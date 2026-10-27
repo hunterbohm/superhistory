@@ -265,6 +265,69 @@ def cmd_hooks(paths, config, args):
     return 0
 
 
+def cmd_try(paths, config, args):
+    from kb import trial
+    try:
+        trial.run(paths, config, args.month, args.question)
+    except FileNotFoundError as exc:
+        raise Fail(f"{exc}; pass a folder holding items.jsonl and questions.jsonl with --month")
+    return 0
+
+
+def _ask(question, default=""):
+    shown = f"{question} [{default}] " if default else f"{question} "
+    try:
+        answer = input(shown).strip()
+    except EOFError:
+        answer = ""
+    return answer or default
+
+
+def _secret(question):
+    import getpass
+    if not sys.stdin.isatty():
+        return _ask(question)
+    return getpass.getpass(question + " ").strip()
+
+
+def cmd_setup(paths, config, args):
+    from kb import schedule, setup
+    result = setup.run(paths, _ask, _secret)
+    if not result:
+        return 0
+    sys.stdout.flush()  # the first read logs to stderr; setup's own lines come first under a pipe too
+    config = config_mod.load(paths.config_file)
+    kb_path = shutil.which("kb")
+    if (result.hooks or result.schedule) and not kb_path:
+        print("Skipped the hooks and the schedule: the kb command is not on PATH. Run install.sh, then "
+              "`kb hooks install` and `kb schedule on`.")
+    else:
+        if result.hooks:
+            cmd_hooks(paths, config, argparse.Namespace(action="install", agents=[], kb=kb_path))
+        if result.schedule:
+            try:
+                print(schedule.on(paths, config, kb_path))
+            except schedule.ScheduleError as exc:
+                print(f"The schedule is off: {exc}")
+    if result.ingest_now and config.sources:
+        return cmd_ingest(paths, config, argparse.Namespace(only=None, no_summaries=False))
+    return 0
+
+
+def cmd_schedule(paths, config, args):
+    from kb import schedule
+    try:
+        if args.action == "on":
+            print(schedule.on(paths, config, _kb_path(args)))
+        elif args.action == "off":
+            print(schedule.off())
+        else:
+            print(schedule.status())
+    except schedule.ScheduleError as exc:
+        raise Fail(str(exc))
+    return 0
+
+
 def cmd_paths(paths, config, args):
     for label, where in (("config", paths.config_file), ("database", paths.db), ("logs", paths.log_dir),
                          ("cache", paths.cache_dir)):
@@ -296,6 +359,7 @@ def cmd_supersede(paths, config, args):
 def parser():
     p = argparse.ArgumentParser(prog="kb", description=f"{NAME}: the knowledge base your agents check first.")
     p.add_argument("--version", action="version", version=f"{NAME} {__version__}")
+    p.add_argument("--try", dest="trial", action="store_true", help="use the made-up month's database")
     sub = p.add_subparsers(dest="cmd", required=True)
     s = sub.add_parser("search", help="find records by keywords")
     s.add_argument("query")
@@ -334,6 +398,15 @@ def parser():
     hs.add_argument("agents", nargs="*", help="agent names; default: every agent found here")
     hs.add_argument("--kb", help="the kb command the hooks run; default: kb on PATH")
     hs.set_defaults(fn=cmd_hooks)
+    t = sub.add_parser("try", help="load a made-up month into a database of its own and run the check on it")
+    t.add_argument("--question", help="the id of one question to ask")
+    t.add_argument("--month", help="a folder holding items.jsonl and questions.jsonl")
+    t.set_defaults(fn=cmd_try)
+    sub.add_parser("setup", help="choose your sources and an AI plug-in").set_defaults(fn=cmd_setup)
+    sc = sub.add_parser("schedule", help="read your sources in the background, or stop")
+    sc.add_argument("action", choices=("on", "off", "status"))
+    sc.add_argument("--kb", help="the kb command the job runs; default: kb on PATH")
+    sc.set_defaults(fn=cmd_schedule)
     sub.add_parser("paths", help="where the config, database, logs and cache live").set_defaults(fn=cmd_paths)
     sub.add_parser("config", help="check the config file and list its sources").set_defaults(fn=cmd_config)
     sub.add_parser("remask", help="reapply masking to stored rows after the patterns change").set_defaults(
@@ -348,6 +421,8 @@ def parser():
 def main(argv=None):
     args = parser().parse_args(argv)
     paths = Paths.for_user()
+    if args.trial:
+        paths = paths.for_try()
     try:
         config = config_mod.load(paths.config_file)
     except OSError as exc:
