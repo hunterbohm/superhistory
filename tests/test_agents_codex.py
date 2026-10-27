@@ -327,6 +327,27 @@ class DetectTest(Home):
         self.assertEqual(AGENT.label, "Codex")
 
 
+class ShiftedTrustTest(Home):
+    def test_a_user_hook_that_moves_up_on_uninstall_keeps_its_trust(self):
+        user = {"type": "command", "command": "/usr/local/bin/notify-prompt", "timeout": 5}
+        self.put(self.hooks_json, {"hooks": {"UserPromptSubmit": [{"hooks": [self.handler()]}, {"hooks": [user]}]}})
+        user_digest = codex.codex_hook_hash("user_prompt_submit", user)
+        moved_from = f"{self.hooks_json}:user_prompt_submit:1:0"
+        self.put(self.config, self.trust_table() + "\n" + self.trust_table(moved_from, user_digest))
+        AGENT.uninstall(self.home)
+        config = self.text(self.config)
+        self.assertIn(self.trust_table(self.key, user_digest), config)
+        self.assertNotIn(moved_from, config)
+        self.assertNotIn(self.digest(), config)
+
+    def test_an_untrusted_user_hook_that_moves_up_gains_no_trust(self):
+        user = {"type": "command", "command": "/usr/local/bin/notify-prompt", "timeout": 5}
+        self.put(self.hooks_json, {"hooks": {"UserPromptSubmit": [{"hooks": [self.handler()]}, {"hooks": [user]}]}})
+        self.put(self.config, self.trust_table())
+        AGENT.uninstall(self.home)
+        self.assertNotIn("trusted_hash", self.text(self.config))
+
+
 class RequestTest(unittest.TestCase):
     def transcript(self, lines):
         tmp = tempfile.TemporaryDirectory()

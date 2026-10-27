@@ -349,7 +349,7 @@ def main(argv=None):
     try:
         config = config_mod.load(paths.config_file)
     except config_mod.ConfigError as exc:
-        if args.cmd == "context":
+        if args.cmd in ("context", "hook"):
             return 0
         print(f"{paths.config_file} has problems:\n" + "\n".join(f"  {p}" for p in exc.problems), file=sys.stderr)
         return 2

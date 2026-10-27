@@ -388,3 +388,33 @@ class UnreadableSettingsTest(unittest.TestCase):
             with open(path) as fh:
                 self.assertEqual(fh.read(), "{not json")
             self.assertEqual(os.listdir(tmp), ["settings.json"])
+
+
+class OwnershipAndBackupTest(unittest.TestCase):
+    def test_only_a_kb_command_counts_as_kb_s_hook(self):
+        self.assertTrue(agents.is_kb_command("'/opt/kb tools/kb' hook claude-code", "claude-code"))
+        self.assertTrue(agents.is_kb_command(agents.command("/home/sam/.local/bin/kb", "codex"), "codex"))
+        for other in ("notify-send hook claude-code", "/usr/bin/kb hook codex", "kb hook claude-code --x", "kb 'unclosed"):
+            with self.subTest(other):
+                self.assertFalse(agents.is_kb_command(other, "claude-code"))
+
+    def test_install_and_uninstall_leave_a_user_hook_with_the_same_ending_alone(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "settings.json")
+            user = {"type": "command", "command": "notify-send hook claude-code"}
+            with open(path, "w") as fh:
+                json.dump({"hooks": {"UserPromptSubmit": [{"hooks": [user]}]}}, fh)
+            agents.add_json_hook(path, "UserPromptSubmit", "claude-code", "'/x/kb' hook claude-code")
+            agents.remove_json_hook(path, "UserPromptSubmit", "claude-code")
+            with open(path) as fh:
+                self.assertEqual(json.load(fh)["hooks"]["UserPromptSubmit"], [{"hooks": [user]}])
+
+    def test_two_changes_in_one_second_keep_the_original_in_a_backup(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "settings.json")
+            with open(path, "w") as fh:
+                fh.write("original")
+            agents.write(path, "first change")
+            agents.write(path, "second change")
+            texts = sorted(open(os.path.join(tmp, f)).read() for f in os.listdir(tmp) if ".bak-kb-" in f)
+            self.assertEqual(texts, ["first change", "original"])

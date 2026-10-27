@@ -159,21 +159,46 @@ def install(home, kb_command):
     return [change, agents.Change(config, action, f"trusts {key}")]
 
 
+def _positions(hooks_json):
+    text = agents.read(hooks_json)
+    groups = ((json.loads(text) if text.strip() else {}).get("hooks") or {}).get(EVENT) or []
+    return [(gi, hi, handler) for gi, group in enumerate(groups) for hi, handler in enumerate(group.get("hooks") or [])]
+
+
 def uninstall(home):
     hooks_json, config = _hooks_json(home), _config(home)
     try:
-        found = _find(hooks_json)
+        before = _positions(hooks_json)
         change = agents.remove_json_hook(hooks_json, EVENT, "codex")
+        after = _positions(hooks_json)
     except ValueError as exc:
         return [agents.Change(hooks_json, "skipped", f"not valid JSON ({exc}); left as it is")]
-    if not found:
+    mine = [(gi, hi) for gi, hi, h in before if agents.is_kb_command(h.get("command", ""), "codex")]
+    if not mine:
         return [change]
-    key = _key(hooks_json, found[0], found[1])
     try:
-        removed = _untrust(config, key)
+        removed = [_untrust(config, _key(hooks_json, gi, hi)) for gi, hi in mine]
+        moved = _move_trust(config, hooks_json, before, after)
     except OSError as exc:
         return [change, agents.Change(config, "skipped", str(exc))]
-    return [change, agents.Change(config, "removed" if removed else "unchanged")]
+    note = f"moved the trust of {moved} hook(s) that shifted up" if moved else ""
+    return [change, agents.Change(config, "removed" if any(removed) else "unchanged", note)]
+
+
+def _move_trust(config, hooks_json, before, after):
+    """Codex keys trust by a hook's position, so a user hook that moved up when kb's left would lose its trust. Each one
+    the user had trusted, by the hash of its current definition, gets its trust at its new position."""
+    others = [p for p in before if not agents.is_kb_command(p[2].get("command", ""), "codex")]
+    moved = 0
+    for (old_gi, old_hi, handler), (new_gi, new_hi, _) in zip(others, after):
+        if (old_gi, old_hi) == (new_gi, new_hi):
+            continue
+        digest = codex_hook_hash(CODEX_EVENT, handler)
+        if _is_trusted(config, _key(hooks_json, old_gi, old_hi), digest):
+            _untrust(config, _key(hooks_json, old_gi, old_hi))
+            trust(config, _key(hooks_json, new_gi, new_hi), digest)
+            moved += 1
+    return moved
 
 
 AGENT = Agent("Codex", detect, installed, install, uninstall, request, reply)
