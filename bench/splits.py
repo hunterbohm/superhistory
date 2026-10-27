@@ -19,6 +19,7 @@ import hashlib
 import json
 import os
 import sys
+import tempfile
 from datetime import datetime, timezone
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -58,6 +59,7 @@ def held_out_run(test, label, code, commit, run):
     run or other code: rerunning a label only fills in the questions its run has no row for yet."""
     if label not in RUNS:
         raise SystemExit(f"a held-out run is labelled {', '.join(RUNS)}; got {label!r}")
+    _hold(test)
     with open(LOG, "a+", encoding="utf-8", newline="") as fh:
         fcntl.flock(fh, fcntl.LOCK_EX)
         fh.seek(0)
@@ -73,6 +75,21 @@ def held_out_run(test, label, code, commit, run):
             writer.writeheader()
         writer.writerow({"date": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"), "test": test,
                          "label": label, "run": run, "code": code, "commit": commit})
+
+
+_held = {}
+
+
+def _hold(test):
+    """One held-out run of `test` at a time on this computer, until this process exits: two at once would each run
+    the questions that have no row yet."""
+    fh = open(os.path.join(tempfile.gettempdir(), f"bench-heldout-{test}.lock"), "w")
+    try:
+        fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        fh.close()
+        raise SystemExit(f"another held-out run of {test} is running; wait for it to end") from None
+    _held[test] = fh
 
 
 def fresh():
