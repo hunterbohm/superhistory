@@ -418,3 +418,19 @@ class OwnershipAndBackupTest(unittest.TestCase):
             agents.write(path, "second change")
             texts = sorted(open(os.path.join(tmp, f)).read() for f in os.listdir(tmp) if ".bak-kb-" in f)
             self.assertEqual(texts, ["first change", "original"])
+
+
+class KbPathTest(unittest.TestCase):
+    def test_hooks_install_refuses_a_command_not_named_kb(self):
+        import contextlib
+        import io
+        from kb import cli
+        with tempfile.TemporaryDirectory() as tmp:
+            os.makedirs(os.path.join(tmp, "home", ".claude"))
+            err = io.StringIO()
+            with mock.patch.dict(os.environ, {"KB_HOME": os.path.join(tmp, "kb"), "HOME": os.path.join(tmp, "home")}), \
+                    contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
+                code = cli.main(["hooks", "install", "claude-code", "--kb", "/opt/tools/kb-custom"])
+            self.assertEqual(code, 1)
+            self.assertIn("named kb", err.getvalue())
+            self.assertFalse(os.path.exists(os.path.join(tmp, "home", ".claude", "settings.json")))

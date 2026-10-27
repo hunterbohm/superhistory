@@ -252,6 +252,8 @@ def cmd_hooks(paths, config, args):
         print("No supported agent found here.")
         return 0
     kb_path = _kb_path(args) if args.action == "install" else None
+    if kb_path and os.path.basename(kb_path) != "kb":
+        raise Fail(f"{kb_path}: the hooks need the command named kb, so kb can find its own hooks again later")
     for name in chosen:
         agent = agents.load(name)
         try:
@@ -348,6 +350,11 @@ def main(argv=None):
     paths = Paths.for_user()
     try:
         config = config_mod.load(paths.config_file)
+    except OSError as exc:
+        if args.cmd in ("context", "hook"):
+            return 0
+        print(f"kb: cannot read {paths.config_file}: {exc.strerror or exc}", file=sys.stderr)
+        return 2
     except config_mod.ConfigError as exc:
         if args.cmd in ("context", "hook"):
             return 0

@@ -8,6 +8,7 @@ import json
 import os
 
 from kb import agents
+from kb.config import read_toml
 from kb.agents import Agent, claude_code
 
 EVENT = "UserPromptSubmit"
@@ -112,12 +113,13 @@ def _untrust(path, key):
 
 
 def _is_trusted(path, key, digest):
-    lines = agents.read(path).splitlines(keepends=True)
-    section = _section(lines, key)
-    if section is None:
+    """Whether config.toml trusts this hook position with this hash, however the TOML is written."""
+    try:
+        data = read_toml(agents.read(path))
+    except ValueError:
         return False
-    found = _trusted_line(lines, section[0], section[1])
-    return found is not None and lines[found].strip() == f'trusted_hash = "{digest}"'
+    entry = ((data.get("hooks") or {}).get("state") or {}).get(key)
+    return isinstance(entry, dict) and entry.get("trusted_hash") == digest
 
 
 def _find(hooks_json):
