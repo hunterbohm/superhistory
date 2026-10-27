@@ -12,6 +12,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import month_b
 import outside  # puts bench/ on the path for gateway
 import gateway
+from tools import Retrieved, claude_mem
 
 try:
     import openai
@@ -78,9 +79,15 @@ class RunnerTest(Installed):
     def test_a_question_waits_out_a_pause_before_its_lookup(self):
         order = []
         outside.LIMITS = SimpleNamespace(wait=lambda: order.append("wait"))
-        tool = month_b.waits(SimpleNamespace(retrieve=lambda q: order.append("lookup")))
+        tool = month_b.waits(SimpleNamespace(retrieve=lambda q: order.append("lookup") or Retrieved("", [], 0.0)))
         tool.retrieve({"question": "q"})
         self.assertEqual(order, ["wait", "lookup"])
+
+    def test_a_question_whose_lookup_failed_gets_no_row(self):
+        outside.LIMITS = SimpleNamespace(wait=lambda: None)
+        tool = month_b.waits(SimpleNamespace(retrieve=lambda q: Retrieved("", [], 30.0, "TimeoutError")))
+        with self.assertRaises(RuntimeError):
+            tool.retrieve({"question": "q"})
 
     def test_a_mem0_store_with_a_failed_add_is_not_kept_or_scored(self):
         with tempfile.TemporaryDirectory() as stores:
@@ -92,12 +99,27 @@ class RunnerTest(Installed):
             finally:
                 month_b.STORES = saved
 
-    def test_claude_mem_is_not_scored_until_its_worker_has_finished_every_session(self):
-        unfinished = SimpleNamespace(load=lambda items, folder: {"reused_store": True}, _drain=lambda seconds: False)
-        with self.assertRaises(month_b.Incomplete):
-            month_b.load_claude_mem(unfinished, [])
-        finished = SimpleNamespace(load=lambda items, folder: {"reused_store": True}, _drain=lambda seconds: True)
-        self.assertTrue(month_b.load_claude_mem(finished, [])["drained"])
+    def test_claude_mem_is_scored_only_on_a_store_this_runner_replayed_to_the_end(self):
+        database = {"sessions": 82, "observations": 500, "summaries": 50}
+        worker, claude_mem.worker = claude_mem.worker, lambda method, path, body=None: {"database": dict(database)}
+        with tempfile.TemporaryDirectory() as stores:
+            saved, month_b.STORES = month_b.STORES, stores
+            try:
+                unfinished = SimpleNamespace(load=lambda items, folder: {"sessions_replayed": 82},
+                                             _drain=lambda seconds: False)
+                with self.assertRaises(month_b.Incomplete):
+                    month_b.load_claude_mem(unfinished, [])
+                reused = SimpleNamespace(load=lambda items, folder: {"reused_store": True}, _drain=lambda s: True)
+                with self.assertRaises(RuntimeError):
+                    month_b.load_claude_mem(reused, [])
+                replayed = SimpleNamespace(load=lambda items, folder: {"sessions_replayed": 82}, _drain=lambda s: True)
+                self.assertTrue(month_b.load_claude_mem(replayed, [])["drained"])
+                self.assertTrue(month_b.load_claude_mem(reused, [])["drained"])
+                database["observations"] = 0
+                with self.assertRaises(RuntimeError):
+                    month_b.load_claude_mem(reused, [])
+            finally:
+                month_b.STORES, claude_mem.worker = saved, worker
 
     def test_it_runs_only_the_rivals(self):
         with self.assertRaises(SystemExit):

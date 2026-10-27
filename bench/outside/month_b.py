@@ -104,24 +104,43 @@ def load_supermemory(tool, items):
 
 
 def load_claude_mem(tool, items):
-    """The adapter gives each replayed session a fixed time and counts one still in the worker as unsettled; the
-    worker must finish every session it was given, on a fresh or a reused store, before any question runs."""
+    """The adapter gives each replayed session a fixed time and counts one still in the worker as unsettled, and it
+    reuses any store holding the month's number of sessions, even one whose replay stopped partway. So the worker
+    must finish every session it was given before any question runs, and a reused store must be the one this runner
+    replayed to the end: its counts are recorded when a replay finishes and must still match."""
+    from tools import claude_mem
+    marker = os.path.join(STORES, "claude-mem-replayed.json")
     stats = tool.load(items, STORES)
     if not tool._drain(SETTLE_SECONDS):
         raise Incomplete("claude-mem's worker has not finished the sessions it was given; run again to wait")
-    return {**stats, "drained": True}
+    database = claude_mem.worker("GET", "/api/stats")["database"]
+    counts = {k: database[k] for k in ("sessions", "observations", "summaries")}
+    if stats.get("reused_store"):
+        recorded = json.load(open(marker)) if os.path.exists(marker) else None
+        if recorded != counts:
+            raise RuntimeError("claude-mem's store was not replayed to the end by this runner; start its worker on an "
+                               "empty store and run again")
+    else:
+        os.makedirs(STORES, exist_ok=True)
+        with open(marker, "w", encoding="utf-8") as fh:
+            json.dump(counts, fh)
+    return {**stats, **counts, "drained": True}
 
 
 LOADERS = {"claude-mem": load_claude_mem, "mem0": load_mem0, "supermemory": load_supermemory}
 
 
 def waits(tool):
-    """A question waits out any model's pause before its lookup, so no new work starts during one."""
+    """A question waits out any model's pause before its lookup, so no new work starts during one. A lookup that
+    failed would leave the answer without the rival's memory, so the question gets no row and runs again."""
     retrieve = tool.retrieve
 
     def retrieve_after_pause(question):
         outside.LIMITS.wait()
-        return retrieve(question)
+        found = retrieve(question)
+        if found.error:
+            raise RuntimeError(f"the lookup failed with {found.error}")
+        return found
 
     tool.retrieve = retrieve_after_pause
     return tool
