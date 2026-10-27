@@ -14,6 +14,7 @@ Tuning reads only dev numbers. Each test half runs at most three times in total,
 """
 import argparse
 import csv
+import fcntl
 import hashlib
 import json
 import os
@@ -57,19 +58,17 @@ def held_out_run(test, label, code, commit):
     code: rerunning a label only fills in the questions it has no row for yet."""
     if label not in RUNS:
         raise SystemExit(f"a held-out run is labelled {', '.join(RUNS)}; got {label!r}")
-    rows = []
-    if os.path.exists(LOG):
-        with open(LOG, encoding="utf-8") as fh:
-            rows = list(csv.DictReader(fh, delimiter="\t"))
-    earlier = [r for r in rows if r["test"] == test and r["label"] == label]
-    if earlier and earlier[0]["code"] != code:
-        raise SystemExit(f"{test} {label} already ran with code {earlier[0]['code']}; this code is {code}")
-    if earlier:
-        return
-    new = not os.path.exists(LOG)
-    with open(LOG, "a", encoding="utf-8", newline="") as fh:
+    with open(LOG, "a+", encoding="utf-8", newline="") as fh:
+        fcntl.flock(fh, fcntl.LOCK_EX)
+        fh.seek(0)
+        rows = list(csv.DictReader(fh, delimiter="\t"))
+        earlier = [r for r in rows if r["test"] == test and r["label"] == label]
+        if earlier and earlier[0]["code"] != code:
+            raise SystemExit(f"{test} {label} already ran with code {earlier[0]['code']}; this code is {code}")
+        if earlier:
+            return
         writer = csv.DictWriter(fh, LOG_FIELDS, delimiter="\t", lineterminator="\n")
-        if new:
+        if not fh.tell():
             writer.writeheader()
         writer.writerow({"date": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"), "test": test,
                          "label": label, "code": code, "commit": commit})
