@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 
 from kb import NAME, __version__, ai, check, config as config_mod, ids, ingest, search, store, summarize
 from kb.ai import AIError
+from kb.mask import mask
 from kb.paths import Paths
 
 PAGE = 20000
@@ -139,12 +140,20 @@ def cmd_stats(paths, config, args):
         print(f"  UNREACHABLE {host} since {since}, probably asleep")
 
 
+class _MaskedFormatter(logging.Formatter):
+    """Masks secrets in every line kb logs, tracebacks included, since an error from a source or from Sync can quote
+    a token."""
+
+    def format(self, record):
+        return mask(super().format(record))
+
+
 def _logger(paths):
     os.makedirs(paths.log_dir, exist_ok=True)
     log = logging.getLogger("kb")
     log.setLevel(logging.INFO)
     if not log.handlers:
-        fmt = logging.Formatter("%(asctime)s %(levelname)s %(message)s")
+        fmt = _MaskedFormatter("%(asctime)s %(levelname)s %(message)s")
         for handler in (logging.FileHandler(paths.log("ingest")), logging.StreamHandler()):
             handler.setFormatter(fmt)
             log.addHandler(handler)
@@ -152,7 +161,7 @@ def _logger(paths):
 
 
 def cmd_ingest(paths, config, args):
-    if not config.sources:
+    if not config.sources and "sync" not in config.units():
         raise Fail(f"No sources in {paths.config_file}. Add one, such as a notes folder:\n\n"
                    f'[sources.notes]\npath = "~/Notes"')
     log = _logger(paths)

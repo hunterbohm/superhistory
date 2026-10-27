@@ -163,7 +163,8 @@ class Config:
         """{source name: account key} for the sources that read an online account (SourceType.account). A key names
         the account, a mail address for Gmail, so it goes only where item text may go: Sync compares keys inside its
         encrypted roster, never in the clear to the app or the relay."""
-        return {s.name: s.type.account(s.options) for s in self.sources if s.type.account}
+        keys = {s.name: s.type.account(s.options) for s in self.sources if s.type.account}
+        return {name: key for name, key in keys.items() if key}
 
     def units(self):
         """Every health unit this config owns."""
@@ -229,6 +230,10 @@ def parse(text):
         if source:
             sources.append(source)
     problems += [f"{key}: expected a table" for key, value in extra.items() if not isinstance(value, dict)]
+    if extra:
+        problems += [f"sources.{s.name}: with [sync] or [cloud] on, name the account it reads (for GitHub, set "
+                     f'involves to your login instead of "@me"), so a second computer reading it is caught'
+                     for s in sources if s.type.account and not s.type.account(s.options)]
     if problems:
         raise ConfigError(problems)
     return Config(machine, ai, check, summarize, schedule, tuple(sources), tuple(hosts), extra=extra)

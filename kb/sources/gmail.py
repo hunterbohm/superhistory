@@ -566,10 +566,26 @@ def render_thread(account, thread_id, messages, mark=0):
 
 
 def _render(address, thread, bodies):
-    messages = [(email.message_from_bytes(bodies.get(m.uid, b""), policy=policy.default), m.labels, m.epoch)
-                for m in thread.messages]
-    return render_thread(address, thread.id, messages, thread.mark)
+    return render_thread(address, thread.id, [(_message(m, bodies.get(m.uid, b"")), m.labels, m.epoch)
+                                              for m in thread.messages], thread.mark)
+
+
+def _message(m, raw):
+    """The fetched message, with the subject and sender already fetched filled in when its body did not come back."""
+    msg = email.message_from_bytes(raw, policy=policy.default)
+    for name, value in (("Subject", m.subject), ("From", m.sender)):
+        if msg.get(name) is None and value:
+            msg[name] = " ".join(value.split())
+    return msg
+
+
+def _account(options):
+    # Gmail ignores dots in a gmail.com name and treats googlemail.com as gmail.com; other domains keep theirs.
+    local, _, domain = options.address.strip().lower().rpartition("@")
+    if domain in ("gmail.com", "googlemail.com"):
+        local, domain = local.replace(".", ""), "gmail.com"
+    return f"gmail:{local}@{domain}"
 
 
 TYPE = SourceType(Options, extract, others_wrote=True, needs_model=True,
-                  account=lambda o: f"gmail:{o.address.strip().lower()}")
+                  account=_account)

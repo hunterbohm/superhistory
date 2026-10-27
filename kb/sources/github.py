@@ -178,4 +178,9 @@ def extract(run):
         yield Progress(now)
 
 
-TYPE = SourceType(Options, extract, account=lambda o: f"github:{o.involves}")
+def _account(options):
+    # "@me" names whoever gh is signed in as, which the config cannot tell; logins ignore case.
+    return None if options.involves == "@me" else f"github:{options.involves.lstrip('@').lower()}"
+
+
+TYPE = SourceType(Options, extract, account=_account)

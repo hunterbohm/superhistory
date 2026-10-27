@@ -35,8 +35,9 @@ The Sync client goes in `kb/sync/`, imported as `kb.sync`.
   items.
 - After `kb ingest`, when the config has a `[sync]` or `[cloud]` table, kb calls
   `kb.sync.after_ingest(paths, config, db, log)`, which runs `kb sync` and `kb push`. `config.extra` holds those
-  tables as parsed TOML, and `config.install` holds this install's id. A failure, a missing client included, is the
-  `sync` health unit and makes `kb ingest` exit 1.
+  tables as parsed TOML, and `config.install` holds this install's id. It runs even when no source is configured, so
+  a forgotten reader's deletions still go out. A failure, a missing client included, is the `sync` health unit and
+  makes `kb ingest` exit 1. Everything kb logs is masked, tracebacks included.
 - `store.mark_superseded`, `clear_superseded` and `superseded_by` keep one mark per marking install in the
   `supersedes` table, keyed by item, not row, so a mark survives a refresh. A clear keeps the row with no target.
   Of several marks the one with no `v` (not synced yet) wins, then the highest `v`, then the highest install id, and
@@ -45,8 +46,10 @@ The Sync client goes in `kb/sync/`, imported as `kb.sync`.
   `gmail.render_thread`, and `summarize.request`, `parse` and `rows`.
 
 Each online account has one reader. Gmail and GitHub read an account, not a computer, so two computers reading one
-would store every thread twice under two prefixes. `config.account_keys()` names the account each source reads, and
-the Sync client refuses a second reader: at `kb sync join`, and on every `after_ingest`, because a member can add a
+would store every thread twice under two prefixes. `config.account_keys()` names the account each source reads, one
+key however the config spells it (case, a leading `@`, dots in a gmail.com name). With `[sync]` or `[cloud]` on, a
+source whose config does not name its account, such as GitHub left at `"@me"`, is a config error. The Sync client
+refuses a second reader: at `kb sync join`, and on every `after_ingest`, because a member can add a
 source after joining. An account key holds a mail address, so it goes only where item text goes. To move a reader to
 a new computer, run `kb forget NAME` on the old one and remove `[sources.NAME]` from its config, then add the source
 on the new one. When the old computer is gone, removing it from Sync must clear its items; that is the Sync client's.

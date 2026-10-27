@@ -64,8 +64,8 @@ class SourceType(NamedTuple):
     needs_model: bool = False
     platforms: FrozenSet[str] = frozenset({"darwin", "linux"})
     # For a source that reads an online account rather than this computer (Gmail, GitHub): Options -> a key naming
-    # the account, such as "gmail:sam@example.com". One computer reads each account, so its items have one writer;
-    # the Sync client uses the key to refuse a second reader. Two GitHub sources left at "@me" count as one account.
+    # the account, such as "gmail:sam@example.com", or None when the options do not say which account. One computer
+    # reads each account, so its items have one writer; the Sync client uses the key to refuse a second reader.
     account: Optional[Callable[[Any], str]] = None
 
 

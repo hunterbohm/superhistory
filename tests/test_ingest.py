@@ -469,9 +469,9 @@ class CliTest(unittest.TestCase):
         return self.run_cli("ingest")[0]
 
     def run_cli(self, *argv):
-        out = io.StringIO()
+        out, self.err = io.StringIO(), io.StringIO()
         try:
-            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(self.err):
                 return cli.main(list(argv)), out.getvalue()
         finally:
             gc.collect()
@@ -539,7 +539,23 @@ class CliTest(unittest.TestCase):
         [(unit, line)] = self.health()[0]
         self.assertEqual(unit, "sync")
         self.assertIn("relay refused [masked]", line)
+        with open(self.paths.log("ingest")) as fh:
+            logged = fh.read()
+        self.assertIn("relay refused [masked]", logged, "the traceback is logged, masked")
+        for where in (logged, self.err.getvalue()):
+            self.assertNotIn("x" * 40, where)
         self.assertEqual(self.stored(), [f"{ids.install_id(self.paths)}:Area/plan.md"], "the items still landed")
+
+    def test_a_computer_with_only_sync_configured_still_runs_it(self):
+        os.makedirs(self.home, exist_ok=True)
+        with open(self.paths.config_file, "w") as fh:
+            fh.write('machine = "m1"\n[sync]\n')
+        calls = []
+        client = types.ModuleType("kb.sync")
+        client.after_ingest = lambda paths, cfg, db, log: calls.append(cfg.install)
+        with mock.patch.dict(sys.modules, {"kb.sync": client}):
+            self.assertEqual(self.ingest(), 0)
+        self.assertEqual(calls, [ids.install_id(self.paths)], "the Gone records of a forgotten reader still go out")
 
     def test_sync_turned_on_without_its_client_is_reported_not_skipped(self):
         self.configure(self.make_notes(), "[sync]\n")

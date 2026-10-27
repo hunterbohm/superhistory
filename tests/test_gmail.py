@@ -577,6 +577,13 @@ class RenderThreadTest(unittest.TestCase):
         self.assertEqual(item.meta["labels"], ["Inbox", "Opened", "Sent"])
         self.assertIn(f"#all/{1781000000000000009:x}", item.meta["url"])
 
+    def test_a_message_whose_body_did_not_come_back_keeps_its_subject_and_sender(self):
+        thread = gmail.Thread(PRICING, 0, (gmail.Message(1, ago(days=1).timestamp(), ("\\Inbox",),
+                                                         "Dana Field <dana@example.com>", "Q4 pricing"),))
+        item = gmail._render(ME, thread, {})
+        self.assertEqual(item.title, "Q4 pricing")
+        self.assertIn("From: Dana Field <dana@example.com>", item.content)
+
     def test_a_thread_with_nothing_left_is_none_and_a_non_gmail_id_has_no_link(self):
         self.assertIsNone(gmail.render_thread(ME, "x", [(self.message("A <a@example.com>", "hi"), ("Trash",), 1.0)]))
         item = gmail.render_thread(ME, "fwd:abc", [(self.message("A <a@example.com>", "hi"), (), 1.0)])

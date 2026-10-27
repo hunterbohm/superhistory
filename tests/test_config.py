@@ -112,8 +112,23 @@ class ExtensionTest(unittest.TestCase):
 
     def test_account_keys_name_the_account_each_online_source_reads(self):
         cfg = config.parse('[sources.mail]\ntype = "gmail"\naddress = "Sam@Example.com"\npassword = "env:X"\n'
-                           '[sources.github]\n[sources.notes]\npath = "/n"\n')
-        self.assertEqual(cfg.account_keys(), {"mail": "gmail:sam@example.com", "github": "github:@me"})
+                           '[sources.github]\ninvolves = "OctoCat"\n[sources.notes]\npath = "/n"\n')
+        self.assertEqual(cfg.account_keys(), {"mail": "gmail:sam@example.com", "github": "github:octocat"})
+
+    def test_one_account_spelled_two_ways_has_one_key(self):
+        def key(table):
+            return config.parse(f"[sources.x]\n{table}\n").account_keys()["x"]
+        self.assertEqual(key('type = "github"\ninvolves = "@OctoCat"'), key('type = "github"\ninvolves = "octocat"'))
+        gmail = 'type = "gmail"\npassword = "env:X"\naddress = '
+        domain = "gmail.com"
+        self.assertEqual(key(gmail + '"Pat.Example@googlemail.com"'), key(gmail + f'"patexample@{domain}"'))
+        self.assertNotEqual(key(gmail + '"pat.example@example.com"'), key(gmail + '"patexample@example.com"'),
+                            "only Gmail's own domain ignores dots")
+
+    def test_with_sync_on_an_account_the_config_cannot_name_is_refused(self):
+        self.assertEqual(config.parse("[sources.github]\n").account_keys(), {}, '"@me" names no account by itself')
+        with self.assertRaisesRegex(ConfigError, 'sources.github: with \\[sync\\] or \\[cloud\\] on, name the account'):
+            config.parse("[sync]\n[sources.github]\n")
 
 
 class SecretTest(unittest.TestCase):
