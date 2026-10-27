@@ -1,0 +1,306 @@
+"""The config file: TOML parsed once into typed settings.
+
+    machine = "studio"            # this computer's name in stored ids; set it once
+    [ai]
+    plugin = "anthropic"          # a name from kb.ai.PLUGINS; the other keys are that plug-in's options
+    [check]
+    budget_seconds = 10           # default: the plug-in's
+    [summarize]
+    per_run = 150
+    [schedule]
+    every_minutes = 15
+    [sources.notes]               # one table per source; its name is what `kb search --source` takes
+    type = "notes"                # default: the table name
+    path = "~/Notes"
+    exclude = ["Journal"]         # added to the type's default excludes
+    summarize = ["Meetings/**"]   # true, false, or the globs whose items get summaries
+
+A source type's Options dataclass, and a plug-in's, is the only schema for its keys: options_from() reads its fields.
+"""
+import dataclasses
+import os
+import re
+import subprocess
+import typing
+from dataclasses import dataclass
+from typing import Any, Optional, Tuple
+
+NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,39}$")
+SOURCE_KEYS = {"type", "enabled", "exclude", "exclude_defaults", "summarize"}
+MAX_CHECK_BUDGET = 25.0
+
+
+class ConfigError(ValueError):
+    """Every problem in the file, each with its key path, such as `sources.notes.pth: unknown key`."""
+
+    def __init__(self, problems):
+        self.problems = tuple(problems)
+        super().__init__("\n".join(self.problems))
+
+
+class SecretError(RuntimeError):
+    pass
+
+
+@dataclass(frozen=True)
+class Secret:
+    """Where a key or password lives, never the value: "env:NAME", "file:PATH" or "cmd:COMMAND". reveal() reads it at
+    the moment of use."""
+    ref: str
+
+    def __post_init__(self):
+        kind, _, rest = self.ref.partition(":")
+        if kind not in ("env", "file", "cmd") or not rest:
+            raise ValueError('expected "env:NAME", "file:PATH" or "cmd:COMMAND"')
+
+    def reveal(self):
+        kind, _, rest = self.ref.partition(":")
+        if kind == "env":
+            value = os.environ.get(rest, "")
+        elif kind == "file":
+            try:
+                with open(os.path.expanduser(rest), encoding="utf-8") as fh:
+                    value = fh.read()
+            except OSError as exc:
+                raise SecretError(f"cannot read {rest}: {exc.strerror}") from None
+        else:
+            proc = subprocess.run(rest, shell=True, capture_output=True, text=True, timeout=60)
+            if proc.returncode:
+                raise SecretError(f"`{rest}` exited {proc.returncode}")
+            value = proc.stdout
+        value = value.strip()
+        if not value:
+            raise SecretError(f"{self.ref.split(':', 1)[0]}:{rest} is empty")
+        return value
+
+    def __repr__(self):
+        return f"Secret({self.ref})"
+
+
+@dataclass(frozen=True)
+class Summarize:
+    """Which long items of a source get summaries: all, none, or those whose id matches a glob."""
+    every: bool
+    globs: Tuple[str, ...] = ()
+
+    def covers(self, source_id):
+        from kb.sources import Excludes
+        return self.every or (bool(self.globs) and Excludes(self.globs)(source_id))
+
+
+@dataclass(frozen=True)
+class Source:
+    name: str
+    type_name: str
+    type: Any
+    options: Any
+    exclude: Tuple[str, ...]
+    summarize: Summarize
+
+
+@dataclass(frozen=True)
+class AISettings:
+    plugin: str
+    options: Any
+
+
+@dataclass(frozen=True)
+class CheckSettings:
+    enabled: bool = True
+    budget_seconds: Optional[float] = None
+
+
+@dataclass(frozen=True)
+class SummarizeSettings:
+    enabled: bool = True
+    per_run: int = 150
+
+
+@dataclass(frozen=True)
+class Schedule:
+    every_minutes: int = 15
+
+
+@dataclass(frozen=True)
+class Config:
+    machine: str = "local"
+    ai: Optional[AISettings] = None
+    check: CheckSettings = CheckSettings()
+    summarize: SummarizeSettings = SummarizeSettings()
+    schedule: Schedule = Schedule()
+    sources: Tuple[Source, ...] = ()
+
+    def source(self, name):
+        return next((s for s in self.sources if s.name == name), None)
+
+    def units(self):
+        """Every health unit this config owns."""
+        return tuple(f"{s.name}@{self.machine}" for s in self.sources) + ("summarize",)
+
+
+def read_toml(text):
+    try:
+        import tomllib
+    except ImportError:
+        from kb._vendor import tomli as tomllib
+    return tomllib.loads(text)
+
+
+def load(path):
+    """The parsed config, or the defaults when the file does not exist yet. Raises ConfigError."""
+    try:
+        with open(path, encoding="utf-8") as fh:
+            text = fh.read()
+    except FileNotFoundError:
+        return Config()
+    return parse(text)
+
+
+def parse(text):
+    try:
+        raw = read_toml(text)
+    except ValueError as exc:
+        raise ConfigError([f"not valid TOML: {exc}"]) from None
+    problems = []
+    machine = raw.pop("machine", "local")
+    if not isinstance(machine, str) or not NAME_RE.match(machine):
+        problems.append("machine: use lowercase letters, digits, - and _, up to 40 characters")
+        machine = "local"
+    tables = {key: raw.pop(key, {}) for key in ("ai", "check", "summarize", "schedule", "sources")}
+    problems += [f"{key}: unknown key" for key in raw]
+    for key, value in tables.items():
+        if not isinstance(value, dict):
+            problems.append(f"{key}: expected a table")
+            tables[key] = {}
+    check = options_from(CheckSettings, tables["check"], "check", problems)
+    if check and check.budget_seconds is not None and not 0 < check.budget_seconds <= MAX_CHECK_BUDGET:
+        problems.append(f"check.budget_seconds: must be above 0 and at most {MAX_CHECK_BUDGET:g}")
+    summarize = options_from(SummarizeSettings, tables["summarize"], "summarize", problems)
+    schedule = options_from(Schedule, tables["schedule"], "schedule", problems)
+    ai = _ai(tables["ai"], problems)
+    sources = []
+    for name, table in tables["sources"].items():
+        source = _source(name, table, problems)
+        if source:
+            sources.append(source)
+    if problems:
+        raise ConfigError(problems)
+    return Config(machine, ai, check, summarize, schedule, tuple(sources))
+
+
+def _ai(table, problems):
+    if not table:
+        return None
+    from kb import ai
+    plugin = table.get("plugin")
+    spec = ai.PLUGINS.get(plugin) if isinstance(plugin, str) else None
+    if spec is None:
+        problems.append(f"ai.plugin: expected one of {', '.join(sorted(ai.visible_plugins()))}")
+        return None
+    options = options_from(spec.Options, {k: v for k, v in table.items() if k != "plugin"}, "ai", problems)
+    return AISettings(plugin, options) if options is not None else None
+
+
+def _source(name, table, problems):
+    from kb import sources
+    where = f"sources.{name}"
+    if not NAME_RE.match(name):
+        problems.append(f"{where}: a source name uses lowercase letters, digits, - and _, up to 40 characters")
+        return None
+    if not isinstance(table, dict):
+        problems.append(f"{where}: expected a table")
+        return None
+    if table.get("enabled", True) is False:
+        return None
+    type_name = table.get("type", name)
+    kind = sources.load_type(type_name) if isinstance(type_name, str) else None
+    if kind is None:
+        problems.append(f"{where}.type: expected one of {', '.join(sources.type_names())}")
+        return None
+    common = options_from(_Common, {k: v for k, v in table.items() if k in SOURCE_KEYS - {"type"}}, where, problems)
+    options = options_from(kind.Options, {k: v for k, v in table.items() if k not in SOURCE_KEYS}, where, problems)
+    if common is None or options is None:
+        return None
+    if common.summarize is None:
+        summarize = Summarize(kind.summarize)
+    elif isinstance(common.summarize, bool):
+        summarize = Summarize(common.summarize)
+    else:
+        summarize = Summarize(False, common.summarize)
+    exclude = (kind.exclude if common.exclude_defaults else ()) + common.exclude
+    return Source(name, type_name, kind, options, exclude, summarize)
+
+
+@dataclass(frozen=True)
+class _Common:
+    enabled: bool = True
+    exclude: Tuple[str, ...] = ()
+    exclude_defaults: bool = True
+    summarize: typing.Union[bool, Tuple[str, ...], None] = None
+
+
+def options_from(cls, raw, where, problems):
+    """An instance of the frozen dataclass `cls` built from TOML values by its field types (str, int, float, bool,
+    Literal, Secret, Tuple[str, ...], Optional and Union of those). Problems go to `problems` with their key path;
+    returns None when there were any."""
+    hints = typing.get_type_hints(cls)
+    fields = {f.name: f for f in dataclasses.fields(cls)}
+    found = len(problems)
+    values = {}
+    for key, value in raw.items():
+        if key not in fields:
+            problems.append(f"{where}.{key}: unknown key")
+            continue
+        try:
+            values[key] = _coerce(hints[key], value)
+        except (TypeError, ValueError) as exc:
+            problems.append(f"{where}.{key}: {exc}")
+    for name, f in fields.items():
+        if name not in values and f.default is dataclasses.MISSING and f.default_factory is dataclasses.MISSING:
+            problems.append(f"{where}.{name}: required")
+    if len(problems) > found:
+        return None
+    return cls(**values)
+
+
+def _coerce(hint, value):
+    origin, args = typing.get_origin(hint), typing.get_args(hint)
+    if origin is typing.Union:
+        for option in args:
+            if option is type(None):
+                continue
+            try:
+                return _coerce(option, value)
+            except (TypeError, ValueError):
+                pass
+        raise TypeError(f"expected {_describe(hint)}")
+    if origin is typing.Literal:
+        if value not in args:
+            raise ValueError(f"expected one of {', '.join(map(repr, args))}")
+        return value
+    if origin is tuple:
+        if not isinstance(value, list):
+            raise TypeError(f"expected {_describe(hint)}")
+        return tuple(_coerce(args[0], v) for v in value)
+    if hint is Secret:
+        if not isinstance(value, str):
+            raise TypeError('expected "env:NAME", "file:PATH" or "cmd:COMMAND"')
+        return Secret(value)
+    if hint is float and isinstance(value, int) and not isinstance(value, bool):
+        return float(value)
+    if hint is bool or hint is int:
+        if type(value) is not hint:
+            raise TypeError(f"expected {_describe(hint)}")
+        return value
+    if not isinstance(value, hint):
+        raise TypeError(f"expected {_describe(hint)}")
+    return value
+
+
+def _describe(hint):
+    origin, args = typing.get_origin(hint), typing.get_args(hint)
+    if origin is typing.Union:
+        return " or ".join(_describe(a) for a in args if a is not type(None))
+    if origin is tuple:
+        return f"a list of {_describe(args[0])}s"
+    return {str: "text", int: "a whole number", float: "a number", bool: "true or false"}.get(hint, "a value")
