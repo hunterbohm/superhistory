@@ -96,28 +96,28 @@ A test half runs at most three times, once each as `baseline`, `midpoint` and `f
 
 ![The check against three rivals on the made-up month](results/month/chart.png)
 
-All rows are in `bench/results/month/`, and `table.md` there has the full table. Graded once, then graded a second time with the same rubric, the rows agree on 1,359 of 1,368; `second-grading.jsonl` holds both verdicts for every row. No tool's verdicts flipped on more than 4 of its 171 questions, so a gap of four questions or fewer between two tools is not measurable here. To grade again, copy the per-tool row files to a folder and run `python3 bench/run.py rejudge <folder>`.
+All rows are in `bench/results/month/`, and `table.md` there has the full table. Graded once, then graded a second time with the same rubric, the rows agree on 1,360 of 1,368; `second-grading.jsonl` holds both verdicts for every row. No tool's verdicts flipped on more than 4 of its 171 questions, so a gap of four questions or fewer between two tools is not measurable here. To grade again, copy the per-tool row files to a folder and run `python3 bench/run.py rejudge <folder>`. Four gold answers were completed after audits on 2026-10-27 (`demo/month/README.md`); the rows were graded again for those questions, and `bench/results/regrades.tsv` holds before and after.
 
 | Tool | Right, of 131 with an answer | Added nothing, of 40 with nothing to find | Tokens added per question, mean | Lookup, median |
 |---|---|---|---|---|
 | The check, with `kb search` and `kb get` | 122 | 37 | 2,087 | 3.52 s |
-| The check, cards only | 59 | 37 | 288 | 3.63 s |
-| Supermemory, self-hosted | 122 | 0 | 8,834 | 0.18 s |
-| Mem0, open source | 103 | 0 | 450 | 0.23 s |
+| The check, cards only | 57 | 37 | 288 | 3.63 s |
+| Supermemory, self-hosted | 121 | 0 | 8,834 | 0.18 s |
+| Mem0, open source | 102 | 0 | 450 | 0.23 s |
 | claude-mem | 19 | 0 | 7,067 | 0.01 s |
 | claude-mem, per-prompt lookup on | 19 | 0 | 6,418 | 0.23 s |
-| Gold records | 129 | 40 | 550 | |
+| Gold records | 126 | 40 | 550 | |
 | No lookup | 1 | 40 | 0 | |
 
 Every tool's agent said it didn't know, or answered correctly, on 39 or 40 of the 40 questions where nothing fits. The difference is what each tool put in front of the agent first.
 
 What limits each number:
 
-- **The check and Supermemory.** Each answers 122 and misses 9. For Supermemory, items from the right documents reached the agent in all 9 misses. For the check they reached it in 6, and in 3 neither the lookup nor the agent's own searches found them. The two differ elsewhere. Supermemory's documented harness puts its whole profile, 5 memories and 3 document chunks before every message, about 6,800 tokens at the median, so it never adds nothing. The check adds a median of 266 tokens of cards and adds nothing on 37 of the 40 no-fit questions; the agent then reads about 1,200 tokens at the median with `kb get`. The check's lookup is two `claude-haiku-5-5` calls in a row, a query writer and a picker, so it takes 3.5 s where the rivals' lookups make no model call.
-- **Cards alone.** A card is a 240-character snippet. In 57 of the 72 misses the right item was among the cards, but the snippet did not hold the answer. With `kb get` the same lookup answers 122.
-- **Mem0.** It returns 3 memories for every message. In 22 of its 28 misses, an item that holds the answer was among the memories' sources, but the extracted memory lacked the detail asked for. Its log shows 22 fact-extraction replies that did not parse, and Mem0 stores no memories for those adds.
+- **The check and Supermemory.** The check answers 122 and misses 9; Supermemory answers 121 and misses 10. For Supermemory, items from the right documents reached the agent in all 10 misses. For the check they reached it in 6, and in 3 neither the lookup nor the agent's own searches found them. The two differ elsewhere. Supermemory's documented harness puts its whole profile, 5 memories and 3 document chunks before every message, about 6,800 tokens at the median, so it never adds nothing. The check adds a median of 266 tokens of cards and adds nothing on 37 of the 40 no-fit questions; the agent then reads about 1,200 tokens at the median with `kb get`. The check's lookup is two `claude-haiku-5-5` calls in a row, a query writer and a picker, so it takes 3.5 s where the rivals' lookups make no model call.
+- **Cards alone.** A card is a 240-character snippet. In 59 of the 74 misses the right item was among the cards, but the snippet did not hold the answer. With `kb get` the same lookup answers 122.
+- **Mem0.** It returns 3 memories for every message. In 23 of its 29 misses, an item that holds the answer was among the memories' sources, but the extracted memory lacked the detail asked for. Its log shows 22 fact-extraction replies that did not parse, and Mem0 stores no memories for those adds.
 - **claude-mem.** It records agent sessions only. Only 37 of the 131 questions with an answer have any evidence in an agent session, and it answered 18 of those. Its per-prompt lookup, off by default, answered the same number. Its agent uses claude-mem's own MCP search tools and read about 7,000 tokens per question with them.
-- **The gold records.** With the right items handed over, the answer model and judge still miss 2 of 131. That is the ceiling for every tool.
+- **The gold records.** With the right items handed over, the answer model and judge still miss 5 of 131. That is the ceiling for every tool.
 - **Lookup times.** These are the month run's, measured while other runs shared the gateway. Timed alone, 80 lookups each, the check's median is 3.28 s (p90 4.81 s), Supermemory's 0.17 s and claude-mem's 0.01 s (`latency.jsonl`).
 - **What this month can't show.** Each question ran once, so run-to-run spread is not measured. The month and its questions were written by the same team as the check. The rivals ran self-hosted on `claude-haiku-5-5`; Mem0 and Supermemory both say their hosted platforms extract memories better. The check ran from kb's code at 4a884a2 with the product's prompt wording, not from the released package.
 

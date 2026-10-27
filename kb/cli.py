@@ -2,6 +2,7 @@ import argparse
 import json
 import logging
 import os
+import shutil
 import sqlite3
 import sys
 import time
@@ -222,6 +223,114 @@ def cmd_ai(paths, config, args):
     return 0
 
 
+def cmd_hook(paths, config, args):
+    from kb import agents
+    output = agents.run(paths, config, args.agent, sys.stdin.read())
+    if output:
+        print(output)
+    return 0
+
+
+def _kb_path(args):
+    path = args.kb or shutil.which("kb")
+    if not path:
+        raise Fail("cannot find the kb command on PATH; pass its full path with --kb")
+    return os.path.abspath(path)
+
+
+def cmd_hooks(paths, config, args):
+    from kb import agents
+    home = os.path.expanduser("~")
+    chosen = args.agents or [n for n in agents.names() if agents.load(n).detect(home)]
+    unknown = sorted(set(chosen) - set(agents.names()))
+    if unknown:
+        raise Fail(f"unknown agent {', '.join(unknown)}; the agents are {', '.join(agents.names())}")
+    if args.action == "status":
+        for name in agents.names():
+            agent = agents.load(name)
+            state = "hook on" if agent.installed(home) else "found, no hook" if agent.detect(home) else "not found"
+            print(f"{name:<14}{state}")
+        return 0
+    if not chosen:
+        print("No supported agent found here.")
+        return 0
+    kb_path = _kb_path(args) if args.action == "install" else None
+    if kb_path and os.path.basename(kb_path) != "kb":
+        raise Fail(f"{kb_path}: the hooks need the command named kb, so kb can find its own hooks again later")
+    for name in chosen:
+        agent = agents.load(name)
+        try:
+            changes = agent.install(home, agents.command(kb_path, name)) if args.action == "install" else agent.uninstall(home)
+        except agents.Unreadable as exc:
+            changes = [agents.Change(str(exc).split(" ", 1)[0], "skipped", str(exc))]
+        for change in changes:
+            print(f"{agent.label}: {change.path}: {change.action}" + (f" ({change.note})" if change.note else ""))
+    return 0
+
+
+def cmd_try(paths, config, args):
+    from kb import trial
+    try:
+        trial.run(paths, config, args.month, args.question)
+    except FileNotFoundError as exc:
+        raise Fail(f"{exc}; pass a folder holding items.jsonl and questions.jsonl with --month")
+    return 0
+
+
+def _ask(question, default=""):
+    shown = f"{question} [{default}] " if default else f"{question} "
+    try:
+        answer = input(shown).strip()
+    except EOFError:
+        answer = ""
+    return answer or default
+
+
+def _secret(question):
+    import getpass
+    if not sys.stdin.isatty():
+        return _ask(question)
+    return getpass.getpass(question + " ").strip()
+
+
+def cmd_setup(paths, config, args):
+    from kb import schedule, setup
+    result = setup.run(paths, _ask, _secret)
+    if not result:
+        return 0
+    sys.stdout.flush()  # the first read logs to stderr; setup's own lines come first under a pipe too
+    config = config_mod.load(paths.config_file)
+    kb_path = shutil.which("kb")
+    if (result.hooks or result.schedule) and not kb_path:
+        print("Skipped the hooks and the schedule: the kb command is not on PATH. Run install.sh, then "
+              "`kb hooks install` and `kb schedule on`.")
+    else:
+        if result.hooks:
+            cmd_hooks(paths, config, argparse.Namespace(action="install", agents=[], kb=kb_path))
+        if result.schedule:
+            try:
+                print(schedule.on(paths, config, kb_path))
+            except schedule.ScheduleError as exc:
+                print(f"The schedule is off: {exc}")
+    if result.ingest_now and config.sources:
+        return cmd_ingest(paths, config, argparse.Namespace(only=None, no_summaries=False))
+    return 0
+
+
+def cmd_schedule(paths, config, args):
+    from kb import schedule
+    try:
+        if args.action == "on":
+            print(schedule.on(paths, config, _kb_path(args)))
+        elif args.action == "off":
+            print(schedule.off())
+        else:
+            print(schedule.status())
+    except schedule.ScheduleError as exc:
+        raise Fail(str(exc))
+    return 0
+
+
 def cmd_paths(paths, config, args):
     for label, where in (("config", paths.config_file), ("database", paths.db), ("logs", paths.log_dir),
                          ("cache", paths.cache_dir)):
@@ -253,6 +362,7 @@ def cmd_supersede(paths, config, args):
 def parser():
     p = argparse.ArgumentParser(prog="kb", description=f"{NAME}: the knowledge base your agents check first.")
     p.add_argument("--version", action="version", version=f"{NAME} {__version__}")
+    p.add_argument("--try", dest="trial", action="store_true", help="use the made-up month's database")
     sub = p.add_subparsers(dest="cmd", required=True)
     s = sub.add_parser("search", help="find records by keywords")
     s.add_argument("query")
@@ -284,6 +394,23 @@ def parser():
     a = sub.add_parser("ai", help="list the AI plug-ins, or test the one in the config with one tiny call")
     a.add_argument("action", choices=("list", "test"))
     a.set_defaults(fn=cmd_ai)
+    hk = sub.add_parser("hook", help="run by an agent on each prompt: print the check's records for it")
+    hk.add_argument("agent")
+    hk.set_defaults(fn=cmd_hook)
+    hs = sub.add_parser("hooks", help="add or remove the hook that runs the check in your agents")
+    hs.add_argument("action", choices=("install", "uninstall", "status"))
+    hs.add_argument("agents", nargs="*", help="agent names; default: every agent found here")
+    hs.add_argument("--kb", help="the kb command the hooks run; default: kb on PATH")
+    hs.set_defaults(fn=cmd_hooks)
+    t = sub.add_parser("try", help="load a made-up month into a database of its own and run the check on it")
+    t.add_argument("--question", help="the id of one question to ask")
+    t.add_argument("--month", help="a folder holding items.jsonl and questions.jsonl")
+    t.set_defaults(fn=cmd_try)
+    sub.add_parser("setup", help="choose your sources and an AI plug-in").set_defaults(fn=cmd_setup)
+    sc = sub.add_parser("schedule", help="read your sources in the background, or stop")
+    sc.add_argument("action", choices=("on", "off", "status"))
+    sc.add_argument("--kb", help="the kb command the job runs; default: kb on PATH")
+    sc.set_defaults(fn=cmd_schedule)
     sub.add_parser("paths", help="where the config, database, logs and cache live").set_defaults(fn=cmd_paths)
     sub.add_parser("config", help="check the config file and list its sources").set_defaults(fn=cmd_config)
     sub.add_parser("remask", help="reapply masking to stored rows after the patterns change").set_defaults(
@@ -298,10 +425,17 @@ def parser():
 def main(argv=None):
     args = parser().parse_args(argv)
     paths = Paths.for_user()
+    if args.trial:
+        paths = paths.for_try()
     try:
         config = config_mod.load(paths.config_file)
+    except OSError as exc:
+        if args.cmd in ("context", "hook"):
+            return 0
+        print(f"kb: cannot read {paths.config_file}: {exc.strerror or exc}", file=sys.stderr)
+        return 2
     except config_mod.ConfigError as exc:
-        if args.cmd == "context":
+        if args.cmd in ("context", "hook"):
             return 0
         print(f"{paths.config_file} has problems:\n" + "\n".join(f"  {p}" for p in exc.problems), file=sys.stderr)
         return 2

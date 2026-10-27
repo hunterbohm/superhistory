@@ -4,6 +4,7 @@ Each store is a folder laid out as `Paths.under(folder)`, so kb's own `search` a
 printed output is caught per thread. The check's model is the package's Anthropic-compatible plug-in, pointed at the
 benchmark's endpoint.
 """
+import contextlib
 import hashlib
 import json
 import logging
@@ -21,7 +22,7 @@ from tools import Retrieved, Tool
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, ROOT)
 
-from kb import check, cli, search, store, summarize  # noqa: E402
+from kb import ai, check, cli, search, store, summarize  # noqa: E402
 from kb.ai import api  # noqa: E402
 from kb.config import Config, Secret, Summarize  # noqa: E402
 from kb.paths import Paths  # noqa: E402
@@ -83,18 +84,28 @@ api.post = _counted_post
 
 
 class Counted:
-    """A model that adds up the tokens of the calls it answers. A hedged copy runs on its own thread and counts too,
-    if it answers before the lookup ends."""
+    """A model that adds up the tokens of one lookup's calls, hedged copies included. A call counts as running from
+    the moment the check starts its thread (see _Threads), so settle() waits even for a copy that has not reached the
+    model yet. A call cut off at its deadline returns no usage, so it cannot be counted."""
 
     def __init__(self, inner):
         self.inner, self.name, self.model, self.traits = inner, inner.name, inner.model, inner.traits
-        self.tokens = self.calls = 0
-        self.lock = threading.Lock()
+        self.tokens = self.calls = self.running = 0
+        self.changed = threading.Condition()
 
     def add(self, tokens):
-        with self.lock:
+        with self.changed:
             self.tokens += tokens
             self.calls += 1
+
+    def started(self):
+        with self.changed:
+            self.running += 1
+
+    def finished(self):
+        with self.changed:
+            self.running -= 1
+            self.changed.notify_all()
 
     def ask(self, prompt, timeout):
         _local.sink = self
@@ -102,6 +113,46 @@ class Counted:
             return self.inner.ask(prompt, timeout)
         finally:
             _local.sink = None
+
+    def settle(self, timeout):
+        """The tokens once every call started during the lookup has returned."""
+        with self.changed:
+            self.changed.wait_for(lambda: not self.running, timeout)
+            return self.tokens
+
+
+@contextlib.contextmanager
+def counting(counted):
+    """Threads kb.ai starts on this thread meanwhile count as `counted`'s running calls."""
+    _local.lookup = counted
+    try:
+        yield counted
+    finally:
+        _local.lookup = None
+
+
+class _Threads:
+    """The threading module as kb.ai sees it. A thread started inside counting() is counted when it is created, on
+    the thread that creates it, so no delay before it runs can hide it."""
+
+    def __getattr__(self, name):
+        return getattr(threading, name)
+
+    def Thread(self, target=None, **kwargs):
+        counted = getattr(_local, "lookup", None)
+        if counted is None:
+            return threading.Thread(target=target, **kwargs)
+        counted.started()
+
+        def run():
+            try:
+                target()
+            finally:
+                counted.finished()
+        return threading.Thread(target=run, **kwargs)
+
+
+ai.threading = _Threads()
 
 
 _search = search.search
@@ -186,13 +237,16 @@ class Store:
         started = time.monotonic()
         db = store.connect(self.paths.db, readonly=True)
         try:
-            found = check.lookup(db, message, list(before), "", set(), counted, counted.traits.check_budget,
-                                 counted.traits.hedge_after)
-            return Retrieved(check.render(found.hits, CONFIG.machine), [h["source_id"] for h in found.hits],
-                             time.monotonic() - started, None, counted.tokens, found.query)
+            with counting(counted):
+                found = check.lookup(db, message, list(before), "", set(), counted, counted.traits.check_budget,
+                                     counted.traits.hedge_after)
+            seconds = time.monotonic() - started
+            return Retrieved(check.render(found.hits, CONFIG.machine), [h["source_id"] for h in found.hits], seconds,
+                             None, counted.settle(counted.traits.check_budget), found.query)
         except Exception as exc:
             # The hook prints nothing when the check fails, so the agent sees nothing.
-            return Retrieved("", [], time.monotonic() - started, type(exc).__name__, counted.tokens)
+            seconds = time.monotonic() - started
+            return Retrieved("", [], seconds, type(exc).__name__, counted.settle(counted.traits.check_budget))
         finally:
             db.close()
 

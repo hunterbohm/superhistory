@@ -171,31 +171,61 @@ def run_tool(name, tool, stats, questions, out, workers, fresh, setup):
     return {"tool": name, "load": stats, "ran": len(todo) - failures, "failed": failures}
 
 
-def rejudge(out, questions, setup, workers, second=None):
+def rejudge(out, questions, setup, workers, second=None, only=None, why=None):
     """Grade every tool's saved answers again, taking each question's current gold answer and evidence. With
-    `second`, keep the saved verdicts and write both verdicts for every row to that file instead."""
+    `second`, keep the saved verdicts and write both verdicts for every row to that file instead. With `only`, grade
+    just those question ids, keep every other verdict, record each regraded row's earlier verdict, and log the run's
+    count right before and after to REGRADES."""
     by_id = {q["id"]: q for q in questions}
     pairs = []
     for name in sorted(f for f in os.listdir(out) if f.endswith(".jsonl") and f[:-6] in tools.REGISTRY):
         rows = read_jsonl(os.path.join(out, name))
+        todo = [r for r in rows if only is None or r["id"] in only]
         with ThreadPoolExecutor(workers) as pool:
-            verdicts = list(pool.map(lambda r: grade(setup, by_id[r["id"]], r["answer"]), rows))
+            verdicts = list(pool.map(lambda r: grade(setup, by_id[r["id"]], r["answer"]), todo))
         if second:
             pairs += [{"tool": name[:-6], "id": r["id"], "first": r["correct"], "second": bool(v.get("correct")),
-                       "second_reason": v.get("reason")} for r, v in zip(rows, verdicts)]
+                       "second_reason": v.get("reason")} for r, v in zip(todo, verdicts)]
             continue
-        for row, verdict in zip(rows, verdicts):
+        before = summarize(rows) if rows else {}
+        for row, verdict in zip(todo, verdicts):
             q = by_id[row["id"]]
+            if only is not None:
+                row["regraded"] = {"why": why, "correct_before": row["correct"], "gold_before": row["gold"]}
             row.update(question=q["question"], gold=q["answer"], evidence=q["evidence"],
                        correct=bool(verdict.get("correct")), judge_reason=verdict.get("reason"))
         with open(os.path.join(out, name), "w", encoding="utf-8") as fh:
             fh.writelines(json.dumps(r, ensure_ascii=False) + "\n" for r in rows)
+        if only is not None:
+            log_regrade(out, name, todo, before, summarize(rows), why)
         print(f"{name}: {sum(r['correct'] for r in rows)}/{len(rows)} correct", file=sys.stderr)
+    if second and only is not None:
+        path = second
+        kept = [p for p in read_jsonl(path) if p["id"] not in only] if os.path.exists(path) else []
+        pairs = kept + [{**p, "regraded": why} for p in pairs]
+        pairs.sort(key=lambda p: (p["tool"], p["id"]))
     if second:
         with open(second, "w", encoding="utf-8") as fh:
             fh.writelines(json.dumps(p, ensure_ascii=False) + "\n" for p in pairs)
         agree = sum(p["first"] == p["second"] for p in pairs)
         print(f"second grading agrees on {agree} of {len(pairs)} rows", file=sys.stderr)
+
+
+REGRADES = os.path.join(HERE, "results", "regrades.tsv")
+
+
+def log_regrade(out, name, rows, before, after, why):
+    """One line per run and tool: which questions were graded again, and the run's numbers before and after."""
+    new = not os.path.exists(REGRADES)
+    with open(REGRADES, "a", encoding="utf-8") as fh:
+        if new:
+            fh.write("date\twhy\trun\ttool\tquestions\tflipped\thandled right before\thandled right after\t"
+                     "accuracy before\taccuracy after\n")
+        flipped = sorted(r["id"] for r in rows if r["regraded"]["correct_before"] != r["correct"])
+        fh.write("\t".join([datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"), why or "",
+                            os.path.relpath(out, HERE), name[:-6], ",".join(sorted(r["id"] for r in rows)),
+                            ",".join(flipped), before.get("handled right", ""), after["handled right"],
+                            before.get("accuracy", ""), after["accuracy"]]) + "\n")
 
 
 def latency(args):
@@ -312,8 +342,11 @@ def main(argv=None):
     lt.add_argument("--out", default=RESULTS)
     rj = sub.add_parser("rejudge", help="grade the month's saved answers again with the current gold and judge")
     rj.add_argument("out", nargs="?", default=RESULTS)
-    rj.add_argument("--workers", type=int, default=6)
+    rj.add_argument("--workers", type=int, default=2)
     rj.add_argument("--second", help="keep the saved verdicts; write both verdicts for every row to this file")
+    rj.add_argument("--month", choices=sorted(MONTHS), default="a")
+    rj.add_argument("--only", help="comma-separated question ids to grade again; every other verdict stays")
+    rj.add_argument("--why", help="the reason, logged with each regrade")
     lv = sub.add_parser("live", help="ask questions of an existing knowledge base, read-only")
     lv.add_argument("--db", required=True, help="the kb.sqlite to read")
     lv.add_argument("--questions", required=True)
@@ -331,7 +364,11 @@ def main(argv=None):
         latency(args)
         return 0
     if args.cmd == "rejudge":
-        rejudge(args.out, read_jsonl(os.path.join(MONTH, "questions.jsonl")), MONTH_SETUP, args.workers, args.second)
+        only = set(args.only.split(",")) if args.only else None
+        if only is not None and not args.why:
+            raise SystemExit("--only takes --why, the reason the log records")
+        rejudge(args.out, read_jsonl(os.path.join(MONTHS[args.month], "questions.jsonl")), MONTH_SETUP, args.workers,
+                args.second, only, args.why)
         print(table(args.out))
         return 0
     os.makedirs(args.out, exist_ok=True)
@@ -358,10 +395,13 @@ def main(argv=None):
             raise SystemExit("a split run takes --label and writes to its own folder; leave out --out")
         os.makedirs(args.out, exist_ok=True)
         if args.month == "b":
-            if args.limit:
-                raise SystemExit("a held-out run takes the whole month")
+            if args.limit or args.fresh:
+                raise SystemExit("a held-out run takes the whole month and cannot start over; rerunning its label "
+                                 "fills in only the questions with no row")
+            if args.tools != "check":
+                raise SystemExit("a held-out month run measures the check alone: pass --tools check")
             from tools import check
-            splits.held_out_run("month", args.label, check.code_id(), git_head())
+            splits.held_out_run("month", args.label, check.code_id(), git_head(), f"b-{args.label}:check")
         items = read_jsonl(os.path.join(month, "items.jsonl"))
         questions = read_jsonl(os.path.join(month, "questions.jsonl"))[:args.limit]
         setup = MONTH_SETUP

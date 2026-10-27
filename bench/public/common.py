@@ -121,20 +121,27 @@ def stratified(cases, n, seed=0):
 
 
 def split_args(p):
-    p.add_argument("--split", choices=splits.SPLITS, help="run one half only; tuning reads dev numbers only")
+    p.add_argument("--split", choices=(*splits.SPLITS, "all"),
+                   help="dev or test: one half; all: both, which counts as a run on the held-out half")
     p.add_argument("--label", help="names a split run; a test run is labelled " + ", ".join(splits.RUNS))
     p.add_argument("--slice", type=int, help="with --split dev: N questions, drawn from each kind in proportion")
 
 
 def in_split(test, cases, name, args):
-    """The cases and run name for --split, --label and --slice."""
+    """The cases and run name for --split, --label and --slice. Every run that makes model calls names its half, so
+    none reaches the held-out half without counting as one of its runs."""
     if not args.split:
-        return cases, name
+        if args.count:
+            return cases, name
+        raise SystemExit("pick --split dev, test or all: the whole set holds the held-out half")
     if not args.label:
         raise SystemExit("--split needs --label")
-    if args.slice and args.split == "test":
-        raise SystemExit("a test run takes the whole half")
-    keep = splits.read(test, args.split)
+    if args.split != "dev" and (args.slice or args.sample or args.limit):
+        raise SystemExit("a run on the held-out half takes all of it")
+    if args.split != "dev" and args.fresh:
+        raise SystemExit("a run on the held-out half cannot start over; rerunning its label fills in only the "
+                         "questions with no row")
+    keep = splits.read(test, "dev") | splits.read(test, "test") if args.split == "all" else splits.read(test, args.split)
     cases = [c for c in cases if c.id in keep or c.group in keep]
     if args.slice:
         cases = stratified(cases, args.slice)
@@ -142,10 +149,10 @@ def in_split(test, cases, name, args):
     return cases, f"{name}-{args.split}-{args.label}"
 
 
-def log_held_out(test, args):
-    """Log a run on a test half just before it starts. Refuses past the three runs a test half gets."""
-    if args.split == "test":
-        splits.held_out_run(test, args.label, check.code_id(), run.git_head())
+def log_held_out(test, args, name):
+    """Log run `name` on the held-out half just before it starts. Refuses past the three runs it gets."""
+    if args.split in ("test", "all"):
+        splits.held_out_run(test, args.label, check.code_id(), run.git_head(), name)
 
 
 def run_names(out):

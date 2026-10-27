@@ -24,9 +24,9 @@ def build():
         Q("b7-08", "none", "How many fluid ounces are in a cup?", "8 US fluid ounces."),
         Q("b7-09", "none", "How do I get the size of each folder in the current directory?", "du -sh *"),
         Q("b7-10", "none", "How do I list all the tables in psql?", "\\dt"),
-        Q("b7-11", "none", "What does set -euo pipefail actually do in a bash script?",
-          "Exit on any failing command (-e), treat unset variables as errors (-u), and fail a pipeline if any "
-          "command in it fails (pipefail)."),
+        Q("b7-11", "none", "What does shopt -s nullglob actually do in a bash script?",
+          "A glob that matches no files expands to nothing instead of staying as the literal pattern.",
+          month_lacks=("nullglob",)),
         Q("b7-12", "none", "In JavaScript, why use === instead of ==?",
           "=== compares without type coercion, so 0 === '0' is false while 0 == '0' is true."),
         Q("b7-13", "none", "When are federal quarterly estimated taxes due?",

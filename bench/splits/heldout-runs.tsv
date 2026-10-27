@@ -1,4 +1,4 @@
-date	test	label	code	commit
-2026-10-27T18:00:08Z	month	baseline	5688365eec9c1c5d	e66d49d71bf0096f03b1fbbcdf6bed4e529f80a3
-2026-10-27T18:00:09Z	locomo	baseline	5688365eec9c1c5d	e66d49d71bf0096f03b1fbbcdf6bed4e529f80a3
-2026-10-27T18:01:07Z	longmemeval-s	baseline	5688365eec9c1c5d	e66d49d71bf0096f03b1fbbcdf6bed4e529f80a3
+date	test	label	run	code	commit
+2026-10-27T18:00:08Z	month	baseline	b-baseline:check	5688365eec9c1c5d	e66d49d71bf0096f03b1fbbcdf6bed4e529f80a3
+2026-10-27T18:00:09Z	locomo	baseline	locomo10-with-summaries-test-baseline	5688365eec9c1c5d	e66d49d71bf0096f03b1fbbcdf6bed4e529f80a3
+2026-10-27T18:01:07Z	longmemeval-s	baseline	s-without-summaries-test-baseline	5688365eec9c1c5d	e66d49d71bf0096f03b1fbbcdf6bed4e529f80a3

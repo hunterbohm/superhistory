@@ -22,4 +22,5 @@ version = {attr = "kb.__version__"}
 include = ["kb*"]
 
 [tool.setuptools.package-data]
+"kb" = ["sample_month/*.jsonl"]
 "kb._vendor.tomli" = ["LICENSE"]

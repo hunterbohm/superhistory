@@ -19,6 +19,7 @@ import hashlib
 import json
 import os
 import sys
+import tempfile
 from datetime import datetime, timezone
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -26,7 +27,7 @@ FOLDER = os.path.join(HERE, "splits")
 LOG = os.path.join(FOLDER, "heldout-runs.tsv")
 SPLITS = ("dev", "test")
 RUNS = ("baseline", "midpoint", "final")
-LOG_FIELDS = ("date", "test", "label", "code", "commit")
+LOG_FIELDS = ("date", "test", "label", "run", "code", "commit")
 
 
 def longmemeval(entries):
@@ -53,25 +54,42 @@ def read(test, split):
         return set(json.load(fh)[split])
 
 
-def held_out_run(test, label, code, commit):
-    """Log a run on a test half. Raises SystemExit for a label outside RUNS, or for a label already logged with other
-    code: rerunning a label only fills in the questions it has no row for yet."""
+def held_out_run(test, label, code, commit, run):
+    """Log `run` on a test half. Raises SystemExit for a label outside RUNS, or for a label already logged with another
+    run or other code: rerunning a label only fills in the questions its run has no row for yet."""
     if label not in RUNS:
         raise SystemExit(f"a held-out run is labelled {', '.join(RUNS)}; got {label!r}")
+    _hold(test)
     with open(LOG, "a+", encoding="utf-8", newline="") as fh:
         fcntl.flock(fh, fcntl.LOCK_EX)
         fh.seek(0)
         rows = list(csv.DictReader(fh, delimiter="\t"))
         earlier = [r for r in rows if r["test"] == test and r["label"] == label]
-        if earlier and earlier[0]["code"] != code:
-            raise SystemExit(f"{test} {label} already ran with code {earlier[0]['code']}; this code is {code}")
+        if earlier and (earlier[0]["code"], earlier[0]["run"]) != (code, run):
+            raise SystemExit(f"{test} {label} already ran as {earlier[0]['run']} with code {earlier[0]['code']}; "
+                             f"this is {run} with code {code}")
         if earlier:
             return
         writer = csv.DictWriter(fh, LOG_FIELDS, delimiter="\t", lineterminator="\n")
         if not fh.tell():
             writer.writeheader()
         writer.writerow({"date": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"), "test": test,
-                         "label": label, "code": code, "commit": commit})
+                         "label": label, "run": run, "code": code, "commit": commit})
+
+
+_held = {}
+
+
+def _hold(test):
+    """One held-out run of `test` at a time on this computer, until this process exits: two at once would each run
+    the questions that have no row yet."""
+    fh = open(os.path.join(tempfile.gettempdir(), f"bench-heldout-{test}.lock"), "w")
+    try:
+        fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        fh.close()
+        raise SystemExit(f"another held-out run of {test} is running; wait for it to end") from None
+    _held[test] = fh
 
 
 def fresh():

@@ -162,8 +162,6 @@ def main(argv=None):
         print(table(common.run_names(OUT)))
         return 0
     cases, groups = cases_and_groups(load(args.set))
-    if args.split and args.set != "s":
-        raise SystemExit("the splits are of the S set")
     cases, suffix = common.in_split("longmemeval-s", cases, "", args)
     cases = common.choose(cases, args.sample, args.seed, args.limit)
     planned = common.plan(cases, groups)
@@ -174,7 +172,7 @@ def main(argv=None):
     print(f"{name}: {json.dumps(planned)}", file=sys.stderr)
     if args.count:
         return 0
-    common.log_held_out("longmemeval-s", args)
+    common.log_held_out("longmemeval-s", args, name)
     meta = {"test": "longmemeval", "set": args.set, "data_revision": REVISION, "data_sha256": SETS[args.set][1],
             "judge_model": JUDGE_MODEL, "questions": len(cases), "planned": planned}
     record = common.run_cases(name, cases, groups, out, system, score, summaries, args.workers, args.fresh, meta)
