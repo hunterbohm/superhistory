@@ -446,7 +446,8 @@ Jules""", cc=CALLUM),
           "No. Annual prepaid memberships can't be frozen.", ("b2-freeze-policy", "b2-gh-6"),
           evidence_has=("Annual prepaid",)),
         Q("b2-15", "single", "Kindling's website says one freeze a year. Is that right?",
-          "No. That's the old 2025 policy; the current v3 policy allows two freezes per calendar year.",
+          "No. That's the old 2025 policy; the current v3 policy allows two freezes per calendar year, "
+          "excluding medical freezes. Annual prepaid memberships can't be frozen.",
           ("b2-freeze-policy",), evidence_has=("one freeze a year", "2025")),
         Q("b2-16", "single", "What did I quote Kindling for the waitlist app?",
           "$7,400 fixed (50% up front), then $95 a month for hosting and support, with Twilio texting passed through "
@@ -488,8 +489,8 @@ Jules""", cc=CALLUM),
           ("b2-golive",), evidence_has=("October 5", "October 19")),
         Q("b2-30", "multi", "What broke in Kindling's staff test and how did we fix it?",
           "Wash Park offers said \"at Highlands\" because the location came from a stale room id; it now uses the "
-          "Bendwise location id. Replies like \"Yes!\" or \"y\" didn't claim the spot; any reply starting with "
-          "yes, y, yep, yeah or ya now does. Fixed September 26.",
+          "Bendwise location id. Replies like \"Yes!\" or \"y\" didn't claim the spot; any reply whose first word, "
+          "ignoring case and punctuation, is yes, y, yep, yeah or ya now does. Fixed September 26.",
           ("b2-staff-test", "b2-claude-fix"), evidence_has=("at Highlands", "Yes!", "location id")),
         Q("b2-31", "multi", "Has Kindling paid the deposit, and how much was it?",
           "Yes. Invoice MW-2051 for $3,700 was paid by ACH on September 18.",

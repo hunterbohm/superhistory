@@ -67,3 +67,8 @@ of real names kept outside the repository, pass `--deny FILE`.
   that leave out a qualification their own evidence states, and two gained one: har-01 (a reminder that would land on
   a Sunday goes out Saturday at 10:00) and cop-22 (Bluestem also needs `vertical_strategy: lines`). Every saved
   run's answers to them were graded again; `bench/results/regrades.tsv` holds before and after.
+- 2026-10-27, agreed with the coordinator. An auditor from a second model family swept all 171 for the same kind and
+  completed two more gold answers: har-03 and st-20. Every saved run's answers to them were graded again.
+
+The gold has been audited three times, by two model families, and a few answers may still leave out a qualification
+their evidence states. A gold change applies to the baseline and to every later run alike.

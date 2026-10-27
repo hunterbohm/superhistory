@@ -390,8 +390,8 @@ Open: the dashboard's Unmatched count doesn't refresh without a reload. Fix befo
           "after-hours calls and only finishes its open jobs.",
           ("b3-vendors", "b3-hermes-plumber", "b3-commit-redtail"), evidence_has=("Sixpenny", "Redtail")),
         Q("b3-03", "update", "When does the Alder & Finch dispatch system go live?",
-          "A pilot at Larkspur Court and Ashby House starting Monday October 5, then the other five buildings on "
-          "Monday October 19. The original plan was all 7 buildings on October 1.",
+          "A pilot at Larkspur Court and Ashby House starting Monday October 5, then the other five buildings "
+          "on Monday October 19 if the pilot goes well. The original plan was all 7 buildings on October 1.",
           ("b3-discovery", "b3-proposal", "b3-golive"), evidence_has=("October 5", "October 19")),
         Q("b3-04", "multi", "What happened with the Larkspur Court leak, and what did it change in the escalation?",
           "On September 19 at 1:40am unit 3B reported a dishwasher leak to NightDesk, which called the on-call tech "

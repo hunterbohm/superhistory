@@ -254,8 +254,8 @@ Things to settle before the build starts on Sep 28.
           ("b4-claude-proposal", "b4-proposal", "b4-texts-lena", "b4-revised"),
           evidence_has=("November 16", "November 2")),
         Q("b4-13", "update", "Is Bluestem rolling out to all its gardens at once?",
-          "No. The board cut the first rollout to three pilot gardens, Larkspur, Tenth Avenue and Mill Creek; the "
-          "other six come on in the spring. The original plan was all 9 gardens.",
+          "No. The board cut the first rollout to three pilot gardens, Larkspur, Tenth Avenue and Mill Creek; "
+          "the other six come on in the spring once they've seen it work. The original plan was all 9 gardens.",
           ("b4-discovery", "b4-claude-proposal", "b4-proposal", "b4-revised"),
           evidence_has=("Larkspur", "Tenth Avenue", "Mill Creek")),
         Q("b4-14", "temporal", "How many days after the Bluestem discovery call did the first proposal go out?",

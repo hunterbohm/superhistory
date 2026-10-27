@@ -401,8 +401,9 @@ In the pilot, 4 customers never got their arrival text: Twilio error 30006, the 
           ("b1-proposal", "b1-payment"), evidence_has=("MW-2061", "ACH")),
         Q("b1-05", "multi", "If someone reported a gas smell to Tallgrass on Wednesday Sep 23, who got paged and what "
           "did the customer get?",
-          "Ray Tanaka, on call the week of Sep 21, through the on-call line. The customer got a safety text (leave "
-          "the house, no light switches, call 911 from outside) and no arrival window.",
+          "Ray Tanaka, on call the week of Sep 21, through the on-call line. The customer got a safety text "
+          "(leave the house, no light switches or starting a car in the garage, call 911 from outside) and no "
+          "arrival window.",
           ("b1-oncall", "b1-codex-classify"), evidence_has=("Ray Tanaka", "call 911 from outside")),
         Q("b1-06", "multi", "What went wrong in the Tallgrass pilot and how did we fix it?",
           "4 customers on landlines never got their arrival text (Twilio error 30006). PR #6 checks the line type "
@@ -462,7 +463,8 @@ In the pilot, 4 customers never got their arrival text: Twilio error 30006, the 
           "He heard Jules talk at the Wheat Ridge Business Association breakfast in August.", ("b1-intro",),
           evidence_has=("Wheat Ridge Business Association",)),
         Q("b1-25", "single", "How fast does a Tallgrass request turn into a ticket now?",
-          "About 40 seconds on average in the pilot, against about 25 minutes when Leticia retyped them.",
+          "About 40 seconds on average in the pilot, against about 25 minutes when Leticia retyped them at busy "
+          "times.",
           ("b1-pilot",), evidence_has=("40 seconds",)),
         Q("b1-26", "single", "What did I quote Graham for review request texts, and is he doing it?",
           "$600 add-on; Graham wants to hold it until spring.", ("b1-texts-graham-0928",),
