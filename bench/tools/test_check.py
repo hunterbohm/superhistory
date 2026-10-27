@@ -14,6 +14,16 @@ from kb import ai  # noqa: E402
 USAGE = {"input_tokens": 60, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 30, "output_tokens": 10}
 
 
+def answered_after(*delays):
+    """A gateway whose nth call answers after the nth delay."""
+    delays = iter(delays)
+
+    def gateway(url, body, headers, timeout):
+        time.sleep(next(delays))
+        return {"content": [{"type": "text", "text": "ok"}], "usage": USAGE}
+    return gateway
+
+
 class TokenCountTest(unittest.TestCase):
     def setUp(self):
         env = mock.patch.dict(os.environ, {"BENCH_API_KEY": "test"})
@@ -21,29 +31,27 @@ class TokenCountTest(unittest.TestCase):
         self.addCleanup(env.stop)
 
     def test_a_hedged_copy_that_loses_the_race_still_counts_with_cached_input(self):
-        delays = iter([0.4, 0.05])
-
-        def gateway(url, body, headers, timeout):
-            time.sleep(next(delays))
-            return {"content": [{"type": "text", "text": "ok"}], "usage": USAGE}
-
         model = check.Counted(check.model())
-        with mock.patch.object(check, "_post", gateway):
+        with mock.patch.object(check, "_post", answered_after(0.4, 0.05)), check.counting(model):
             self.assertEqual(ai.hedged(model, ai.Prompt("system", "user"), timeout=2, hedge_after=0.1), "ok")
             self.assertEqual(model.settle(2), 200)
         self.assertEqual(model.calls, 2)
 
-    def test_a_hedged_copy_whose_thread_reaches_ask_late_still_counts(self):
-        def gateway(url, body, headers, timeout):
-            return {"content": [{"type": "text", "text": "ok"}], "usage": USAGE}
+    def test_a_hedged_copy_whose_thread_runs_late_still_counts(self):
+        class SecondRunsLate(threading.Thread):
+            runs = 0
+
+            def run(self):
+                SecondRunsLate.runs += 1
+                if SecondRunsLate.runs == 2:
+                    time.sleep(0.4)
+                super().run()
 
         model = check.Counted(check.model())
-        with mock.patch.object(check, "_post", gateway):
-            model.ask(ai.Prompt("system", "user"), 1)
-            late = threading.Timer(0.1, model.ask, (ai.Prompt("system", "user"), 1))
-            late.start()
+        with mock.patch.object(check, "_post", answered_after(0.15, 0.0)), \
+                mock.patch.object(check.threading, "Thread", SecondRunsLate), check.counting(model):
+            self.assertEqual(ai.hedged(model, ai.Prompt("system", "user"), timeout=2, hedge_after=0.1), "ok")
             self.assertEqual(model.settle(2), 200)
-            late.join()
 
     def test_the_summarizer_is_held_to_two_calls_at_once(self):
         self.assertLessEqual(check.model().traits.parallel, 2)

@@ -4,6 +4,7 @@ Each store is a folder laid out as `Paths.under(folder)`, so kb's own `search` a
 printed output is caught per thread. The check's model is the package's Anthropic-compatible plug-in, pointed at the
 benchmark's endpoint.
 """
+import contextlib
 import hashlib
 import json
 import logging
@@ -21,7 +22,7 @@ from tools import Retrieved, Tool
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, ROOT)
 
-from kb import check, cli, search, store, summarize  # noqa: E402
+from kb import ai, check, cli, search, store, summarize  # noqa: E402
 from kb.ai import api  # noqa: E402
 from kb.config import Config, Secret, Summarize  # noqa: E402
 from kb.paths import Paths  # noqa: E402
@@ -29,9 +30,6 @@ from kb.sources import load_type  # noqa: E402
 
 MODEL = "claude-haiku-5-5"
 PARALLEL = 2
-# A hedged copy's thread can start just as the lookup ends, before it reaches ask(); the count waits this long with no
-# call running before it is read.
-SETTLE_GRACE = 0.25
 CONFIG = Config()
 
 AGENT_TOOLS = (
@@ -86,8 +84,9 @@ api.post = _counted_post
 
 
 class Counted:
-    """A model that adds up the tokens of the calls it answers, hedged copies included. A call cut off at its deadline
-    returns no usage, so it cannot be counted."""
+    """A model that adds up the tokens of one lookup's calls, hedged copies included. A call counts as running from
+    the moment the check starts its thread (see _Threads), so settle() waits even for a copy that has not reached the
+    model yet. A call cut off at its deadline returns no usage, so it cannot be counted."""
 
     def __init__(self, inner):
         self.inner, self.name, self.model, self.traits = inner, inner.name, inner.model, inner.traits
@@ -99,29 +98,61 @@ class Counted:
             self.tokens += tokens
             self.calls += 1
 
-    def ask(self, prompt, timeout):
+    def started(self):
         with self.changed:
             self.running += 1
+
+    def finished(self):
+        with self.changed:
+            self.running -= 1
             self.changed.notify_all()
+
+    def ask(self, prompt, timeout):
         _local.sink = self
         try:
             return self.inner.ask(prompt, timeout)
         finally:
             _local.sink = None
-            with self.changed:
-                self.running -= 1
-                self.changed.notify_all()
 
     def settle(self, timeout):
-        """The tokens once every call has returned, such as a hedged copy that lost the race, and no call has
-        started for SETTLE_GRACE seconds."""
-        deadline = time.monotonic() + timeout
+        """The tokens once every call started during the lookup has returned."""
         with self.changed:
-            while time.monotonic() < deadline:
-                self.changed.wait_for(lambda: not self.running, deadline - time.monotonic())
-                if not self.changed.wait_for(lambda: self.running, SETTLE_GRACE):
-                    break
+            self.changed.wait_for(lambda: not self.running, timeout)
             return self.tokens
+
+
+@contextlib.contextmanager
+def counting(counted):
+    """Threads kb.ai starts on this thread meanwhile count as `counted`'s running calls."""
+    _local.lookup = counted
+    try:
+        yield counted
+    finally:
+        _local.lookup = None
+
+
+class _Threads:
+    """The threading module as kb.ai sees it. A thread started inside counting() is counted when it is created, on
+    the thread that creates it, so no delay before it runs can hide it."""
+
+    def __getattr__(self, name):
+        return getattr(threading, name)
+
+    def Thread(self, target=None, **kwargs):
+        counted = getattr(_local, "lookup", None)
+        if counted is None:
+            return threading.Thread(target=target, **kwargs)
+        counted.started()
+
+        def run():
+            try:
+                target()
+            finally:
+                counted.finished()
+        return threading.Thread(target=run, **kwargs)
+
+
+ai.threading = _Threads()
 
 
 _search = search.search
@@ -206,8 +237,9 @@ class Store:
         started = time.monotonic()
         db = store.connect(self.paths.db, readonly=True)
         try:
-            found = check.lookup(db, message, list(before), "", set(), counted, counted.traits.check_budget,
-                                 counted.traits.hedge_after)
+            with counting(counted):
+                found = check.lookup(db, message, list(before), "", set(), counted, counted.traits.check_budget,
+                                     counted.traits.hedge_after)
             seconds = time.monotonic() - started
             return Retrieved(check.render(found.hits, CONFIG.machine), [h["source_id"] for h in found.hits], seconds,
                              None, counted.settle(counted.traits.check_budget), found.query)
