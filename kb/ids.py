@@ -14,7 +14,7 @@ import os
 import re
 import tempfile
 
-INSTALL_ID = re.compile(r"^c-[a-z2-7]{13}$")
+INSTALL_ID = re.compile(r"c-[a-z2-7]{13}")  # use fullmatch: "$" would also match before a final newline
 FILE_NAME = "install-id"
 
 
@@ -29,7 +29,7 @@ def install_id(paths):
         found = path.read_text(encoding="ascii").strip()
     except FileNotFoundError:
         found = _make(path)
-    if not INSTALL_ID.match(found):
+    if not INSTALL_ID.fullmatch(found):
         raise ValueError(f"{path} does not hold an install id; delete it to make a new one")
     return found
 
@@ -55,10 +55,23 @@ def prefix(install, host=None):
     return f"{install}:" if host is None else f"{install}@{host}:"
 
 
+def head(source_id):
+    """What an id starts with, up to its first ":" or "@": the install id, or the machine name before them."""
+    return source_id.split(":", 1)[0].split("@", 1)[0]
+
+
 def owner(source_id):
     """The install id that wrote this item, or None for an id with no install prefix."""
-    head = source_id.split(":", 1)[0].split("@", 1)[0]
-    return head if INSTALL_ID.match(head) else None
+    found = head(source_id)
+    return found if INSTALL_ID.fullmatch(found) else None
+
+
+def owned_sql(column, owner):
+    """(sql, params) true when `column` is an id `owner` wrote, the same test as head(id) == owner: "<owner>",
+    "<owner>:..." or "<owner>@...". Prune, forget and the summarizer use it, so they agree with owner()."""
+    n = len(owner) + 1
+    return f"({column} = ? OR substr({column}, 1, ?) = ? OR substr({column}, 1, ?) = ?)", [owner, n, owner + ":",
+                                                                                         n, owner + "@"]
 
 
 def native(source_id):

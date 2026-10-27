@@ -6,7 +6,7 @@ from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from datetime import datetime, timedelta, timezone
 from typing import NamedTuple, Optional
 
-from kb import ai, store
+from kb import ai, ids, store
 from kb.ai import BadAnswer, Prompt, Refused
 from kb.mask import mask
 
@@ -118,8 +118,8 @@ def pending(db, scope, limit=None, owner=None):
     mine = ""
     args = list(names)
     if owner:
-        mine = "AND (substr(r.source_id, 1, ?) = ? OR substr(r.source_id, 1, ?) = ?)"
-        args += [len(owner) + 1, owner + ":", len(owner) + 1, owner + "@"]
+        sql, params = ids.owned_sql("r.source_id", owner)
+        mine, args = "AND " + sql, args + params
     sql = f"""
         SELECT r.source, r.source_id, r.ts, r.title, json_extract(r.metadata, '$.hash') AS h, r.metadata,
                (SELECT sum(length(c.content)) FROM docs c

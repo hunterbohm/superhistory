@@ -29,7 +29,7 @@ The Sync client goes in `kb/sync/`, imported as `kb.sync`.
   `<install id>@<host>:` for a host it reads over SSH, where host is the name in `[hosts.NAME]`. The install id is
   `c-` and 13 base32 characters, made once and kept in `install-id` beside the config, mode 600.
   `ids.install_id(paths)` reads it and `ids.owner(source_id)` returns it from any stored id; split on `@` as well as
-  `:`, or items read over SSH look like another computer's.
+  `:`, or items read over SSH look like another computer's. `ids.owned_sql` is the same test in SQL.
 - `ingest.apply(db, source, prefix, event, host)` is the one write path for read data, and applying an event twice
   changes nothing. A prune deletes only under the prefix it read, and the summarizer summarizes only this install's
   items.

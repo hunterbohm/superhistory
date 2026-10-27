@@ -272,8 +272,8 @@ def cmd_forget(paths, config, args):
     open_db(paths).close()
     owner = _own(paths, config).owner
     db = open_db(paths, readonly=False)
-    mine = "source=? AND (substr(source_id, 1, ?) = ? OR substr(source_id, 1, ?) = ?)"
-    params = (args.source, len(owner) + 1, owner + ":", len(owner) + 1, owner + "@")
+    owned, owned_params = ids.owned_sql("source_id", owner)
+    mine, params = "source=? AND " + owned, (args.source, *owned_params)
     count = db.execute(f"SELECT count(DISTINCT source_id) FROM docs WHERE {mine}", params).fetchone()[0]
     if config.source(args.source):
         print(f"[sources.{args.source}] is still in {paths.config_file}, so the next ingest reads it again. Remove "
