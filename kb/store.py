@@ -122,7 +122,7 @@ def delete_item(db, source, source_id):
 def store_item(db, source, source_id, ts, title, content, meta):
     """Store one item as a `doc` row, or as `raw` chunks when long. Returns False when nothing changed. The same text
     under new metadata, such as a moved file, keeps its rows and summaries and takes the new metadata."""
-    title, content = mask(clean(title or ""))[:300], mask(clean(content or ""))
+    ts, title, content = mask(str(ts)), mask(clean(title or ""))[:300], mask(clean(content or ""))
     digest = hashlib.sha1(f"{title}\0{content}".encode()).hexdigest()[:16]
     meta = {**mask_all(meta), "hash": digest}
     old = db.execute("SELECT metadata FROM docs WHERE source=? AND source_id=? AND kind IN ('doc','raw') LIMIT 1",

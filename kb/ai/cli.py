@@ -10,6 +10,7 @@ from typing import Callable, NamedTuple, Optional
 from urllib.parse import quote
 
 from kb.ai import Busy, NotReady, PluginSpec, Refused, Traits
+from kb.mask import mask
 
 NESTED_ENV = "KB_NESTED"
 WORKDIR_PREFIX = "kb-ai-"
@@ -100,7 +101,7 @@ def run(call, workdir, timeout, program):
     finally:
         _running.discard(proc)
     if proc.returncode:
-        tail = (err.strip() or out.strip())[-300:]
+        tail = mask(err.strip() or out.strip())[-300:]  # masked whole, so a cut can't drop a secret's field name
         raise (NotReady if SIGNED_OUT.search(tail) else Busy)(f"{program} exited {proc.returncode}: {tail}")
     return out
 

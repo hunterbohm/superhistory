@@ -28,8 +28,10 @@ import typing
 from dataclasses import dataclass
 from typing import Any, Optional, Tuple
 
-from kb.mask import mask
+from kb.mask import holds_secret, mask
 
+# Names go into every stored id and into the logs, so one that looks like a key is refused; the message is masked.
+SECRET_NAME = "{where}: this name looks like a secret; use a plain name"
 NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,39}$")
 SOURCE_KEYS = {"type", "enabled", "exclude", "exclude_defaults", "summarize", "hosts"}
 MAX_CHECK_BUDGET = 25.0
@@ -193,6 +195,9 @@ def parse(text):
     if not isinstance(machine, str) or not NAME_RE.match(machine):
         problems.append("machine: use lowercase letters, digits, - and _, up to 40 characters")
         machine = "local"
+    elif holds_secret(machine):
+        problems.append(SECRET_NAME.format(where="machine"))
+        machine = "local"
     tables = {key: raw.pop(key, {}) for key in ("ai", "check", "summarize", "schedule", "hosts", "sources")}
     problems += [f"{key}: unknown key" for key in raw]
     for key, value in tables.items():
@@ -209,6 +214,8 @@ def parse(text):
     for name, table in tables["hosts"].items():
         if name == machine or not NAME_RE.match(name):
             problems.append(f"hosts.{name}: a host name differs from machine and uses lowercase letters, digits, - and _")
+        elif holds_secret(name):
+            problems.append(SECRET_NAME.format(where=f"hosts.{name}"))
         elif not isinstance(table, dict):
             problems.append(f"hosts.{name}: expected a table")
         else:
@@ -248,6 +255,9 @@ def _source(name, table, machine, known_hosts, problems):
     where = f"sources.{name}"
     if not NAME_RE.match(name):
         problems.append(f"{where}: a source name uses lowercase letters, digits, - and _, up to 40 characters")
+        return None
+    if holds_secret(name):
+        problems.append(SECRET_NAME.format(where=where))
         return None
     if not isinstance(table, dict):
         problems.append(f"{where}: expected a table")

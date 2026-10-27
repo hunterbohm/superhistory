@@ -63,8 +63,8 @@ def run_git(args, cwd):
     except (OSError, subprocess.SubprocessError) as exc:
         raise RuntimeError(mask(f"git did not run in {cwd}: {exc}")) from None
     if proc.returncode:
-        raise RuntimeError(mask(f"git {' '.join(args[:2])} in {cwd} exited {proc.returncode}: "
-                                f"{proc.stderr.strip()[-300:]}"))
+        raise RuntimeError(mask(f"git {' '.join(args[:2])} in {cwd} exited {proc.returncode}: ")
+                           + mask(proc.stderr.strip())[-300:])
     return proc.stdout
 
 

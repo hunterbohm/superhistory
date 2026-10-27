@@ -73,15 +73,21 @@ def holds_secret(text):
     return mask(text) != text
 
 
-def mask_all(value):
+def mask_all(value, key=None):
     """mask() over every string in a value of dicts, lists and strings, such as an item's metadata. Only the
-    secret-looking parts change, so a link or a path still points where it did."""
+    secret-looking parts change, so a link or a path still points where it did. A value is masked with its key in
+    front, as "key=value", so {"password": "..."} is caught by its field name as it would be in text."""
     if isinstance(value, str):
-        return mask(value)
+        if key is None:
+            return mask(value)
+        masked = mask(f"{key}={value}")
+        head = mask(key) + "="
+        return masked[len(head):] if masked.startswith(head) else mask(value)
     if isinstance(value, dict):
-        return {mask(k) if isinstance(k, str) else k: mask_all(v) for k, v in value.items()}
+        return {mask(k) if isinstance(k, str) else k: mask_all(v, k if isinstance(k, str) else None)
+                for k, v in value.items()}
     if isinstance(value, (list, tuple)):
-        return [mask_all(v) for v in value]
+        return [mask_all(v, key) for v in value]
     return value
 
 

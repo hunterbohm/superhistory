@@ -24,17 +24,24 @@ from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from unittest import mock
 
+import dataclasses
+
 from kb import ai, check, cli, config, ingest, remote, search, store, summarize
 from kb.ai import api
 from kb.ai import cli as ai_cli
 from kb.paths import Paths
-from kb.sources import Item, git, github, gmail
+from kb.sources import Excludes, Item, Progress, Run, SourceType, git, github, gmail, notes
 from tests.test_gmail import FakeGmail
 
 KINDS = ("env", "cmd", "cmdfail", "cmdtimeout", "configkey", "itemtext", "itemmeta", "metakey", "notepath",
          "notepath2", "repopath", "sshout", "ssherr", "ghout", "gherr", "ghpath", "gitout", "giterr", "gitcwd", "http",
          "httpbad", "httpstatus", "modeltext", "imap", "imapbad", "imaperr", "remoteopt", "aipath", "session")
 CANARY = {kind: f"sk-ant-api03-canary-{kind}-" + "Z" * 24 for kind in KINDS}
+# Secrets that only their field name gives away, as in "password=...": mask() knows them by the name in front.
+KEYED = ("metapw", "metanested", "ghtail", "aitail")
+CANARY.update({kind: f"canary{kind}Zz12345678" for kind in KEYED})
+NAMES = ("machinename", "hostname", "sourcename", "timestamp", "mark")
+CANARY.update({kind: f"sk-ant-api03-canary-{kind}-" + "z" * 24 for kind in NAMES})
 NOW = datetime.now(timezone.utc).replace(microsecond=0)
 ME = "pat@example.com"
 
@@ -137,6 +144,10 @@ class CanaryTest(unittest.TestCase):
         for name, fail in (("gh-ok", False), ("gh-fail", True)):
             self._program(name, FAKE_GH.format(python=sys.executable, fail=fail, gherr=CANARY["gherr"],
                                                ghout=CANARY["ghout"], updated=updated))
+        for kind in ("ghtail", "aitail"):
+            # The field name ends up outside the last 400 characters an error keeps; only masking first catches it.
+            tail = f"password={CANARY[kind]} " + "." * (400 - len(CANARY[kind]) - 1)
+            self._program(kind, f"#!{sys.executable}\nimport sys\nsys.stderr.write({tail!r})\nsys.exit(1)\n")
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), Model)
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
         self.addCleanup(self.server.server_close)
@@ -402,6 +413,43 @@ password = "cmd:echo {CANARY['cmdfail']} >&2; exit 3"
             self.call(cfg.source(name).options.password.reveal)
         self.call(config.parse, f'"{CANARY["configkey"]}" = 1\n')
         self.call(remote.decode, json.dumps({"oops": CANARY["sshout"]}))
+        self.call(ingest.apply, db, "notes", "desk", Item("keyed.md", NOW.isoformat(), "keyed", "keyed",
+                                                          {"password": CANARY["metapw"],
+                                                           "auth": {"api_key": CANARY["metanested"]}}, 0))
+        self.call(ingest.apply, db, "notes", "desk", Item("dated.md", CANARY["timestamp"], "dated", "dated", {}, 0))
+        self.call(ingest.apply, db, CANARY["sourcename"], "desk", Item("a.md", NOW.isoformat(), "t", "t", {}, 0))
+        self.call(ingest.apply, db, "notes", CANARY["hostname"], Item("a.md", NOW.isoformat(), "t", "t", {}, 0))
+        for name in ("machine", "hosts", "sources"):
+            text = {"machine": f'machine = "{CANARY["machinename"]}"\n',
+                    "hosts": f'[hosts.{CANARY["hostname"]}]\nssh = "x"\n',
+                    "sources": f'[sources.{CANARY["sourcename"]}]\ntype = "notes"\npath = "/n"\n'}[name]
+            self.call(config.parse, text.replace("Z", "z"))
+        odd = dataclasses.replace(cfg, machine=CANARY["machinename"], sources=tuple(
+            dataclasses.replace(s, name=CANARY["sourcename"], hosts=(CANARY["machinename"],)) for s in cfg.sources[:1]))
+        self.call(ingest.run, db, odd, self.cloud, with_summaries=False)
+        marked = SourceType(notes.Options, lambda run: iter([
+            Item("marked.md", NOW.isoformat(), "marked", "marked", {}, CANARY["mark"]), Progress(CANARY["mark"])]))
+        with mock.patch.object(notes, "TYPE", marked):
+            self.call(remote.serve, {"verb": "extract", "type": "notes", "since": None, "exclude": [],
+                                     "options": {"path": self.notes}})
+            unit = dataclasses.replace(cfg.sources[0], type=marked)
+            self.call(ingest.run_unit, db, unit, "desk", ingest.LocalReader(), self.cloud)
+        missing = os.path.join(self.tmp, CANARY["notepath2"], "gone")
+        locked = os.path.join(self.tmp, f"locked-{CANARY['notepath2']}")
+        os.makedirs(os.path.join(locked, "inside"))
+        os.chmod(locked, 0)
+        self.addCleanup(os.chmod, locked, 0o755)
+        for root in (missing, locked):
+            for verb in ("extract", "live_ids"):
+                self.call(remote.serve, {"verb": verb, "type": "notes", "since": None, "exclude": [],
+                                         "options": {"path": root}})
+        self.call(github.run_gh, os.path.join(self.bin, "ghtail"), ["search", "issues"])
+        self.call(ai_cli.run, ai_cli.Call([os.path.join(self.bin, "aitail")], "", {}, None), self.tmp, 5, "aitail")
+        Model.mode = "status"
+        with mock.patch.object(gmail, "TOKEN_URL", f"http://127.0.0.1:{self.server.server_address[1]}/token"):
+            self.call(gmail._token_request, {"grant_type": "refresh_token"})
+        Model.mode = "ok"
+        db.commit()
         self.call(remote.serve, {"verb": "extract", "type": "notes", "since": None, "exclude": [],
                                  "options": {"path": "/n", CANARY["remoteopt"]: 1}})
         self.call(github.run_gh, os.path.join(self.bin, "gh-fail"), ["search", "issues"])

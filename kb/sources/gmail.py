@@ -223,6 +223,8 @@ def _token_request(form):
             "client_secret, and sign in again for a new refresh token if it was revoked or expired.") from None
     except urllib.error.URLError as exc:
         raise RuntimeError(mask.mask(f"cannot reach {TOKEN_URL}: {exc.reason}")) from None
+    except Exception as exc:
+        raise RuntimeError(mask.mask(f"the token request to {TOKEN_URL} failed: {type(exc).__name__}: {exc}")) from None
 
 
 def oauth_login(client_id, client_secret, open_browser=webbrowser.open, timeout=300):
@@ -279,7 +281,7 @@ def oauth_login(client_id, client_secret, open_browser=webbrowser.open, timeout=
 def _ok(answer):
     status, data = answer
     if status != "OK":
-        raise RuntimeError(mask.mask(f"IMAP answered {status}: {data!r:.200}"))
+        raise RuntimeError(f"IMAP answered {mask.mask(str(status))}: " + mask.mask(repr(data))[:200])
     return data
 
 
@@ -327,7 +329,7 @@ def _number(value, what):
     try:
         return int(value)
     except (TypeError, ValueError):
-        raise RuntimeError(mask.mask(f"Gmail sent {what} that is not a number: {value!r:.80}")) from None
+        raise RuntimeError(f"Gmail sent {what} that is not a number: " + mask.mask(repr(value))[:80]) from None
 
 
 def _list(conn, since, window_days):

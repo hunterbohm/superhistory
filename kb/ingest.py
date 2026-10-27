@@ -48,6 +48,8 @@ def apply(db, source, host, event):
     """Stores the event under the id "<host>:<source_id>". An item whose id looks like it holds a secret, such as a
     file named after a token, is not stored. Applying an event twice changes nothing the second time. Returns True
     when rows changed."""
+    if holds_secret(source) or holds_secret(host):
+        raise ValueError("a source or host name that looks like a secret is not stored")
     if isinstance(event, Progress) or holds_secret(event.source_id):
         return False
     sid = f"{host}:{event.source_id}"
@@ -86,6 +88,9 @@ def run_unit(db, source, host, reader, log):
     mark = None
     started = time.time()
     for event in reader.events(source, since):
+        if holds_secret(json.dumps(event.mark, default=str)):
+            log.warning("%s@%s: skipped an event whose position looks like it holds a secret", source.name, host)
+            continue
         mark = event.mark if mark is None else max(mark, event.mark)
         if isinstance(event, Progress):
             continue
@@ -135,6 +140,11 @@ def run(db, config, log, only=(), with_summaries=True, model_factory=None):
             continue
         for host in source.hosts:
             if host in away:
+                continue
+            if holds_secret(source.name) or holds_secret(host):
+                # A config built without config.parse can hold such a name; it goes into every id and health key.
+                log.warning("a source or host name looks like a secret; skipped it without storing anything")
+                failures += 1
                 continue
             unit = f"{source.name}@{host}"
             try:

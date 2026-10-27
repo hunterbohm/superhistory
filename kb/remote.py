@@ -9,6 +9,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import traceback
 
 import kb
 from kb.mask import holds_secret, mask, mask_all
@@ -66,8 +67,8 @@ def script(request):
 
 def encode(event):
     if isinstance(event, Item):
-        return json.dumps({**event._asdict(), "title": mask(event.title), "content": mask(event.content),
-                           "meta": mask_all(event.meta)})
+        return json.dumps({**event._asdict(), "ts": mask(str(event.ts)), "title": mask(event.title),
+                           "content": mask(event.content), "meta": mask_all(event.meta)})
     if isinstance(event, Gone):
         return json.dumps({"source_id": event.source_id, "delete": True, "mark": event.mark})
     return json.dumps({"mark": event.mark})
@@ -77,7 +78,7 @@ def decode(line):
     """An event from one line a remote run printed. Raises ValueError on anything else."""
     data = json.loads(line)
     if not isinstance(data, dict) or "mark" not in data:
-        raise ValueError(mask(f"not an event: {line[:200]!r}"))
+        raise ValueError("not an event: " + mask(repr(line))[:200])
     if set(data) == {"mark"}:
         return Progress(data["mark"])
     if data.get("delete") is True and isinstance(data.get("source_id"), str):
@@ -85,11 +86,20 @@ def decode(line):
     try:
         return Item(**data)
     except TypeError:
-        raise ValueError(mask(f"not an event: {line[:200]!r}")) from None
+        raise ValueError("not an event: " + mask(repr(line))[:200]) from None
 
 
 def serve(request):
-    """The far side: run one source with the request's options and print its events or ids, one JSON line each."""
+    """The far side: run one source with the request's options and print its events or ids, one JSON line each. A
+    failure prints a masked traceback, because the reading side quotes this computer's stderr."""
+    try:
+        return _serve(request)
+    except Exception:
+        sys.stderr.write(mask(traceback.format_exc()))
+        return 1
+
+
+def _serve(request):
     if sys.version_info < (3, 9):
         sys.stderr.write("kb needs Python 3.9 or newer on this computer\n")
         return 3
@@ -109,8 +119,8 @@ def serve(request):
     if request["verb"] == "live_ids":
         lines = (json.dumps(sid) for sid in kind.live_ids(run) if not holds_secret(sid))
     else:
-        lines = (encode(event) for event in kind.extract(run)
-                 if isinstance(event, Progress) or not holds_secret(event.source_id))
+        lines = (encode(event) for event in kind.extract(run) if not holds_secret(json.dumps(event.mark, default=str))
+                 and (isinstance(event, Progress) or not holds_secret(event.source_id)))
     for line in lines:
         sys.stdout.write(line + "\n")
     sys.stdout.flush()
@@ -153,7 +163,7 @@ class SshReader:
                 proc.stdout.close()
             if proc.wait() != 0:
                 err.seek(0)
-                stderr = err.read().decode(errors="replace")[-STDERR_TAIL:]
+                stderr = mask(err.read().decode(errors="replace"))[-STDERR_TAIL:]
                 away = proc.returncode == 255 and OFF_NETWORK.search(stderr)
-                failed = mask(f"ssh {self.host.name} exited {proc.returncode}: {stderr}")
+                failed = f"ssh {self.host.name} exited {proc.returncode}: {stderr}"
                 raise (HostAway if away else RuntimeError)(failed)

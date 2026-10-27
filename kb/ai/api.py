@@ -8,6 +8,7 @@ from typing import Literal, Optional
 from kb import __version__
 from kb.ai import Busy, NotReady, PluginSpec, Refused, Traits
 from kb.config import Secret, SecretError
+from kb.mask import mask
 
 TRAITS = Traits(check_budget=10.0, hedge_after=3.0, parallel=4, max_prompt_chars=600_000)
 AUTH_CODES = (401, 403)
@@ -169,7 +170,7 @@ def post(url, body, headers, timeout):
         with urllib.request.urlopen(request, timeout=timeout) as resp:
             return json.load(resp)
     except urllib.error.HTTPError as e:
-        detail = " ".join(e.read()[:600].decode(errors="replace").split())[:300]
+        detail = " ".join(mask(e.read(65536).decode(errors="replace")).split())[:300]
         message = f"HTTP {e.code} from {url}: {detail}"
         if e.code in SETUP_CODES:
             raise NotReady(message) from None
