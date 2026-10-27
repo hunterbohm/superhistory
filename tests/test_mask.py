@@ -160,7 +160,7 @@ class SecretInIdTest(unittest.TestCase):
     def test_a_token_or_a_credential_in_a_name_counts(self):
         for name in ("key-sk-ant-api03-" + "Z" * 24 + ".md", "ghp_" + "A1" * 18 + ".md", "password=walrus2secret9.md",
                      "token:abcd1234efgh5678.md", "OPENAI_API_KEY=where-to-find.md",
-                     "https://user:hunter9pw@example.com/notes"):
+                     "https://user:walrus9pw@example.com/notes"):
             with self.subTest(name=name):
                 self.assertTrue(secret_in_id(name))
 
