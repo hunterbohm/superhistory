@@ -179,6 +179,16 @@ class ReadingTest(CodexCase):
         self.assertEqual(set(self.items()), {SID})
 
 
+class AuthCodeTest(CodexCase):
+    def test_a_turn_that_hands_over_a_code_is_dropped_and_talk_about_codes_stays(self):
+        lines = conversation(prompt="Why does the verification code email never arrive on staging?")
+        lines.append(rec(3, "response_item", msg("user", "Your verification code is 482913.")))
+        self.write(f"sessions/2026/06/03/rollout-a-{SID}.jsonl", lines)
+        content = self.only_item().content
+        self.assertNotIn("482913", content)
+        self.assertIn("verification code email never arrive", content)
+
+
 class SessionShapeTest(CodexCase):
     def test_a_forked_file_drops_the_replayed_parent_history(self):
         parent = "019e0000-0000-7000-8000-0000000000ff"

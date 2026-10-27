@@ -1,4 +1,3 @@
-"""Claude Code: a UserPromptSubmit hook in ~/.claude/settings.json. Its output is added to the prompt as context."""
 import json
 import os
 
@@ -29,7 +28,6 @@ def uninstall(home):
 
 
 def request(event):
-    """The prompt, the two turns before it from the session transcript, and the session id."""
     prompt = str(event.get("prompt") or "")
     try:
         before = _turns.turns_before(event["transcript_path"], prompt) if event.get("transcript_path") else []

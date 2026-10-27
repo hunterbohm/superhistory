@@ -15,6 +15,8 @@ import time
 from dataclasses import dataclass
 from typing import Tuple
 
+from kb.ai.cli import WORKDIR_PREFIX
+from kb.mask import is_auth_code
 from kb.sources import Gone, Item, Progress, SourceType, home_key
 
 
@@ -121,7 +123,7 @@ def _message_lines(payload):
         if not isinstance(part, dict) or part.get("type") not in ("input_text", "output_text"):
             continue
         text = part.get("text", "").strip()
-        if text and not (role == "user" and _is_injected(text)):
+        if text and not (role == "user" and _is_injected(text)) and not is_auth_code(text):
             yield label, text
 
 
@@ -250,5 +252,4 @@ def extract(run):
     yield Progress(started)
 
 
-# Sessions the AI plug-ins start run in folders named kb-ai-*; they are kb's own calls, not the user's work.
-TYPE = SourceType(Options, extract, exclude=("kb-ai-*",))
+TYPE = SourceType(Options, extract, exclude=(WORKDIR_PREFIX + "*",))

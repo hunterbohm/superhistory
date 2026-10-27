@@ -24,17 +24,18 @@ import time
 from typing import Callable, List, NamedTuple, Optional
 
 from kb import check
+from kb.config import MAX_CHECK_BUDGET
 from kb.ai.cli import NESTED_ENV
 
-# Above the check's longest budget (25 s), so the agent never cuts the check off whichever plug-in runs it.
-HOOK_TIMEOUT = 30
+# A few seconds above the check's longest budget, so the agent never cuts the check off.
+HOOK_TIMEOUT = int(MAX_CHECK_BUDGET) + 5
 # Grok runs the hooks in Claude Code's settings file too, but drops what a prompt hook prints.
 GROK_ENV = "GROK_HOOK_EVENT"
 
 
 class Change(NamedTuple):
     path: str
-    action: str          # added, updated, removed, unchanged or skipped
+    action: str
     note: str = ""
 
 
@@ -63,12 +64,10 @@ def command(kb_path, name):
 
 
 def is_kb_command(text, name):
-    """Whether a hook command is the one `command()` writes for this agent, whatever kb's path."""
     return str(text).rstrip().endswith(f" hook {name}")
 
 
 def run(paths, config, name, stdin_text):
-    """The output for one `kb hook <name>` call. Never raises; prints nothing it cannot stand behind."""
     if os.environ.get(NESTED_ENV) or os.environ.get(GROK_ENV):
         return ""
     try:
@@ -91,7 +90,6 @@ def read(path):
 
 
 def write(path, text):
-    """Back up the current file beside it, then replace it in one rename, keeping its mode."""
     path = os.path.realpath(path)
     os.makedirs(os.path.dirname(path), exist_ok=True)
     exists = os.path.exists(path)
@@ -109,11 +107,23 @@ def _dump(data, old_text):
     return json.dumps(data, indent=2, ensure_ascii=False) + ("\n" if old_text.endswith("\n") or not old_text else "")
 
 
-def add_json_hook(path, event, name, kb_command):
-    """Ensures a group under hooks.<event> in a Claude-style JSON hooks file runs kb's hook with HOOK_TIMEOUT.
-    Returns (group index, handler index, handler, Change)."""
+class Unreadable(ValueError):
+    pass
+
+
+def _load(path):
     text = read(path)
-    data = json.loads(text) if text.strip() else {}
+    try:
+        data = json.loads(text) if text.strip() else {}
+    except ValueError:
+        raise Unreadable(f"{path} is not valid JSON; fix it, then run this again") from None
+    if not isinstance(data, dict):
+        raise Unreadable(f"{path} does not hold a JSON object")
+    return text, data
+
+
+def add_json_hook(path, event, name, kb_command):
+    text, data = _load(path)
     groups = data.setdefault("hooks", {}).setdefault(event, [])
     found = next(((gi, hi, handler) for gi, group in enumerate(groups) for hi, handler in enumerate(group.get("hooks") or [])
                   if is_kb_command(handler.get("command", ""), name)), None)
@@ -132,16 +142,17 @@ def add_json_hook(path, event, name, kb_command):
 
 
 def has_json_hook(path, event, name):
-    text = read(path)
-    groups = ((json.loads(text) if text.strip() else {}).get("hooks") or {}).get(event) or []
+    try:
+        groups = (_load(path)[1].get("hooks") or {}).get(event) or []
+    except Unreadable:
+        return False
     return any(is_kb_command(h.get("command", ""), name) for group in groups for h in group.get("hooks") or [])
 
 
 def remove_json_hook(path, event, name):
-    text = read(path)
+    text, data = _load(path)
     if not text.strip():
         return Change(path, "unchanged")
-    data = json.loads(text)
     groups = (data.get("hooks") or {}).get(event) or []
     kept = []
     removed = False

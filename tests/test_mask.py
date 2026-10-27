@@ -1,6 +1,6 @@
 import unittest
 
-from kb.mask import is_auth_noise, mask
+from kb.mask import is_auth_code, is_auth_noise, mask
 
 
 class MaskTest(unittest.TestCase):
@@ -193,6 +193,21 @@ class AuthNoiseTest(unittest.TestCase):
     def test_only_the_opening_is_checked(self):
         self.assertFalse(is_auth_noise("a" * 700 + " verification code"))
         self.assertTrue(is_auth_noise("a" * 100 + " verification code"))
+
+
+class AuthCodeTest(unittest.TestCase):
+    def test_a_message_that_hands_over_a_code_is_an_auth_code(self):
+        for text in ("Your verification code is 482913.", "Your code is 4829", "Use this code: 12345678 to sign in",
+                     "Your verification code is 482913, valid for 10 minutes.", "Verification code:482913"):
+            with self.subTest(text):
+                self.assertTrue(is_auth_code(text))
+
+    def test_talk_about_codes_dates_and_versions_is_not(self):
+        for text in ("the verification code email never arrives", "login code broke in v2.1234.5",
+                     "reset your password on 2026-10-27", "reset your password by 10/27/2026", "order 482913 shipped",
+                     "the sign-in code path takes 3.14159 seconds"):
+            with self.subTest(text):
+                self.assertFalse(is_auth_code(text))
 
 
 if __name__ == "__main__":

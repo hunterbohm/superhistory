@@ -284,6 +284,13 @@ class ReadingTest(GmailCase):
         self.assertNotIn("482913", content)
         self.assertEqual(content.count("\n\n---\n\n"), 1)
 
+    def test_a_code_in_the_subject_drops_the_message(self):
+        self.gmail.add(OTHER, ago(1, 1), "Dana <dana@example.com>", "Notes from the call.", subject="Call notes")
+        self.gmail.add(OTHER, ago(1), "Acme <no-reply@acme.example.com>", "482913", subject="Your verification code")
+        content = self.items(self.extract(model=unused_model(), sort=False))[OTHER].content
+        self.assertIn("Notes from the call.", content)
+        self.assertNotIn("482913", content)
+
     def test_a_thread_of_only_auth_codes_is_gone(self):
         self.gmail.add(OTHER, ago(1, 1), "Acme <no-reply@acme.example.com>", "Your verification code is 482913.",
                        subject="Sign in to Acme")
