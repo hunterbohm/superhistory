@@ -23,6 +23,7 @@ import faulthandler
 import functools
 import json
 import os
+import random
 import re
 import signal
 import sys
@@ -32,6 +33,8 @@ import time
 import urllib.error
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
+
+import numpy as np
 from datetime import datetime, timezone
 from typing import NamedTuple
 
@@ -402,7 +405,48 @@ def rows_path(test, name):
     return os.path.join(OUT, test, f"{name}.jsonl")
 
 
-def run_tests(tests, names, groups, workers, limit=None):
+def stratum(case):
+    """The tests' own categories. Each person's repetition messages are their own stratum, because the repetition
+    score is computed over one person's replies."""
+    if case.test == "implicit":
+        return f"implicit/{case.kind}"
+    if case.kind == "diversity":
+        return f"op/diversity/{case.group}/{case.user}"
+    return f"op/{case.kind}" + (f"/{case.subtype}" if case.subtype else "")
+
+
+def draw(cases, fraction, seed):
+    """A seeded stratified sample: the same share of every stratum, at least 2 messages from each."""
+    strata = {}
+    for c in cases:
+        strata.setdefault(stratum(c), []).append(c.id)
+    rng = random.Random(seed)
+    return {key: {"population": len(ids), "ids": sorted(rng.sample(sorted(ids), max(2, round(len(ids) * fraction))))}
+            for key, ids in sorted(strata.items())}
+
+
+def sample_path():
+    return os.path.join(OUT, "sample.json")
+
+
+def sample_for(cases, fraction, seed):
+    """The recorded sample, or a new one drawn and recorded. A different share or seed is a different sample."""
+    drawn = {"fraction": fraction, "seed": seed, "strata": draw(cases, fraction, seed)}
+    if os.path.exists(sample_path()):
+        with open(sample_path(), encoding="utf-8") as fh:
+            recorded = json.load(fh)
+        if recorded != drawn:
+            raise SystemExit(f"{sample_path()} holds a different sample; move it aside to draw this one")
+    with open(sample_path(), "w", encoding="utf-8") as fh:
+        json.dump(drawn, fh, indent=1)
+    return drawn
+
+
+def every_case(samples, tests):
+    return [c for t in tests for c in TESTS[t].cases(samples)]
+
+
+def run_tests(tests, names, groups, workers, limit=None, chosen=None):
     samples = locomo.load()
     by_id = {s["sample_id"]: s for s in samples}
     items = {s["sample_id"]: locomo.session_items(s) for s in samples}
@@ -410,7 +454,7 @@ def run_tests(tests, names, groups, workers, limit=None):
     for t in tests:
         every = TESTS[t].cases(samples)
         for group in groups:
-            cases += [c for c in every if c.group == group][:limit]
+            cases += [c for c in every if c.group == group and (chosen is None or c.id in chosen)][:limit]
     common.summarized_sources()
     install_limits()
     workers = min(workers, Limits.PARALLEL)
@@ -545,6 +589,144 @@ def op_table(names):
                             "Lookup added nothing"], lines)
 
 
+BOOTSTRAP = 2000
+BOOTSTRAP_SEED = 0
+
+
+def interval(point, draws):
+    lo, hi = np.percentile(draws, [2.5, 97.5])
+    return point, lo, hi
+
+
+def shown(found, scale=1, digits=3):
+    point, lo, hi = found
+    return f"{scale * point:.{digits}f} [{scale * lo:.{digits}f}, {scale * hi:.{digits}f}]"
+
+
+def sample_rows(test, names, strata):
+    """Each tool's rows for the sampled messages, keeping only messages every tool answered, so every comparison is
+    on the same messages."""
+    rows = {n: {r["id"]: r for r in common.read_rows(rows_path(test, n))} for n in names}
+    rows = {n: rs for n, rs in rows.items() if rs}
+    keep = {k: [i for i in v["ids"] if all(i in rs for rs in rows.values())] for k, v in strata.items()}
+    missing = sum(len(v["ids"]) - len(keep[k]) for k, v in strata.items())
+    return rows, keep, missing
+
+
+def implicit_sample(names, strata):
+    """The fact-used mean over the population, estimated from the sample stratum by stratum, with a 95% interval from
+    a bootstrap that resamples each stratum's messages; the same resampled messages score every tool."""
+    strata = {k: v for k, v in strata.items() if k.startswith("implicit/")}
+    rows, keep, missing = sample_rows("implicit", [n for n in names if n in TESTS["implicit"].tools], strata)
+    weight = {k: v["population"] / sum(x["population"] for x in strata.values()) for k, v in strata.items()}
+    scores = {n: {k: np.array([rs[i]["fact_score"] for i in keep[k]]) for k in strata} for n, rs in rows.items()}
+
+    def estimate(n, picks):
+        return sum(weight[k] * scores[n][k][picks[k]].mean() for k in strata)
+
+    rng = np.random.default_rng(BOOTSTRAP_SEED)
+    whole = {k: np.arange(len(keep[k])) for k in strata}
+    draws = {n: [] for n in rows}
+    for _ in range(BOOTSTRAP):
+        picks = {k: rng.integers(0, len(keep[k]), len(keep[k])) for k in strata}
+        for n in rows:
+            draws[n].append(estimate(n, picks))
+    found = {n: interval(estimate(n, whole), draws[n]) for n in rows}
+    kinds = list(locomo.CATEGORIES.values())
+    lines = [[LABELS[n], sum(map(len, keep.values())), shown(found[n]),
+              *(f"{scores[n][f'implicit/{k}'].mean():.3f}" for k in kinds),
+              common.pct(sum(bool(rs[i]["context"]) for v in keep.values() for i in v), sum(map(len, keep.values())))]
+             for n, rs in rows.items()]
+    parts = [common.markdown(["Tool", "Messages", "Fact used, mean [95% CI]", *(f"{k} ({len(keep[f'implicit/{k}'])})"
+                                                                                for k in kinds),
+                              "Lookup added something"], lines)]
+    if "check" in rows:
+        diffs = [[f"{LABELS['check']} minus {LABELS[n]}", shown(interval(found["check"][0] - found[n][0],
+                                                                          np.subtract(draws["check"], draws[n])))]
+                 for n in rows if n != "check"]
+        parts.append(common.markdown(["Paired difference", "Fact used [95% CI]"], diffs))
+    return parts, missing
+
+
+def op_sample(names, strata):
+    """The six OP-Bench columns and the code's overall score, each a 95% interval from a stratified bootstrap.
+    Sycophancy weighs its subtypes by their share of the 400 messages, as the code's per-person mean does."""
+    from sentence_transformers import SentenceTransformer
+    strata = {k: v for k, v in strata.items() if k.startswith("op/")}
+    rows, keep, missing = sample_rows("op", [n for n in names if n in TESTS["op"].tools], strata)
+    model = SentenceTransformer(EMBEDDER)
+    people = [k for k in strata if k.startswith("op/diversity/") and len(keep[k]) >= 2]
+    columns = ["op/irrelevance_easy", "op/irrelevance_hard", "op/sycophancy/fact", "op/sycophancy/value",
+               "op/sycophancy/memory"]
+    scores = {n: {k: np.array([rs[i]["score"] for i in keep[k]]) for k in columns} for n, rs in rows.items()}
+    similar = {}
+    for n, rs in rows.items():
+        for k in people:
+            answers = [rs[i]["answer"] for i in keep[k]]
+            vectors = model.encode(answers, normalize_embeddings=True)
+            similar[n, k] = (vectors @ vectors.T, np.array([bool(a.strip()) for a in answers], dtype=bool))
+    syc = {k: strata[k]["population"] for k in columns if k.startswith("op/sycophancy/")}
+
+    def repetition(n, k, pick):
+        sims, ok = similar[n, k]
+        pick = pick[ok[pick]]
+        i, j = np.triu_indices(len(pick), 1)
+        pairs = pick[i] != pick[j]
+        if not pairs.any():
+            return 0.0
+        return float(np.clip(1.0 - sims[pick[i][pairs], pick[j][pairs]].mean(), 0.0, 1.0))
+
+    def stats(n, picks):
+        col = {k: scores[n][k][picks[k]].mean() for k in columns}
+        col["diversity"] = float(np.mean([repetition(n, k, picks[k]) for k in people]))
+        sycophancy = sum(syc[k] * col[k] for k in syc) / sum(syc.values())
+        col["overall"] = np.mean([col["op/irrelevance_easy"], col["op/irrelevance_hard"], sycophancy, col["diversity"]])
+        return col
+
+    rng = np.random.default_rng(BOOTSTRAP_SEED)
+    whole = {k: np.arange(len(keep[k])) for k in strata}
+    point = {n: stats(n, whole) for n in rows}
+    draws = {n: [] for n in rows}
+    for _ in range(BOOTSTRAP):
+        picks = {k: rng.integers(0, len(keep[k]), len(keep[k])) for k in strata}
+        for n in rows:
+            draws[n].append(stats(n, picks))
+    order = ["op/irrelevance_easy", "op/irrelevance_hard", "diversity", *columns[2:], "overall"]
+
+    def cell(n, key, against=None):
+        values = [d[key] - (draws[against][b][key] if against else 0) for b, d in enumerate(draws[n])]
+        return shown(interval(point[n][key] - (point[against][key] if against else 0), values), 100, 1)
+
+    counts = {"diversity": sum(len(keep[k]) for k in people), "overall": sum(map(len, keep.values()))}
+    head = [f"{k.removeprefix('op/').replace('/', ', ')} ({counts.get(k) or len(keep[k])})" for k in order]
+    lines = [[LABELS[n], *(cell(n, k) for k in order),
+              common.pct(sum(not rows[n][i]["context"] for v in keep.values() for i in v), counts["overall"])]
+             for n in rows]
+    parts = [common.markdown(["Tool", *head, "Lookup added nothing"], lines)]
+    if "check" in rows:
+        parts.append(common.markdown(["Paired difference", *head],
+                                     [[f"{LABELS['check']} minus {LABELS[n]}", *(cell("check", k, n) for k in order)]
+                                      for n in rows if n != "check"]))
+    return parts, missing
+
+
+def sample_table(tests, names):
+    with open(sample_path(), encoding="utf-8") as fh:
+        recorded = json.load(fh)
+    strata = recorded["strata"]
+    parts = [f"A seeded stratified sample: {recorded['fraction']:.0%} of each stratum, seed {recorded['seed']}, "
+             f"{BOOTSTRAP} bootstrap draws (seed {BOOTSTRAP_SEED}). Intervals are 95%."]
+    for test, build in (("implicit", implicit_sample), ("op", op_sample)):
+        if test in tests:
+            found, missing = build(names, strata)
+            parts += found + ([f"{missing} sampled messages lack a row for some tool and are left out."]
+                              if missing else []) + [published(test)]
+    text = "\n\n".join(parts) + "\n"
+    with open(os.path.join(OUT, "sample-table.md"), "w", encoding="utf-8") as fh:
+        fh.write(text)
+    return text
+
+
 def published(test):
     with open(os.path.join(HERE, "published.json"), encoding="utf-8") as fh:
         found = [p for p in json.load(fh) if p["test"] == test]
@@ -580,10 +762,12 @@ def main(argv=None):
     p.add_argument("--limit", type=int, help="run only the first N messages of each test in each conversation")
     p.add_argument("--table", action="store_true", help="print the tables from the rows already written")
     p.add_argument("--load-only", action="store_true", help="build the kept stores (Mem0's) and stop")
+    p.add_argument("--sample", type=float, help="run a seeded stratified sample, such as 0.2 for 20%% of each stratum")
+    p.add_argument("--seed", type=int, default=0)
     args = p.parse_args(argv)
     tests, names = args.tests.split(","), args.tools.split(",")
     if args.table:
-        print(table(tests, names))
+        print(sample_table(tests, names) if args.sample else table(tests, names))
         return 0
     groups = args.groups.split(",") if args.groups else [s["sample_id"] for s in locomo.load()]
     if args.load_only:
@@ -592,8 +776,12 @@ def main(argv=None):
             tool, stats = load("mem0", samples[group], [], STORES)
             print(group, json.dumps(stats))
         return 0
-    record = run_tests(tests, names, groups, args.workers, args.limit)
-    print(table(tests, names))
+    chosen = None
+    if args.sample:
+        drawn = sample_for(every_case(locomo.load(), list(TESTS)), args.sample, args.seed)
+        chosen = {i for v in drawn["strata"].values() for i in v["ids"]}
+    record = run_tests(tests, names, groups, args.workers, args.limit, chosen)
+    print(sample_table(tests, names) if args.sample else table(tests, names))
     return common.exit_status(record)
 
 
