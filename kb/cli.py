@@ -254,7 +254,10 @@ def cmd_hooks(paths, config, args):
     kb_path = _kb_path(args) if args.action == "install" else None
     for name in chosen:
         agent = agents.load(name)
-        changes = agent.install(home, agents.command(kb_path, name)) if args.action == "install" else agent.uninstall(home)
+        try:
+            changes = agent.install(home, agents.command(kb_path, name)) if args.action == "install" else agent.uninstall(home)
+        except agents.Unreadable as exc:
+            changes = [agents.Change(str(exc).split(" ", 1)[0], "skipped", str(exc))]
         for change in changes:
             print(f"{agent.label}: {change.path}: {change.action}" + (f" ({change.note})" if change.note else ""))
     return 0

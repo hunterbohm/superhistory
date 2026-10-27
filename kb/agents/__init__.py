@@ -109,11 +109,25 @@ def _dump(data, old_text):
     return json.dumps(data, indent=2, ensure_ascii=False) + ("\n" if old_text.endswith("\n") or not old_text else "")
 
 
+class Unreadable(ValueError):
+    """A settings file that is not the JSON object kb expects; kb leaves it alone."""
+
+
+def _load(path):
+    text = read(path)
+    try:
+        data = json.loads(text) if text.strip() else {}
+    except ValueError:
+        raise Unreadable(f"{path} is not valid JSON; fix it, then run this again") from None
+    if not isinstance(data, dict):
+        raise Unreadable(f"{path} does not hold a JSON object")
+    return text, data
+
+
 def add_json_hook(path, event, name, kb_command):
     """Ensures a group under hooks.<event> in a Claude-style JSON hooks file runs kb's hook with HOOK_TIMEOUT.
     Returns (group index, handler index, handler, Change)."""
-    text = read(path)
-    data = json.loads(text) if text.strip() else {}
+    text, data = _load(path)
     groups = data.setdefault("hooks", {}).setdefault(event, [])
     found = next(((gi, hi, handler) for gi, group in enumerate(groups) for hi, handler in enumerate(group.get("hooks") or [])
                   if is_kb_command(handler.get("command", ""), name)), None)
@@ -132,16 +146,17 @@ def add_json_hook(path, event, name, kb_command):
 
 
 def has_json_hook(path, event, name):
-    text = read(path)
-    groups = ((json.loads(text) if text.strip() else {}).get("hooks") or {}).get(event) or []
+    try:
+        groups = (_load(path)[1].get("hooks") or {}).get(event) or []
+    except Unreadable:
+        return False
     return any(is_kb_command(h.get("command", ""), name) for group in groups for h in group.get("hooks") or [])
 
 
 def remove_json_hook(path, event, name):
-    text = read(path)
+    text, data = _load(path)
     if not text.strip():
         return Change(path, "unchanged")
-    data = json.loads(text)
     groups = (data.get("hooks") or {}).get(event) or []
     kept = []
     removed = False

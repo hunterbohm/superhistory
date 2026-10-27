@@ -37,8 +37,11 @@ def _turn(entry):
 def turns_before(transcript_path, prompt):
     """The last two turns before the prompt, oldest first, as [{"role", "text"}]."""
     with open(transcript_path, "rb") as fh:
-        fh.seek(max(0, os.path.getsize(transcript_path) - TAIL_BYTES))
-        lines = fh.read().decode("utf-8", "replace").splitlines()[1:]
+        start = max(0, os.path.getsize(transcript_path) - TAIL_BYTES)
+        fh.seek(start)
+        lines = fh.read().decode("utf-8", "replace").splitlines()
+        if start:
+            lines = lines[1:]  # the first line read after a seek is cut off
     turns = []
     for line in lines:
         try:
