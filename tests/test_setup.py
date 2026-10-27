@@ -39,7 +39,6 @@ class SetupCase(unittest.TestCase):
         self.addCleanup(host.stop)
 
     def run_setup(self, answers, secrets=(), platform="linux", binaries=None):
-        """Runs setup with scripted answers. Returns (result, printed text, [(question, default)] asked)."""
         answers, secrets, asked, bins = list(answers), list(secrets), [], binaries or {}
 
         def ask(question, default):

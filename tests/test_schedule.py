@@ -15,8 +15,7 @@ LABEL = f"{NAME.lower()}.kb.ingest"
 TIMER = f"{NAME.lower()}-kb-ingest.timer"
 SERVICE = f"{NAME.lower()}-kb-ingest.service"
 
-# A stand-in for launchctl and systemctl. It records every call, keeps a one-bit "job is loaded" state the way the
-# real tools do (loading twice fails, unloading nothing fails) and fails any call that has a word from FAKE_FAIL_ON.
+# The real tools fail when a job is loaded twice or unloaded while not loaded.
 FAKE_TOOL = """#!{python}
 import os, sys
 state = os.environ["FAKE_STATE"]
@@ -57,7 +56,7 @@ SPACED_KB = "/home/sam/my tools/kb"
 
 
 def unit_lines(path):
-    """The `key=value` lines of a unit file, as a dict of lists (systemd allows a key twice)."""
+    # systemd allows a key twice, so each key maps to a list.
     found = {}
     for line in Path(path).read_text().splitlines():
         if "=" in line:
@@ -95,7 +94,6 @@ class ScheduleCase(unittest.TestCase):
         return log.read_text().splitlines() if log.exists() else []
 
     def path_with(self, *dirs):
-        """A PATH that starts with `dirs` and still finds the fake tools."""
         return os.pathsep.join([*dirs, str(self.bin_dir), os.environ["PATH"]])
 
     def fail_on(self, *words):

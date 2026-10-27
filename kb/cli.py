@@ -293,7 +293,7 @@ def cmd_setup(paths, config, args):
     result = setup.run(paths, _ask, _secret)
     if not result:
         return 0
-    sys.stdout.flush()
+    sys.stdout.flush()  # the first read logs to stderr; setup's own lines come first under a pipe too
     config = config_mod.load(paths.config_file)
     kb_path = shutil.which("kb")
     if (result.hooks or result.schedule) and not kb_path:

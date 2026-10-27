@@ -1,9 +1,3 @@
-"""`kb setup`: ask what to read and which AI to use, then write the config file.
-
-run() only asks and writes. The questions come in through `ask(question, default)` and `secret(question)`, so a
-terminal, a script and a test drive it the same way. What the user chose to do next (hooks, schedule, a first ingest) is
-handed back for the CLI to carry out.
-"""
 import json
 import os
 import re
@@ -38,8 +32,6 @@ class Offer(NamedTuple):
 
 
 class Plan:
-    """The file to write: tables in order, and the secrets to save once the text has parsed."""
-
     def __init__(self, machine):
         self.machine = machine
         self.tables: List[Tuple[str, Dict[str, Any]]] = []
@@ -49,7 +41,6 @@ class Plan:
         self.tables.append((header, values))
 
     def secret(self, paths, filename, value):
-        """Holds the value for saving later and returns the config reference to its file."""
         self.secrets[filename] = value
         return f"file:{paths.keys_dir / filename}"
 
@@ -72,7 +63,6 @@ def _toml(value):
 
 
 def default_machine():
-    """The short host name as a config machine name: lowercase, odd characters turned to "-", at most 40 long."""
     short = socket.gethostname().split(".")[0].lower()
     short = re.sub(r"[^a-z0-9_-]+", "-", short).strip("-_")[:40].strip("-_")
     return short if config.NAME_RE.match(short) else "local"
@@ -100,7 +90,7 @@ def _list(text):
 
 
 def _present(path):
-    """Whether the file is there. A Mac that has not granted Full Disk Access still answers "not permitted"."""
+    # Without Full Disk Access, macOS answers "not permitted" for a file that exists.
     try:
         os.stat(path)
     except PermissionError:
@@ -223,7 +213,6 @@ def _required(ask, question):
 
 
 def run(paths, ask, secret, home=None, platform=None, which=shutil.which):
-    """Asks the questions and writes paths.config_file. Nothing is written when the user keeps the file that is there."""
     home = str(home or os.path.expanduser("~")).rstrip("/") or "/"
     platform = platform or sys.platform
     path = paths.config_file

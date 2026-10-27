@@ -1,7 +1,6 @@
-"""`kb try`: a made-up month in a database of its own, and the check run on its sample questions.
-
-The month is `items.jsonl` (one item a line: source, source_id, ts, title, content, meta) and `questions.jsonl` (id,
-question, answer, evidence as source ids, kind; kind "none" means the right result is to add nothing).
+"""The made-up month is `items.jsonl` (one item a line: source, source_id, ts, title, content, meta) and
+`questions.jsonl` (id, question, answer, evidence as source ids, kind; kind "none" means the right result is to add
+nothing).
 """
 import json
 from pathlib import Path
@@ -14,7 +13,6 @@ SHOWN_HITS = 5
 
 
 def month_dir():
-    """The month that ships beside the package: demo/month in a checkout or an install."""
     return Path(kb.__file__).resolve().parent.parent / "demo" / "month"
 
 
@@ -24,7 +22,6 @@ def _lines(path):
 
 
 def load(db, folder):
-    """Stores every item of the month; loading it again changes nothing. Returns the number of items."""
     items = _lines(Path(folder) / "items.jsonl")
     for item in items:
         store.store_item(db, item["source"], f"{HOST}:{item['source_id']}", item["ts"], item["title"],
@@ -39,7 +36,6 @@ def questions(folder):
 
 
 def samples(all_questions, chosen=None):
-    """The question asked for, or the first one with an answer and the first one where the right result is nothing."""
     if chosen:
         return [q for q in all_questions if q["id"] == chosen]
     answered = next((q for q in all_questions if q["kind"] != "none"), None)

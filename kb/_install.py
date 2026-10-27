@@ -1,8 +1,4 @@
-"""The second half of install.sh, run with the Python it chose: copies kb into the data folder and writes the kb command.
-
-Each version gets its own folder under <data>/app and `current` points at the newest, so an upgrade swaps one link.
-The command runs kb with this exact Python, the binary macOS asks to be given Full Disk Access for iMessage.
-"""
+# The kb command runs kb with this exact Python: macOS ties Full Disk Access (iMessage) to that one binary.
 import argparse
 import os
 import shlex
@@ -21,7 +17,6 @@ exec {python} -I -c 'import sys; sys.path.insert(0, sys.argv.pop(1)); from kb.cl
 
 
 def install(src, app_root, bin_dir, python=sys.executable):
-    """Returns the path of the kb command. Running it again with the same version replaces that version in place."""
     src, app_root, bin_dir = Path(src).resolve(), Path(app_root), Path(bin_dir)
     version_dir = app_root / kb.__version__
     staging = app_root / f".{kb.__version__}.{os.getpid()}"

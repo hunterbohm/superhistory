@@ -6,7 +6,6 @@
 #   curl -fsSL <address of install.sh> | sh        (downloads the release archive named below)
 set -eu
 
-# The release archive the one-line install downloads. KB_ARCHIVE_URL overrides it.
 ARCHIVE_URL="${KB_ARCHIVE_URL:-}"
 SRC=""
 while [ $# -gt 0 ]; do

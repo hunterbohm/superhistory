@@ -36,7 +36,6 @@ def _environment():
 
 
 def _run(*argv):
-    """(exit code, output). A missing program counts as a failure."""
     try:
         done = subprocess.run(argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True)
     except OSError as exc:
@@ -45,7 +44,6 @@ def _run(*argv):
 
 
 def _write(path, data):
-    """Write through a temporary file so a crash never leaves half a file."""
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(path.name + ".tmp")
     tmp.write_bytes(data)
@@ -77,8 +75,6 @@ def _kb_path(kb_path):
 def _every(minutes):
     return f"every {minutes} minute" + ("" if minutes == 1 else "s")
 
-
-# launchd
 
 def _plist_path(home):
     return _home(home) / "Library" / "LaunchAgents" / f"{LABEL}.plist"
@@ -128,8 +124,6 @@ def _mac_status(home):
         return f"launchd has {LABEL} loaded but {plist} is gone. Turn the schedule off, then on again."
     return "Not scheduled."
 
-
-# systemd
 
 def _unit_dir(home):
     xdg = os.environ.get("XDG_CONFIG_HOME", "")
@@ -202,8 +196,6 @@ def _linux_status(home):
         return f"systemd has {TIMER} active but its file is gone. Turn the schedule off, then on again."
     return "Not scheduled."
 
-
-# public
 
 def on(paths, config, kb_path, platform=None, home=None):
     """Run `kb ingest` on the configured interval. Safe to repeat: it leaves one job with the current interval."""
