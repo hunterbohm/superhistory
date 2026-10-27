@@ -169,6 +169,8 @@ def load(path):
             text = fh.read()
     except FileNotFoundError:
         return Config()
+    except UnicodeDecodeError as exc:
+        raise ConfigError([f"not valid UTF-8: {exc.reason} at byte {exc.start}"]) from None
     return parse(text)
 
 

@@ -295,3 +295,15 @@ class UnreadableConfigTest(unittest.TestCase):
                     contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
                 code = cli.main(["hook", "claude-code"])
         self.assertEqual((code, out.getvalue(), err.getvalue()), (0, "", ""))
+
+
+class InvalidUtf8ConfigTest(unittest.TestCase):
+    def test_a_config_that_is_not_utf8_makes_the_hook_print_nothing_and_exit_0(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with open(os.path.join(tmp, "config.toml"), "wb") as fh:
+                fh.write(b'machine = "\xff"\n')
+            out, err = io.StringIO(), io.StringIO()
+            with mock.patch.dict(os.environ, {"KB_HOME": tmp}), mock.patch("sys.stdin", io.StringIO('{"prompt": "hi"}')), \
+                    contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                code = cli.main(["hook", "claude-code"])
+        self.assertEqual((code, out.getvalue(), err.getvalue()), (0, "", ""))

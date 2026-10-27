@@ -56,9 +56,17 @@ def _header(key):
     return f"[hooks.state.{json.dumps(key)}]"
 
 
+def _is_header(line, key):
+    """Whether a line opens this key's table, as kb and Codex write it, with or without a trailing comment."""
+    line = line.strip()
+    for header in (_header(key), f"[hooks.state.'{key}']"):
+        if line == header or (line.startswith(header) and line[len(header):].lstrip().startswith("#")):
+            return True
+    return False
+
+
 def _section(lines, key):
-    header = _header(key)
-    start = next((i for i, line in enumerate(lines) if line.strip() == header), None)
+    start = next((i for i, line in enumerate(lines) if _is_header(line, key)), None)
     if start is None:
         return None
     end = next((i for i in range(start + 1, len(lines)) if lines[i].lstrip().startswith("[")), len(lines))
@@ -197,8 +205,9 @@ def _move_trust(config, hooks_json, before, after):
             continue
         digest = codex_hook_hash(CODEX_EVENT, handler)
         if _is_trusted(config, _key(hooks_json, old_gi, old_hi), digest):
-            _untrust(config, _key(hooks_json, old_gi, old_hi))
+            # The new trust is written first, so a failure leaves the old one in place.
             trust(config, _key(hooks_json, new_gi, new_hi), digest)
+            _untrust(config, _key(hooks_json, old_gi, old_hi))
             moved += 1
     return moved
 

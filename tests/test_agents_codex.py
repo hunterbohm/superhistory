@@ -350,6 +350,20 @@ class ShiftedTrustTest(Home):
         AGENT.uninstall(self.home)
         self.assertIn(self.trust_table(self.key, user_digest), self.text(self.config))
 
+    def test_trust_headers_with_a_trailing_comment_are_recognized(self):
+        user = {"type": "command", "command": "/usr/local/bin/notify-prompt", "timeout": 5}
+        self.put(self.hooks_json, {"hooks": {"UserPromptSubmit": [{"hooks": [self.handler()]}, {"hooks": [user]}]}})
+        user_digest = codex.codex_hook_hash("user_prompt_submit", user)
+        moved_from = f"{self.hooks_json}:user_prompt_submit:1:0"
+        commented = self.trust_table().replace("]\n", "]  # approved\n", 1)
+        self.put(self.config, commented + "\n" + self.trust_table(moved_from, user_digest))
+        AGENT.uninstall(self.home)
+        config = self.text(self.config)
+        if tomllib:
+            self.assertEqual(tomllib.loads(config)["hooks"]["state"][self.key]["trusted_hash"], user_digest)
+        self.assertEqual(config.count(self.key + '"'), 1)
+        self.assertNotIn(moved_from, config)
+
     def test_an_untrusted_user_hook_that_moves_up_gains_no_trust(self):
         user = {"type": "command", "command": "/usr/local/bin/notify-prompt", "timeout": 5}
         self.put(self.hooks_json, {"hooks": {"UserPromptSubmit": [{"hooks": [self.handler()]}, {"hooks": [user]}]}})
