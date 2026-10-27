@@ -16,7 +16,7 @@ python3 bench/outside/outside.py --groups conv-26 --limit 5 --tools none,check
 
 Run it with the Python that has the rivals' packages, and with a Supermemory server, as for the month (`bench/README.md`). `SUPERMEMORY_URL` and `SUPERMEMORY_KEY_FILE` point the adapter at it. Rows go to `results/<test>/<tool>.jsonl`, one per message; a rerun runs only messages with no row yet. `results/runs.json` records each run's models, data hashes, store stats, rate limits and failures.
 
-A run makes at most two model calls at once, the limit for a benchmark run on the shared model plans. Answers, judges, the check's own calls and its summaries all wait for one of two slots, and the check's hedge, which sends a second copy of a call still running after 3 seconds, sends it only when a slot is free. After an HTTP 429 or "cooling down" from a model, no new call goes to it for 30 minutes, then it is tried once more; a second limit stops the run. A message that meets a limit gets no row, so no reply is graded without the lookup it should have had.
+A run makes at most two model calls at once, the limit for a benchmark run on the shared model plans. Answers, judges, the check's own calls and its summaries all wait for one of two slots, and the check's hedge, which sends a second copy of a call still running after 3 seconds, sends it only when a slot is free. Mem0's calls go through the same slots, with the OpenAI SDK's own retries off. After an HTTP 429 or "cooling down" from a model, no new call goes to it for 30 minutes, checked again whenever a call gets a slot, then it is tried once more; a second limit stops the run. A message whose lookup fails, times out or meets a limit gets no row and runs again, so no reply is graded without the lookup it should have had.
 
 ## Licenses
 
@@ -30,7 +30,7 @@ Neither test's repository has a license. LoCoMo-Conv's repository has no license
 
 ## How a message runs
 
-1. Each tool loads the conversation's 19 to 32 sessions into a store. The check and Supermemory take one item per session with its date, the same items as `bench/public/locomo.py`, and Supermemory waits until each one's memories are extracted. Mem0 is loaded the way Mem0's own LoCoMo evaluation loads it (`mem0_locomo.py`): one user id per speaker, two messages per add, each session added once from each speaker's side, the session's date as metadata, and both speakers searched for 10 memories each. Loaded one session per add, as for the month, Mem0's extraction replies failed to parse on 11 of the first conversation's 19 sessions before that load was stopped, and a session whose reply fails stores nothing. Its own method had no such failures on any of the ten conversations (`extraction_parse_errors` in each store's stats). Mem0's stores are built once and kept, since they take 11 to 23 minutes each.
+1. Each tool loads the conversation's 19 to 32 sessions into a store. The check and Supermemory take one item per session with its date, the same items as `bench/public/locomo.py`, and Supermemory waits until each one's memories are extracted. Mem0 is loaded the way Mem0's own LoCoMo evaluation loads it (`mem0_locomo.py`): one user id per speaker, two messages per add, each session added once from each speaker's side, the session's date as metadata, and both speakers searched for 10 memories each. Loaded one session per add, as for the month, Mem0's extraction replies failed to parse on 11 of the first conversation's 19 sessions before that load was stopped, and a session whose reply fails stores nothing. Its own method had no such failures on any of the ten conversations (`extraction_parse_errors` in each store's stats). Mem0's stores are built once with `--load-only`, under the same limits, and kept, since they take 11 to 23 minutes each; a benchmark run only opens them, and a build that meets a limit is not kept.
 2. The message goes through the tool's lookup as a new message.
 3. The answer model (`claude-sonnet-5-5`) replies from the test's own prompt, with the lookup's text where the prompt puts memory, and with the tool's agent tools: `kb search` and `kb get` for the check, each rival's search. It gets at most 4 tool turns, as in `bench/public/`.
 4. The test's own judge prompt grades the reply, run on `gpt-6.1-sol`. OP-Bench's repetition score is 1 minus the mean cosine similarity between every pair of one person's 44 or so replies.
@@ -45,6 +45,8 @@ The tools are no memory, the gold sessions (for the implicit test, as a ceiling)
 | Judge | gpt-5.4-mini | gpt-4o-mini | `gpt-6.1-sol` |
 | Memory per message | top 10 retrieved items | top 5 | what each tool's own lookup returns |
 | Agent tools | none | none | each tool's own, up to 4 turns |
+| Answer temperature | 0 | 0 | the model's default, as in `bench/public/` |
+| Answer length cap | 300 tokens | 512 tokens | 2,000 tokens, since a reply may call tools first |
 | Repetition embedder | | text-embedding-3-small | `BAAI/bge-base-en-v1.5`, local |
 | A judge call that fails | | scores 0 | asked again up to 3 times when the reply has no score; a failed call leaves the message with no row, and the run reports it |
 | Messages | all | all | a seeded 20% sample for now; all once the check is final |
@@ -74,7 +76,7 @@ All rows behind these numbers are in `results/sample/`, one per tool and message
 |---|---|---|---|---|---|---|
 | No memory | 0.171 [0.135, 0.209] | 0.220 | 0.196 | 0.000 | 0.237 | 0% |
 | Gold sessions | 0.891 [0.863, 0.918] | 0.973 | 0.866 | 0.781 | 0.605 | 100% |
-| The check | 0.650 [0.601, 0.699] | 0.696 | 0.643 | 0.609 | 0.395 | 59% |
+| The check | 0.650 [0.601, 0.699] | 0.696 | 0.643 | 0.609 | 0.395 | 60% |
 | Mem0 | 0.511 [0.467, 0.553] | 0.696 | 0.518 | 0.094 | 0.263 | 100% |
 | Supermemory | 0.685 [0.641, 0.729] | 0.753 | 0.634 | 0.625 | 0.447 | 100% |
 
@@ -84,12 +86,12 @@ The check minus Supermemory is -0.036 [-0.083, 0.016], no measurable difference.
 
 | Tool | Off-topic (64) | Baiting (20) | Repetition (176) | False fact (20) | False value (20) | False memory (40) | Overall | Lookup added nothing |
 |---|---|---|---|---|---|---|---|---|
-| No memory | 99.8 [99.6, 100.0] | 99.5 [98.8, 100.0] | 36.5 [35.4, 37.5] | 97.8 [96.6, 98.8] | 97.0 [96.4, 97.8] | 86.0 [77.0, 94.3] | 81.9 [80.7, 83.0] | 100% |
-| The check | 97.4 [95.3, 99.1] | 74.8 [62.7, 86.4] | 36.3 [35.2, 37.4] | 96.5 [94.9, 98.0] | 97.3 [96.7, 97.9] | 42.6 [32.0, 53.5] | 69.6 [66.1, 72.9] | 77% |
-| Mem0 | 69.7 [63.7, 75.2] | 49.2 [34.5, 64.8] | 31.0 [29.8, 32.2] | 92.4 [90.5, 94.4] | 95.2 [93.8, 96.4] | 14.3 [9.9, 19.6] | 51.0 [47.0, 55.3] | 0% |
-| Supermemory | 57.0 [52.2, 61.9] | 24.3 [21.5, 27.0] | 29.5 [28.3, 30.5] | 92.6 [90.5, 94.8] | 94.3 [92.5, 95.6] | 12.3 [9.0, 15.5] | 40.9 [39.5, 42.4] | 0% |
+| No memory | 99.9 [99.6, 100.0] | 99.5 [98.8, 100.0] | 36.5 [35.4, 37.5] | 97.7 [96.6, 98.8] | 97.0 [96.3, 97.7] | 86.0 [77.0, 94.3] | 81.9 [80.7, 83.0] | 100% |
+| The check | 97.6 [95.6, 99.2] | 71.0 [58.5, 84.2] | 36.3 [35.1, 37.3] | 96.5 [94.9, 98.0] | 97.3 [96.7, 97.9] | 42.6 [32.0, 53.5] | 68.7 [65.1, 72.2] | 76% |
+| Mem0 | 68.3 [62.0, 74.2] | 49.2 [34.5, 64.7] | 31.0 [29.8, 32.2] | 92.4 [90.5, 94.4] | 95.2 [93.8, 96.4] | 14.3 [9.9, 19.6] | 50.6 [46.6, 54.9] | 0% |
+| Supermemory | 57.2 [52.0, 62.3] | 24.2 [21.5, 27.0] | 29.5 [28.3, 30.5] | 92.6 [90.5, 94.8] | 94.3 [92.5, 95.6] | 12.2 [9.0, 15.5] | 40.9 [39.4, 42.5] | 0% |
 
-The check minus Supermemory is 28.7 [25.3, 31.9] overall, and the check minus Mem0 18.6 [13.7, 22.9]. The check minus no memory is -12.3 [-15.9, -8.9]: -43.4 [-55.5, -30.6] on false memories and -24.7 [-37.1, -12.8] on baiting. The paired differences for every column are in `results/sample-table.md`.
+Each column is a mean of per-person means, as OP-Bench's code computes it: a sampled message stands for its person's share of the task, since people have 9 to 21 off-topic messages. The check minus Supermemory is 27.7 [24.2, 31.3] overall, and the check minus Mem0 18.0 [13.4, 22.6]. The check minus no memory is -13.2 [-16.9, -9.5]: -43.4 [-55.5, -30.6] on false memories and -28.5 [-41.2, -15.3] on baiting. The paired differences for every column are in `results/sample-table.md`.
 
 For comparison, OP-Bench's paper reports Mem0 at 46.32 overall and no memory at 83.10, with gpt-4o-mini answering and judging; LoCoMo-Conv's reports mem0 at 0.330 on implicit messages and its oracle at 0.724, with gemma-4-31B-it answering. Both are in `published.json` with their sources. The answer model, judge and setup differ from these runs, so they are context, not a ranking.
 
@@ -97,8 +99,8 @@ For comparison, OP-Bench's paper reports Mem0 at 46.32 overall and no memory at 
 
 - **The sample.** 20% of each stratum, one run per message. The intervals cover resampling the messages, not run-to-run variation in the models. Small strata give wide intervals: 19 open-domain messages, and 20 each for baiting, false facts and false values.
 - **The check against Supermemory on implicit messages.** The check's agent searched on all 307 messages and reached a gold session on 261. Supermemory's lookup reached one on 229, and it puts about 12,000 characters before every message, so its agent searched on only 61. They end up level.
-- **Where the check loses points on OP-Bench.** On false memories, such as "remember when I told you...", the check added cards on 19 of 40, and those replies went along with the false memory, scoring 15.5. When it added nothing they scored 67.1. On baiting messages it added cards on 5 of 20, scoring 40.0 against 86.3 without. Even without cards, the agent searched with `kb search` on all 40 false-memory messages.
+- **Where the check loses points on OP-Bench.** On false memories, such as "remember when I told you...", the check added cards on 19 of 40, and those replies went along with the false memory, scoring 15.5. When it added nothing they scored 67.1. On baiting messages it added cards on 6 of 20, scoring 37.5 against 85.4 without. Even without cards, the agent searched with `kb search` on all 40 false-memory messages.
 - **Mem0 on temporal questions.** Mem0's open-source extraction writes the day a memory is made into it, as in "as of October 27, 2026": that date is in 4,475 of the 6,140 memories its lookups returned for sampled implicit messages. That is right in live use, but these chats are from 2022 to 2024, so replies mix the load date with the session dates. That costs Mem0 on temporal questions: 0.094, against 0.696 on single-hop. It is a limit of replaying history, not necessarily of Mem0 in use.
 - **Repetition.** As above, the local embedder puts every tool's repetition score lower than the paper's. Compare tools within the table only.
 - **Rivals self-hosted.** Mem0 and Supermemory ran their open-source servers on `claude-haiku-5-5`, as for the month. Both say their hosted platforms extract memories better.
-- **Runs and failures.** The first three conversations' rows come from two earlier runs with 8 and 6 workers, stopped before they wrote a record when the shared limit of two was set; 5 of their messages met a rate limit and had no row; the one of them in the sample ran again in the sample run. The sample runs, recorded in `results/runs.json`, made at most two calls at once and met no rate limit; 11 messages lost their connection to the gateway and were run again. No sampled message is missing a row. `results/mem0-stores.json` records each Mem0 store's build, with no extraction parse errors and no failed adds in any of the ten.
+- **Runs and failures.** The first three conversations' rows come from two earlier runs with 8 and 6 workers, stopped before they wrote a record when the shared limit of two was set; 5 of their messages met a rate limit and had no row; the one of them in the sample ran again in the sample run. The sample runs, recorded in `results/runs.json`, made at most two calls at once and met no rate limit. 11 messages lost their connection to the gateway and were run again, and 10 of the check's messages whose lookup timed out in that same stretch, so their replies had no cards, were run again too. No sampled message is missing a row. `results/mem0-stores.json` records each Mem0 store's build, with no extraction parse errors and no failed adds in any of the ten.

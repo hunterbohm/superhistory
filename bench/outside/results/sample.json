@@ -672,7 +672,29 @@
     "conv-50/Dave/irrelevance_easy/3",
     "conv-50/Dave/irrelevance_easy/5",
     "conv-50/Dave/irrelevance_easy/8"
-   ]
+   ],
+   "people": {
+    "conv-26/Caroline": 9,
+    "conv-26/Melanie": 15,
+    "conv-30/Gina": 18,
+    "conv-30/Jon": 18,
+    "conv-41/John": 15,
+    "conv-41/Maria": 12,
+    "conv-42/Joanna": 18,
+    "conv-42/Nate": 18,
+    "conv-43/John": 12,
+    "conv-43/Tim": 21,
+    "conv-44/Andrew": 18,
+    "conv-44/Audrey": 18,
+    "conv-47/James": 15,
+    "conv-47/John": 15,
+    "conv-48/Deborah": 15,
+    "conv-48/Jolene": 18,
+    "conv-49/Evan": 12,
+    "conv-49/Sam": 15,
+    "conv-50/Calvin": 18,
+    "conv-50/Dave": 18
+   }
   },
   "op/irrelevance_hard": {
    "population": 100,
@@ -697,7 +719,29 @@
     "conv-49/Sam/irrelevance_hard/4",
     "conv-50/Calvin/irrelevance_hard/1",
     "conv-50/Dave/irrelevance_hard/0"
-   ]
+   ],
+   "people": {
+    "conv-26/Caroline": 5,
+    "conv-26/Melanie": 5,
+    "conv-30/Gina": 5,
+    "conv-30/Jon": 5,
+    "conv-41/John": 5,
+    "conv-41/Maria": 5,
+    "conv-42/Joanna": 5,
+    "conv-42/Nate": 5,
+    "conv-43/John": 5,
+    "conv-43/Tim": 5,
+    "conv-44/Andrew": 5,
+    "conv-44/Audrey": 5,
+    "conv-47/James": 5,
+    "conv-47/John": 5,
+    "conv-48/Deborah": 5,
+    "conv-48/Jolene": 5,
+    "conv-49/Evan": 5,
+    "conv-49/Sam": 5,
+    "conv-50/Calvin": 5,
+    "conv-50/Dave": 5
+   }
   },
   "op/sycophancy/fact": {
    "population": 100,
@@ -722,7 +766,29 @@
     "conv-49/Sam/sycophancy/7",
     "conv-50/Dave/sycophancy/14",
     "conv-50/Dave/sycophancy/5"
-   ]
+   ],
+   "people": {
+    "conv-26/Caroline": 5,
+    "conv-26/Melanie": 5,
+    "conv-30/Gina": 5,
+    "conv-30/Jon": 5,
+    "conv-41/John": 5,
+    "conv-41/Maria": 5,
+    "conv-42/Joanna": 5,
+    "conv-42/Nate": 5,
+    "conv-43/John": 5,
+    "conv-43/Tim": 5,
+    "conv-44/Andrew": 5,
+    "conv-44/Audrey": 5,
+    "conv-47/James": 5,
+    "conv-47/John": 5,
+    "conv-48/Deborah": 5,
+    "conv-48/Jolene": 5,
+    "conv-49/Evan": 5,
+    "conv-49/Sam": 5,
+    "conv-50/Calvin": 5,
+    "conv-50/Dave": 5
+   }
   },
   "op/sycophancy/memory": {
    "population": 200,
@@ -767,7 +833,29 @@
     "conv-50/Calvin/sycophancy/14",
     "conv-50/Calvin/sycophancy/16",
     "conv-50/Calvin/sycophancy/2"
-   ]
+   ],
+   "people": {
+    "conv-26/Caroline": 10,
+    "conv-26/Melanie": 10,
+    "conv-30/Gina": 10,
+    "conv-30/Jon": 10,
+    "conv-41/John": 10,
+    "conv-41/Maria": 10,
+    "conv-42/Joanna": 10,
+    "conv-42/Nate": 10,
+    "conv-43/John": 10,
+    "conv-43/Tim": 10,
+    "conv-44/Andrew": 10,
+    "conv-44/Audrey": 10,
+    "conv-47/James": 10,
+    "conv-47/John": 10,
+    "conv-48/Deborah": 10,
+    "conv-48/Jolene": 10,
+    "conv-49/Evan": 10,
+    "conv-49/Sam": 10,
+    "conv-50/Calvin": 10,
+    "conv-50/Dave": 10
+   }
   },
   "op/sycophancy/value": {
    "population": 100,
@@ -792,7 +880,29 @@
     "conv-50/Calvin/sycophancy/11",
     "conv-50/Calvin/sycophancy/7",
     "conv-50/Dave/sycophancy/1"
-   ]
+   ],
+   "people": {
+    "conv-26/Caroline": 5,
+    "conv-26/Melanie": 5,
+    "conv-30/Gina": 5,
+    "conv-30/Jon": 5,
+    "conv-41/John": 5,
+    "conv-41/Maria": 5,
+    "conv-42/Joanna": 5,
+    "conv-42/Nate": 5,
+    "conv-43/John": 5,
+    "conv-43/Tim": 5,
+    "conv-44/Andrew": 5,
+    "conv-44/Audrey": 5,
+    "conv-47/James": 5,
+    "conv-47/John": 5,
+    "conv-48/Deborah": 5,
+    "conv-48/Jolene": 5,
+    "conv-49/Evan": 5,
+    "conv-49/Sam": 5,
+    "conv-50/Calvin": 5,
+    "conv-50/Dave": 5
+   }
   }
  }
 }

@@ -51,6 +51,7 @@ import run
 import tools
 import tools.supermemory
 from tools import check
+from limits import Limits, RateLimited, Stopped
 from mem0_locomo import LocomoMem0
 
 OUT = os.path.join(HERE, "results")
@@ -177,70 +178,6 @@ def op_prompt(case, tool, context):
     return p["ANSWER_SYSTEM_PROMPT"], p["ANSWER_USER_PROMPT_WITHOUT_MEMORY"].format(question=case.message)
 
 
-class RateLimited(RuntimeError):
-    pass
-
-
-class Stopped(RuntimeError):
-    pass
-
-
-class Limits:
-    """The shared model plans' rules for a benchmark run: at most two model calls at once, and after HTTP 429 or
-    "cooling down" from a model, no new call to it for 30 minutes, then one more try. A second limit on the same model
-    stops the run, so nothing retries in a loop. A message that meets a limit gets no row; the next run picks it up."""
-
-    PARALLEL = 2
-    PAUSE_SECONDS = 1800
-
-    def __init__(self):
-        self.slots = threading.BoundedSemaphore(self.PARALLEL)
-        self.lock = threading.Lock()
-        self.resume_at, self.seen, self.stopped = {}, {}, None
-
-    def limited(self, model):
-        now = time.monotonic()
-        with self.lock:
-            if now < self.resume_at.get(model, 0):
-                return
-            self.seen[model] = self.seen.get(model, 0) + 1
-            if self.seen[model] > 1:
-                self.stopped = f"{model} was rate-limited again after its 30-minute pause"
-            else:
-                self.resume_at[model] = now + self.PAUSE_SECONDS
-            print(f"{model} rate-limited: {self.stopped or 'no new calls for 30 minutes'}", file=sys.stderr)
-
-    def wait(self):
-        """Before a message or a store build starts: wait out any model's pause, since every message uses the answer
-        model and the judge."""
-        while True:
-            if self.stopped:
-                raise Stopped(self.stopped)
-            with self.lock:
-                ready = max(self.resume_at.values(), default=0)
-            if time.monotonic() >= ready:
-                return
-            time.sleep(min(30.0, ready - time.monotonic()))
-
-    def send(self, model, call, timeout=None):
-        """One model call in one of the two slots. Raises RateLimited, without sending, while the model is paused."""
-        with self.lock:
-            if self.stopped or time.monotonic() < self.resume_at.get(model, 0):
-                raise RateLimited(model)
-        if not self.slots.acquire(timeout=timeout):
-            raise TimeoutError("no free model slot in time")
-        try:
-            return call()
-        except urllib.error.HTTPError as exc:
-            body = exc.read()[:300].decode(errors="replace")
-            if exc.code == 429 or "cooling down" in body:
-                self.limited(model)
-                raise RateLimited(model) from None
-            raise RuntimeError(f"HTTP {exc.code}: {body}") from None
-        finally:
-            self.slots.release()
-
-
 LIMITS = Limits()
 
 
@@ -269,25 +206,16 @@ def post(path, body, timeout=300):
 def install_limits():
     """Route every model call this run makes through LIMITS: the answer loop and judges (gateway.post), the check's
     query writer and picker (kb's ask_model, with its 3-second hedge sent only when a slot is free), and kb's
-    summaries while a store is built (2 workers)."""
+    summaries while a store is built (2 workers, none of kb's own retries). Mem0's calls go through it in
+    mem0_locomo.py."""
     gateway.post = post
     _, context, summarize = check.modules()
     ask = context.ask_model
     context.ask_model = lambda body, timeout: LIMITS.send(body["model"], lambda: ask(body, timeout), timeout)
     summarize.WORKERS, summarize.ATTEMPTS = Limits.PARALLEL, 1
     call_api, run_summaries = summarize.call_api, summarize.run
-
-    def send_summary(body):
-        try:
-            return LIMITS.send(body["model"], lambda: call_api(body))
-        except summarize.HttpError as exc:
-            if "429" in str(exc) or "cooling down" in str(exc):
-                LIMITS.limited(body["model"])
-                raise RateLimited(body["model"]) from None
-            raise
-
-    summarize.run = lambda db, log, limit=summarize.RUN_CAP, source=None: run_summaries(db, log, limit, source,
-                                                                                         send_summary)
+    summarize.run = lambda db, log, limit=summarize.RUN_CAP, source=None: run_summaries(
+        db, log, limit, source, lambda body: LIMITS.send(body["model"], lambda: call_api(body)))
 
 
 def judge(prompt, parse):
@@ -374,8 +302,10 @@ def answer(tool, system, text):
 def run_case(name, tool, case):
     LIMITS.wait()
     found = tool.retrieve({"question": case.message, "evidence": list(case.evidence)})
-    if found.error in ("RateLimited", "Stopped"):
-        raise RateLimited(f"the lookup met a model limit: {found.error}")
+    if found.error:
+        # A lookup that failed, timed out or met a limit, even in one of the check's hedged copies, would leave the
+        # reply without what the tool would have added; the message gets no row and runs again.
+        raise RuntimeError(f"the lookup failed with {found.error}")
     system, text = TESTS[case.test].prompt(case, name, found.context)
     reply, calls, shown, chars, empty = answer(tool, system, text)
     return {"id": case.id, "group": case.group, "kind": case.kind, "subtype": case.subtype, "user": case.user,
@@ -385,13 +315,13 @@ def run_case(name, tool, case):
             **TESTS[case.test].grade(case, reply)}
 
 
-def load(name, sample, items, workdir):
+def load(name, sample, items, workdir, build_mem0=False):
     """A store for one conversation. Supermemory's adapter keeps one namespace per server, so each conversation gets
     its own; conversations run one after another, so the namespace holds while its messages run."""
     group = sample["sample_id"]
     if name == "supermemory":
         tools.supermemory.NAMESPACE = f"locomo-{group}"
-    tool = LocomoMem0(sample) if name == "mem0" else tools.make(name)
+    tool = LocomoMem0(sample, LIMITS.send, build_mem0) if name == "mem0" else tools.make(name)
     folder = os.path.join(STORES if name == "mem0" else workdir, name, group)
     os.makedirs(folder, exist_ok=True)
     LIMITS.wait()
@@ -450,14 +380,23 @@ def stratum(case):
     return f"op/{case.kind}" + (f"/{case.subtype}" if case.subtype else "")
 
 
+def person(case_id):
+    return "/".join(case_id.split("/")[:2])
+
+
 def draw(cases, fraction, seed):
-    """A seeded stratified sample: the same share of every stratum, at least 2 messages from each."""
+    """A seeded stratified sample: the same share of every stratum, at least 2 messages from each. OP-Bench's
+    message-scored strata also record each person's count, because its code averages each person's task mean."""
     strata = {}
     for c in cases:
         strata.setdefault(stratum(c), []).append(c.id)
     rng = random.Random(seed)
-    return {key: {"population": len(ids), "ids": sorted(rng.sample(sorted(ids), max(2, round(len(ids) * fraction))))}
-            for key, ids in sorted(strata.items())}
+    drawn = {}
+    for key, ids in sorted(strata.items()):
+        drawn[key] = {"population": len(ids), "ids": sorted(rng.sample(sorted(ids), max(2, round(len(ids) * fraction))))}
+        if key.startswith("op/") and not key.startswith("op/diversity/"):
+            drawn[key]["people"] = {p: sum(person(i) == p for i in ids) for p in sorted({person(i) for i in ids})}
+    return drawn
 
 
 def sample_path():
@@ -688,9 +627,14 @@ def implicit_sample(names, strata):
     return parts, missing
 
 
+def weighted(values, weights, pick):
+    return float((values * weights)[pick].sum() / weights[pick].sum())
+
+
 def op_sample(names, strata):
     """The six OP-Bench columns and the code's overall score, each a 95% interval from a stratified bootstrap.
-    Sycophancy weighs its subtypes by their share of the 400 messages, as the code's per-person mean does."""
+    Every column is a mean of per-person means, as in the code; sycophancy weighs its subtypes by their share of the
+    400 messages, as each person's 20 do."""
     from sentence_transformers import SentenceTransformer
     strata = {k: v for k, v in strata.items() if k.startswith("op/")}
     rows, keep, missing = sample_rows("op", [n for n in names if n in TESTS["op"].tools], strata)
@@ -699,6 +643,9 @@ def op_sample(names, strata):
     columns = ["op/irrelevance_easy", "op/irrelevance_hard", "op/sycophancy/fact", "op/sycophancy/value",
                "op/sycophancy/memory"]
     scores = {n: {k: np.array([rs[i]["score"] for i in keep[k]]) for k in columns} for n, rs in rows.items()}
+    # Each sampled message stands for its person's share of the task, so the mean estimates the mean of each
+    # person's task mean, as OP-Bench's aggregate_metrics computes it.
+    weights = {k: np.array([1.0 / strata[k]["people"][person(i)] for i in keep[k]]) for k in columns}
     similar = {}
     for n, rs in rows.items():
         for k in people:
@@ -717,7 +664,7 @@ def op_sample(names, strata):
         return float(np.clip(1.0 - sims[pick[i][pairs], pick[j][pairs]].mean(), 0.0, 1.0))
 
     def stats(n, picks):
-        col = {k: scores[n][k][picks[k]].mean() for k in columns}
+        col = {k: weighted(scores[n][k], weights[k], picks[k]) for k in columns}
         col["diversity"] = float(np.mean([repetition(n, k, picks[k]) for k in people]))
         sycophancy = sum(syc[k] * col[k] for k in syc) / sum(syc.values())
         col["overall"] = np.mean([col["op/irrelevance_easy"], col["op/irrelevance_hard"], sycophancy, col["diversity"]])
@@ -811,9 +758,14 @@ def main(argv=None):
         return 0
     groups = args.groups.split(",") if args.groups else [s["sample_id"] for s in locomo.load()]
     if args.load_only:
+        install_limits()
         samples = {s["sample_id"]: s for s in locomo.load()}
         for group in groups:
-            tool, stats = load("mem0", samples[group], [], STORES)
+            try:
+                tool, stats = load("mem0", samples[group], [], STORES, build_mem0=True)
+            except RateLimited:
+                LIMITS.wait()
+                tool, stats = load("mem0", samples[group], [], STORES, build_mem0=True)
             print(group, json.dumps(stats))
         record_mem0_stores()
         return 0

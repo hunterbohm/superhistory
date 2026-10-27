@@ -15,6 +15,7 @@ import shutil
 import threading
 import time
 
+from limits import RateLimited
 from tools import Retrieved
 from tools.mem0 import Mem0
 
@@ -37,17 +38,23 @@ class _Count(logging.Handler):
 class LocomoMem0(Mem0):
     label = "Mem0 open source, loaded as in Mem0's LoCoMo evaluation"
 
-    def __init__(self, sample):
+    def __init__(self, sample, send=None, build=True):
+        """send(model, call) makes one model call under the run's limits; build=False only opens a built store."""
         conv = sample["conversation"]
         self.sample, self.users = sample, (conv["speaker_a"], conv["speaker_b"])
+        self.send, self.build, self.limited = send, build, 0
 
     def load(self, items, folder):
         """Build the store in folder, or open it when an earlier run finished building it there."""
         done = os.path.join(folder, "loaded.json")
+        if not os.path.exists(done) and not self.build:
+            raise RuntimeError(f"Mem0's store for {self.sample['sample_id']} is not built; build it with --load-only")
         if not os.path.exists(done) and os.path.isdir(folder):
             shutil.rmtree(folder)
         os.makedirs(folder, exist_ok=True)
         stats = super().load([], folder)
+        if self.send:
+            self._gate()
         if os.path.exists(done):
             with open(done, encoding="utf-8") as fh:
                 return {**json.load(fh), "reused": True}
@@ -62,6 +69,10 @@ class LocomoMem0(Mem0):
                 view.join()
         finally:
             logging.getLogger("mem0.memory.main").removeHandler(count)
+        if self.limited:
+            # Mem0 may log a failed model call and store nothing, so a build that met a limit is not kept.
+            shutil.rmtree(folder)
+            raise RateLimited(f"{self.limited} of Mem0's model calls met a rate limit; the store was not kept")
         stored = sum(len(self.memory.get_all(filters={"user_id": u}, top_k=100_000)["results"]) for u in self.users)
         stats = {**stats, "users": list(self.users), "batch": BATCH, "top_k": TOP_K, "memories": stored,
                  "add_failures": len(failed), "extraction_parse_errors": count.n,
@@ -78,14 +89,34 @@ class LocomoMem0(Mem0):
                          "content": f"{t['speaker']}: {t['text']}"} for t in conv[f"session_{n}"]]
             meta = {"timestamp": when, "source_id": f"{self.sample['sample_id']}/session_{n}"}
             for i in range(0, len(messages), BATCH):
+                if self.limited:
+                    return
                 for attempt in range(3):
                     try:
                         self.memory.add(messages[i:i + BATCH], user_id=user, metadata=meta)
                         break
+                    except RateLimited:
+                        return
                     except Exception:
                         if attempt == 2:
                             failed.append(f"{user} session {n} batch {i // BATCH}")
                         time.sleep(1)
+
+    def _gate(self):
+        """Send Mem0's model calls through the run's limits, with the OpenAI SDK's own retries off, so a rate limit
+        is never retried in a loop."""
+        client = self.memory.llm.client.with_options(max_retries=0)
+        create = client.chat.completions.create
+
+        def gated(**kwargs):
+            try:
+                return self.send(kwargs["model"], lambda: create(**kwargs))
+            except RateLimited:
+                self.limited += 1
+                raise
+
+        client.chat.completions.create = gated
+        self.memory.llm.client = client
 
     def _both(self, query):
         found, sections = [], []
