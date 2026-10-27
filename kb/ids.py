@@ -1,10 +1,9 @@
 """Item ids across computers. Every stored source_id starts with the prefix of the install that read it, so two
 computers never write the same item, and each one prunes, summarizes and syncs only its own items.
 
-The prefix is an install id made once per install: "c-" and 13 base32 characters, 64 random bits. It is not the host
-name, and nothing about the computer or person goes into it. Items this install reads on another computer over SSH
-are still its own, under "<install id>@<host>:", where host is the name given in [hosts.NAME], not its SSH address.
-The demo month in `kb try` uses "demo:".
+The prefix is an install id of 64 random bits, made once per install. It is not the host name, and nothing about
+the computer or person goes into it. Items this install reads on another computer over SSH are still its own, under
+"<install id>@<host>:", where host is the name given in [hosts.NAME], not its SSH address.
 
 A whole source_id is private: after the prefix comes the source's own id, which can hold a file path, a mail
 account or a chat handle such as a phone number. Anything that carries items off this computer protects source_id
@@ -53,16 +52,14 @@ def _make(path):
 
 
 def prefix(install, host=None):
-    """The source_id prefix for items this install reads here, or on `host` over SSH."""
     return f"{install}:" if host is None else f"{install}@{host}:"
 
 
 def owner(source_id):
-    """The install id that wrote this item, or None for an id with no install prefix (such as the demo month)."""
+    """The install id that wrote this item, or None for an id with no install prefix."""
     head = source_id.split(":", 1)[0].split("@", 1)[0]
     return head if INSTALL_ID.match(head) else None
 
 
 def native(source_id):
-    """The id the source gave the item, without the prefix."""
     return source_id.split(":", 1)[1] if ":" in source_id else source_id

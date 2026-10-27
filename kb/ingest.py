@@ -45,9 +45,8 @@ class LocalReader:
 
 
 def apply(db, source, prefix, event, host):
-    """The one write path for what a reader saw: stores the event under "<prefix><source_id>" (kb.ids.prefix), with
-    `host`, the computer it was read on, in its meta. Applying an event twice changes nothing the second time.
-    Returns True when rows changed."""
+    """The one write path for what a reader saw. Applying an event twice changes nothing the second time. Returns True
+    when rows changed."""
     if isinstance(event, Progress):
         return False
     sid = prefix + event.source_id
@@ -79,7 +78,7 @@ def _forget_mark_if_settings_changed(db, source, host):
 
 def run_unit(db, source, host, reader, log, prefix):
     """Read one source on one host: store each event under `prefix`, move the watermark to the largest mark seen, and
-    prune items under that prefix whose files are gone when the type lists them."""
+    prune items whose files are gone when the type lists them. A prune deletes only under `prefix`."""
     _forget_mark_if_settings_changed(db, source, host)
     since = load_mark(db, source.name, host)
     seen = changed = 0
@@ -165,9 +164,8 @@ def run(db, config, log, only=(), with_summaries=True, model_factory=None):
 
 
 def after(paths, config, db, log):
-    """Hands the store to the Sync client after an ingest, when [sync] or [cloud] is in the config. The Sync track's
-    package, kb/sync, defines after_ingest(paths, config, db, log) and runs `kb sync` and `kb push` from it. A failure
-    is recorded as the "sync" unit, as a source's is. Returns the number of failures."""
+    """Calls kb.sync.after_ingest(paths, config, db, log) when [sync] or [cloud] is in the config. A failure is
+    recorded as the "sync" unit. Returns the number of failures."""
     if "sync" not in config.units():
         return 0
     try:

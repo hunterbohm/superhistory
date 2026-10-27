@@ -167,8 +167,8 @@ def cap(text, limit=MAX_INPUT_CHARS, slices=SLICES):
 
 def request(item, text, allowed, start=0):
     """The model request that summarizes `item` (an Item): `text` is the part to read, `start` where it begins in the
-    item's text (0 for a full pass), `allowed` the atom types its source may yield. With parse() and rows(), this is
-    how another caller, such as a hosted store, summarizes an item outside summarize()."""
+    item's text (0 for a full pass), `allowed` the atom types its source may yield. Use it with parse() and rows() to
+    summarize an item outside summarize()."""
     text, title = (CLOSING_TAG.sub("</ item>", t) for t in (text, item.title))
     note = (f"The first {start:,} characters of this item are already indexed. The item below repeats the last "
             f"{OVERLAP:,} of them for context, then the line {INDEXED}. Extract only from the text after that line.\n\n"

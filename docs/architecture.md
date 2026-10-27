@@ -19,7 +19,7 @@ folder names, job labels and printed text come from it, so a rename is one edit.
 | `kb/ids.py` | The install id and the prefix on every stored `source_id`. |
 | `kb/ai/` | AI plug-ins. Each one answers `ask(prompt, timeout)` with the model's text. |
 | `kb/sources/` | Source types. Each module defines `TYPE`, and its name is the type's name. |
-| `kb/sync/` | Reserved for the Sync client, which the Sync track adds. |
+| `kb/sync/` | Reserved for the Sync client. |
 
 ## Where Sync plugs in
 
@@ -27,12 +27,12 @@ The Sync client goes in `kb/sync/`, imported as `kb.sync`.
 
 - Every stored `source_id` starts with the prefix of the install that read it: `<install id>:` for this computer, and
   `<install id>@<host>:` for a host it reads over SSH, where host is the name in `[hosts.NAME]`. The install id is
-  `c-` and 13 base32 characters, 64 random bits made once and kept in `install-id` beside the config, mode 600.
+  `c-` and 13 base32 characters, made once and kept in `install-id` beside the config, mode 600.
   `ids.install_id(paths)` reads it and `ids.owner(source_id)` returns it from any stored id; split on `@` as well as
   `:`, or items read over SSH look like another computer's.
 - `ingest.apply(db, source, prefix, event, host)` is the one write path for read data, and applying an event twice
   changes nothing. A prune deletes only under the prefix it read, and the summarizer summarizes only this install's
-  items. Items from other computers sit beside this computer's own and are never pruned, summarized or rewritten here.
+  items.
 - After `kb ingest`, when the config has a `[sync]` or `[cloud]` table, kb calls
   `kb.sync.after_ingest(paths, config, db, log)`, which runs `kb sync` and `kb push`. `config.extra` holds those
   tables as parsed TOML, and `config.install` holds this install's id. A failure, a missing client included, is the
@@ -40,10 +40,8 @@ The Sync client goes in `kb/sync/`, imported as `kb.sync`.
 - `store.mark_superseded`, `clear_superseded` and `superseded_by` keep one mark per marking install in the
   `supersedes` table, keyed by item, not row, so a mark survives a refresh. Of several marks the one with no `v`
   (not synced yet) wins, then the highest `v`, then the highest install id.
-- For the client and the engine to import: `store.replace_rows` writes an item's rows exactly as given, with their
-  hash; `search.search_stores` searches several stores; `check.lookup_with` runs the check over any search function;
-  `gmail.render_thread` renders a thread from `email.message` objects; `summarize.request`, `parse` and `rows` build a
-  summary request, read the reply and make the rows.
+- For the client and the engine to import: `store.replace_rows`, `search.search_stores`, `check.lookup_with`,
+  `gmail.render_thread`, and `summarize.request`, `parse` and `rows`.
 
 Each online account has one reader. Gmail and GitHub read an account, not a computer, so two computers reading one
 would store every thread twice under two prefixes. `config.account_keys()` names the account each source reads, and

@@ -247,13 +247,11 @@ def cmd_remask(paths, config, args):
 
 
 def _own(paths, config):
-    """The config with this install's id, the prefix of every item this computer writes."""
     return dataclasses.replace(config, install=ids.install_id(paths))
 
 
 def cmd_forget(paths, config, args):
-    """Deletes one source's items under this install's prefixes, with its watermarks and health. Other computers'
-    items stay. This is how a reader moves: forget it here, then add the source on the new computer."""
+    """Deletes one source's items under this install's prefixes, with its watermarks and health."""
     open_db(paths).close()
     owner = _own(paths, config).owner
     db = open_db(paths, readonly=False)
@@ -286,7 +284,6 @@ def cmd_forget(paths, config, args):
 
 
 def _item_name(db, item):
-    """How `kb get` names an item: the number of its first row, or its source and id when it is not stored here."""
     row = db.execute("SELECT id FROM docs WHERE source=? AND source_id=? ORDER BY id LIMIT 1", tuple(item)).fetchone()
     return f"#{row[0]}" if row else f"{item[0]} {item[1]}"
 
