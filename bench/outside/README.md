@@ -8,16 +8,19 @@ Two tests written by other labs, both built on LoCoMo's ten long conversations, 
 The paper behind OP-Bench found that every memory system it tried made replies worse than no memory at all, and that no fix it tried helped without losing points on LoCoMo.
 
 ```bash
-python3 bench/outside/outside.py                  # both tests, every tool, all ten conversations
+python3 bench/outside/outside.py --sample 0.2 --seed 0    # the seeded 20% sample behind the numbers below
+python3 bench/outside/outside.py --sample 0.2 --table     # its tables, from the rows already written
+python3 bench/outside/outside.py                          # every message, every tool, all ten conversations
 python3 bench/outside/outside.py --groups conv-26 --limit 5 --tools none,check
-python3 bench/outside/outside.py --table          # the tables from the rows already written
 ```
 
-Run it with the Python that has the rivals' packages, and with a Supermemory server, as for the month (`bench/README.md`). `SUPERMEMORY_URL` and `SUPERMEMORY_KEY_FILE` point the adapter at it. Rows go to `results/<test>/<tool>.jsonl`, one per message; a rerun runs only messages with no row yet. `results/runs.json` records each run's models, data hashes, store stats and failures.
+Run it with the Python that has the rivals' packages, and with a Supermemory server, as for the month (`bench/README.md`). `SUPERMEMORY_URL` and `SUPERMEMORY_KEY_FILE` point the adapter at it. Rows go to `results/<test>/<tool>.jsonl`, one per message; a rerun runs only messages with no row yet. `results/runs.json` records each run's models, data hashes, store stats, rate limits and failures.
+
+A run makes at most two model calls at once, the limit for a benchmark run on the shared model plans. Answers, judges, the check's own calls and its summaries all wait for one of two slots, and the check's hedge, which sends a second copy of a call still running after 3 seconds, sends it only when a slot is free. After an HTTP 429 or "cooling down" from a model, no new call goes to it for 30 minutes, then it is tried once more; a second limit stops the run. A message that meets a limit gets no row, so no reply is graded without the lookup it should have had.
 
 ## Licenses
 
-Neither test's repository has a license. LoCoMo-Conv's repository has no license file. OP-Bench's has a NOTICE saying its owner has yet to choose one. So `run.py` downloads their data, prompts and judge code at pinned commits on first use, checks each file's hash, and reads the prompts out of their code without running it. None of it is copied into this repository, and the result rows hold message ids, not the messages. LoCoMo's conversations are under CC BY-NC 4.0, the same as for `bench/public/`.
+Neither test's repository has a license. LoCoMo-Conv's repository has no license file. OP-Bench's has a NOTICE saying its owner has yet to choose one. So `outside.py` downloads their data, prompts and judge code at pinned commits on first use, checks each file's hash, and reads the prompts out of their code without running it. None of it is copied into this repository. The result rows hold message ids, not the messages, though the replies and the check's search queries are written from them. LoCoMo's conversations are under CC BY-NC 4.0, the same as for `bench/public/`.
 
 | File | From | Commit |
 |---|---|---|
@@ -27,12 +30,12 @@ Neither test's repository has a license. LoCoMo-Conv's repository has no license
 
 ## How a message runs
 
-1. Each tool loads the conversation's 19 to 32 sessions into a fresh store, one item per session with its date, the same items as `bench/public/locomo.py`. The rivals load them the way they load the month: Mem0 adds each session, and Supermemory posts each one and waits until its memories are extracted.
+1. Each tool loads the conversation's 19 to 32 sessions into a store. The check and Supermemory take one item per session with its date, the same items as `bench/public/locomo.py`, and Supermemory waits until each one's memories are extracted. Mem0 is loaded the way Mem0's own LoCoMo evaluation loads it (`mem0_locomo.py`): one user id per speaker, two messages per add, each session added once from each speaker's side, the session's date as metadata, and both speakers searched for 10 memories each. Loaded one session per add, as for the month, Mem0's extraction replies failed to parse on 11 of the first conversation's 19 sessions before that load was stopped, and a session whose reply fails stores nothing. Its own method had no such failures on any of the ten conversations (`extraction_parse_errors` in each store's stats). Mem0's stores are built once and kept, since they take 11 to 23 minutes each.
 2. The message goes through the tool's lookup as a new message.
 3. The answer model (`claude-sonnet-5-5`) replies from the test's own prompt, with the lookup's text where the prompt puts memory, and with the tool's agent tools: `kb search` and `kb get` for the check, each rival's search. It gets at most 4 tool turns, as in `bench/public/`.
 4. The test's own judge prompt grades the reply, run on `gpt-6.1-sol`. OP-Bench's repetition score is 1 minus the mean cosine similarity between every pair of one person's 44 or so replies.
 
-The tools are no memory, the gold sessions (for the implicit test, as a ceiling), the check, Mem0 and Supermemory, each set up as in `bench/README.md`. claude-mem is left out: it records coding-agent sessions through its hooks, and these are chats between two friends.
+The tools are no memory, the gold sessions (for the implicit test, as a ceiling), the check and Supermemory as set up in `bench/README.md`, and Mem0 as in step 1. claude-mem is left out: it records coding-agent sessions through its hooks, and these are chats between two friends.
 
 ## What differs from each paper
 
@@ -43,9 +46,59 @@ The tools are no memory, the gold sessions (for the implicit test, as a ceiling)
 | Memory per message | top 10 retrieved items | top 5 | what each tool's own lookup returns |
 | Agent tools | none | none | each tool's own, up to 4 turns |
 | Repetition embedder | | text-embedding-3-small | `BAAI/bge-base-en-v1.5`, local |
-| A judge call that fails | | scores 0 | retried 3 times, then the message has no row and the run reports it |
+| A judge call that fails | | scores 0 | asked again up to 3 times when the reply has no score; a failed call leaves the message with no row, and the run reports it |
+| Messages | all | all | a seeded 20% sample for now; all once the check is final |
 | Gold ceiling | the gold turns | | the gold sessions, whole |
 
 OP-Bench's code uses its plain prompt, with no memory section, when a lookup returns nothing, and its memory prompt otherwise. Here that rule applies to every tool, so a lookup that adds nothing sends the plain prompt. LoCoMo-Conv's code always uses its memory prompt, with "(no memories retrieved)" when a lookup returns nothing, and that is kept too.
 
 OP-Bench's paper reports six columns and an average, AVG.(OP), and does not say how the average is computed. Its released code averages over each person's four tasks. That does not reproduce the paper's averages from the paper's own columns, so the tables compare the six columns and give the code's average beside them.
+
+The local embedder places unrelated replies closer together than OpenAI's small embedding model does, so repetition scores here run lower for every tool, no memory included: about 35 against the paper's 72. Compare tools within the table only.
+
+## The sample
+
+The numbers below come from a seeded stratified sample, `--sample 0.2 --seed 0`, recorded in `results/sample.json` with each stratum's population and the ids drawn. A stratum is one of each test's own categories: LoCoMo's four question categories for the implicit test (307 messages), and for OP-Bench the off-topic, baiting, and fact, value and memory sycophancy messages. Each person's repetition messages form one stratum, because that score is computed over one person's replies (340 OP-Bench messages, 7 to 11 per person). Every tool answers the same sampled messages.
+
+The fact-used mean is estimated stratum by stratum and weighted by each stratum's share of the 1,540 messages. Each interval is the middle 95% of 2,000 bootstrap draws that resample each stratum's messages with replacement. The same resampled messages score every tool, so the paired differences compare tools message by message.
+
+## Results on the sample
+
+These are a baseline. The check will change before release, and these tests will be run again in full with the final check before any of these numbers is published. The Hillclimb track, which changes the check, does not tune on these tests.
+
+All rows behind these numbers are in `results/sample/`, one per tool and message, and `python3 bench/outside/outside.py --sample 0.2 --table` rebuilds the tables in `results/sample-table.md` from them alone.
+
+**Speaking up: LoCoMo-Conv's implicit messages.** Fact used, 0 to 1, over 307 sampled messages.
+
+| Tool | Fact used [95% CI] | single-hop (168) | multi-hop (56) | temporal (64) | open-domain (19) | Lookup added something |
+|---|---|---|---|---|---|---|
+| No memory | 0.171 [0.135, 0.209] | 0.220 | 0.196 | 0.000 | 0.237 | 0% |
+| Gold sessions | 0.891 [0.863, 0.918] | 0.973 | 0.866 | 0.781 | 0.605 | 100% |
+| The check | 0.650 [0.601, 0.699] | 0.696 | 0.643 | 0.609 | 0.395 | 59% |
+| Mem0 | 0.511 [0.467, 0.553] | 0.696 | 0.518 | 0.094 | 0.263 | 100% |
+| Supermemory | 0.685 [0.641, 0.729] | 0.753 | 0.634 | 0.625 | 0.447 | 100% |
+
+The check minus Supermemory is -0.036 [-0.083, 0.016], no measurable difference. The check minus Mem0 is 0.139 [0.090, 0.191].
+
+**Staying quiet: OP-Bench.** Higher is better, x100, over 340 sampled messages.
+
+| Tool | Off-topic (64) | Baiting (20) | Repetition (176) | False fact (20) | False value (20) | False memory (40) | Overall | Lookup added nothing |
+|---|---|---|---|---|---|---|---|---|
+| No memory | 99.8 [99.6, 100.0] | 99.5 [98.8, 100.0] | 36.5 [35.4, 37.5] | 97.8 [96.6, 98.8] | 97.0 [96.4, 97.8] | 86.0 [77.0, 94.3] | 81.9 [80.7, 83.0] | 100% |
+| The check | 97.4 [95.3, 99.1] | 74.8 [62.7, 86.4] | 36.3 [35.2, 37.4] | 96.5 [94.9, 98.0] | 97.3 [96.7, 97.9] | 42.6 [32.0, 53.5] | 69.6 [66.1, 72.9] | 77% |
+| Mem0 | 69.7 [63.7, 75.2] | 49.2 [34.5, 64.8] | 31.0 [29.8, 32.2] | 92.4 [90.5, 94.4] | 95.2 [93.8, 96.4] | 14.3 [9.9, 19.6] | 51.0 [47.0, 55.3] | 0% |
+| Supermemory | 57.0 [52.2, 61.9] | 24.3 [21.5, 27.0] | 29.5 [28.3, 30.5] | 92.6 [90.5, 94.8] | 94.3 [92.5, 95.6] | 12.3 [9.0, 15.5] | 40.9 [39.5, 42.4] | 0% |
+
+The check minus Supermemory is 28.7 [25.3, 31.9] overall, and the check minus Mem0 18.6 [13.7, 22.9]. The check minus no memory is -12.3 [-15.9, -8.9]: -43.4 [-55.5, -30.6] on false memories and -24.7 [-37.1, -12.8] on baiting. The paired differences for every column are in `results/sample-table.md`.
+
+For comparison, OP-Bench's paper reports Mem0 at 46.32 overall and no memory at 83.10, with gpt-4o-mini answering and judging; LoCoMo-Conv's reports mem0 at 0.330 on implicit messages and its oracle at 0.724, with gemma-4-31B-it answering. Both are in `published.json` with their sources. The answer model, judge and setup differ from these runs, so they are context, not a ranking.
+
+## What limits these numbers
+
+- **The sample.** 20% of each stratum, one run per message. The intervals cover resampling the messages, not run-to-run variation in the models. Small strata give wide intervals: 19 open-domain messages, and 20 each for baiting, false facts and false values.
+- **The check against Supermemory on implicit messages.** The check's agent searched on all 307 messages and reached a gold session on 261. Supermemory's lookup reached one on 229, and it puts about 12,000 characters before every message, so its agent searched on only 61. They end up level.
+- **Where the check loses points on OP-Bench.** On false memories, such as "remember when I told you...", the check added cards on 19 of 40, and those replies went along with the false memory, scoring 15.5. When it added nothing they scored 67.1. On baiting messages it added cards on 5 of 20, scoring 40.0 against 86.3 without. Even without cards, the agent searched with `kb search` on all 40 false-memory messages.
+- **Mem0 on temporal questions.** Mem0's open-source extraction writes the day a memory is made into it, as in "as of October 27, 2026": that date is in 4,475 of the 6,140 memories its lookups returned for sampled implicit messages. That is right in live use, but these chats are from 2022 to 2024, so replies mix the load date with the session dates. That costs Mem0 on temporal questions: 0.094, against 0.696 on single-hop. It is a limit of replaying history, not necessarily of Mem0 in use.
+- **Repetition.** As above, the local embedder puts every tool's repetition score lower than the paper's. Compare tools within the table only.
+- **Rivals self-hosted.** Mem0 and Supermemory ran their open-source servers on `claude-haiku-5-5`, as for the month. Both say their hosted platforms extract memories better.
+- **Runs and failures.** The first three conversations' rows come from two earlier runs with 8 and 6 workers, stopped before they wrote a record when the shared limit of two was set; 5 of their messages met a rate limit and had no row; the one of them in the sample ran again in the sample run. The sample runs, recorded in `results/runs.json`, made at most two calls at once and met no rate limit; 11 messages lost their connection to the gateway and were run again. No sampled message is missing a row. `results/mem0-stores.json` records each Mem0 store's build, with no extraction parse errors and no failed adds in any of the ten.

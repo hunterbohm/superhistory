@@ -21,6 +21,7 @@ import argparse
 import ast
 import faulthandler
 import functools
+import gzip
 import json
 import os
 import random
@@ -405,6 +406,40 @@ def rows_path(test, name):
     return os.path.join(OUT, test, f"{name}.jsonl")
 
 
+def export_path(test, name):
+    return os.path.join(OUT, "sample", test, f"{name}.jsonl.gz")
+
+
+def read_rows(test, name):
+    """The working rows when this machine has them, else the sampled rows committed with the results."""
+    rows = common.read_rows(rows_path(test, name))
+    if rows or not os.path.exists(export_path(test, name)):
+        return rows
+    with gzip.open(export_path(test, name), "rt", encoding="utf-8") as fh:
+        return [json.loads(line) for line in fh if line.strip()]
+
+
+def export(test, name, rows, ids):
+    """The sampled rows, sorted and compressed the same way every time, so an unchanged sample is an unchanged file."""
+    os.makedirs(os.path.dirname(export_path(test, name)), exist_ok=True)
+    text = "".join(json.dumps(rows[i], ensure_ascii=False, sort_keys=True) + "\n" for i in sorted(ids))
+    with open(export_path(test, name), "wb") as raw, gzip.GzipFile(fileobj=raw, mode="wb", mtime=0) as fh:
+        fh.write(text.encode())
+
+
+def record_mem0_stores():
+    """Each kept Mem0 store's build stats, from the loaded.json written when it was built."""
+    found = {}
+    for group in sorted(os.listdir(os.path.join(STORES, "mem0"))) if os.path.isdir(os.path.join(STORES, "mem0")) else []:
+        done = os.path.join(STORES, "mem0", group, "loaded.json")
+        if os.path.exists(done):
+            with open(done, encoding="utf-8") as fh:
+                found[group] = json.load(fh)
+    if found:
+        with open(os.path.join(OUT, "mem0-stores.json"), "w", encoding="utf-8") as fh:
+            json.dump(found, fh, indent=1, sort_keys=True)
+
+
 def stratum(case):
     """The tests' own categories. Each person's repetition messages are their own stratum, because the repetition
     score is computed over one person's replies."""
@@ -510,6 +545,7 @@ def run_tests(tests, names, groups, workers, limit=None, chosen=None):
               "data": {k: {"url": u, "sha256": h} for k, (u, h) in FILES.items()},
               "conversations": {"revision": locomo.REVISION, "sha256": locomo.SHA256}, "stores": stores,
               "failed": len(failures), "failures": failures[:50]}
+    record_mem0_stores()
     meta = os.path.join(OUT, "runs.json")
     runs = json.load(open(meta))["runs"] if os.path.exists(meta) else []
     with open(meta, "w", encoding="utf-8") as fh:
@@ -606,10 +642,14 @@ def shown(found, scale=1, digits=3):
 def sample_rows(test, names, strata):
     """Each tool's rows for the sampled messages, keeping only messages every tool answered, so every comparison is
     on the same messages."""
-    rows = {n: {r["id"]: r for r in common.read_rows(rows_path(test, n))} for n in names}
+    working = {n: bool(common.read_rows(rows_path(test, n))) for n in names}
+    rows = {n: {r["id"]: r for r in read_rows(test, n)} for n in names}
     rows = {n: rs for n, rs in rows.items() if rs}
     keep = {k: [i for i in v["ids"] if all(i in rs for rs in rows.values())] for k, v in strata.items()}
     missing = sum(len(v["ids"]) - len(keep[k]) for k, v in strata.items())
+    for n, rs in rows.items():
+        if working[n]:
+            export(test, n, rs, [i for v in keep.values() for i in v])
     return rows, keep, missing
 
 
@@ -775,6 +815,7 @@ def main(argv=None):
         for group in groups:
             tool, stats = load("mem0", samples[group], [], STORES)
             print(group, json.dumps(stats))
+        record_mem0_stores()
         return 0
     chosen = None
     if args.sample:
