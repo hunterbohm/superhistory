@@ -8,6 +8,7 @@ import logging
 import os
 import sys
 import tempfile
+import time
 import unittest
 from unittest import mock
 
@@ -192,8 +193,9 @@ class RunUnitTest(IngestCase):
         self.assertEqual(self.rows(), before)
 
     def test_marks_below_a_stale_watermark_replace_it(self):
-        store.set_watermark(self.db, "fake", "m1", json.dumps(99.0))
         script = Script(events=[item("a", mark=3.0)])
+        store.set_watermark(self.db, "fake", "m1", json.dumps(99.0))
+        store.set_watermark(self.db, "fake", "m1:settings", ingest.settings_digest(script.source))
         self.run_unit(script)
         self.assertEqual(script.since_seen, [99.0])
         self.assertEqual(self.mark("fake"), 3.0)
@@ -509,3 +511,51 @@ class SearchAfterIngestTest(IngestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SettingsChangeTest(unittest.TestCase):
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.tmp = tmp.name
+        self.db = store.connect(os.path.join(self.tmp, "kb.sqlite"))
+        self.addCleanup(self.db.close)
+
+    def note(self, rel, text):
+        path = os.path.join(self.tmp, rel)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as fh:
+            fh.write(text)
+
+    def files_predate_the_last_run(self):
+        store.set_watermark(self.db, "notes", "m1", json.dumps(time.time() + 3600))
+        self.db.commit()
+
+    def ingest(self, table):
+        cfg = config.parse(f'machine = "m1"\n[sources.notes]\n{table}')
+        self.assertEqual(ingest.run(self.db, cfg, LOG, with_summaries=False), 0)
+        return sorted(r[0] for r in self.db.execute("SELECT DISTINCT source_id FROM docs"))
+
+    def test_a_new_folder_is_read_in_full_even_when_its_files_predate_the_watermark(self):
+        self.note("a/one.md", "first folder")
+        self.note("b/two.md", "second folder")
+        self.assertEqual(self.ingest(f'path = {json.dumps(os.path.join(self.tmp, "a"))}\n'), ["m1:one.md"])
+        self.files_predate_the_last_run()
+        self.assertEqual(self.ingest(f'path = {json.dumps(os.path.join(self.tmp, "b"))}\n'), ["m1:two.md"])
+
+    def test_removing_an_exclusion_reads_the_files_it_hid(self):
+        self.note("n/Journal/day.md", "a day")
+        self.note("n/plan.md", "a plan")
+        path = f'path = {json.dumps(os.path.join(self.tmp, "n"))}\n'
+        self.assertEqual(self.ingest(path + 'exclude = ["Journal"]\n'), ["m1:plan.md"])
+        self.files_predate_the_last_run()
+        self.assertEqual(self.ingest(path), ["m1:Journal/day.md", "m1:plan.md"])
+
+    def test_unchanged_settings_keep_reading_only_what_changed(self):
+        self.note("n/plan.md", "a plan")
+        path = f'path = {json.dumps(os.path.join(self.tmp, "n"))}\n'
+        self.ingest(path)
+        self.files_predate_the_last_run()
+        self.db.execute("DELETE FROM docs")
+        self.db.commit()
+        self.assertEqual(self.ingest(path), [])

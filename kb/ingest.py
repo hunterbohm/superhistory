@@ -1,3 +1,5 @@
+import dataclasses
+import hashlib
 import json
 import sys
 import time
@@ -46,9 +48,26 @@ def load_mark(db, source, host):
     return json.loads(raw) if raw is not None else None
 
 
+def settings_digest(source):
+    """A fingerprint of what decides which items a source reads: its type, options and excludes."""
+    text = json.dumps({"type": source.type_name, "options": dataclasses.asdict(source.options),
+                       "exclude": list(source.exclude)}, sort_keys=True, default=str)
+    return hashlib.sha1(text.encode()).hexdigest()[:16]
+
+
+def _forget_mark_if_settings_changed(db, source, host):
+    """A watermark taken under other settings would skip items the new settings include, such as an older folder the
+    source now points at, so the source starts over."""
+    digest, key = settings_digest(source), f"{host}:settings"
+    if store.get_watermark(db, source.name, key) != digest:
+        db.execute("DELETE FROM ingest_state WHERE source=? AND key=?", (source.name, host))
+        store.set_watermark(db, source.name, key, digest)
+
+
 def run_unit(db, source, host, reader, log):
     """Read one source on one host: store each event, move the watermark to the largest mark seen, and prune items
     whose files are gone when the type lists them."""
+    _forget_mark_if_settings_changed(db, source, host)
     since = load_mark(db, source.name, host)
     seen = changed = 0
     mark = None
