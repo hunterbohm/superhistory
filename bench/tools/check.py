@@ -71,6 +71,8 @@ _post = api.post
 
 def _counted_post(url, body, headers, timeout):
     """The gateway caches every prompt, and its `input_tokens` leaves the cached part out, so all three count."""
+    # Nothing is sent once a rate limit is seen, not even the copy kb's hedge starts after a failed call.
+    gateway.check_limited()
     try:
         response = _post(url, body, headers, timeout)
     except ai.AIError as exc:
@@ -78,6 +80,8 @@ def _counted_post(url, body, headers, timeout):
         if gateway.is_rate_limit(429 if "HTTP 429" in str(exc) else 0, str(exc)):
             gateway.limited(str(exc))
         raise
+    if gateway.limited_reply(response):
+        gateway.limited(f"from {url}: {json.dumps(response)[:300]}")
     sink = getattr(_local, "sink", None)
     if sink is not None:
         usage = response.get("usage") or {}
@@ -249,6 +253,8 @@ class Store:
             seconds = time.monotonic() - started
             return Retrieved(check.render(found.hits, CONFIG.machine), [h["source_id"] for h in found.hits], seconds,
                              None, counted.settle(counted.traits.check_budget), found.query)
+        except gateway.RateLimited:
+            raise
         except Exception as exc:
             # The hook prints nothing when the check fails, so the agent sees nothing.
             seconds = time.monotonic() - started

@@ -44,6 +44,15 @@ def is_rate_limit(code, detail):
     return code == 429 or "cooling down" in detail.lower()
 
 
+def limited_reply(response):
+    """Whether a reply that came back as JSON is an error saying the plan is rate limited, as some gateways send
+    with status 200."""
+    if not isinstance(response, dict) or (response.get("type") != "error" and "error" not in response):
+        return False
+    text = json.dumps(response.get("error", response))
+    return "rate_limit" in text or "cooling down" in text.lower()
+
+
 def _key():
     if os.environ.get("BENCH_API_KEY"):
         return os.environ["BENCH_API_KEY"]
@@ -52,6 +61,7 @@ def _key():
 
 
 def post(path, body, timeout=300):
+    check_limited()
     headers = {"content-type": "application/json", "anthropic-version": "2023-06-01",
                "authorization": "Bearer " + _key()}
     data = json.dumps(body).encode()
@@ -60,7 +70,10 @@ def post(path, body, timeout=300):
         try:
             req = urllib.request.Request(BASE_URL + path, data=data, headers=headers, method="POST")
             with urllib.request.urlopen(req, timeout=timeout) as resp:
-                return json.load(resp)
+                reply = json.load(resp)
+            if limited_reply(reply):
+                limited(f"from {BASE_URL}{path}: {json.dumps(reply)[:300]}")
+            return reply
         except urllib.error.HTTPError as e:
             detail = e.read()[:300].decode(errors="replace")
             if is_rate_limit(e.code, detail):

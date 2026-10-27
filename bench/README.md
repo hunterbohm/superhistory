@@ -11,11 +11,12 @@ The made-up month is `demo/month/` (see its README). One command loads it into e
 ```bash
 python3 bench/run.py month --tools none,oracle,check,check-cards
 python3 bench/run.py table            # print the table from the saved rows
-python3 bench/run.py rejudge          # grade saved answers again, after a gold or judge change
-python3 bench/run.py rejudge --second bench/results/month/second-grading.jsonl   # grade again, keep both verdicts
+python3 bench/run.py rejudge --why "REASON"            # grade saved answers again, after a gold or judge change
+python3 bench/run.py rejudge --why "REASON" --only ID,ID   # just those questions; every other verdict stays
+python3 bench/run.py rejudge --why "REASON" --second bench/results/month/second-grading.jsonl   # keep both verdicts
 ```
 
-Rows go to `bench/results/month/<tool>.jsonl`, and the table to `bench/results/month/table.md`. `second-grading.jsonl` holds a second grading of the same answers, both verdicts per row, which measures how often the judge agrees with itself. A rerun keeps the rows already written and runs only the missing questions; pass `--fresh` to start over.
+Rows go to `bench/results/month/<tool>.jsonl`, and the table to `bench/results/month/table.md`. `second-grading.jsonl` holds a second grading of the same answers, both verdicts per row, which measures how often the judge agrees with itself. A rerun keeps the rows already written and runs only the missing questions; pass `--fresh` to start over. The first rate limit (HTTP 429, or a reply that says the model is cooling down) is never retried: the run starts no new question, keeps every row it has, and the same command run once 30 minutes later fills in the rest. The same holds for `rejudge` (resumed by its `--why`), `latency` and `bench/lookups.py`.
 
 Model calls go to any endpoint that speaks Anthropic's Messages API: `BENCH_BASE_URL` (default `http://127.0.0.1:8317`, a local CLIProxyAPI gateway) and `BENCH_API_KEY`. The judge model is a GPT model served through that gateway; with a plain Anthropic key, change `JUDGE_MODEL` in `run.py`.
 
@@ -96,7 +97,7 @@ A test half runs at most three times, once each as `baseline`, `midpoint` and `f
 
 ![The check against three rivals on the made-up month](results/month/chart.png)
 
-All rows are in `bench/results/month/`, and `table.md` there has the full table. Graded once, then graded a second time with the same rubric, the rows agree on 1,360 of 1,368; `second-grading.jsonl` holds both verdicts for every row. No tool's verdicts flipped on more than 4 of its 171 questions, so a gap of four questions or fewer between two tools is not measurable here. To grade again, copy the per-tool row files to a folder and run `python3 bench/run.py rejudge <folder>`. Four gold answers were completed after audits on 2026-10-27 (`demo/month/README.md`); the rows were graded again for those questions, and `bench/results/regrades.tsv` holds before and after.
+All rows are in `bench/results/month/`, and `table.md` there has the full table. Graded once, then graded a second time with the same rubric, the rows agree on 1,360 of 1,368; `second-grading.jsonl` holds both verdicts for every row. No tool's verdicts flipped on more than 4 of its 171 questions, so a gap of four questions or fewer between two tools is not measurable here. To grade again, copy the per-tool row files to a folder and run `python3 bench/run.py rejudge <folder> --why "REASON"`. Four gold answers were completed after audits on 2026-10-27 (`demo/month/README.md`); the rows were graded again for those questions, and `bench/results/regrades.tsv` holds before and after.
 
 | Tool | Right, of 131 with an answer | Added nothing, of 40 with nothing to find | Tokens added per question, mean | Lookup, median |
 |---|---|---|---|---|

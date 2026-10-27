@@ -172,44 +172,58 @@ def run_tool(name, tool, stats, questions, out, workers, fresh, setup):
     return {"tool": name, "load": stats, "ran": len(todo) - failures, "failed": failures}
 
 
-def rejudge(out, questions, setup, workers, second=None, only=None, why=None):
-    """Grade every tool's saved answers again, taking each question's current gold answer and evidence. With
-    `second`, keep the saved verdicts and write both verdicts for every row to that file instead. With `only`, grade
-    just those question ids, keep every other verdict, record each regraded row's earlier verdict, and log the run's
-    count right before and after to REGRADES."""
+def rejudge(out, questions, setup, workers, why, second=None, only=None):
+    """Grade the tools' saved answers again, taking each question's current gold answer and evidence, and record
+    each regraded row's earlier verdict under `why`. With `only`, just those question ids; every other verdict stays.
+    With `second`, keep the saved verdicts and write both verdicts per row to that file instead. A rate limit stops
+    new grading; every verdict already in is saved, and running the same command again grades only the rest.
+    Returns the RateLimited that stopped it, or None."""
     by_id = {q["id"]: q for q in questions}
-    pairs = []
+    pairs = read_jsonl(second) if second and os.path.exists(second) else []
+    paired = {(p["tool"], p["id"]) for p in pairs if p.get("regraded") == why}
+    stopped = None
+
+    def judged(row):
+        gateway.check_limited()
+        return grade(setup, by_id[row["id"]], row["answer"])
+
     for name in sorted(f for f in os.listdir(out) if f.endswith(".jsonl") and f[:-6] in tools.REGISTRY):
+        tool = name[:-6]
         rows = read_jsonl(os.path.join(out, name))
-        todo = [r for r in rows if only is None or r["id"] in only]
+        done = paired if second else {(tool, r["id"]) for r in rows if (r.get("regraded") or {}).get("why") == why}
+        todo = [r for r in rows if (only is None or r["id"] in only) and (tool, r["id"]) not in done]
+        verdicts = {}
         with ThreadPoolExecutor(workers) as pool:
-            verdicts = list(pool.map(lambda r: grade(setup, by_id[r["id"]], r["answer"]), todo))
+            futures = {pool.submit(judged, r): r for r in todo}
+            for future in as_completed(futures):
+                try:
+                    verdicts[futures[future]["id"]] = future.result()
+                except gateway.RateLimited as exc:
+                    stopped = exc
+        graded = [r for r in todo if r["id"] in verdicts]
         if second:
-            pairs += [{"tool": name[:-6], "id": r["id"], "first": r["correct"], "second": bool(v.get("correct")),
-                       "second_reason": v.get("reason")} for r, v in zip(todo, verdicts)]
+            pairs = [p for p in pairs if (p["tool"], p["id"]) not in {(tool, r["id"]) for r in graded}]
+            pairs += [{"tool": tool, "id": r["id"], "first": r["correct"], "second": bool(verdicts[r["id"]].get("correct")),
+                       "second_reason": verdicts[r["id"]].get("reason"), "regraded": why} for r in graded]
             continue
         before = summarize(rows) if rows else {}
-        for row, verdict in zip(todo, verdicts):
-            q = by_id[row["id"]]
-            if only is not None:
-                row["regraded"] = {"why": why, "correct_before": row["correct"], "gold_before": row["gold"]}
+        for row in graded:
+            q, verdict = by_id[row["id"]], verdicts[row["id"]]
+            row["regraded"] = {"why": why, "correct_before": row["correct"], "gold_before": row["gold"]}
             row.update(question=q["question"], gold=q["answer"], evidence=q["evidence"],
                        correct=bool(verdict.get("correct")), judge_reason=verdict.get("reason"))
         with open(os.path.join(out, name), "w", encoding="utf-8") as fh:
             fh.writelines(json.dumps(r, ensure_ascii=False) + "\n" for r in rows)
-        if only is not None:
-            log_regrade(out, name, todo, before, summarize(rows), why)
+        if graded:
+            log_regrade(out, name, graded, before, summarize(rows), why)
         print(f"{name}: {sum(r['correct'] for r in rows)}/{len(rows)} correct", file=sys.stderr)
-    if second and only is not None:
-        path = second
-        kept = [p for p in read_jsonl(path) if p["id"] not in only] if os.path.exists(path) else []
-        pairs = kept + [{**p, "regraded": why} for p in pairs]
-        pairs.sort(key=lambda p: (p["tool"], p["id"]))
     if second:
+        pairs.sort(key=lambda p: (p["tool"], p["id"]))
         with open(second, "w", encoding="utf-8") as fh:
             fh.writelines(json.dumps(p, ensure_ascii=False) + "\n" for p in pairs)
         agree = sum(p["first"] == p["second"] for p in pairs)
         print(f"second grading agrees on {agree} of {len(pairs)} rows", file=sys.stderr)
+    return stopped
 
 
 REGRADES = os.path.join(HERE, "results", "regrades.tsv")
@@ -230,24 +244,31 @@ def log_regrade(out, name, rows, before, after, why):
 
 
 def latency(args):
-    """Lookups only, with no answers or grading running beside them, so the times are not inflated by other work."""
+    """Lookups only, with no answers or grading running beside them, so the times are not inflated by other work.
+    Each lookup's row is written as it ends; running the same command again times only the lookups with no row,
+    unless --fresh."""
     items = read_jsonl(os.path.join(MONTH, "items.jsonl"))
     questions = read_jsonl(os.path.join(MONTH, "questions.jsonl"))[::max(1, 171 // args.questions)][:args.questions]
-    rows = []
-    with tempfile.TemporaryDirectory(prefix="bench-latency-") as workdir:
-        loaded = {name: tools.make(name) for name in args.tools.split(",")}
+    path = os.path.join(args.out, "latency.jsonl")
+    if args.fresh and os.path.exists(path):
+        os.remove(path)
+    done = {(r["tool"], r["round"], r["id"]) for r in read_jsonl(path)} if os.path.exists(path) else set()
+    names = args.tools.split(",")
+    with tempfile.TemporaryDirectory(prefix="bench-latency-") as workdir, open(path, "a", encoding="utf-8") as fh:
+        loaded = {name: tools.make(name) for name in names}
         for tool in loaded.values():
             tool.load(items, workdir)
         for n in range(args.rounds):
             for q in questions:
                 for name, tool in loaded.items():
+                    if (name, n + 1, q["id"]) in done:
+                        continue
                     gateway.check_limited()
                     found = tool.retrieve(q)
-                    rows.append({"tool": name, "round": n + 1, "id": q["id"], "seconds": round(found.seconds, 3),
-                                 "error": found.error, "added": bool(found.context)})
-    path = os.path.join(args.out, "latency.jsonl")
-    with open(path, "w", encoding="utf-8") as fh:
-        fh.writelines(json.dumps(r) + "\n" for r in rows)
+                    fh.write(json.dumps({"tool": name, "round": n + 1, "id": q["id"], "seconds": round(found.seconds, 3),
+                                         "error": found.error, "added": bool(found.context)}) + "\n")
+                    fh.flush()
+    rows = read_jsonl(path)
     for name in loaded:
         times = sorted(r["seconds"] for r in rows if r["tool"] == name)
         print(f"{name}: {len(times)} lookups, p50 {times[len(times) // 2]:.2f} s, p90 {times[int(len(times) * 0.9)]:.2f} s, "
@@ -342,6 +363,7 @@ def main(argv=None):
     lt.add_argument("--questions", type=int, default=40)
     lt.add_argument("--rounds", type=int, default=2)
     lt.add_argument("--out", default=RESULTS)
+    lt.add_argument("--fresh", action="store_true", help="drop the rows already timed and start over")
     rj = sub.add_parser("rejudge", help="grade the month's saved answers again with the current gold and judge")
     rj.add_argument("out", nargs="?", default=RESULTS)
     rj.add_argument("--workers", type=int, default=2)
@@ -363,14 +385,21 @@ def main(argv=None):
         print(table(args.out))
         return 0
     if args.cmd == "latency":
-        latency(args)
+        try:
+            latency(args)
+        except gateway.RateLimited as exc:
+            print(exc, file=sys.stderr)
+            return 1
         return 0
     if args.cmd == "rejudge":
+        if not args.why:
+            raise SystemExit("rejudge takes --why, the reason the log records; the same --why resumes a stopped pass")
         only = set(args.only.split(",")) if args.only else None
-        if only is not None and not args.why:
-            raise SystemExit("--only takes --why, the reason the log records")
-        rejudge(args.out, read_jsonl(os.path.join(MONTHS[args.month], "questions.jsonl")), MONTH_SETUP, args.workers,
-                args.second, only, args.why)
+        stopped = rejudge(args.out, read_jsonl(os.path.join(MONTHS[args.month], "questions.jsonl")), MONTH_SETUP,
+                          args.workers, args.why, args.second, only)
+        if stopped:
+            print(stopped, file=sys.stderr)
+            return 1
         print(table(args.out))
         return 0
     os.makedirs(args.out, exist_ok=True)
