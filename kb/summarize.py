@@ -234,7 +234,7 @@ def summarize(db, items, scope, model, log, timeout=300.0):
         log.warning("summarize %s %s: %s", item.source, item.source_id, reason)
 
     def ask(prompt):
-        return ai.with_retries(lambda: model.ask(prompt, timeout))
+        return ai.with_retries(lambda: model.ask(ai.masked(prompt), timeout))
 
     def fill():
         for item in queue:

@@ -40,6 +40,11 @@ The Sync client goes in `kb/sync/`. It meets the engine at two points.
   text of every error kb raises from outside text: AI answers, secrets, ssh, gh and git output, IMAP and Google
   answers.
 
+- To the AI plug-in: every prompt, through the model `ai.load` returns and through `ai.hedged` and the summarizer
+  for a model a caller made itself. The check's prompt (the user's message, earlier turns, the records) and the Gmail
+  sorter's lines are masked, so the plug-in, which can be another provider than the user's agent, never sees a
+  secret's value. kb's own instructions in those prompts contain nothing mask() changes.
+
 Records that other code sends through its own loggers to its own handlers are that code's to mask.
 `tests/test_canary.py` plants a different secret in every kind of input, runs every command and every library entry
 point, and checks that none reaches an output. A path it misses is a new case there.

@@ -41,7 +41,7 @@ CANARY = {kind: f"sk-ant-api03-canary-{kind}-" + "Z" * 24 for kind in KINDS}
 KEYED = ("metapw", "metanested", "ghtail", "aitail")
 CANARY.update({kind: f"canary{kind}Zz12345678" for kind in KEYED})
 NAMES = ("machinename", "hostname", "sourcename", "timestamp", "mark", "ghargs", "hookprompt", "hooksession",
-         "transcript", "hooksettings", "schedout")
+         "transcript", "hooksettings", "schedout", "sortsubject", "sortsender", "contextmessage")
 # A number its field name marks as secret, and a private key's body, whose line breaks repr() would escape.
 NUMBER = 928374615001
 PEM_BODY = "Q2FuYXJ5UHJpdmF0ZUtleUJvZHkxMjM0NTY3OA"
@@ -86,9 +86,10 @@ class Model(BaseHTTPRequestHandler):
     """An Anthropic-compatible server. In "ok" it answers every call with JSON that carries a canary; in "refuse"
     it echoes the key it was sent; in "garbage" it answers with something other than JSON."""
     mode = "ok"
+    sent = []  # every request body: what the configured model was sent
 
     def do_POST(self):
-        self.rfile.read(int(self.headers.get("content-length", 0)))
+        Model.sent.append(self.rfile.read(int(self.headers.get("content-length", 0))).decode("utf-8", "replace"))
         if Model.mode == "pem":
             body = json.dumps({"content": [{"type": "text", "text": f"Here it is:\n{PEM}"}]}).encode()
             self.send_response(200)
@@ -109,6 +110,7 @@ class Model(BaseHTTPRequestHandler):
             self.send_response(200)
         else:
             text = json.dumps({"query": f"pelican {CANARY['modeltext']}", "search": True, "scores": {"1": 2, "2": 2},
+                               "keep": [1, 2],
                                "segments": [{"title": CANARY["modeltext"], "question": CANARY["modeltext"],
                                              "summary": CANARY["modeltext"]}],
                                "atoms": [{"type": "fact", "text": CANARY["modeltext"]}]})
@@ -130,6 +132,8 @@ class Gmail(FakeGmail):
         self.user = user
         self.add("1781000000000000001", NOW - timedelta(days=1), "Dana <dana@example.org>",
                  f"The deploy key is {CANARY['imap']}", subject=f"Key {CANARY['imap']}")
+        self.add("1781000000000000002", NOW - timedelta(hours=5), f"Ops <ops-{CANARY['sortsender']}@example.org>",
+                 "Rotate it today.", subject=f"Rotated {CANARY['sortsubject']}")
 
     def login(self, user, password):
         if user == "refused@example.com":
@@ -170,6 +174,7 @@ class CanaryTest(unittest.TestCase):
         self.addCleanup(self.server.server_close)
         self.addCleanup(self.server.shutdown)
         Model.mode = "ok"
+        Model.sent = []
         self.notes = os.path.join(self.tmp, f"notes-{CANARY['notepath']}")
         os.makedirs(os.path.join(self.notes, "Area"))
         texts = {"plan.md": f"---\nsource: https://vault.example/?api_key={CANARY['itemmeta']}\n---\n"
@@ -267,6 +272,12 @@ window_days = 1
 [sources.mail]
 {mail}address = "{ME}"
 password = "cmd:printf %s {CANARY['cmd']}"
+[sources.mail_sorted]
+type = "gmail"
+sort = true
+window_days = 30
+address = "sorted@example.com"
+password = "cmd:printf ok"
 [sources.mail_refused]
 {mail}address = "refused@example.com"
 password = "cmd:printf %s {CANARY['cmd']}"
@@ -345,7 +356,7 @@ password = "cmd:echo {CANARY['cmdfail']} >&2; exit 3"
 
     def assert_no_canary(self):
         channels = {"output and exceptions": "\n".join(self.seen), "log records": "\n".join(self.records),
-                    "files": "\n".join(self.written())}
+                    "files": "\n".join(self.written()), "AI requests": "\n".join(Model.sent)}
         planted = {**CANARY, "number": str(NUMBER), "pem": PEM_BODY, "pem reversed": PEM_BODY[::-1]}
         for name, text in channels.items():
             for kind, canary in planted.items():
@@ -402,7 +413,8 @@ password = "cmd:echo {CANARY['cmdfail']} >&2; exit 3"
         self.kb("summarize", "--estimate")
         self.kb("summarize", "--limit", "2")
         self.kb("context", "--session", CANARY["session"],
-                stdin=json.dumps({"message": "What is the staging token for pelican?", "before": []}))
+                stdin=json.dumps({"message": f"What is the staging token for pelican? {CANARY['contextmessage']}",
+                                  "before": [{"role": "assistant", "text": f"It was {CANARY['transcript']}"}]}))
         self.assertTrue(os.listdir(self.paths.seen_dir), "the lookup kept its session's records, so it really ran")
         self.kb("ai", "test")
         for mode in ("refuse", "garbage", "status", "pem"):
@@ -436,6 +448,8 @@ password = "cmd:echo {CANARY['cmdfail']} >&2; exit 3"
         names = [r[0] for r in db.execute("SELECT source_id FROM docs")]
         self.assertFalse([n for n in names if "key-" in n], "files named after a token are never stored")
         self.assertIn("whose name looks like it holds a secret", channels["files"])
+        self.assertTrue(any("Rotated" in body for body in Model.sent), "the sorter sent its thread lines")
+        self.assertTrue(any("staging token" in body for body in Model.sent), "the check sent the user's message")
         for unit in ("notes@noisy", "notes@garbage", "issues_down@desk", "mail_refused@desk", "mail_odd@desk",
                      "mail_slow@desk", "mail_failing@desk"):
             self.assertIn(unit, failing, f"{unit} was driven into its failure path")
