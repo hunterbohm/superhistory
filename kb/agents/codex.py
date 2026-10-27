@@ -74,12 +74,32 @@ def _section(lines, key):
     start = next((i for i, line in enumerate(lines) if _is_header(line, key)), None)
     if start is None:
         return None
-    end = next((i for i in range(start + 1, len(lines)) if lines[i].lstrip().startswith("[")), len(lines))
+    end = next((i for i in range(start + 1, len(lines)) if _opens_table(lines, i)), len(lines))
     return start, end
 
 
+def _opens_table(lines, i):
+    """Whether line i is a table header, not a line of a multi-line array or string that starts with "[": it parses
+    as a header alone, and everything before it parses too."""
+    return lines[i].lstrip().startswith("[") and _parses(lines[i]) and _parses("".join(lines[:i]))
+
+
+def _parses(text):
+    try:
+        read_toml(text)
+    except ValueError:
+        return False
+    return True
+
+
 def _trusted_line(lines, start, end):
-    return next((i for i in range(start + 1, end) if lines[i].split("=")[0].strip() == "trusted_hash"), None)
+    """The line in a table that sets trusted_hash, however its key is quoted."""
+    def sets_hash(line):
+        try:
+            return list(read_toml(line)) == ["trusted_hash"]
+        except ValueError:
+            return False
+    return next((i for i in range(start + 1, end) if sets_hash(lines[i])), None)
 
 
 def _lines(text):
@@ -116,14 +136,20 @@ def trust(path, key, digest):
 
 
 def _untrust(path, key):
-    lines = _lines(agents.read(path))
+    text = agents.read(path)
+    lines = _lines(text)
     section = _section(lines, key)
     if section is None:
         return False
+    if not _parses(text):
+        raise ValueError(f"{path} is not valid TOML; left as it is")
     start, end = section
     if end == len(lines) and start > 0 and not lines[start - 1].strip():
         start -= 1
-    agents.write(path, "".join(lines[:start] + lines[end:]))
+    new = "".join(lines[:start] + lines[end:])
+    if key in ((read_toml(new).get("hooks") or {}).get("state") or {}):
+        raise ValueError(f"{path}: the trust entry did not come out cleanly")
+    agents.write(path, new)
     return True
 
 
