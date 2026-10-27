@@ -119,7 +119,8 @@ def answer(tool, question, context, system):
         results = []
         for use in uses:
             out, ids = tool.call(use["name"], use.get("input") or {})
-            calls.append({"name": use["name"], "input": use.get("input")})
+            calls.append({"name": use["name"], "input": use.get("input"),
+                          "tokens": gateway.count_tokens(ANSWER_MODEL, out)})
             shown += [i for i in ids if i not in shown]
             printed.append(out)
             results.append({"type": "tool_result", "tool_use_id": use["id"], "content": out})
@@ -139,7 +140,7 @@ def run_one(tool, q, setup):
             "lookup_model_tokens": found.model_tokens,
             "context_tokens": gateway.count_tokens(ANSWER_MODEL, found.context),
             "tool_calls": calls, "read_items": shown,
-            "tool_tokens": sum(gateway.count_tokens(ANSWER_MODEL, t) for t in printed),
+            "tool_tokens": sum(c["tokens"] for c in calls),
             "answer": text, "correct": bool(verdict.get("correct")), "judge_reason": verdict.get("reason")}
 
 

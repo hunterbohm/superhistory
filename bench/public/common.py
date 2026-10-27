@@ -225,7 +225,8 @@ def answer(store, system, question, context):
         results = []
         for use in uses:
             out, ids = store.call(use["name"], use.get("input") or {})
-            calls.append({"name": use["name"], "input": use.get("input")})
+            calls.append({"name": use["name"], "input": use.get("input"),
+                          "tokens": gateway.count_tokens(run.ANSWER_MODEL, out)})
             shown += [i for i in ids if i not in shown]
             printed.append(out)
             results.append({"type": "tool_result", "tool_use_id": use["id"], "content": out})
@@ -243,7 +244,7 @@ def run_case(stores, case, system, score):
             "lookup_error": found.error, "lookup_model_tokens": found.model_tokens, "tool_calls": calls,
             "read_items": shown, "tool_chars": sum(map(len, printed)),
             "context_tokens": gateway.count_tokens(run.ANSWER_MODEL, found.context),
-            "tool_tokens": sum(gateway.count_tokens(run.ANSWER_MODEL, t) for t in printed),
+            "tool_tokens": sum(c["tokens"] for c in calls),
             "empty_replies": empty, "answer": text, **score(case, text)}
 
 
