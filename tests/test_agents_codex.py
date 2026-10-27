@@ -212,9 +212,10 @@ class InstallTest(Home):
         AGENT.install(self.home, COMMAND)
         broken = self.text(self.config) + "oops = = 1\n"
         self.put(self.config, broken)
+        hooks = self.text(self.hooks_json)
         changes = AGENT.uninstall(self.home)
-        self.assertEqual([c.action for c in changes], ["removed", "skipped"])
-        self.assertEqual(self.text(self.config), broken)
+        self.assertEqual([c.action for c in changes], ["skipped", "skipped"])
+        self.assertEqual((self.text(self.hooks_json), self.text(self.config)), (hooks, broken))
 
     def test_a_trust_table_without_a_hash_gets_one(self):
         self.put(self.config, f'[hooks.state."{self.key}"]\nenabled = true\n')
@@ -276,15 +277,19 @@ class InstallTest(Home):
     def test_a_config_that_would_not_parse_back_is_skipped_and_left_alone(self):
         self.put(self.config, "model = = broken\n")
         changes = AGENT.install(self.home, COMMAND)
-        self.assertEqual([c.action for c in changes], ["added", "skipped"])
-        self.assertIn("/hooks in Codex", changes[1].note)
+        self.assertEqual([c.action for c in changes], ["skipped", "skipped"])
+        self.assertIn("by hand", changes[0].note)
+        self.assertIn("/hooks in Codex", changes[0].note)
         self.assertEqual(self.text(self.config), "model = = broken\n")
+        self.assertFalse(os.path.exists(self.hooks_json), "nothing is written, not even the hook")
 
-    def test_trust_refuses_a_result_that_does_not_parse_back(self):
-        self.put(self.config, "[hooks.state\n")
-        with self.assertRaises(ValueError):
-            codex.trust(self.config, self.key, self.digest())
-        self.assertEqual(self.text(self.config), "[hooks.state\n")
+    def test_the_guard_refuses_an_edit_that_does_not_parse(self):
+        hooks = json.dumps({"hooks": {"UserPromptSubmit": [{"hooks": [self.handler()]}]}})
+        config = self.trust_table()
+        self.assertIsNone(codex._guard(self.hooks_json, (hooks, config), (hooks, config),
+                                       [(0, 0, self.handler())], {self.key: self.digest()}))
+        self.assertIn("would not parse", codex._guard(self.hooks_json, (hooks, config), (hooks, config + "[x\n"),
+                                                      [(0, 0, self.handler())], {self.key: self.digest()}))
 
 
 class UninstallTest(Home):
@@ -393,7 +398,9 @@ class ShiftedTrustTest(Home):
         self.put(self.config, self.trust_table() + f'\n[hooks.state."{moved_from}"]\n'
                                                    f"trusted_hash = '{user_digest}'  # approved in /hooks\n")
         AGENT.uninstall(self.home)
-        self.assertIn(self.trust_table(self.key, user_digest), self.text(self.config))
+        config = self.text(self.config)
+        self.assertEqual(codex.read_toml(config)["hooks"]["state"], {self.key: {"trusted_hash": user_digest}})
+        self.assertIn("# approved in /hooks", config, "the table moves whole, comment and all")
 
     def test_trust_headers_with_a_trailing_comment_are_recognized(self):
         user = {"type": "command", "command": "/usr/local/bin/notify-prompt", "timeout": 5}
@@ -429,11 +436,13 @@ class ShiftedTrustTest(Home):
         moved_from = f"{self.hooks_json}:user_prompt_submit:1:0"
         self.put(self.config, self.trust_table() + "\n" + self.trust_table(
             moved_from, codex.codex_hook_hash("user_prompt_submit", user)))
-        with mock.patch.object(codex, "trust", side_effect=ValueError("the trust entry did not parse back")):
+        before = (self.text(self.hooks_json), self.text(self.config))
+        with mock.patch.object(codex, "_moved", lambda text, old, new: (text, False)):
             changes = AGENT.uninstall(self.home)
-        self.assertEqual([c.action for c in changes], ["removed", "skipped"])
-        self.assertIn("/hooks in Codex", changes[1].note)
-        self.assertIn(moved_from, self.text(self.config), "the old trust stays when the new one could not be written")
+        self.assertEqual([c.action for c in changes], ["skipped", "skipped"])
+        self.assertIn("more than kb's own entries", changes[0].note)
+        self.assertIn("by hand", changes[0].note)
+        self.assertEqual((self.text(self.hooks_json), self.text(self.config)), before, "nothing is written")
 
     def test_a_home_with_an_emoji_or_a_delete_character_is_trusted_and_untrusted(self):
         for name in ("team-🙂", "odd\x7fname", "team-\u2028", "a\x85b"):
@@ -451,6 +460,82 @@ class ShiftedTrustTest(Home):
         self.put(self.config, self.trust_table())
         AGENT.uninstall(self.home)
         self.assertNotIn("trusted_hash", self.text(self.config))
+
+
+class GuardTest(Home):
+    """Every edge case earlier reviews found in hand-editing config.toml goes through install and uninstall. Each must
+    leave the user's own settings, hooks and trust exactly as they were, and a wrong edit must write nothing."""
+
+    USER = {"type": "command", "command": "/usr/local/bin/notify-prompt", "timeout": 5}
+    HOMES = ("plain", "José W", "team-🙂", "team-\u2028", "a\x85b", "odd\x7fname")
+    CONFIGS = {
+        "plain": "{user}",
+        "comments": "# my settings\nmodel = \"gpt-6.1\"  # chosen\n{user}",
+        "quoted keys": "{user}".replace("trusted_hash =", '"trusted_hash" ='),
+        "escaped key": "{user}".replace("trusted_hash =", '"trusted\\u005fhash" ='),
+        "spaced header": "{user}".replace("[hooks.state.", "[ hooks . state . ").replace('"]\n', '" ]  # ok\n', 1),
+        "single-quoted header": "{user}".replace('[hooks.state."', "[hooks.state.'").replace('"]\n', "']\n", 1),
+        "multi-line string": 'notes = """\n[hooks.state."{kb}"]\ntrusted_hash = "decoy"\n"""\n{user}',
+        "multi-line array": 'paths = [\n  ["a", "b"],\n  [\n    "c",\n  ],\n]\n{user}',
+        "crlf": "model = \"gpt-6.1\"\r\n{user}",
+    }
+
+    def home_with(self, name, config):
+        home = os.path.join(self.home, name)
+        hooks_json = os.path.join(home, ".codex", "hooks.json")
+        config_toml = os.path.join(home, ".codex", "config.toml")
+        user_key = f"{os.path.realpath(hooks_json)}:user_prompt_submit:1:0"
+        kb_key = f"{os.path.realpath(hooks_json)}:user_prompt_submit:0:0"
+        user = f'[hooks.state."{user_key}"]\ntrusted_hash = "{codex.codex_hook_hash("user_prompt_submit", self.USER)}"\n'
+        self.put(hooks_json, {"hooks": {"UserPromptSubmit": [{"hooks": [self.handler("/old/kb hook codex")]},
+                                                              {"hooks": [self.USER]}]}})
+        # TOML has no raw DEL in a string, so a key holding one is written escaped, as Codex writes it.
+        self.put(config_toml, config.format(user=user, kb=kb_key).replace("\x7f", "\\u007f"))
+        return home, hooks_json, config_toml
+
+    def test_every_edge_case_installs_and_uninstalls_without_touching_the_users_entries(self):
+        for home_name in self.HOMES:
+            for config_name, config in self.CONFIGS.items():
+                if "\x7f" in home_name and config_name == "single-quoted header":
+                    continue  # a literal string cannot hold DEL, so no valid config spells this key that way
+                with self.subTest(home=home_name, config=config_name):
+                    home, hooks_json, config_toml = self.home_with(f"{home_name}-{config_name}", config)
+                    original = codex.read_toml(self.text(config_toml))
+                    self.assertNotIn("skipped", [c.action for c in AGENT.install(home, COMMAND)])
+                    self.assertTrue(AGENT.installed(home))
+                    self.assertNotIn("skipped", [c.action for c in AGENT.uninstall(home)])
+                    self.assertFalse(AGENT.installed(home))
+                    hooks = json.loads(self.text(hooks_json))
+                    self.assertEqual(hooks, {"hooks": {"UserPromptSubmit": [{"hooks": [self.USER]}]}})
+                    after = codex.read_toml(self.text(config_toml))
+                    state = original["hooks"]["state"]
+                    moved = {f"{os.path.realpath(hooks_json)}:user_prompt_submit:0:0":
+                             state[f"{os.path.realpath(hooks_json)}:user_prompt_submit:1:0"]}
+                    self.assertEqual(after, {**original, "hooks": {**original["hooks"], "state": moved}},
+                                     "only kb's entry left, and the user's trust moved with its hook")
+
+    def test_a_wrong_edit_writes_nothing(self):
+        def also_changes_a_setting(text, key, digest):
+            new, action = trusted(text, key, digest)
+            return new.replace('model = "gpt-6.1"', 'model = "gpt-0"'), action
+
+        def also_drops_the_users_trust(text, key):
+            new, gone = untrusted(text, key)
+            return new.replace("trusted_hash", "trusted_hash_was"), gone
+
+        trusted, untrusted = codex._trusted, codex._untrusted
+        for patch, step in ((mock.patch.object(codex, "_trusted", also_changes_a_setting), AGENT.install),
+                            (mock.patch.object(codex, "_untrusted", also_drops_the_users_trust), AGENT.uninstall)):
+            home, hooks_json, config_toml = self.home_with(step.__name__, self.CONFIGS["comments"])
+            if step is AGENT.uninstall:
+                AGENT.install(home, COMMAND)
+            before = (self.text(hooks_json), self.text(config_toml))
+            with patch:
+                changes = step(home, COMMAND) if step is AGENT.install else step(home)
+            self.assertEqual([c.action for c in changes], ["skipped", "skipped"], step.__name__)
+            self.assertIn("more than kb's own entries", changes[0].note)
+            self.assertIn("by hand", changes[0].note)
+            self.assertEqual((self.text(hooks_json), self.text(config_toml)), before, "nothing is written")
 
 
 class RequestTest(unittest.TestCase):
