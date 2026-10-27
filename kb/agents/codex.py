@@ -71,7 +71,7 @@ def _is_header(line, key):
 
 
 def _section(lines, key):
-    start = next((i for i, line in enumerate(lines) if _is_header(line, key)), None)
+    start = next((i for i, line in enumerate(lines) if _is_header(line, key) and _parses("".join(lines[:i]))), None)
     if start is None:
         return None
     end = next((i for i in range(start + 1, len(lines)) if _opens_table(lines, i)), len(lines))
@@ -93,13 +93,14 @@ def _parses(text):
 
 
 def _trusted_line(lines, start, end):
-    """The line in a table that sets trusted_hash, however its key is quoted."""
-    def sets_hash(line):
+    """The line in a table that sets trusted_hash, however its key is quoted, and not a line inside a multi-line
+    string that only looks like one: everything before it parses too."""
+    def sets_hash(i):
         try:
-            return list(read_toml(line)) == ["trusted_hash"]
+            return list(read_toml(lines[i])) == ["trusted_hash"] and _parses("".join(lines[:i]))
         except ValueError:
             return False
-    return next((i for i in range(start + 1, end) if sets_hash(lines[i])), None)
+    return next((i for i in range(start + 1, end) if sets_hash(i)), None)
 
 
 def _lines(text):

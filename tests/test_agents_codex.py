@@ -192,6 +192,22 @@ class InstallTest(Home):
         AGENT.uninstall(self.home)
         self.assertEqual(codex.read_toml(self.text(self.config)), {})
 
+    def test_a_hash_line_inside_a_multi_line_string_is_not_the_hash(self):
+        AGENT.install(self.home, "/old/kb hook codex")
+        self.put(self.config, self.text(self.config).replace(
+            "trusted_hash =", 'note = """\ntrusted_hash = "documentation"\n"""\ntrusted_hash ='))
+        AGENT.install(self.home, COMMAND)
+        state = codex.read_toml(self.text(self.config))["hooks"]["state"][self.key]
+        self.assertEqual(state, {"note": 'trusted_hash = "documentation"\n', "trusted_hash": self.digest()})
+        self.assertTrue(AGENT.installed(self.home))
+
+    def test_a_header_line_inside_a_multi_line_string_is_not_the_table(self):
+        AGENT.install(self.home, COMMAND)
+        decoy = f'model_instructions = """\n[hooks.state."{self.key}"]\ntrusted_hash = "old"\n"""\n\n'
+        self.put(self.config, decoy + self.text(self.config))
+        AGENT.uninstall(self.home)
+        self.assertEqual(self.text(self.config), decoy.rstrip("\n") + "\n", "the string is kept, the table is gone")
+
     def test_uninstall_never_writes_a_config_that_does_not_parse(self):
         AGENT.install(self.home, COMMAND)
         broken = self.text(self.config) + "oops = = 1\n"
