@@ -1,0 +1,31 @@
+{
+ "date": "2026-10-27T19:17:09Z",
+ "month": "a",
+ "month_commit": "953cba6ddd9330e3323843e29ba286eeecaa9686",
+ "check_commit": "cafde6d8e7fe88aadf647f50e8330677b785919f",
+ "answer_model": "claude-sonnet-5-5",
+ "judge_model": "gpt-6.1-sol",
+ "base_url": "http://127.0.0.1:8317",
+ "questions": 171,
+ "workers": 2,
+ "tools": [
+  {
+   "tool": "check",
+   "load": {
+    "store_seconds": 0.38,
+    "summarized": 42,
+    "summary_failures": 0,
+    "summarize_seconds": 90.5,
+    "rows": {
+     "atom": 290,
+     "doc": 429,
+     "raw": 95,
+     "segment": 134
+    },
+    "code": "5d99b06faad0833a"
+   },
+   "ran": 171,
+   "failed": 0
+  }
+ ]
+}
