@@ -207,14 +207,14 @@ class CheckTest(unittest.TestCase):
         self.assertEqual(self.ask(ASK, model=model), "")
         self.assertEqual(model.systems, [check.QUERY_SYSTEM])
 
-    def test_at_most_four_records_with_short_snippets(self):
+    def test_at_most_four_records_with_excerpts_of_bounded_length(self):
         for i in range(6):
             self.add("vault", f"studio:n{i}", "Connect launch notes " + "detail " * 200)
         out = self.ask("what is the status of the Connect launch", model=plan_and_pick("Connect launch"))
         lines = out.splitlines()
         self.assertEqual(len(lines), 1 + 3 * 4)
-        for snippet in lines[2::3]:
-            self.assertLessEqual(len(snippet), 3 + 240)
+        for excerpt in lines[2::3]:
+            self.assertLessEqual(len(excerpt), 3 + search.EXCERPT_CHARS)
 
     def test_current_session_is_excluded(self):
         self.add("claude_code", "test:sess-1", "we discussed the Connect launch with Dana")

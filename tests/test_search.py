@@ -291,6 +291,22 @@ class SearchTest(TempDB):
         self.assertEqual(search.pointer(hit["meta"], machine="laptop"), "/tmp/x.md")
 
 
+class ExcerptTest(TempDB):
+    def test_a_match_after_a_long_run_of_words_stays_in_the_excerpt(self):
+        filler = " ".join(f"word{i}" for i in range(300))
+        self.add("a", f"Kickoff notes. {filler} the walrus contract was signed")
+        hit = search.search(self.db, "walrus contract")[0]
+        self.assertIn("walrus contract was signed", hit["excerpt"])
+        self.assertLessEqual(len(hit["excerpt"]), search.EXCERPT_CHARS + 2)
+        self.assertNotIn("Kickoff", hit["excerpt"])
+
+    def test_a_record_that_matches_only_in_its_title_shows_its_opening(self):
+        self.add("a", "Opening line of the note. " + "more text " * 100, title="Walrus plan")
+        hit = search.search(self.db, "walrus")[0]
+        self.assertTrue(hit["excerpt"].startswith("Opening line of the note."))
+        self.assertLessEqual(len(hit["excerpt"]), search.EXCERPT_CHARS)
+
+
 class PointerTest(unittest.TestCase):
     def test_pointer_forms(self):
         self.assertEqual(search.pointer({"url": "https://example.com/y", "path": "/p"}), "https://example.com/y")

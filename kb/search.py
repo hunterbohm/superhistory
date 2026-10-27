@@ -12,6 +12,10 @@ all also get got make made say said tell""".split())
 RRF_K = 60
 RAW_WEIGHT = 0.5
 CANDIDATES = 60
+# The longest passage FTS5's snippet() gives: the stretch of a record where its matching words cluster.
+EXCERPT_TOKENS = 64
+EXCERPT_CHARS = 500
+MARK, END = "\x02", "\x03"
 
 
 def fts_terms(text):
@@ -108,11 +112,22 @@ def search(db, query, after=None, sources=(), limit=10, before=None, keep=None):
         hit["score"] = total[key]
     hits = sorted((h for h in best.values() if keep is None or keep(h)), key=lambda h: -h["score"])[:limit]
     for hit in hits:
-        snip = db.execute("SELECT snippet(docs_fts, 1, '[', ']', ' … ', 24) FROM docs_fts "
-                          "WHERE docs_fts MATCH ? AND rowid = ?", (match, hit["id"])).fetchone()
-        text = snip[0] if snip and "[" in snip[0] else hit["content"][:220]
+        snip, marked = db.execute(
+            f"SELECT snippet(docs_fts, 1, '[', ']', ' … ', 24), snippet(docs_fts, 1, char(2), char(3), ' … ', "
+            f"{EXCERPT_TOKENS}) FROM docs_fts WHERE docs_fts MATCH ? AND rowid = ?", (match, hit["id"])).fetchone()
+        text = snip if "[" in snip else hit["content"][:220]
         hit["snippet"] = re.sub(r"\s+", " ", text).strip()
+        hit["excerpt"] = excerpt(marked if MARK in marked else hit["content"])
     return hits
+
+
+def excerpt(marked, chars=EXCERPT_CHARS):
+    """The text cut to `chars` around its first marked word, so a long run of words before a match cannot push the
+    match out."""
+    text = re.sub(r"\s+", " ", marked).strip()
+    start = max(0, min(text.find(MARK) - chars // 3, len(text) - chars))
+    text = text[start:start + chars].replace(MARK, "").replace(END, "")
+    return ("… " + text.lstrip("… ") if start else text).strip()
 
 
 def pointer(meta, machine=None):
