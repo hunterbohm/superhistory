@@ -95,7 +95,7 @@ A: 🎁 Nice. She'll use both.
           "Yes: signed and sent back on September 28; the deadline was September 30.",
           ("pe-pat-0920", "pe-pat-0928"), evidence_has=("September 30", "Signed the lease renewal")),
         Q("pe-12", "single", "What did I buy Mom for her birthday?",
-          "A hori hori garden knife and a pair of medium goatskin gardening gloves (and Dana's cake).",
+          "A hori hori garden knife and a pair of medium goatskin gardening gloves.",
           ("pe-hermes-gift",), evidence_has=("hori hori", "goatskin")),
         Q("pe-13", "single", "Is Cass coming to Mom's birthday dinner, and from where?",
           "Yes, Cass is driving up from Colorado Springs.", ("pe-mom-0908",), evidence_has=("Colorado Springs",)),

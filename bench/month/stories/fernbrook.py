@@ -432,6 +432,6 @@ Probably a `closed_dates` list per location in `config/locations.yaml`.
           "Ray, Dana's husband.", ("fern-wholesale",), evidence_has=("Ray",)),
         Q("fern-31", "single", "How does the Fernbrook bot handle an order that says nothing about which store?",
           "It replies asking which location; it never guesses (texts to the Riverside line are the exception).",
-          ("fern-claude-parser", "fern-spec"), evidence_has=("ask",)),
+          ("fern-claude-parser", "fern-spec", "fern-claude-routing"), evidence_has=("ask", "skip the location question")),
     )
     return s

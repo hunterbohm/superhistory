@@ -30,6 +30,7 @@ MODULES = ("stories.copperline", "stories.fernbrook", "stories.harbor", "stories
            "stories.personal", "noise.mail", "noise.sessions", "noise.life", "noise.code", "stories.none")
 KINDS = ("single", "multi", "update", "temporal", "none")
 FIRST, LAST = "2026-09-01T06:00:00Z", "2026-10-01T06:00:00Z"
+HOME_PATH = re.compile(r"/(?:home|users)/[\w.-]+")
 PHONE = re.compile(r"\+1\d{10}\b|\(\d{3}\) \d{3}-\d{4}\b|\b\d{3}-\d{3}-\d{4}\b")
 
 
@@ -58,6 +59,8 @@ def problems(items, questions, deny=()):
     text = "\n".join(f"{i.title}\n{i.content}\n{json.dumps(i.meta)}" for i in items).lower()
     found += [f"phone number outside the 555-01xx range: {n}" for n in sorted(set(PHONE.findall(text)))
               if re.sub(r"\D", "", n)[-7:-2] != "55501"]
+    found += [f"home folder other than the persona's: {p}" for p in sorted(set(HOME_PATH.findall(text)))
+              if p != model.HOME.lower()]
     for word in (product.NAME, *deny):
         if re.search(r"(?<![a-z])" + re.escape(word.lower()) + r"(?![a-z])", text):
             found.append(f"denied word in the month: {word!r}")

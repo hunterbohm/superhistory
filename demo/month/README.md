@@ -23,7 +23,7 @@ text, and a phone call lands in a Hermes chat that the next coding session ignor
 | `hermes` | 21 |
 | `gmail` | 80 |
 | `imessage` | 79 |
-| `vault` | 47 |
+| `notes` | 47 |
 | `git` | 159 |
 | `github` | 25 |
 

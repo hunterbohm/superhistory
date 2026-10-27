@@ -494,10 +494,10 @@ Steps:
 
 ```
 Traceback (most recent call last):
-  File "/home/dkessler/.local/bin/pinch", line 8, in <module>
+  File "/usr/local/bin/pinch", line 8, in <module>
     sys.exit(main())
              ^^^^^^
-  File "/home/dkessler/.local/share/pipx/venvs/pinch/lib/python3.12/site-packages/pinch/cli.py", line 74, in main
+  File "/opt/pipx/venvs/pinch/lib/python3.12/site-packages/pinch/cli.py", line 74, in main
     text = sys.stdin.read()
            ^^^^^^^^^^^^^^^^
   File "<frozen codecs>", line 322, in decode

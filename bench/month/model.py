@@ -228,14 +228,14 @@ def group(key, chat, people, day, script):
 
 
 def note(key, path, body, edited=None):
-    """A note dated in its file name takes that date, as the vault connector does; any other takes `edited`."""
+    """A note dated in its file name takes that date, as the notes source does; any other takes `edited`."""
     folder, _, name = path.rpartition("/")
     stem = name[:-3]
     m = re.match(r"(\d{4})-(\d{2})-(\d{2})", stem)
     if not m and edited is None:
         raise ValueError(f"{key}: a note without a date in its name needs `edited`")
     ts = f"{m.group(1)}-{m.group(2)}-{m.group(3)}T00:00:00Z" if m else seeded_utc(edited, key)
-    return Item(key, "vault", path, ts, stem, f"vault/{folder}".rstrip("/") + "\n\n" + body.strip() + "\n",
+    return Item(key, "notes", path, ts, stem, f"notes/{folder}".rstrip("/") + "\n\n" + body.strip() + "\n",
                 {"path": f"{HOME}/notes/{path}",
                  "url": f"obsidian://open?vault=notes&file={quote(path[:-3], safe='')}"})
 

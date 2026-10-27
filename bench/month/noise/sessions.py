@@ -18,7 +18,7 @@ R: completed	failure	Add case study template	build	main	push	11849203314	41s	abo
 completed	success	Fix footer links	build	main	push	11846120877	58s	about 3 hours ago
 completed	success	Bump astro	build	main	push	11839904102	1m2s	about 1 day ago
 T Bash: gh run view 11849203314 --log-failed | rg -n "error|Rollup|resolve" | head
-R: 31:build	Build site	2026-09-01T15:09:41.7120043Z [vite]: Rollup failed to resolve import "../assets/hero.png" from "/home/runner/work/marlowworks-site/marlowworks-site/src/pages/index.astro".
+R: 31:build	Build site	2026-09-01T15:09:41.7120043Z [vite]: Rollup failed to resolve import "../assets/hero.png" from "/actions-runner/_work/marlowworks-site/marlowworks-site/src/pages/index.astro".
 32:build	Build site	2026-09-01T15:09:41.7121290Z This is most likely unintended because it can break your application at runtime.
 T Grep: hero\.png in /Users/jules/code/marlowworks-site/src
 R: src/pages/index.astro:3:import hero from '../assets/hero.png';
@@ -4638,11 +4638,11 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --locked --no-dev
 
 FROM python:3.12-slim
-RUN useradd --create-home --uid 1000 app
+RUN useradd --uid 1000 app
 COPY --from=build /app /app
 ENV PATH="/app/.venv/bin:$PATH"
 USER app
-WORKDIR /home/app
+WORKDIR /app
 ENTRYPOINT ["copperline-docs"]
 EOF
 cat > .dockerignore <<'EOF'
