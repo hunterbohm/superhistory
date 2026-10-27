@@ -43,6 +43,12 @@ RECORD = os.path.join(HERE, "results", "month-b-runs.json")
 STORES = os.path.join(outside.STORES, "month-b")
 RIVALS = ("claude-mem", "mem0", "supermemory")
 NAMESPACE = "month-b"
+# How long claude-mem's worker may take to finish every session it was given before the run gives up on its store.
+SETTLE_SECONDS = 3 * 3600
+
+
+class Incomplete(RuntimeError):
+    """A rival's store may be missing part of the month, so it is not scored."""
 
 
 def install():
@@ -80,6 +86,9 @@ def load_mem0(tool, items):
     if sum(outside.LIMITS.seen.values()) > limited:
         shutil.rmtree(folder)
         raise RateLimited("Mem0 met a rate limit while taking in the month; its store was not kept")
+    if stats.get("add_failures"):
+        shutil.rmtree(folder)
+        raise Incomplete(f"{stats['add_failures']} of Mem0's adds failed; its store was not kept")
     stats = {**stats, "extraction_parse_errors": count.n}
     with open(done, "w", encoding="utf-8") as fh:
         json.dump(stats, fh)
@@ -95,7 +104,12 @@ def load_supermemory(tool, items):
 
 
 def load_claude_mem(tool, items):
-    return tool.load(items, STORES)
+    """The adapter gives each replayed session a fixed time and counts one still in the worker as unsettled; the
+    worker must finish every session it was given, on a fresh or a reused store, before any question runs."""
+    stats = tool.load(items, STORES)
+    if not tool._drain(SETTLE_SECONDS):
+        raise Incomplete("claude-mem's worker has not finished the sessions it was given; run again to wait")
+    return {**stats, "drained": True}
 
 
 LOADERS = {"claude-mem": load_claude_mem, "mem0": load_mem0, "supermemory": load_supermemory}
@@ -119,7 +133,7 @@ def run_rival(name, items, questions, workers):
     started = time.monotonic()
     try:
         stats = LOADERS[name](tool, items)
-    except RateLimited:
+    except (RateLimited, Incomplete):
         outside.LIMITS.wait()
         stats = LOADERS[name](tool, items)
     stats = {**stats, "load_seconds": round(time.monotonic() - started)}

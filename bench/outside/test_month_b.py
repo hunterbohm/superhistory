@@ -1,6 +1,7 @@
 import io
 import os
 import sys
+import tempfile
 import unittest
 import urllib.error
 import urllib.request
@@ -80,6 +81,23 @@ class RunnerTest(Installed):
         tool = month_b.waits(SimpleNamespace(retrieve=lambda q: order.append("lookup")))
         tool.retrieve({"question": "q"})
         self.assertEqual(order, ["wait", "lookup"])
+
+    def test_a_mem0_store_with_a_failed_add_is_not_kept_or_scored(self):
+        with tempfile.TemporaryDirectory() as stores:
+            saved, month_b.STORES = month_b.STORES, stores
+            try:
+                with self.assertRaises(month_b.Incomplete):
+                    month_b.load_mem0(SimpleNamespace(load=lambda items, folder: {"add_failures": 1}), [])
+                self.assertFalse(os.path.exists(os.path.join(stores, "mem0", "loaded.json")))
+            finally:
+                month_b.STORES = saved
+
+    def test_claude_mem_is_not_scored_until_its_worker_has_finished_every_session(self):
+        unfinished = SimpleNamespace(load=lambda items, folder: {"reused_store": True}, _drain=lambda seconds: False)
+        with self.assertRaises(month_b.Incomplete):
+            month_b.load_claude_mem(unfinished, [])
+        finished = SimpleNamespace(load=lambda items, folder: {"reused_store": True}, _drain=lambda seconds: True)
+        self.assertTrue(month_b.load_claude_mem(finished, [])["drained"])
 
     def test_it_runs_only_the_rivals(self):
         with self.assertRaises(SystemExit):
