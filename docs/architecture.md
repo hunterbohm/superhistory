@@ -38,8 +38,9 @@ The Sync client goes in `kb/sync/`, imported as `kb.sync`.
   tables as parsed TOML, and `config.install` holds this install's id. A failure, a missing client included, is the
   `sync` health unit and makes `kb ingest` exit 1.
 - `store.mark_superseded`, `clear_superseded` and `superseded_by` keep one mark per marking install in the
-  `supersedes` table, keyed by item, not row, so a mark survives a refresh. Of several marks the one with no `v`
-  (not synced yet) wins, then the highest `v`, then the highest install id.
+  `supersedes` table, keyed by item, not row, so a mark survives a refresh. A clear keeps the row with no target.
+  Of several marks the one with no `v` (not synced yet) wins, then the highest `v`, then the highest install id, and
+  a winning clear means the item is not superseded.
 - For the client and the engine to import: `store.replace_rows`, `search.search_stores`, `check.lookup_with`,
   `gmail.render_thread`, and `summarize.request`, `parse` and `rows`.
 

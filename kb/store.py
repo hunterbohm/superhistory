@@ -49,7 +49,7 @@ CREATE TRIGGER IF NOT EXISTS docs_au AFTER UPDATE OF title, content ON docs BEGI
 END;
 CREATE TABLE IF NOT EXISTS supersedes(
   source TEXT NOT NULL, source_id TEXT NOT NULL, marked_by TEXT NOT NULL,
-  new_source TEXT NOT NULL, new_source_id TEXT NOT NULL, at TEXT NOT NULL, v INTEGER,
+  new_source TEXT, new_source_id TEXT, at TEXT NOT NULL, v INTEGER,
   PRIMARY KEY(source, source_id, marked_by));
 CREATE TABLE IF NOT EXISTS ingest_state(
   source TEXT NOT NULL, key TEXT NOT NULL, watermark TEXT, PRIMARY KEY(source, key));
@@ -130,11 +130,16 @@ def mark_superseded(db, source, source_id, new, by, at=None, v=None):
     db.execute("INSERT INTO supersedes(source, source_id, marked_by, new_source, new_source_id, at, v) "
                "VALUES (?,?,?,?,?,?,?) ON CONFLICT(source, source_id, marked_by) DO UPDATE SET "
                "new_source=excluded.new_source, new_source_id=excluded.new_source_id, at=excluded.at, v=excluded.v",
-               (source, source_id, by, new[0], new[1], at or now_iso(), v))
+               (source, source_id, by, new[0], new[1], now_iso() if at is None else at, v))
 
 
-def clear_superseded(db, source, source_id, by):
-    db.execute("DELETE FROM supersedes WHERE source=? AND source_id=? AND marked_by=?", (source, source_id, by))
+def clear_superseded(db, source, source_id, by, at=None, v=None):
+    """Clears this install's mark by keeping its row with no target, so the clear still outranks an older mark from
+    another computer."""
+    db.execute("INSERT INTO supersedes(source, source_id, marked_by, new_source, new_source_id, at, v) "
+               "VALUES (?,?,?,NULL,NULL,?,?) ON CONFLICT(source, source_id, marked_by) DO UPDATE SET "
+               "new_source=NULL, new_source_id=NULL, at=excluded.at, v=excluded.v",
+               (source, source_id, by, now_iso() if at is None else at, v))
 
 
 def superseded_by(db, source, source_id):
@@ -142,8 +147,9 @@ def superseded_by(db, source, source_id):
 
 
 def superseded(db, items):
-    """{item: the item that replaces it} for those of `items` with a mark. Of several marks the latest wins: one not
-    synced yet (no `v`), else the highest `v`, then the highest marking install."""
+    """{item: the item that replaces it} for those of `items` that are superseded. Of several marks the latest wins:
+    one not synced yet (no `v`), else the highest `v`, then the highest marking install. A winning clear (no target)
+    means the item is not superseded."""
     marks = {}
     items = list(items)
     for i in range(0, len(items), 400):
@@ -155,7 +161,7 @@ def superseded(db, items):
             rank = (v is None, v or 0, by)
             if (src, sid) not in marks or rank > marks[(src, sid)][0]:
                 marks[(src, sid)] = (rank, (new_src, new_sid))
-    return {item: new for item, (_, new) in marks.items()}
+    return {item: new for item, (_, new) in marks.items() if new[0] is not None}
 
 
 def store_item(db, source, source_id, ts, title, content, meta):

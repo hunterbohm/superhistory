@@ -203,19 +203,17 @@ class CliTest(TempHome):
         self.assertIn("Old plan (superseded by #2)\n", self.get(1))
         self.assertNotIn("superseded", self.get(2))
 
-    def test_clearing_a_mark_clears_only_this_computers(self):
+    def test_clearing_a_mark_outranks_another_computers_older_one(self):
         self.add("old", "the launch is in October", title="Old plan")
         self.add("new", "the launch is in November", title="New plan")
-        self.assertEqual(self.run_kb("supersede", 1, 2)[0], 0)
         store.mark_superseded(self.db, "s", "old", ("s", "new"), "c-bbbbbbbbbbbbb", v=1)
         self.db.commit()
+        self.assertIn("(superseded by #2)", self.get(1))
+        self.assertEqual(self.run_kb("supersede", 1, 2)[0], 0)
         code, out, _ = self.run_kb("supersede", 1, "--clear")
         self.assertEqual(code, 0)
-        self.assertIn("another computer's mark still stands", out)
-        self.assertIn("(superseded by #2)", self.get(1))
-        self.db.execute("DELETE FROM supersedes WHERE marked_by = 'c-bbbbbbbbbbbbb'")
-        self.db.commit()
-        self.assertNotIn("superseded", self.get(1))
+        self.assertIn("#1 is no longer marked superseded", out)
+        self.assertNotIn("superseded by", self.get(1))
 
     def test_empty_item_prints_an_empty_page(self):
         self.add("e", "", title="Empty note")

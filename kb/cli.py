@@ -306,12 +306,7 @@ def cmd_supersede(paths, config, args):
             store.clear_superseded(db, *old, mine)
         else:
             store.mark_superseded(db, *old, _item_of(db, args.new_id), mine)
-    if not args.clear:
-        print(f"#{args.old_id} superseded by #{args.new_id}")
-    elif store.superseded_by(db, *old):
-        print(f"#{args.old_id}: cleared this computer's mark; another computer's mark still stands")
-    else:
-        print(f"#{args.old_id} is no longer marked superseded")
+    print(f"#{args.old_id} " + ("is no longer marked superseded" if args.clear else f"superseded by #{args.new_id}"))
 
 
 def parser():

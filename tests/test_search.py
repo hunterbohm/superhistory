@@ -249,8 +249,16 @@ class SearchTest(TempDB):
         self.assertEqual(store.superseded_by(self.db, "s", "old"), ("s", "theirs"), "the higher version wins")
         store.mark_superseded(self.db, "s", "old", ("s", "mine"), MINE)
         self.assertEqual(store.superseded_by(self.db, "s", "old"), ("s", "mine"), "a mark not synced yet is newest")
-        store.clear_superseded(self.db, "s", "old", MINE)
-        self.assertEqual(store.superseded_by(self.db, "s", "old"), ("s", "theirs"), "clearing one leaves the other")
+
+    def test_a_later_clear_outranks_an_older_mark_from_another_computer(self):
+        self.add("old", "gecko", title="old")
+        store.mark_superseded(self.db, "s", "old", ("s", "a-new"), THEIRS, "2026-10-01", v=1)
+        store.mark_superseded(self.db, "s", "old", ("s", "b-new"), MINE, "2026-10-02", v=2)
+        store.clear_superseded(self.db, "s", "old", MINE, "2026-10-03", v=3)
+        self.assertIsNone(store.superseded_by(self.db, "s", "old"), "the older mark does not win again")
+        self.assertIsNone(search.search(self.db, "gecko")[0]["superseded_by"])
+        store.mark_superseded(self.db, "s", "old", ("s", "a-newer"), THEIRS, "2026-10-04", v=4)
+        self.assertEqual(store.superseded_by(self.db, "s", "old"), ("s", "a-newer"), "a newer mark wins over the clear")
 
     def test_search_over_several_stores_merges_by_score_and_names_each_store(self):
         other = store.connect(os.path.join(self.tmp.name, "other.sqlite"))
