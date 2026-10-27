@@ -166,13 +166,19 @@ def run_tool(name, tool, stats, questions, out, workers, fresh, setup):
     return {"tool": name, "load": stats, "ran": len(todo) - failures, "failed": failures}
 
 
-def rejudge(out, questions, setup, workers):
-    """Grade every saved answer again, taking each question's current gold answer and evidence."""
+def rejudge(out, questions, setup, workers, second=None):
+    """Grade every tool's saved answers again, taking each question's current gold answer and evidence. With
+    `second`, keep the saved verdicts and write both verdicts for every row to that file instead."""
     by_id = {q["id"]: q for q in questions}
-    for name in sorted(f for f in os.listdir(out) if f.endswith(".jsonl")):
+    pairs = []
+    for name in sorted(f for f in os.listdir(out) if f.endswith(".jsonl") and f[:-6] in tools.REGISTRY):
         rows = read_jsonl(os.path.join(out, name))
         with ThreadPoolExecutor(workers) as pool:
             verdicts = list(pool.map(lambda r: grade(setup, by_id[r["id"]], r["answer"]), rows))
+        if second:
+            pairs += [{"tool": name[:-6], "id": r["id"], "first": r["correct"], "second": bool(v.get("correct")),
+                       "second_reason": v.get("reason")} for r, v in zip(rows, verdicts)]
+            continue
         for row, verdict in zip(rows, verdicts):
             q = by_id[row["id"]]
             row.update(question=q["question"], gold=q["answer"], evidence=q["evidence"],
@@ -180,6 +186,11 @@ def rejudge(out, questions, setup, workers):
         with open(os.path.join(out, name), "w", encoding="utf-8") as fh:
             fh.writelines(json.dumps(r, ensure_ascii=False) + "\n" for r in rows)
         print(f"{name}: {sum(r['correct'] for r in rows)}/{len(rows)} correct", file=sys.stderr)
+    if second:
+        with open(second, "w", encoding="utf-8") as fh:
+            fh.writelines(json.dumps(p, ensure_ascii=False) + "\n" for p in pairs)
+        agree = sum(p["first"] == p["second"] for p in pairs)
+        print(f"second grading agrees on {agree} of {len(pairs)} rows", file=sys.stderr)
 
 
 def latency(args):
@@ -233,7 +244,7 @@ def summarize(rows):
 def table(out):
     meta = json.load(open(os.path.join(out, "run.json"))) if os.path.exists(os.path.join(out, "run.json")) else {}
     names = [t["tool"] for t in meta.get("tools", [])] or sorted(
-        f[:-6] for f in os.listdir(out) if f.endswith(".jsonl"))
+        f[:-6] for f in os.listdir(out) if f.endswith(".jsonl") and f[:-6] in tools.REGISTRY)
     lines = []
     head = None
     for name in names:
@@ -280,6 +291,7 @@ def main(argv=None):
     rj = sub.add_parser("rejudge", help="grade the month's saved answers again with the current gold and judge")
     rj.add_argument("out", nargs="?", default=RESULTS)
     rj.add_argument("--workers", type=int, default=6)
+    rj.add_argument("--second", help="keep the saved verdicts; write both verdicts for every row to this file")
     lv = sub.add_parser("live", help="ask questions of an existing knowledge base, read-only")
     lv.add_argument("--db", required=True, help="the kb.sqlite to read")
     lv.add_argument("--questions", required=True)
@@ -297,7 +309,7 @@ def main(argv=None):
         latency(args)
         return 0
     if args.cmd == "rejudge":
-        rejudge(args.out, read_jsonl(os.path.join(MONTH, "questions.jsonl")), MONTH_SETUP, args.workers)
+        rejudge(args.out, read_jsonl(os.path.join(MONTH, "questions.jsonl")), MONTH_SETUP, args.workers, args.second)
         print(table(args.out))
         return 0
     os.makedirs(args.out, exist_ok=True)

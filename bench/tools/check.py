@@ -97,6 +97,8 @@ def modules():
                 return search(db, query, after, source, limit, before, visible if HIDE else keep)
             kb.search = visible_search
             sys.stdout = _ThreadStdout()
+            # kb's check names its own gateway and key file; the benchmark's endpoint and key replace them.
+            context.GATEWAY, context.gateway_token = gateway.BASE_URL, gateway._key
             if PRODUCT_WORDING:
                 _product_wording(context)
             _modules.update(kb=kb, context=context, summarize=summarize)
