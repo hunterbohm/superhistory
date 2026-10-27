@@ -19,7 +19,7 @@ Rows go to `bench/results/month/<tool>.jsonl`, and the table to `bench/results/m
 
 Model calls go to any endpoint that speaks Anthropic's Messages API: `BENCH_BASE_URL` (default `http://127.0.0.1:8317`, a local CLIProxyAPI gateway) and `BENCH_API_KEY`. The judge model is a GPT model served through that gateway; with a plain Anthropic key, change `JUDGE_MODEL` in `run.py`.
 
-The check runs from kb's own code until the product's package lands in this repo. `BENCH_KB_CODE` points at a copy of it; the numbers below used `git archive` of kb at 4a884a2, recorded in `run.json` by hash. Without the copy, the check's tools stop with a message saying so.
+The check runs from this repo's package: `kb/check.py`, `kb/search.py` and `kb/summarize.py`, with the package's Anthropic-compatible plug-in pointed at `BENCH_BASE_URL`. The agent's `kb search` and `kb get` are the package's own commands, run against each scratch store. Each run records the package code's hash and the commit. The published rows below ran from a copy of kb's code at 4a884a2, before the package landed; rerun from the package, the month matches them (see "Dev and test halves").
 
 The rival tools need their own setup, all local, with no account:
 
@@ -33,12 +33,12 @@ The rival tools need their own setup, all local, with no account:
 
 ## How a question runs
 
-1. The tool loads `demo/month/items.jsonl` into a fresh store. The check stores the items with kb's own code and writes kb's summaries for long items, as ingest does.
+1. The tool loads `demo/month/items.jsonl` into a fresh store. The check stores the items with the package's code and writes its summaries for long items, as ingest does, for each source its type summarizes by default.
 2. The question arrives as a new message to an agent, with no conversation before it. The tool's lookup returns the text an agent would see before the message, or nothing.
 3. The answer model (`claude-sonnet-5-5`) answers from that text. It is told it works for the month's persona and that today is October 1, 2026. When the product gives agents commands to read more, the answer model gets them as tools: `kb search` and `kb get` for the check (its own header tells agents to run them), `search_memory` for Mem0 (OpenMemory MCP's name), a search for Supermemory, and claude-mem's three MCP search tools (`search`, `timeline`, `get_observations`), served by claude-mem's own MCP server with its own schemas and replies. It gets at most 8 tool turns.
 4. The judge (`gpt-6.1-sol`, a different model family from the answer model and from the check's own `claude-haiku-5-5`) compares the answer with the gold answer and returns correct or not, with a reason.
 
-The check's own two model calls, and kb's summaries at ingest, run on `claude-haiku-5-5`, as they do in kb. The check's two prompts use the product's wording ("the user") from the package's `kb/check.py`; kb's own copy names its owner, and the query writer then put that name into searches.
+The check's own two model calls, and the summaries at ingest, run on `claude-haiku-5-5`, as they do in kb. The check's model tokens count the gateway's cached input too: the gateway caches every prompt, and its `input_tokens` leaves the cached part out.
 
 ## What each column means
 
@@ -68,6 +68,29 @@ Load notes from `run.json` and the run logs:
 - Supermemory finished extracting memories from all 471 documents about two hours after they were posted, at about 3.5 documents a minute. A first run that posted them was stopped by a time limit; the second run reused the posted documents and waited for the rest.
 - claude-mem took 142 minutes to compress the 81 sessions into 504 observations and 54 summaries. Replayed all at once, sessions park behind its two agent slots and never finish, so the replay waits for each session.
 - claude-mem's agent tools are its own MCP server's, started the way its plugin registers it, so the agent sees the vendor's tool schemas and formatted replies. The rows in this folder come from that setup, against the same store.
+
+## Dev and test halves
+
+Changes to the check are tuned on dev halves and reported on test halves that tuning never reads. `bench/splits.py` fixes them, and `bench/splits/` holds the ids:
+
+| Test | Dev | Test |
+|---|---|---|
+| The made-up month | month A, `demo/month` | month B, `bench/month-b`: its own stories and questions, written apart from any tuning, on month A's background items |
+| LongMemEval S | 250 questions | 250 questions: by question id hash within each question type, abstention questions apart |
+| LoCoMo | conversations 1 to 5 | conversations 6 to 10 |
+
+A seed alone cannot make a held-out month: it changes only ids and the seconds of each time, so month B has its own stories (`bench/month/stories_b/`).
+
+```bash
+bench/dev.sh LABEL [--slice]                        # one pass over the three dev halves; --slice: 100 and 150 questions
+python3 bench/compare.py LABEL --noise noise1,noise2,noise3   # dev numbers beside the baseline's repeat runs
+python3 bench/lookups.py LABEL                      # the check's lookups alone: a screen with no answer model or judge
+python3 bench/run.py month --month b --label baseline --tools check   # a held-out run
+python3 bench/public/longmemeval.py --set s --split test --label baseline
+python3 bench/public/locomo.py --split test --label baseline
+```
+
+A test half runs at most three times, once each as `baseline`, `midpoint` and `final`, and `bench/splits/heldout-runs.tsv` logs every run. "Handled right" on the month counts a correct answer, and for a question nothing fits, a lookup that also added nothing. Tokens per question count the cards, the agent's `kb` commands and the check's own model calls.
 
 ## Results on the made-up month
 

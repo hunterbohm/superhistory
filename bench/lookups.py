@@ -73,6 +73,10 @@ def report(test, rows):
     timed = sorted(r["seconds"] for r in rows if r["query"])
     line = (f"{test}: {len(rows)} lookups, evidence on a card {sum(bool(set(r['evidence']) & set(r['shown'])) for r in answerable)}"
             f"/{len(answerable)}")
+    spread = [r for r in answerable if len(r["evidence"]) > 1]
+    if spread:
+        line += (f", every evidence record on a card {sum(set(r['evidence']) <= set(r['shown']) for r in spread)}"
+                 f"/{len(spread)} with more than one")
     if any(r["phrases_on_cards"] for r in answerable):
         line += f", answer phrases on the cards {sum(r['phrases_on_cards'] for r in answerable)}/{len(answerable)}"
     if none:
