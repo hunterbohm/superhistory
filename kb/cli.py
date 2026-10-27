@@ -140,20 +140,28 @@ def cmd_stats(paths, config, args):
         print(f"  UNREACHABLE {host} since {since}, probably asleep")
 
 
-class _MaskedFormatter(logging.Formatter):
-    """Masks secrets in every line kb logs, tracebacks included, since an error from a source or from Sync can quote
-    a token."""
+class _Mask(logging.Filter):
+    """Masks secrets in each record kb logs, its traceback included, before any handler sees it, since an error from
+    a source or from Sync can quote a token."""
 
-    def format(self, record):
-        return mask(super().format(record))
+    def filter(self, record):
+        record.msg, record.args = mask(record.getMessage()), None
+        if record.exc_info:
+            record.exc_text, record.exc_info = mask(logging.Formatter().formatException(record.exc_info)), None
+        if record.stack_info:
+            record.stack_info = mask(record.stack_info)
+        return True
 
 
 def _logger(paths):
     os.makedirs(paths.log_dir, exist_ok=True)
     log = logging.getLogger("kb")
     log.setLevel(logging.INFO)
+    log.propagate = False
+    if not any(isinstance(f, _Mask) for f in log.filters):
+        log.addFilter(_Mask())
     if not log.handlers:
-        fmt = _MaskedFormatter("%(asctime)s %(levelname)s %(message)s")
+        fmt = logging.Formatter("%(asctime)s %(levelname)s %(message)s")
         for handler in (logging.FileHandler(paths.log("ingest")), logging.StreamHandler()):
             handler.setFormatter(fmt)
             log.addHandler(handler)

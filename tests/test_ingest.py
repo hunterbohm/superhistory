@@ -544,6 +544,28 @@ class CliTest(unittest.TestCase):
         self.assertIn("relay refused [masked]", logged, "the traceback is logged, masked")
         for where in (logged, self.err.getvalue()):
             self.assertNotIn("x" * 40, where)
+
+    def test_a_handler_kb_did_not_add_sees_only_masked_text(self):
+        client = types.ModuleType("kb.sync")
+
+        def refuse(*args):
+            raise RuntimeError("relay refused sk-ant-api03-" + "x" * 40)
+
+        client.after_ingest = refuse
+        self.configure(self.make_notes(), "[sync]\n")
+        seen = {name: io.StringIO() for name in ("root", "kb")}
+        handlers = {name: logging.StreamHandler(stream) for name, stream in seen.items()}
+        root, kb = logging.getLogger(), logging.getLogger("kb")
+        root.addHandler(handlers["root"])
+        self.addCleanup(root.removeHandler, handlers["root"])
+        with mock.patch.dict(sys.modules, {"kb.sync": client}):
+            self.assertEqual(self.ingest(), 1)
+            kb.addHandler(handlers["kb"])
+            self.addCleanup(kb.removeHandler, handlers["kb"])
+            self.assertEqual(self.ingest(), 1)
+        self.assertNotIn("x" * 40, seen["root"].getvalue())
+        self.assertIn("relay refused [masked]", seen["kb"].getvalue(), "an app's own handler gets the traceback")
+        self.assertNotIn("x" * 40, seen["kb"].getvalue())
         self.assertEqual(self.stored(), [f"{ids.install_id(self.paths)}:Area/plan.md"], "the items still landed")
 
     def test_a_computer_with_only_sync_configured_still_runs_it(self):
