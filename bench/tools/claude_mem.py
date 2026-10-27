@@ -35,9 +35,6 @@ def worker_url():
     host = settings.get("CLAUDE_MEM_WORKER_HOST", "127.0.0.1")
     port = settings.get("CLAUDE_MEM_WORKER_PORT", str(37700 + os.getuid() % 100))
     return f"http://{'127.0.0.1' if host == 'localhost' else host}:{port}"
-
-
-URL = worker_url()
 # The three tools of claude-mem's documented search workflow: search, then timeline, then get_observations.
 SEARCH_TOOLS = ("search", "timeline", "get_observations")
 
@@ -88,7 +85,7 @@ class MCP:
 
 
 def worker(method, path, body=None, timeout=120):
-    req = urllib.request.Request(URL + path, method=method, headers={"content-type": "application/json"},
+    req = urllib.request.Request(worker_url() + path, method=method, headers={"content-type": "application/json"},
                                  data=None if body is None else json.dumps(body).encode())
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         raw = resp.read().decode()
