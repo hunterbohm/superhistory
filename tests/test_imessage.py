@@ -33,7 +33,6 @@ SMS_CHAT = "SMS;-;+15550100999"
 
 
 def blob(text):
-    """The attributedBody of a message that has no plain text column."""
     raw = text.encode()
     if len(raw) < 0x80:
         size = bytes([len(raw)])
@@ -44,7 +43,6 @@ def blob(text):
 
 
 def apple_ns(year, month, day, hour, minute):
-    """Local wall-clock time as chat.db stores it. Tests that read days run with TZ=America/Los_Angeles."""
     return int((datetime(year, month, day, hour, minute).timestamp() - imessage.APPLE_EPOCH) * 1e9)
 
 
@@ -57,8 +55,6 @@ def add_message(path, rowid, chat, text, body, handle, from_me, date, assoc=0, f
 
 
 def build_chat_db(path):
-    """A made-up Messages database: a one-to-one chat with Dana over three local days, a group with Dana and a
-    company, and a text-message chat with an unsaved number. Messages are dated October 2026."""
     db = sqlite3.connect(path)
     db.executescript(SCHEMA)
     db.executescript("""
@@ -92,7 +88,6 @@ def build_chat_db(path):
 
 
 def build_addressbook(folder):
-    """A made-up AddressBook: Dana Park by phone, and a company by email, in a Sources subfolder as macOS nests them."""
     book_dir = os.path.join(folder, "Sources", "SRC-1")
     os.makedirs(book_dir)
     book = sqlite3.connect(os.path.join(book_dir, "AddressBook-v22.abcddb"))

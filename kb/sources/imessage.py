@@ -42,8 +42,8 @@ class Chat(NamedTuple):
     group: bool
     display: str
     service: str
-    handles: List[str]      # as stored: a phone number or an email; a one-to-one chat with none falls back to its id
-    participants: List[str]  # the handles as contact names where known
+    handles: List[str]      # as stored: a phone number or an email
+    participants: List[str]
 
 
 def decode_attributed(blob):
@@ -126,7 +126,6 @@ def _apple_ns(unix):
 
 
 def _day_bounds(day):
-    """Apple-epoch ns range [start, end) of a local calendar day."""
     start = datetime(day.year, day.month, day.day)
     end = start + timedelta(days=1)
     return _apple_ns(start.timestamp()), _apple_ns(end.timestamp())
@@ -196,7 +195,6 @@ def _day_lines(db, chat_id, day, names, me):
 
 
 def _touched(db, since, cutoff):
-    """(chat_id, local day) pairs that gained a message, and the largest message ROWID seen."""
     if since is None:
         rows = db.execute(
             "SELECT j.chat_id, j.message_date, j.message_id FROM chat_message_join j WHERE j.message_date >= ?",
@@ -233,6 +231,11 @@ def _label(chat):
         f" and {len(people) - MAX_TITLE_NAMES} more" if len(people) > MAX_TITLE_NAMES else "")
 
 
+def _rowids_restarted(db, since):
+    """Whether chat.db was rebuilt, so its message ids start again below the watermark."""
+    return (db.execute("SELECT MAX(ROWID) FROM message").fetchone()[0] or 0) < since
+
+
 def extract(run):
     options = run.options
     path = os.path.expanduser(options.db)
@@ -241,8 +244,7 @@ def extract(run):
     db = _open(path)
     try:
         db.execute("PRAGMA busy_timeout=30000")
-        if since is not None and (db.execute("SELECT MAX(ROWID) FROM message").fetchone()[0] or 0) < since:
-            # chat.db was rebuilt and its ROWIDs restarted below the stored mark.
+        if since is not None and _rowids_restarted(db, since):
             since = None
         names = Names(load_contacts(options.contacts))
         chats = _chats(db, names)

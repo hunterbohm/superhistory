@@ -34,9 +34,6 @@ def review(login, at, state, body):
 
 
 class FakeGh:
-    """The fixture gh script copied into a temp folder with its first line pointing at this Python, plus the
-    made-up threads it serves and the calls it received."""
-
     def __init__(self, folder):
         self.folder = folder
         self.path = os.path.join(folder, "gh")
@@ -71,7 +68,6 @@ class FakeGh:
             return []
 
     def searches(self):
-        """The (start, end) epochs of every search, in call order."""
         ranges = [next(a for a in call if a.startswith("--updated=")).split("=", 1)[1].split("..")
                   for call in self.calls() if call[:2] == ["search", "issues"]]
         return [tuple(datetime.strptime(t, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc).timestamp()

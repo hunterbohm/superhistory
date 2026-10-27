@@ -52,7 +52,6 @@ class Hit(NamedTuple):
 
 
 class Post(NamedTuple):
-    """A comment, or a submitted review; verdict is empty for a comment."""
     author: str
     at: str
     text: str
@@ -108,7 +107,6 @@ def _search(options, start, end):
 
 
 def _hits(options, start, end):
-    """The latest version of every thread updated from start to end, oldest first."""
     windows = [(lo, min(int(end), lo + SPAN_DAYS * DAY)) for lo in range(int(start), int(end), SPAN_DAYS * DAY)]
     found, ready = {}, 0.0
     while windows:

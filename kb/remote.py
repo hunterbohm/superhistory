@@ -42,13 +42,11 @@ sys.exit(serve(REQUEST))
 
 
 class HostAway(RuntimeError):
-    """ssh could not reach the computer. Its sources catch up from their watermarks when it is back."""
+    """ssh could not reach the computer."""
 
 
 @functools.lru_cache(maxsize=1)
 def package_sources():
-    """module name -> (is a package, source text) for every module of the package except the vendored TOML parser,
-    which only reads this computer's config."""
     root = pathlib.Path(kb.__file__).parent
     found = {}
     for path in sorted(root.rglob("*.py")):
@@ -116,8 +114,6 @@ def serve(request):
 
 
 class SshReader:
-    """Runs sources on one other computer over ssh."""
-
     def __init__(self, host):
         self.host = host
 

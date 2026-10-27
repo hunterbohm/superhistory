@@ -120,7 +120,6 @@ def _session_files(root, since):
         except OSError:
             continue
         for entry in entries:
-            # Claude Code cleanup can delete a session file between the listing and the open.
             try:
                 if not entry.name.endswith(".jsonl") or not entry.is_file():
                     continue

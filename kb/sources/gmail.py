@@ -50,7 +50,6 @@ BATCH = 50
 LIST_CHUNK = 500
 TIMEOUT = 120
 BODY_CHARS = 20000
-# Unsent drafts and deleted or spam copies inside a kept thread are not part of the conversation.
 SKIP_MESSAGE_LABELS = {"DRAFT", "TRASH", "SPAM"}
 HEADER_ITEMS = "(UID X-GM-THRID X-GM-LABELS INTERNALDATE BODY.PEEK[HEADER.FIELDS (FROM SUBJECT)])"
 MONTHS = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
@@ -131,8 +130,8 @@ class Message(NamedTuple):
 
 class Thread(NamedTuple):
     id: str                          # X-GM-THRID, in decimal
-    mark: int                        # the highest UID of the thread's new messages
-    messages: Tuple[Message, ...]    # oldest first, without drafts and trash or spam copies
+    mark: int
+    messages: Tuple[Message, ...]
 
     @property
     def labels(self):
@@ -288,12 +287,10 @@ def _quote(name):
 
 
 def _mark(validity, uid):
-    """A watermark that holds the folder's UIDVALIDITY above the UID, so marks from a renumbered folder never match."""
     return validity * UID_SPAN + uid
 
 
 def _since(mark, validity, highest):
-    """The last processed UID in this numbering of the folder, or None to start over from the window."""
     if mark is None:
         return None
     old_validity, uid = divmod(int(mark), UID_SPAN)
@@ -301,7 +298,6 @@ def _since(mark, validity, highest):
 
 
 def _open_all_mail(conn):
-    """Selects All Mail read-only and returns its UIDVALIDITY and highest UID."""
     for row in _ok(conn.list()):
         m = LIST_ROW.match(row) if isinstance(row, bytes) else None
         if m and b"\\all" in m.group(1).lower().split():
@@ -327,7 +323,6 @@ def _search(conn, criteria):
 
 
 def _list(conn, since, window_days):
-    """The new messages' threads: thread id -> the highest new UID in it."""
     if since is None:
         day = datetime.now(timezone.utc) - timedelta(days=window_days)
         uids = _search(conn, f"SINCE {day.day}-{MONTHS[day.month - 1]}-{day.year}")
@@ -352,7 +347,6 @@ def _uid_set(uids):
 
 
 def _fetch(conn, uids, items):
-    """(uid, response head, literal or None) for each fetched message."""
     rows = []
     for start in range(0, len(uids), LIST_CHUNK):
         current = None
@@ -418,7 +412,6 @@ def _header(msg, name):
 
 
 def _describe(conn, ids, marks):
-    """The threads, whole, in the given order."""
     found = {}
     for start in range(0, len(ids), BATCH):
         batch = ids[start:start + BATCH]
@@ -435,13 +428,10 @@ def _describe(conn, ids, marks):
 
 
 def _sort(run, threads):
-    """The ids of the threads to keep."""
     options = run.options
     candidates = [t for t in threads if t.messages and not run.excludes(parseaddr(t.messages[0].sender)[1].lower())]
     if not options.sort:
         return {t.id for t in candidates}
-    # A thread the user wrote in with more than one message is a conversation. The model sometimes skipped one
-    # that began as an airline notice, so these are kept without asking.
     kept = {t.id for t in candidates if len(t.messages) > 1 and "SENT" in t.labels}
     rest = [t for t in candidates if t.id not in kept]
     batches = [rest[i:i + BATCH] for i in range(0, len(rest), BATCH)]
@@ -481,7 +471,6 @@ def _text(part):
 
 
 def _body_and_attachments(msg):
-    """Plain text when the message has it, else HTML (cleaned later), and the attachment names."""
     body = _text(msg.get_body(("plain",))).strip() or _text(msg.get_body(("html",)))
     names = []
     for part in msg.iter_attachments():
@@ -538,13 +527,11 @@ def _clean_body(body):
 
 
 def _render(address, thread, bodies):
-    """The thread as an Item, or None when no message is left after dropping auth codes."""
     blocks, people, subject, last = [], [], None, None
     for m in thread.messages:
         msg = email.message_from_bytes(bodies.get(m.uid, b""), policy=policy.default)
         body, names = _body_and_attachments(msg)
         body = _clean_body(body)
-        # Checked per message: one code email must not drop the conversation.
         if mask.is_auth_noise(body):
             continue
         subject = m.subject if subject is None else subject

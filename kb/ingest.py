@@ -12,19 +12,22 @@ from kb.sources import Excludes, Gone, Item, Progress, Run
 COMMIT_EVERY = 200
 
 
+_UNBUILT = object()
+
+
 class LocalReader:
     def __init__(self, model_factory=None):
         self._model_factory = model_factory or (lambda: None)
-        self._models = []
+        self._built = _UNBUILT
 
     def _model(self):
-        """The AI plug-in, built once a run, or None when none is set up; a source asks for it only if it needs it."""
-        if not self._models:
+        """The AI plug-in, built once a run, or None when none is set up."""
+        if self._built is _UNBUILT:
             try:
-                self._models.append(self._model_factory())
+                self._built = self._model_factory()
             except ai.NotReady:
-                self._models.append(None)
-        return self._models[0]
+                self._built = None
+        return self._built
 
     def _run(self, source, since):
         return Run(source.options, Excludes(source.exclude), since, self._model() if source.type.needs_model else None)

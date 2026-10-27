@@ -11,8 +11,6 @@ from kb import cli, config, ingest, remote, search, store
 from kb.sources import Gone, Item, Progress
 
 LOG = logging.getLogger("kb-test")
-# Stands in for ssh: records the alias, then runs the program it was sent with an isolated Python from "/", like a
-# computer with no copy of kb. Some aliases act out a sleeping or refusing computer.
 FAKE_SSH = """#!{python}
 import subprocess, sys
 args = sys.argv[1:]

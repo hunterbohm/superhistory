@@ -68,7 +68,6 @@ def _iso(epoch):
 
 
 def _identity(options):
-    """Casefolded author names and emails that are the user's: git's global user plus the `identities` option."""
     known = {value.casefold() for value in options.identities}
     for key in ("user.name", "user.email"):
         try:
@@ -81,7 +80,6 @@ def _identity(options):
 
 
 def _walk(path, home, excluded, max_depth, depth=0):
-    """Folders holding a .git entry, never through a symlink, so a linked notes folder is not reached by accident."""
     try:
         entries = list(os.scandir(path))
     except OSError:
@@ -95,8 +93,6 @@ def _walk(path, home, excluded, max_depth, depth=0):
 
 
 def _repos(options, excluded):
-    """One Repo per repository, with linked worktrees folded into it. GitHub repositories come first, so a commit
-    that is also in an unpublished copy keeps its owner/repo id."""
     home = os.path.realpath(os.path.expanduser("~"))
     found = {}
     for root in options.roots:
@@ -154,7 +150,6 @@ def _item(commit, mark):
 
 
 def extract(run):
-    # The watermark is when this run began, not a committer date: dates come from other computers' clocks.
     started = time.time()
     after = started - run.options.window_days * 86400 if run.since is None else run.since - OVERLAP
     identity = _identity(run.options)
@@ -164,7 +159,6 @@ def extract(run):
             shas = [sha for sha in _own_shas(repo, after, identity) if sha not in seen]
             commits = _commits(repo, shas)
         except RuntimeError as exc:
-            # One broken clone must not stop the rest; OVERLAP rereads it once it works again.
             print(f"git: skipped {repo.path}: {exc}", file=sys.stderr)
             continue
         seen.update(shas)

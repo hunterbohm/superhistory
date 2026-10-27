@@ -27,8 +27,6 @@ TOOL_CHARS = 300
 ERROR_CHARS = 800
 AGENT_CHARS = 800
 
-# Matched against the first bytes of a raw line so token counts and encrypted reasoning, which dominate the
-# size of a rollout file, never reach json.loads. Other layouts fall through to the full parse and the handlers below.
 SKIP_HEAD = (
     '"payload":{"type":"token_count"',
     '"payload":{"type":"reasoning"',

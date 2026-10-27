@@ -39,8 +39,7 @@ def iso(at):
 
 
 class FakeGmail:
-    """Stands in for imaplib.IMAP4_SSL on imap.gmail.com: one account's All Mail, answering the commands the source
-    sends the way Gmail does (thread ids, labels, UID order, the `n:*` rule)."""
+    """`UID n:*` includes the last message even when n is past it, as Gmail does."""
 
     def __init__(self, all_mail="[Gmail]/All Mail"):
         self.all_mail = all_mail
@@ -157,7 +156,6 @@ class FakeGmail:
 
 
 def keeps(skip=("deals@",)):
-    """A sorter that keeps every listed thread whose line names none of `skip`."""
     def reply(prompt):
         lines = prompt.user.splitlines()
         return json.dumps({"keep": [int(line.split(".", 1)[0]) for line in lines if not any(s in line for s in skip)]})
@@ -405,8 +403,6 @@ class SignInTest(GmailCase):
 
 
 class TokenServer:
-    """Google's token endpoint on 127.0.0.1: answers refresh and authorization-code grants."""
-
     def __init__(self, test):
         self.forms = []
         outer = self

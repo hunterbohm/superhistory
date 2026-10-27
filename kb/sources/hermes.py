@@ -28,7 +28,6 @@ BATCH_CHARS = 600
 RESULT_CHARS = 200
 ERROR_CHARS = 800
 PLATFORM = {"bluebubbles": "imessage", "photon": "imessage"}
-# Results of these tools are skill and schema dumps that only add noise.
 QUIET_TOOLS = {"skill_view", "skills_list", "tool_describe"}
 # Gateway and compaction injections, not words the user or Hermes said.
 DROP_PREFIXES = (
@@ -43,8 +42,7 @@ SKILL_INVOKED = re.compile(r'^\[IMPORTANT: The user has invoked the "([^"]+)" sk
 OUT_OF_BAND = re.compile(
     r"^\[OUT-OF-BAND USER MESSAGE[^\]]*\]\s*(?:Gateway message origin.*?insufficient\.\s*)?(.*?)\s*\[/OUT-OF-BAND USER MESSAGE\]",
     re.S)
-# The gateway tags a message with the sender's name ("[Sam] text"). The tag stays on plain text, where it says who
-# spoke, and goes only when another injected block follows it.
+# The gateway tags a message with the sender's name ("[Sam] text").
 WRAPPERS = re.compile(
     r"^(?:\[Triggering message id[^\]]*\]|\[[^\]\n:]{1,40}\] (?=\[)|"
     r"Gateway message origin \(JSON data.*?insufficient\.)\s*", re.S)
@@ -78,7 +76,6 @@ def clean_text(text, role):
     if role == "user":
         skill = SKILL_INVOKED.match(text)
         if skill:
-            # The skill body is in the skill library; keep only what the cron prompt asked of it.
             tail = CRON_PREAMBLE.split(text, maxsplit=1)[1] if CRON_PREAMBLE.search(text) else ""
             return f"[skill {skill.group(1)}] {PREVIOUS_RUN.sub('', tail).strip()}".strip()
         text = _unwrap(text)
