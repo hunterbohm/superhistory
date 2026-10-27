@@ -3,12 +3,14 @@
 
     python3 bench/chart.py [--out bench/results/month/chart.png]
 
-Two panels, one scale each: the share of questions with an answer that each tool's agent got right, and the share
-of questions where nothing fits on which the tool added nothing. Rendered with headless Chrome.
+Four panels, one scale each, from the month's result rows: questions with an answer that the agent got right,
+questions with nothing to find on which the tool added nothing, tokens each lookup added to the agent's context,
+and seconds per lookup. Rendered with headless Chrome and the launch fonts.
 """
 import argparse
 import html
 import os
+import statistics
 import subprocess
 import sys
 import tempfile
@@ -21,45 +23,45 @@ import product
 import run
 
 PAPER, INK, GREEN, MUTED, RULE = "#F2EEE5", "#17150F", "#1F6B4C", "#9A9488", "#D9D3C7"
-# Tool, label. The product's own row is drawn in green; every other row in the muted ink.
-ROWS = (("check", product.NAME), ("mem0", "Mem0 (open source)"), ("supermemory", "Supermemory (self-hosted)"),
-        ("claude-mem", "claude-mem"), ("none", "No lookup"))
+# The product's own row is green; every other row is the muted ink.
+ROWS = (("check", product.NAME), ("supermemory", "Supermemory"), ("mem0", "Mem0"), ("claude-mem", "claude-mem"))
 WIDTH, HEIGHT = 1600, 900
 FONTS = {"Newsreader": "ofl/newsreader/Newsreader%5Bopsz,wght%5D.ttf", "Inter": "ofl/inter/Inter%5Bopsz,wght%5D.ttf",
          "JetBrains Mono": "ofl/jetbrainsmono/JetBrainsMono%5Bwght%5D.ttf"}
 
 
-def shares(results):
+def measures(results):
+    """Per tool: answered right, added nothing when nothing fit, mean tokens added, median lookup seconds."""
     found = {}
     for tool, label in ROWS:
-        path = os.path.join(results, f"{tool}.jsonl")
-        if not os.path.exists(path):
-            continue
-        rows = run.read_jsonl(path)
+        rows = run.read_jsonl(os.path.join(results, f"{tool}.jsonl"))
         answerable = [r for r in rows if r["kind"] != "none"]
         none = [r for r in rows if r["kind"] == "none"]
-        found[tool] = (label, sum(r["correct"] for r in answerable) / len(answerable),
-                       sum(not r["context"] for r in none) / len(none), len(answerable), len(none))
+        found[tool] = {"label": label,
+                       "right": sum(r["correct"] for r in answerable) / len(answerable),
+                       "quiet": sum(not r["context"] for r in none) / len(none),
+                       "tokens": statistics.mean(r["context_tokens"] + r["tool_tokens"] for r in rows),
+                       "seconds": statistics.median(r["lookup_seconds"] for r in rows),
+                       "answerable": len(answerable), "none": len(none)}
     return found
 
 
-def panel(x, title, note, values, key):
-    bar_left, bar_width, top, step = x + 300, 320, 250, 96
-    parts = [f'<text x="{x}" y="170" class="h">{html.escape(title)}</text>',
-             f'<text x="{x}" y="206" class="n">{html.escape(note)}</text>']
-    for i, (tool, row) in enumerate(values):
-        y = top + i * step
-        value = row[key]
-        color = GREEN if tool == "check" else MUTED
-        weight = "600" if tool == "check" else "400"
+def panel(x, y, title, note, found, key, scale, show):
+    label_right, bar_left, bar_width, step = x + 190, x + 214, 330, 62
+    parts = [f'<text x="{x}" y="{y}" class="h">{html.escape(title)}</text>',
+             f'<text x="{x}" y="{y + 32}" class="n">{html.escape(note)}</text>']
+    for i, (tool, _) in enumerate(ROWS):
+        top = y + 62 + i * step
+        value = found[tool][key]
+        mine = tool == "check"
+        weight = "600" if mine else "400"
         parts += [
-            f'<text x="{bar_left - 24}" y="{y + 30}" class="l" text-anchor="end" font-weight="{weight}">'
-            f'{html.escape(row[0])}</text>',
-            f'<rect x="{bar_left}" y="{y + 6}" width="{bar_width}" height="36" fill="{RULE}" rx="4"/>',
-            f'<rect x="{bar_left}" y="{y + 6}" width="{max(bar_width * value, 4):.1f}" height="36" fill="{color}" '
-            f'rx="4"/>',
-            f'<text x="{bar_left + bar_width + 20}" y="{y + 32}" class="v" font-weight="{weight}">'
-            f'{100 * value:.0f}%</text>']
+            f'<text x="{label_right}" y="{top + 23}" class="l" text-anchor="end" font-weight="{weight}">'
+            f'{html.escape(found[tool]["label"])}</text>',
+            f'<rect x="{bar_left}" y="{top}" width="{bar_width}" height="32" fill="{RULE}" rx="4"/>',
+            f'<rect x="{bar_left}" y="{top}" width="{max(bar_width * value / scale, 4):.1f}" height="32" '
+            f'fill="{GREEN if mine else MUTED}" rx="4"/>',
+            f'<text x="{bar_left + bar_width + 18}" y="{top + 24}" class="v" font-weight="{weight}">{show(value)}</text>']
     return "\n".join(parts)
 
 
@@ -76,26 +78,29 @@ def fonts(folder):
 
 
 def page(found, faces):
-    values = [(tool, found[tool]) for tool, _ in ROWS if tool in found]
-    answerable, none = values[0][1][3], values[0][1][4]
-    return f"""<!doctype html><html><head><meta charset="utf-8">
-<style>
+    first = found["check"]
+    tokens = max(f["tokens"] for f in found.values())
+    seconds = max(f["seconds"] for f in found.values())
+    pct = lambda v: f"{100 * v:.0f}%"
+    return f"""<!doctype html><html><head><meta charset="utf-8"><style>
 {faces}
 body {{ margin: 0; background: {PAPER}; }}
-.t {{ font: 500 60px Newsreader, serif; fill: {INK}; }}
-.s {{ font: 400 26px Inter, sans-serif; fill: {INK}; opacity: .72; }}
-.h {{ font: 600 30px Inter, sans-serif; fill: {INK}; }}
-.n {{ font: 400 22px Inter, sans-serif; fill: {INK}; opacity: .65; }}
-.l {{ font: 400 26px Inter, sans-serif; fill: {INK}; }}
-.v {{ font: 400 28px "JetBrains Mono", monospace; fill: {INK}; }}
-.f {{ font: 400 20px "JetBrains Mono", monospace; fill: {INK}; opacity: .55; }}
+.t {{ font: 500 54px Newsreader, serif; fill: {INK}; }}
+.h {{ font: 600 28px Inter, sans-serif; fill: {INK}; }}
+.n {{ font: 400 20px Inter, sans-serif; fill: {INK}; opacity: .65; }}
+.l {{ font: 400 24px Inter, sans-serif; fill: {INK}; }}
+.v {{ font: 400 24px "JetBrains Mono", monospace; fill: {INK}; }}
+.f {{ font: 400 18px "JetBrains Mono", monospace; fill: {INK}; opacity: .55; }}
 </style></head><body>
 <svg width="{WIDTH}" height="{HEIGHT}" viewBox="0 0 {WIDTH} {HEIGHT}" xmlns="http://www.w3.org/2000/svg">
 <rect width="{WIDTH}" height="{HEIGHT}" fill="{PAPER}"/>
-<text x="80" y="100" class="t">One made-up month, asked {answerable + none} times</text>
-{panel(80, "Answered right", f"{answerable} questions with an answer in the month", values, 1)}
-{panel(840, "Added nothing when nothing fit", f"{none} questions with no answer in the month", values, 2)}
-<text x="80" y="{HEIGHT - 50}" class="f">Same answer model and judge for every tool. Method, versions and every row: bench/README.md</text>
+<text x="80" y="92" class="t">One made-up month, {first["answerable"] + first["none"]} questions, four tools</text>
+{panel(80, 170, "Answered right", f"{first['answerable']} questions with an answer in the month", found, "right", 1, pct)}
+{panel(840, 170, "Added nothing when nothing fit", f"{first['none']} questions with nothing to find", found, "quiet", 1, pct)}
+{panel(80, 520, "Tokens added per question", "mean, lookup plus what the agent read; fewer is cheaper", found, "tokens",
+       tokens, lambda v: f"{v:,.0f}")}
+{panel(840, 520, "Seconds per lookup", "median; fewer is faster", found, "seconds", seconds, lambda v: f"{v:.2f} s")}
+<text x="80" y="{HEIGHT - 34}" class="f">Same answer model and judge for every tool; rivals self-hosted. Method and every row: bench/README.md</text>
 </svg></body></html>"""
 
 
@@ -109,11 +114,10 @@ def main(argv=None):
     with tempfile.TemporaryDirectory() as tmp:
         source = os.path.join(tmp, "chart.html")
         with open(source, "w", encoding="utf-8") as fh:
-            fh.write(page(shares(args.results), fonts(args.fonts)))
+            fh.write(page(measures(args.results), fonts(args.fonts)))
         subprocess.run([args.chrome, "--headless=new", "--disable-gpu", "--hide-scrollbars", "--no-first-run",
                         "--no-default-browser-check", f"--user-data-dir={os.path.join(tmp, 'profile')}",
-                        f"--window-size={WIDTH},{HEIGHT}",
-                        f"--screenshot={os.path.abspath(args.out)}", source],
+                        f"--window-size={WIDTH},{HEIGHT}", f"--screenshot={os.path.abspath(args.out)}", source],
                        check=True, capture_output=True, timeout=120)
     print(args.out)
     return 0

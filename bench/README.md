@@ -72,7 +72,7 @@ Load notes from `run.json` and the run logs:
 
 ![The check against three rivals on the made-up month](results/month/chart.png)
 
-All rows are in `bench/results/month/`, and `table.md` there has the full table. Graded once, then graded a second time with the same rubric, the rows agree on 1,361 of 1,368. Four of the seven that flipped are Supermemory's, so a gap of four questions or fewer between two tools is not measurable here.
+All rows are in `bench/results/month/`, and `table.md` there has the full table. Graded once, then graded a second time with the same rubric, the rows agree on 1,361 of 1,368; `second-grading.jsonl` holds both verdicts for every row. Four of the seven that flipped are Supermemory's, so a gap of four questions or fewer between two tools is not measurable here. To grade again, copy the per-tool row files to a folder and run `python3 bench/run.py rejudge <folder>`.
 
 | Tool | Right, of 131 with an answer | Added nothing, of 40 with nothing to find | Tokens added per question, mean | Lookup, median |
 |---|---|---|---|---|
