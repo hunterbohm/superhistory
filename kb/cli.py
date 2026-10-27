@@ -4,6 +4,7 @@ import logging
 import os
 import sqlite3
 import sys
+import time
 from datetime import datetime, timezone
 
 from kb import NAME, __version__, ai, check, config as config_mod, ingest, search, store, summarize
@@ -204,6 +205,20 @@ def cmd_login(paths, config, args):
         print(f"Add this line under [sources.{args.source}]:\n\nrefresh_token = \"file:{key_file}\"")
 
 
+def cmd_ai(paths, config, args):
+    if args.action == "list":
+        for name in ai.visible_plugins():
+            spec = ai.PLUGINS[name]
+            mark = "*" if config.ai and config.ai.plugin == name else " "
+            print(f"{mark} {name:<22}{spec.label}")
+        return 0
+    model = ai.load(config.ai)
+    started = time.monotonic()
+    answer = model.ask(ai.Prompt("Answer with the single word ok.", "Say ok.", 1000), timeout=120)
+    print(f"{model.name} ({model.model}) answered in {time.monotonic() - started:.1f} s: {answer.strip()[:80]!r}")
+    return 0
+
+
 def cmd_paths(paths, config, args):
     for label, where in (("config", paths.config_file), ("database", paths.db), ("logs", paths.log_dir),
                          ("cache", paths.cache_dir)):
@@ -262,6 +277,9 @@ def parser():
     lg = sub.add_parser("login", help="sign in to Gmail with your own Google OAuth client")
     lg.add_argument("source", help="the name of a gmail source with auth = \"oauth\"")
     lg.set_defaults(fn=cmd_login)
+    a = sub.add_parser("ai", help="list the AI plug-ins, or test the one in the config with one tiny call")
+    a.add_argument("action", choices=("list", "test"))
+    a.set_defaults(fn=cmd_ai)
     sub.add_parser("paths", help="where the config, database, logs and cache live").set_defaults(fn=cmd_paths)
     sub.add_parser("config", help="check the config file and list its sources").set_defaults(fn=cmd_config)
     sub.add_parser("remask", help="reapply masking to stored rows after the patterns change").set_defaults(

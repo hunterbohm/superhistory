@@ -15,6 +15,7 @@ import time
 from dataclasses import dataclass
 from typing import Tuple
 
+from kb.ai.cli import WORKDIR_PREFIX
 from kb.mask import is_auth_code
 from kb.sources import Gone, Item, Progress, SourceType, home_key
 
@@ -251,4 +252,4 @@ def extract(run):
     yield Progress(started)
 
 
-TYPE = SourceType(Options, extract)
+TYPE = SourceType(Options, extract, exclude=(WORKDIR_PREFIX + "*",))

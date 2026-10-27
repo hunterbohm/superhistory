@@ -58,9 +58,8 @@ class PluginSpec(NamedTuple):
 
 
 def _plugins():
-    from kb.ai import api
-    rows = api.PLUGINS
-    return {spec.name: spec for spec in rows}
+    from kb.ai import api, cli
+    return {spec.name: spec for spec in api.PLUGINS + cli.PLUGINS}
 
 
 PLUGINS = _plugins()
