@@ -67,3 +67,64 @@ Load notes from `run.json` and the run logs:
 - Supermemory finished extracting memories from all 471 documents about two hours after they were posted, at about 3.5 documents a minute. A first run that posted them was stopped by a time limit; the second run reused the posted documents and waited for the rest.
 - claude-mem took 142 minutes to compress the 81 sessions into 504 observations and 54 summaries. Replayed all at once, sessions park behind its two agent slots and never finish, so the replay waits for each session.
 - claude-mem's worker accepts only numeric ids from `get_observations`. The first pass sent strings, and every question whose agent called it failed; those questions ran again after the fix, against the same store.
+
+## Results on the made-up month
+
+![The check against three rivals on the made-up month](results/month/chart.png)
+
+All rows are in `bench/results/month/`, and `table.md` there has the full table. Graded once, then graded a second time with the same rubric, the rows agree on 1,361 of 1,368. Four of the seven that flipped are Supermemory's, so a gap of four questions or fewer between two tools is not measurable here.
+
+| Tool | Right, of 131 with an answer | Added nothing, of 40 with nothing to find | Tokens added per question, mean | Lookup, median |
+|---|---|---|---|---|
+| The check, with `kb search` and `kb get` | 122 | 37 | 2,087 | 3.52 s |
+| The check, cards only | 59 | 37 | 288 | 3.63 s |
+| Supermemory, self-hosted | 122 | 0 | 8,834 | 0.18 s |
+| Mem0, open source | 103 | 0 | 450 | 0.23 s |
+| claude-mem | 20 | 0 | 5,589 | 0.01 s |
+| claude-mem, per-prompt lookup on | 16 | 0 | 5,052 | 0.18 s |
+| Gold records | 129 | 40 | 550 | |
+| No lookup | 1 | 40 | 0 | |
+
+Every tool's agent said it didn't know, or answered correctly, on 39 or 40 of the 40 questions where nothing fits. The difference is what each tool put in front of the agent first.
+
+What limits each number:
+
+- **The check and Supermemory.** Each answers 122 and misses 9. For Supermemory, items from the right documents reached the agent in all 9 misses. For the check they reached it in 6, and in 3 neither the lookup nor the agent's own searches found them. The two differ elsewhere. Supermemory's documented harness puts its whole profile, 5 memories and 3 document chunks before every message, about 6,800 tokens at the median, so it never adds nothing. The check adds a median of 266 tokens of cards and adds nothing on 37 of the 40 no-fit questions; the agent then reads about 1,200 tokens at the median with `kb get`. The check's lookup is two `claude-haiku-5-5` calls in a row, a query writer and a picker, so it takes 3.5 s where the rivals' lookups make no model call.
+- **Cards alone.** A card is a 240-character snippet. In 57 of the 72 misses the right item was among the cards, but the snippet did not hold the answer. With `kb get` the same lookup answers 122.
+- **Mem0.** It returns 3 memories for every message. In 22 of its 28 misses, an item that holds the answer was among the memories' sources, but the extracted memory lacked the detail asked for. Its log shows 22 fact-extraction replies that did not parse, and Mem0 stores no memories for those adds.
+- **claude-mem.** It records agent sessions only. Only 37 of the 131 questions with an answer have any evidence in an agent session, and it answered 19 of those. Its per-prompt lookup, off by default, did not help here.
+- **The gold records.** With the right items handed over, the answer model and judge still miss 2 of 131. That is the ceiling for every tool.
+- **Lookup times.** These are the month run's, measured while other runs shared the gateway. Timed alone, 80 lookups each, the check's median is 3.28 s (p90 4.81 s), Supermemory's 0.17 s and claude-mem's 0.01 s (`latency.jsonl`).
+- **What this month can't show.** Each question ran once, so run-to-run spread is not measured. The month and its questions were written by the same team as the check. The rivals ran self-hosted on `claude-haiku-5-5`; Mem0 and Supermemory both say their hosted platforms extract memories better. The check ran from kb's code at 4a884a2 with the product's prompt wording, not from the released package.
+
+## Results on LongMemEval and LoCoMo
+
+`bench/results/public/README.md` has the commands, every table and what limits each number, and `bench/public/DEVIATIONS.md` lists every difference from the published setups. Answer model `claude-sonnet-5-5`, judge `gpt-6.1-sol` with each test's own prompts, each question once.
+
+| Test | Questions | The check |
+|---|---|---|
+| LongMemEval S, without summaries | 500 | 92.6% |
+| LongMemEval oracle, with summaries | 500 | 94.8% |
+| LoCoMo, categories 1 to 4 | 1,540 | 90.4% LLM judge, 65.8 token F1 |
+
+Published numbers from others, from `bench/public/rivals.json`. None used the same answer model or judge as this run, so they sit beside these numbers and are not a ranking.
+
+| System | LongMemEval | LoCoMo | Models | Label |
+|---|---|---|---|---|
+| Mem0 platform, 2026 | 94.4% (S) | 92.5% | gpt-5 answers and judges; Mem0's own judge prompt | vendor |
+| Supermemory | 85.2% (S) | none published | gemini-3-pro answers, gpt-4o judges | vendor |
+| Supermemory, rerun by Maximem | 71.3% | | gpt-5 | a rival vendor |
+| Zep, 2026 | 90.2% | 94.7% | gpt-5.4 answers and judges | vendor |
+| Letta filesystem agent | none published | 74.0% | gpt-4o-mini | vendor |
+| Full context, no memory layer | 60.6% (S), 87.0% (oracle) | 72.9% | gpt-4o; gpt-4o-mini | the benchmark's authors; Mem0 |
+
+## Results on a real history
+
+The check also ran on its owner's real knowledge base: 53 questions written from raw records, run read-only, with only Claude models (`claude-sonnet-5-5` answers, `claude-opus-5-5` judges). The questions, rows and answers stay private; these are the only numbers that leave it.
+
+| | Right, of 53 | Of 42 with an answer | Of 11 with nothing to find |
+|---|---|---|---|
+| The check, as it runs today | 51 | 40 | 11 |
+| No lookup | 11 | 0 | 11 |
+
+The questions were found with `kb search`, so every answerable one is reachable by keyword search, which favours the check. With 42 answerable questions, one question moves the score by 2.4 points. The sessions that wrote the questions were hidden from every search. On 8 of the 11 questions with nothing to find, the check added nothing.
