@@ -272,6 +272,25 @@ class Mem0RateLimitTest(unittest.TestCase):
         self.assertFalse(client._should_retry(mock.Mock(status_code=503, text="model x is cooling down")))
         self.assertTrue(client._should_retry(mock.Mock(status_code=503, text="busy")))
 
+    def test_a_200_that_says_cooling_down_stops_before_mem0_reads_it(self):
+        from tools import mem0
+        reply = {"choices": None, "message": "All credentials for model x are cooling down"}
+        client = mock.Mock()
+        client.chat.completions.create = lambda **kwargs: mock.Mock(model_dump=lambda: reply)
+        mem0.no_retry_on_limits(client)
+        with self.assertRaises(gateway.RateLimited):
+            client.chat.completions.create(model="m", messages=[])
+        self.assertTrue(gateway.LIMITED.is_set())
+
+    def test_a_completion_about_rate_limits_reaches_mem0(self):
+        from tools import mem0
+        reply = {"choices": [{"message": {"content": "the job is cooling down after a rate limit"}}]}
+        client = mock.Mock()
+        client.chat.completions.create = lambda **kwargs: mock.Mock(model_dump=lambda: reply)
+        mem0.no_retry_on_limits(client)
+        self.assertEqual(client.chat.completions.create(model="m").model_dump(), reply)
+        gateway.check_limited()
+
 
 def tools_case(i):
     import common

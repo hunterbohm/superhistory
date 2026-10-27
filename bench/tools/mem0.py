@@ -4,6 +4,7 @@ claude-haiku-5-5 through the gateway's OpenAI-style endpoint and the embedder is
 Run the harness with a Python that has mem0ai and sentence-transformers installed.
 """
 import importlib.metadata
+import json
 import os
 import time
 
@@ -28,19 +29,31 @@ def rate_limit(exc):
     """Whether Mem0's error, or one it wraps, is a rate limit. Its LLMError wraps the OpenAI client's, which keeps
     the reply in `body`, not in its text."""
     while exc is not None:
-        if gateway.is_rate_limit(getattr(exc, "status_code", None), f"{exc} {getattr(exc, 'body', '')}"):
+        if isinstance(exc, gateway.RateLimited) or gateway.is_rate_limit(
+                getattr(exc, "status_code", None), f"{exc} {getattr(exc, 'body', '')}"):
             return True
         exc = exc.__cause__ or exc.__context__
     return False
 
 
 def no_retry_on_limits(client):
-    """The OpenAI client retries a 429 twice by itself; it still retries the rest, a busy server for one."""
+    """The OpenAI client retries a 429 twice by itself, and hands Mem0 a 200 that says the model is cooling down as a
+    completion with no choices, which Mem0 fails to parse and counts as one failed add. Both now raise RateLimited; a
+    busy server is still retried."""
     should_retry = client._should_retry
 
     def retry(response):
         return not gateway.is_rate_limit(response.status_code, response.text) and should_retry(response)
     client._should_retry = retry
+    create = client.chat.completions.create
+
+    def checked(*args, **kwargs):
+        reply = create(*args, **kwargs)
+        raw = reply.model_dump() if hasattr(reply, "model_dump") else reply
+        if not (isinstance(raw, dict) and raw.get("choices")) and gateway.limited_reply(raw):
+            gateway.limited(f"Mem0's model call: {json.dumps(raw, default=str)[:300]}")
+        return reply
+    client.chat.completions.create = checked
 
 
 def memories_text(results):
