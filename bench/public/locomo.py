@@ -23,10 +23,6 @@ import sys
 from collections import Counter
 from datetime import datetime
 
-import numpy as np
-import regex
-from nltk.stem import PorterStemmer
-
 import common
 
 import gateway
@@ -74,8 +70,20 @@ Do NOT include both CORRECT and WRONG in your response, or it will break the eva
 Just return the label CORRECT or WRONG in a json format with the key as "label".
 """
 
+np = regex = ps = None
+
+
+def scoring_packages():
+    """LoCoMo's own F1 code needs numpy, regex and nltk; reading the data does not, so they load on the first score."""
+    global np, regex, ps
+    if ps is None:
+        import numpy as np
+        import regex
+        from nltk.stem import PorterStemmer
+        ps = PorterStemmer()
+
+
 # Copied verbatim from LoCoMo's task_eval/evaluation.py at commit 3eb6f2c.
-ps = PorterStemmer()
 
 
 def normalize_answer(s):
@@ -122,6 +130,7 @@ def f1(prediction, ground_truth):
 
 def locomo_f1(category, output, answer):
     """The per-question branch of evaluation.py's eval_question_answering, for categories 1 to 4."""
+    scoring_packages()
     if category == 3:
         answer = answer.split(';')[0].strip()
     if category in [2, 3, 4]:
