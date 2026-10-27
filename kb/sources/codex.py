@@ -15,6 +15,7 @@ import time
 from dataclasses import dataclass
 from typing import Tuple
 
+from kb.mask import is_auth_code
 from kb.sources import Gone, Item, Progress, SourceType, home_key
 
 
@@ -121,7 +122,7 @@ def _message_lines(payload):
         if not isinstance(part, dict) or part.get("type") not in ("input_text", "output_text"):
             continue
         text = part.get("text", "").strip()
-        if text and not (role == "user" and _is_injected(text)):
+        if text and not (role == "user" and _is_injected(text)) and not is_auth_code(text):
             yield label, text
 
 
