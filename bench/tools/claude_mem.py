@@ -4,7 +4,8 @@ claude-mem records agent sessions only: Claude Code, Codex and Hermes. Each of t
 through the worker routes its hooks call (a prompt, each tool call with its output, then the closing summary). It
 never sees the month's email, texts, notes, commits or GitHub threads, because it has no way to read them.
 
-Start the worker with an empty store first; CLAUDE_MEM_URL points at it.
+Start the worker with an empty store first. CLAUDE_MEM_HOME is the home folder claude-mem is installed in; the
+adapter and claude-mem's MCP server both take the worker's address from the settings there.
 """
 import glob
 import json
@@ -18,7 +19,6 @@ import urllib.request
 
 from tools import Retrieved, Tool
 
-URL = os.environ.get("CLAUDE_MEM_URL", "http://127.0.0.1:37700").rstrip("/")
 # A question arrives in a new session that is not inside any one repository.
 CWD = "/Users/jules"
 PLATFORM = {"claude_code": "claude-code", "codex": "codex", "hermes": "hermes"}
@@ -26,6 +26,18 @@ TURN = re.compile(r"\n\n(?=(?:USER|ASSISTANT|RESULT|ERROR|TOOL [\w.:-]+): )")
 SESSION_SECONDS = 15 * 60
 
 HOME_DIR = os.path.expanduser(os.environ.get("CLAUDE_MEM_HOME", "~/.cache/kb-bench/claude-mem/home"))
+
+
+def worker_url():
+    """The worker's address as claude-mem's own settings give it, with claude-mem's defaults."""
+    with open(os.path.join(HOME_DIR, ".claude-mem", "settings.json"), encoding="utf-8") as fh:
+        settings = json.load(fh)
+    host = settings.get("CLAUDE_MEM_WORKER_HOST", "127.0.0.1")
+    port = settings.get("CLAUDE_MEM_WORKER_PORT", str(37700 + os.getuid() % 100))
+    return f"http://{'127.0.0.1' if host == 'localhost' else host}:{port}"
+
+
+URL = worker_url()
 # The three tools of claude-mem's documented search workflow: search, then timeline, then get_observations.
 SEARCH_TOOLS = ("search", "timeline", "get_observations")
 
