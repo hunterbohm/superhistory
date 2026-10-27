@@ -8,11 +8,6 @@ from unittest import mock
 from kb import agents
 from kb.agents import Change, codex
 
-try:
-    import tomllib
-except ImportError:
-    tomllib = None
-
 AGENT = codex.AGENT
 COMMAND = "'/opt/kb tools/kb' hook codex"
 TIMEOUT = agents.HOOK_TIMEOUT
@@ -130,11 +125,9 @@ class InstallTest(Home):
         self.assertEqual(sorted(self.text(b) for b in self.backups()), sorted(before.values()))
 
     def test_the_trust_entry_parses_and_holds_the_hooks_hash(self):
-        if tomllib is None:
-            self.skipTest("tomllib needs Python 3.11")
         self.realistic_home()
         AGENT.install(self.home, COMMAND)
-        state = tomllib.loads(self.text(self.config))["hooks"]["state"]
+        state = codex.read_toml(self.text(self.config))["hooks"]["state"]
         self.assertEqual(len(state), 3)
         self.assertEqual(state[self.key], {"trusted_hash": self.digest()})
 
@@ -225,7 +218,6 @@ class InstallTest(Home):
         self.assertEqual(self.text(self.config), CONFIG)
         self.assertEqual(self.backups(), [])
 
-    @unittest.skipIf(tomllib is None, "tomllib needs Python 3.11")
     def test_a_config_that_would_not_parse_back_is_skipped_and_left_alone(self):
         self.put(self.config, "model = = broken\n")
         changes = AGENT.install(self.home, COMMAND)
@@ -234,8 +226,6 @@ class InstallTest(Home):
         self.assertEqual(self.text(self.config), "model = = broken\n")
 
     def test_trust_refuses_a_result_that_does_not_parse_back(self):
-        if tomllib is None:
-            self.skipTest("tomllib needs Python 3.11")
         self.put(self.config, "[hooks.state\n")
         with self.assertRaises(ValueError):
             codex.trust(self.config, self.key, self.digest())
@@ -359,10 +349,36 @@ class ShiftedTrustTest(Home):
         self.put(self.config, commented + "\n" + self.trust_table(moved_from, user_digest))
         AGENT.uninstall(self.home)
         config = self.text(self.config)
-        if tomllib:
-            self.assertEqual(tomllib.loads(config)["hooks"]["state"][self.key]["trusted_hash"], user_digest)
+        self.assertEqual(codex.read_toml(config)["hooks"]["state"][self.key]["trusted_hash"], user_digest)
         self.assertEqual(config.count(self.key + '"'), 1)
         self.assertNotIn(moved_from, config)
+
+    def test_trust_headers_spelled_with_literal_letters_or_spaces_still_move(self):
+        home = os.path.join(self.home, "José W")
+        hooks_json = os.path.join(home, ".codex", "hooks.json")
+        config = os.path.join(home, ".codex", "config.toml")
+        user = {"type": "command", "command": "/usr/local/bin/notify-prompt", "timeout": 5}
+        self.put(hooks_json, {"hooks": {"UserPromptSubmit": [{"hooks": [self.handler()]}, {"hooks": [user]}]}})
+        user_digest = codex.codex_hook_hash("user_prompt_submit", user)
+        kb_key, user_key = (f"{hooks_json}:user_prompt_submit:{g}:0" for g in (0, 1))
+        self.put(config, f'[hooks.state."{kb_key}"]\ntrusted_hash = "{self.digest()}"\n\n'
+                         f'[ hooks . state . "{user_key}" ]  # approved\ntrusted_hash = "{user_digest}"\n')
+        changes = AGENT.uninstall(home)
+        self.assertEqual([c.action for c in changes], ["removed", "removed"])
+        state = codex.read_toml(self.text(config))["hooks"]["state"]
+        self.assertEqual(state, {kb_key: {"trusted_hash": user_digest}}, "the user's hook kept its trust at 0:0")
+
+    def test_a_trust_that_cannot_move_is_reported_and_names_the_way_back(self):
+        user = {"type": "command", "command": "/usr/local/bin/notify-prompt", "timeout": 5}
+        self.put(self.hooks_json, {"hooks": {"UserPromptSubmit": [{"hooks": [self.handler()]}, {"hooks": [user]}]}})
+        moved_from = f"{self.hooks_json}:user_prompt_submit:1:0"
+        self.put(self.config, self.trust_table() + "\n" + self.trust_table(
+            moved_from, codex.codex_hook_hash("user_prompt_submit", user)))
+        with mock.patch.object(codex, "trust", side_effect=ValueError("the trust entry did not parse back")):
+            changes = AGENT.uninstall(self.home)
+        self.assertEqual([c.action for c in changes], ["removed", "skipped"])
+        self.assertIn("/hooks in Codex", changes[1].note)
+        self.assertIn(moved_from, self.text(self.config), "the old trust stays when the new one could not be written")
 
     def test_an_untrusted_user_hook_that_moves_up_gains_no_trust(self):
         user = {"type": "command", "command": "/usr/local/bin/notify-prompt", "timeout": 5}

@@ -57,12 +57,15 @@ def _header(key):
 
 
 def _is_header(line, key):
-    """Whether a line opens this key's table, as kb and Codex write it, with or without a trailing comment."""
+    """Whether a line opens this key's table, however the TOML spells the key: either quotes, escaped or literal
+    characters such as an accented letter in a home folder, spaces around the dots, a trailing comment."""
     line = line.strip()
-    for header in (_header(key), f"[hooks.state.'{key}']"):
-        if line == header or (line.startswith(header) and line[len(header):].lstrip().startswith("#")):
-            return True
-    return False
+    if not line.startswith("[") or line.startswith("[["):
+        return False
+    try:
+        return read_toml(line + "\n") == {"hooks": {"state": {key: {}}}}
+    except ValueError:
+        return False
 
 
 def _section(lines, key):
@@ -98,11 +101,7 @@ def trust(path, key, digest):
             lines[found] = entry + "\n"
         new = "".join(lines)
         action = "updated"
-    try:
-        import tomllib
-    except ImportError:
-        tomllib = None
-    if tomllib and tomllib.loads(new)["hooks"]["state"][key]["trusted_hash"] != digest:
+    if read_toml(new)["hooks"]["state"][key]["trusted_hash"] != digest:
         raise ValueError(f"{path}: the trust entry did not parse back")
     agents.write(path, new)
     return action
@@ -189,8 +188,9 @@ def uninstall(home):
     try:
         removed = [_untrust(config, _key(hooks_json, gi, hi)) for gi, hi in mine]
         moved = _move_trust(config, hooks_json, before, after)
-    except OSError as exc:
-        return [change, agents.Change(config, "skipped", str(exc))]
+    except (OSError, ValueError) as exc:
+        return [change, agents.Change(config, "skipped", f"{exc}; if a hook of yours stopped running, trust it again "
+                                                         "with /hooks in Codex")]
     note = f"moved the trust of {moved} hook(s) that shifted up" if moved else ""
     return [change, agents.Change(config, "removed" if any(removed) else "unchanged", note)]
 
