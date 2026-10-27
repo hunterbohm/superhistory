@@ -487,7 +487,8 @@ def _clean_body(body):
         body = TAG.sub(" ", body)
     if ENTITY.search(body):
         body = unescape(body).replace("\xa0", " ")
-    lines = body.splitlines()
+    # Mail breaks lines at CRLF; splitlines() would also break at U+2028, and a "> 5" after one would look quoted.
+    lines = body.replace("\r\n", "\n").replace("\r", "\n").split("\n")
     out = []
     i = 0
     while i < len(lines):

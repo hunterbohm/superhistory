@@ -545,5 +545,15 @@ class IngestTest(GmailCase):
                          [f"m1:{PRICING}"])
 
 
+class CleanBodyTest(unittest.TestCase):
+    def test_a_line_separator_does_not_start_a_quoted_line(self):
+        body = "Decision: the required comparison is\u2028> 5, and the launch is approved."
+        self.assertEqual(gmail._clean_body(body), body)
+
+    def test_crlf_mail_still_drops_its_quoted_reply(self):
+        body = "Thanks, see you then.\r\n\r\nOn Mon, Oct 5, 2026 at 9:00 AM Dana <dana@example.org> wrote:\r\n> old\r\n"
+        self.assertEqual(gmail._clean_body(body), "Thanks, see you then.")
+
+
 if __name__ == "__main__":
     unittest.main()
