@@ -38,7 +38,7 @@ from urllib.parse import parse_qs, quote, urlencode, urlparse
 
 from kb import ai, mask
 from kb.config import Secret
-from kb.sources import Gone, Item, Progress, SourceType
+from kb.sources import SPACE, Gone, Item, Progress, SourceType
 
 # UIDs are 32-bit, so a mark of UIDVALIDITY * 2**32 + UID keeps both and still compares in order.
 UID_SPAN = 2 ** 32
@@ -86,10 +86,11 @@ Answer with JSON only, in this form: {{"keep": [1, 4, 7]}}. List the numbers of 
 TAG = re.compile(r"<[^>]+>")
 HTMLISH = re.compile(r"(?i)<(?:html|body|div|p|br|table|span|a)\b")
 ENTITY = re.compile(r"&(?:nbsp|amp|lt|gt|quot|#\d+|#x[0-9a-f]+);", re.I)
-WROTE = re.compile(r"(?i)^\s*On .{5,200}wrote:\s*$")
-ORIGINAL = re.compile(r"(?i)^\s*-{3,}\s*Original Message\s*-{3,}\s*$")
-OUTLOOK_HEAD = re.compile(r"(?i)^\s*From:\s.+")
-SIG_DELIM = re.compile(r"^--\s?$")
+# Each of these matches within one line, so its spaces are SPACE: \s would also match U+2028 inside a line.
+WROTE = re.compile(rf"(?i)^{SPACE}*On .{{5,200}}wrote:{SPACE}*$")
+ORIGINAL = re.compile(rf"(?i)^{SPACE}*-{{3,}}{SPACE}*Original Message{SPACE}*-{{3,}}{SPACE}*$")
+OUTLOOK_HEAD = re.compile(rf"(?i)^{SPACE}*From:{SPACE}.+")
+SIG_DELIM = re.compile(rf"^--{SPACE}?$")
 LEGAL = re.compile(
     r"(?i)(this (?:e-?mail|message|communication)[^.\n]{0,80}(?:confidential|privileged|intended (?:only )?for)|"
     r"if you (?:are not|have received this)[^.\n]{0,60}(?:intended recipient|in error)|"
@@ -494,7 +495,7 @@ def _clean_body(body):
     while i < len(lines):
         line = lines[i]
         head = line
-        if re.match(r"(?i)^\s*On\b", line) and "wrote:" not in line and i + 1 < len(lines):
+        if re.match(rf"(?i)^{SPACE}*On\b", line) and "wrote:" not in line and i + 1 < len(lines):
             head = line.rstrip() + " " + lines[i + 1].strip()
         if WROTE.match(head):
             rest = [x for x in lines[i + (2 if head is not line else 1):] if x.strip()]
@@ -505,7 +506,7 @@ def _clean_body(body):
         if ORIGINAL.match(line):
             break
         if OUTLOOK_HEAD.match(line) and i + 3 < len(lines) and any(
-                re.match(r"(?i)^\s*(?:Sent|Date):\s", x) for x in lines[i + 1:i + 4]):
+                re.match(rf"(?i)^{SPACE}*(?:Sent|Date):{SPACE}", x) for x in lines[i + 1:i + 4]):
             break
         if line.lstrip().startswith(">"):
             i += 1

@@ -181,7 +181,10 @@ class ReadingTest(NotesCase):
 class LinksTest(NotesCase):
     def test_a_line_separator_inside_a_front_matter_value_does_not_start_a_line(self):
         write(self.root, "Active/c.md", "---\nsummary: moved\u2028date: 2019-01-02\ndate: 2026-05-06\n---\nbody")
-        self.assertEqual(self.items()["Active/c.md"].ts[:10], "2026-05-06")
+        write(self.root, "Active/d.md", "---\ndate\u2028: 2019-01-02\ndate: 2026-05-06\n---\nbody")
+        got = self.items()
+        self.assertEqual(got["Active/c.md"].ts[:10], "2026-05-06")
+        self.assertEqual(got["Active/d.md"].ts[:10], "2026-05-06", "U+2028 is part of the key, not space")
 
     def test_a_folder_with_an_obsidian_config_gets_obsidian_links(self):
         rel = "Projects/Meetings/2026-10-09 1500 Weekly Sync.md"

@@ -3,11 +3,11 @@ import re
 import time
 from datetime import datetime, timezone
 
-from kb.sources import Item
+from kb.sources import SPACE, Item
 
 MAX_BYTES = 1_000_000
 FILENAME_DATE = re.compile(r"^(\d{4})-(\d{2})-(\d{2})(?:[ T_-](\d{2})(\d{2}))?(?!\d)")
-FRONT_DATE = re.compile(r"^(?:date|created)\s*:\s*(.*)$", re.I)
+FRONT_DATE = re.compile(rf"^(?:date|created){SPACE}*:{SPACE}*(.*)$", re.I)
 ANY_DATE = re.compile(r"(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{2}):(\d{2}))?")
 
 
