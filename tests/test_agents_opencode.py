@@ -130,6 +130,14 @@ class RenderTest(unittest.TestCase):
         self.assertIn(f"const TIMEOUT_MS = {agents.HOOK_TIMEOUT * 1000};", rendered)
 
 
+class EmptyFileTest(OpenCodeCase):
+    def test_an_empty_file_with_the_plugins_name_is_left_alone(self):
+        os.makedirs(self.plugins, exist_ok=True)
+        open(self.plugin, "w").close()
+        self.assertEqual([c.action for c in AGENT.install(self.home, self.command())], ["skipped"])
+        self.assertEqual(self.read(), "")
+
+
 class UninstallTest(OpenCodeCase):
     def test_uninstall_removes_the_plugin_and_a_second_run_changes_nothing(self):
         AGENT.install(self.home, self.command())

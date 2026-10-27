@@ -251,6 +251,22 @@ class InstallTest(HermesCase):
         self.assertEqual(get(os.path.join(self.folder, backups[0])), old_text)
         self.assertEqual(self.plugin()[0].COMMAND, self.command)
 
+    def test_a_foreign_plugin_with_an_empty_init_is_left_alone(self):
+        os.makedirs(self.folder)
+        yaml = "name: kb-context\nversion: \"99\"\nprovides_hooks: []\n"
+        put(self.init, "")
+        put(os.path.join(self.folder, "plugin.yaml"), yaml)
+        changes = hermes.AGENT.install(self.home, self.command)
+        self.assertEqual([c.action for c in changes], ["skipped"])
+        self.assertEqual((get(self.init), get(os.path.join(self.folder, "plugin.yaml"))), ("", yaml))
+
+    def test_uninstall_keeps_files_kb_did_not_write(self):
+        hermes.AGENT.install(self.home, self.command)
+        put(os.path.join(self.folder, "notes.txt"), "mine")
+        hermes.AGENT.uninstall(self.home)
+        self.assertEqual(sorted(os.listdir(self.folder)), ["notes.txt"])
+        self.assertFalse(hermes.AGENT.installed(self.home))
+
     def test_install_leaves_a_foreign_plugin_of_the_same_name_alone(self):
         os.makedirs(self.folder)
         put(self.init, "# someone else's plugin\n")

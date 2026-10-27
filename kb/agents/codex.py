@@ -138,7 +138,19 @@ def _untrusted(text, key):
     start, end = section
     if end == len(lines) and start > 0 and not lines[start - 1].strip():
         start -= 1
-    return "".join(lines[:start] + lines[end:]), True
+    # A comment line inside the span is the user's (often about the section after it), so it stays.
+    kept = [line for i, line in enumerate(lines[start:end], start) if i > section[0] and _is_comment(lines, i)]
+    return "".join(lines[:start] + kept + lines[end:]), True
+
+
+def _is_comment(lines, i):
+    """Whether line i is a whole-line comment, not a line of a multi-line string that starts with "#"."""
+    return lines[i].lstrip().startswith("#") and _parses("".join(lines[:i]))
+
+
+def _comments(text):
+    lines = _lines(text)
+    return [lines[i].strip() for i in range(len(lines)) if _is_comment(lines, i)]
 
 
 def _moved(text, old_key, new_key):
@@ -204,6 +216,10 @@ def _guard(hooks_json, old, new, kb_after, kb_trust):
     kb_keys = {_key(hooks_json, gi, hi) for gi, hi, _ in _kb_hooks(old_hooks) + _kb_hooks(hooks)}
     if _view(hooks_json, hooks, config, kb_keys) != _view(hooks_json, old_hooks, old_config, kb_keys):
         return "the edit would change more than kb's own entries"
+    # Parsing drops comments, so they are checked as text: every whole-line comment stays, in order.
+    kept = iter(_comments(new[1]))
+    if not all(comment in kept for comment in _comments(old[1])):
+        return "the edit would drop a comment from config.toml"
     if _kb_hooks(hooks) != kb_after:
         return "kb's hook did not come out as intended"
     state = (config.get("hooks") or {}).get("state") or {}

@@ -402,6 +402,36 @@ class ShiftedTrustTest(Home):
         self.assertEqual(codex.read_toml(config)["hooks"]["state"], {self.key: {"trusted_hash": user_digest}})
         self.assertIn("# approved in /hooks", config, "the table moves whole, comment and all")
 
+    def test_uninstall_keeps_a_comment_about_the_next_section(self):
+        self.put(self.hooks_json, {"hooks": {"UserPromptSubmit": [{"hooks": [self.handler()]}]}})
+        tail = "# Do not change Acme settings; my other tools depend on them.\n[model_providers.acme]\nname = \"Acme\"\n"
+        self.put(self.config, f'[hooks.state."{self.key}"]\ntrusted_hash = "old"\n\n' + tail)
+        self.assertNotIn("skipped", [c.action for c in AGENT.uninstall(self.home)])
+        self.assertEqual(self.text(self.config), tail)
+
+    def test_the_guard_refuses_an_edit_that_drops_a_comment(self):
+        def also_drops_comments(text, key):
+            new, gone = untrusted(text, key)
+            return "".join(line for line in new.splitlines(True) if not line.startswith("#")), gone
+
+        untrusted = codex._untrusted
+        AGENT.install(self.home, COMMAND)
+        self.put(self.config, "# keep me\nmodel = \"x\"\n\n" + self.text(self.config))
+        before = (self.text(self.hooks_json), self.text(self.config))
+        with mock.patch.object(codex, "_untrusted", also_drops_comments):
+            changes = AGENT.uninstall(self.home)
+        self.assertEqual([c.action for c in changes], ["skipped", "skipped"])
+        self.assertIn("drop a comment", changes[0].note)
+        self.assertEqual((self.text(self.hooks_json), self.text(self.config)), before)
+
+    def test_a_multi_line_hash_is_refused_and_nothing_is_written(self):
+        self.put(self.config, f'[hooks.state."{self.key}"]\ntrusted_hash = """\nold\n"""\n')
+        before = self.text(self.config)
+        changes = AGENT.install(self.home, COMMAND)
+        self.assertEqual([c.action for c in changes], ["skipped", "skipped"])
+        self.assertEqual(self.text(self.config), before)
+        self.assertFalse(os.path.exists(self.hooks_json))
+
     def test_a_moved_trust_table_keeps_the_comment_on_its_header(self):
         user = {"type": "command", "command": "/usr/local/bin/notify-prompt", "timeout": 5}
         self.put(self.hooks_json, {"hooks": {"UserPromptSubmit": [{"hooks": [self.handler()]}, {"hooks": [user]}]}})
