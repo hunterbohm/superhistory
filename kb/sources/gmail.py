@@ -472,7 +472,10 @@ def _text(part):
 
 
 def _body_and_attachments(msg):
-    body = _text(msg.get_body(("plain",))).strip() or _text(msg.get_body(("html",)))
+    # The plain body is used as it came; only whether it holds anything is judged, by SPACE and line breaks, so a
+    # leading U+2028 stays and _clean_body still sees "> 5" as the middle of a line, not a quote.
+    plain = _text(msg.get_body(("plain",)))
+    body = plain if re.sub(rf"(?:{SPACE}|[\r\n])+", "", plain) else _text(msg.get_body(("html",)))
     names = []
     for part in msg.iter_attachments():
         name = part.get_filename()

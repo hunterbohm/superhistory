@@ -545,6 +545,18 @@ class IngestTest(GmailCase):
                          [f"m1:{PRICING}"])
 
 
+class RenderedBodyTest(unittest.TestCase):
+    def test_a_body_that_starts_with_a_line_separator_keeps_its_text(self):
+        for separator in ("\u2028", "\u2029", "\x85"):
+            msg = EmailMessage()
+            msg["From"], msg["Subject"] = "Dana <dana@example.org>", "Launch"
+            msg.set_content(f"{separator}> 5, and the launch is approved.")
+            thread = gmail.Thread(PRICING, 0, (gmail.Message(1, ago(days=1).timestamp(), ("\\Inbox",),
+                                                             "Dana <dana@example.org>", "Launch"),))
+            item = gmail._render(ME, thread, {1: msg.as_bytes()})
+            self.assertIn("launch is approved.", item.content, repr(separator))
+
+
 class CleanBodyTest(unittest.TestCase):
     def test_a_line_separator_does_not_start_a_quoted_line(self):
         body = "Decision: the required comparison is\u2028> 5, and the launch is approved."
