@@ -12,13 +12,14 @@ The made-up month is `demo/month/` (see its README). One command loads it into e
 python3 bench/run.py month --tools none,oracle,check,check-cards
 python3 bench/run.py table            # print the table from the saved rows
 python3 bench/run.py rejudge          # grade saved answers again, after a gold or judge change
+python3 bench/run.py rejudge --second bench/results/month/second-grading.jsonl   # grade again, keep both verdicts
 ```
 
-Rows go to `bench/results/month/<tool>.jsonl`, and the table to `bench/results/month/table.md`. A rerun keeps the rows already written and runs only the missing questions; pass `--fresh` to start over.
+Rows go to `bench/results/month/<tool>.jsonl`, and the table to `bench/results/month/table.md`. `second-grading.jsonl` holds a second grading of the same answers, both verdicts per row, which measures how often the judge agrees with itself. A rerun keeps the rows already written and runs only the missing questions; pass `--fresh` to start over.
 
 Model calls go to any endpoint that speaks Anthropic's Messages API: `BENCH_BASE_URL` (default `http://127.0.0.1:8317`, a local CLIProxyAPI gateway) and `BENCH_API_KEY`. The judge model is a GPT model served through that gateway; with a plain Anthropic key, change `JUDGE_MODEL` in `run.py`.
 
-The check runs from kb's own code. `BENCH_KB_CODE` points at a copy of it; the numbers below used `git archive` of kb at 4a884a2, recorded in `run.json` by hash.
+The check runs from kb's own code until the product's package lands in this repo. `BENCH_KB_CODE` points at a copy of it; the numbers below used `git archive` of kb at 4a884a2, recorded in `run.json` by hash. Without the copy, the check's tools stop with a message saying so.
 
 ## How a question runs
 

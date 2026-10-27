@@ -80,6 +80,10 @@ class _ThreadStdout:
 def modules():
     with _setup:
         if not _modules:
+            if not os.path.exists(os.path.join(CODE, "context.py")):
+                raise SystemExit(f"The check's code is not at {CODE}. Until the product's package is in this repo, set "
+                                 "BENCH_KB_CODE to a copy of kb's code (kb.py, context.py, summarize.py); the published "
+                                 "rows record the copy they ran by hash in run.json.")
             os.environ["ANTHROPIC_BASE_URL"] = gateway.BASE_URL
             os.environ["ANTHROPIC_AUTH_TOKEN"] = gateway._key()
             sys.path.insert(0, CODE)
@@ -97,6 +101,8 @@ def modules():
                 return search(db, query, after, source, limit, before, visible if HIDE else keep)
             kb.search = visible_search
             sys.stdout = _ThreadStdout()
+            # kb's check names its own gateway and key file; the benchmark's endpoint and key replace them.
+            context.GATEWAY, context.gateway_token = gateway.BASE_URL, gateway._key
             if PRODUCT_WORDING:
                 _product_wording(context)
             _modules.update(kb=kb, context=context, summarize=summarize)
