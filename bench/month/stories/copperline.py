@@ -425,7 +425,8 @@ MM/DD/YYYY and weights as whole pounds, and take the header from AP_Import_v3.""
         Q("cop-03", "single", "Where do the carrier date formats live in copperline-docs, and how are dates parsed now?",
           "In config/carriers.yaml: each carrier has a date_format (\"%d/%m/%Y\" for Northgate), and dates are "
           "parsed with datetime.strptime, so a mismatch fails instead of guessing.",
-          ("cop-claude-dates", "cop-codex-northgate", "cop-commit-dates"), evidence_has=("date_format", "strptime")),
+          ("cop-claude-dates", "cop-codex-northgate", "cop-commit-dates", "cop-gh-8"),
+          evidence_has=("date_format", "strptime", "fails loudly")),
         Q("cop-04", "single", "What date format does Kettle Creek Transport print on its invoices?",
           "ISO dates, YYYY-MM-DD (date_format \"%Y-%m-%d\").", ("cop-codex-northgate",), evidence_has=("%Y-%m-%d",)),
         Q("cop-05", "single", "What currency does Northgate Haulage bill Copperline in?",
@@ -468,8 +469,8 @@ MM/DD/YYYY and weights as whole pounds, and take the header from AP_Import_v3.""
           "instead of a CSV; October 5 to October 30.", ("cop-phase2-quote", "cop-hermes-fy"),
           evidence_has=("October 5", "October 30")),
         Q("cop-20", "single", "Why does the Rosebud export quote every field?",
-          "Rosebud's importer splits on every comma, even inside a field, so rows with a comma in the BOL "
-          "reference were rejected; quoting all fields (csv.QUOTE_ALL) fixed it.",
+          "Rows with a comma inside a field (the BOL reference) were rejected by Rosebud's importer, so the writer "
+          "now quotes every field with csv.QUOTE_ALL.",
           ("cop-claude-export", "cop-commit-export"), evidence_has=("QUOTE_ALL",)),
         Q("cop-21", "single", "What date format and weight unit does Rosebud's import expect?",
           "Dates as MM/DD/YYYY and weights in whole pounds.", ("cop-claude-export", "cop-commit-export"),

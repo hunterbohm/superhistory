@@ -379,7 +379,7 @@ Probably a `closed_dates` list per location in `config/locations.yaml`.
         Q("fern-10", "single", "What does Fernbrook pay each month after launch?",
           "$45 a month for hosting and the texting number.", ("fern-proposal", "fern-final"), evidence_has=("$45 a month",)),
         Q("fern-11", "temporal", "When did Fernbrook pay its deposit, and how?",
-          "September 4, 2026, by card through Stripe (invoice MW-1038).", ("fern-deposit",),
+          "September 4, 2026, by card through Stripe (invoice MW-1038).", ("fern-deposit", "fern-proposal"),
           evidence_has=("September 4, 2026", "MW-1038")),
         Q("fern-12", "single", "Where do Fernbrook orders go when the parser isn't sure about them?",
           "To the Needs a human tab of the kitchen sheet (confidence below 0.8, a missing location, or a question "
