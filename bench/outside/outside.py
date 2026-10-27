@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Two outside tests of memory in conversation, both built on LoCoMo's ten conversations by other labs.
 
-    python3 bench/outside/run.py [--tests implicit,op] [--tools none,oracle,check,mem0,supermemory]
+    python3 bench/outside/outside.py [--tests implicit,op] [--tools none,oracle,check,mem0,supermemory]
                                  [--groups conv-26,...] [--workers N] [--table]
 
 implicit: LoCoMo-Conv (Chang and Chen, EMNLP 2026 Findings), its "implicit" style. The user never asks a question;

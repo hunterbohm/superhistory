@@ -8,9 +8,9 @@ Two tests written by other labs, both built on LoCoMo's ten long conversations, 
 The paper behind OP-Bench found that every memory system it tried made replies worse than no memory at all, and that no fix it tried helped without losing points on LoCoMo.
 
 ```bash
-python3 bench/outside/run.py                  # both tests, every tool, all ten conversations
-python3 bench/outside/run.py --groups conv-26 --limit 5 --tools none,check
-python3 bench/outside/run.py --table          # the tables from the rows already written
+python3 bench/outside/outside.py                  # both tests, every tool, all ten conversations
+python3 bench/outside/outside.py --groups conv-26 --limit 5 --tools none,check
+python3 bench/outside/outside.py --table          # the tables from the rows already written
 ```
 
 Run it with the Python that has the rivals' packages, and with a Supermemory server, as for the month (`bench/README.md`). `SUPERMEMORY_URL` and `SUPERMEMORY_KEY_FILE` point the adapter at it. Rows go to `results/<test>/<tool>.jsonl`, one per message; a rerun runs only messages with no row yet. `results/runs.json` records each run's models, data hashes, store stats and failures.
