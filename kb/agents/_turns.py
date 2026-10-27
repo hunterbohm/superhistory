@@ -34,7 +34,8 @@ def turns_before(transcript_path, prompt):
     with open(transcript_path, "rb") as fh:
         start = max(0, os.path.getsize(transcript_path) - TAIL_BYTES)
         fh.seek(start)
-        lines = fh.read().decode("utf-8", "replace").splitlines()
+        # JSON may hold U+2028 and other characters splitlines() would split at; a JSONL line ends at a line feed.
+        lines = fh.read().decode("utf-8", "replace").split("\n")
         if start:
             lines = lines[1:]
     turns = []

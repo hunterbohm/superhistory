@@ -81,8 +81,8 @@ def _plugin(home):
 
 
 def _render(kb_command):
-    return (PLUGIN.replace("__KB_ARGV__", json.dumps(shlex.split(kb_command)))
-            .replace("__TIMEOUT_MS__", str(agents.HOOK_TIMEOUT * 1000)))
+    return agents.fill(PLUGIN, {"__KB_ARGV__": json.dumps(shlex.split(kb_command)),
+                                "__TIMEOUT_MS__": str(agents.HOOK_TIMEOUT * 1000)})
 
 
 def detect(home):

@@ -52,7 +52,7 @@ def _init(home):
 
 
 def plugin_source(kb_command):
-    return PLUGIN_INIT.replace("@COMMAND@", repr(kb_command)).replace("@TIMEOUT@", str(agents.HOOK_TIMEOUT))
+    return agents.fill(PLUGIN_INIT, {"@COMMAND@": repr(kb_command), "@TIMEOUT@": str(agents.HOOK_TIMEOUT)})
 
 
 def _ours(home):
