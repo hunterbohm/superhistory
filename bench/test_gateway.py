@@ -73,6 +73,35 @@ class RateLimitTest(unittest.TestCase):
         self.assertEqual(len(calls), 2)
         gateway.check_limited()
 
+    def test_a_limit_seen_during_a_backoff_stops_the_next_attempt(self):
+        with mock.patch("time.sleep", lambda seconds: gateway.LIMITED.set()):
+            calls = []
+
+            def urlopen(request, timeout):
+                calls.append(request)
+                raise http_error(503, "busy")
+            with mock.patch("urllib.request.urlopen", urlopen), self.assertRaises(gateway.RateLimited):
+                gateway.post("/v1/messages", {})
+        self.assertEqual(len(calls), 1)
+
+    def test_a_bare_cooling_down_reply_stops_and_is_not_asked_again(self):
+        reply = '{"message": "All credentials for model x are cooling down"}'
+        calls = []
+
+        def urlopen(request, timeout):
+            calls.append(request)
+            return Answer(reply.encode())
+        with mock.patch("urllib.request.urlopen", urlopen), self.assertRaises(gateway.RateLimited):
+            gateway.ask_json("m", "system", "user")
+        self.assertEqual(len(calls), 1)
+
+    def test_a_model_that_talks_about_rate_limits_is_not_a_rate_limit(self):
+        reply = {"type": "message", "content": [{"type": "text", "text": "the job is cooling down; rate limit hit"}]}
+        result, calls = self.post_with(json.dumps(reply))
+        self.assertEqual(result, reply)
+        self.assertFalse(gateway.limited_reply({"input_tokens": 12}))
+        gateway.check_limited()
+
     def test_the_checks_plugin_stops_on_a_429_instead_of_retrying(self):
         calls = []
 
@@ -172,6 +201,76 @@ class RateLimitTest(unittest.TestCase):
             run.latency(args)
             self.assertEqual(len(run.read_jsonl(os.path.join(out, "latency.jsonl"))), 3)
             self.assertEqual(len(timed), 4)
+
+
+class Mem0RateLimitTest(unittest.TestCase):
+    """Mem0 calls its LLM through the OpenAI client, not gateway.post, so its adapter has its own guard."""
+
+    def setUp(self):
+        gateway.LIMITED.clear()
+        self.addCleanup(gateway.LIMITED.clear)
+
+    def load(self, error):
+        from tools import mem0
+        added = []
+
+        class Memory:
+            llm = mock.Mock()
+
+            @classmethod
+            def from_config(cls, config):
+                return cls()
+
+            def add(self, messages, **kwargs):
+                added.append(messages)
+                if error:
+                    raise error
+
+            def get_all(self, **kwargs):
+                return {"results": []}
+        items = [{"ts": f"2026-09-0{i + 1}", "source": "gmail", "source_id": f"s{i}", "title": "t", "content": "c"}
+                 for i in range(3)]
+        with mock.patch.dict(sys.modules, {"mem0": mock.Mock(Memory=Memory)}), \
+                mock.patch("importlib.metadata.version", lambda name: "test"), \
+                mock.patch.object(gateway, "_key", lambda: "test"):
+            try:
+                return mem0.Mem0().load(items, tempfile.gettempdir()), added
+            except gateway.RateLimited as exc:
+                return exc, added
+
+    def test_a_429_inside_mem0_stops_the_load(self):
+        class APIStatusError(Exception):
+            status_code = 429
+        try:
+            try:
+                raise APIStatusError("Error code: 429")
+            except APIStatusError as inner:
+                raise RuntimeError("LLM extraction failed") from inner
+        except RuntimeError as wrapped:
+            result, added = self.load(wrapped)
+        self.assertIsInstance(result, gateway.RateLimited)
+        self.assertEqual(len(added), 1)
+        self.assertTrue(gateway.LIMITED.is_set())
+
+    def test_a_cooling_down_inside_mem0_stops_the_load(self):
+        class InternalServerError(Exception):
+            status_code = 503
+            body = "All credentials for model x are cooling down"
+        result, added = self.load(InternalServerError("Error code: 503"))
+        self.assertIsInstance(result, gateway.RateLimited)
+        self.assertEqual(len(added), 1)
+
+    def test_other_mem0_errors_still_count_as_failed_adds(self):
+        stats, added = self.load(RuntimeError("Error code: 400 - bad request"))
+        self.assertEqual((stats["add_failures"], len(added)), (3, 3))
+
+    def test_mem0s_client_retries_a_busy_server_but_not_a_rate_limit(self):
+        from tools import mem0
+        client = mock.Mock(_should_retry=lambda response: True)
+        mem0.no_retry_on_limits(client)
+        self.assertFalse(client._should_retry(mock.Mock(status_code=429, text="")))
+        self.assertFalse(client._should_retry(mock.Mock(status_code=503, text="model x is cooling down")))
+        self.assertTrue(client._should_retry(mock.Mock(status_code=503, text="busy")))
 
 
 def tools_case(i):

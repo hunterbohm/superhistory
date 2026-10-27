@@ -24,6 +24,25 @@ SEARCH_TOOL = {
 }
 
 
+def rate_limit(exc):
+    """Whether Mem0's error, or one it wraps, is a rate limit. Its LLMError wraps the OpenAI client's, which keeps
+    the reply in `body`, not in its text."""
+    while exc is not None:
+        if gateway.is_rate_limit(getattr(exc, "status_code", None), f"{exc} {getattr(exc, 'body', '')}"):
+            return True
+        exc = exc.__cause__ or exc.__context__
+    return False
+
+
+def no_retry_on_limits(client):
+    """The OpenAI client retries a 429 twice by itself; it still retries the rest, a busy server for one."""
+    should_retry = client._should_retry
+
+    def retry(response):
+        return not gateway.is_rate_limit(response.status_code, response.text) and should_retry(response)
+    client._should_retry = retry
+
+
 def memories_text(results):
     if not results:
         return ""
@@ -47,13 +66,17 @@ class Mem0(Tool):
                 "embedding_model_dims": 768, "on_disk": True}},
             "history_db_path": os.path.join(workdir, "mem0-history.db"),
         })
+        no_retry_on_limits(self.memory.llm.client)
         started, failed = time.monotonic(), 0
         for item in sorted(items, key=lambda i: i["ts"]):
+            gateway.check_limited()
             text = f"[{item['ts'][:10]} {item['source']}] {item['title']}\n{item['content']}"
             try:
                 self.memory.add([{"role": "user", "content": text}], user_id=USER,
                                 metadata={"source": item["source"], "source_id": item["source_id"]})
-            except Exception:
+            except Exception as exc:
+                if rate_limit(exc):
+                    gateway.limited(f"Mem0's model call: {exc}")
                 failed += 1
         stored = self.memory.get_all(filters={"user_id": USER}, top_k=100_000)["results"]
         return {"version": importlib.metadata.version("mem0ai"), "llm": LLM, "embedder": EMBEDDER,

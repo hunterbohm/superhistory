@@ -45,12 +45,13 @@ def is_rate_limit(code, detail):
 
 
 def limited_reply(response):
-    """Whether a reply that came back as JSON is an error saying the plan is rate limited, as some gateways send
-    with status 200."""
-    if not isinstance(response, dict) or (response.get("type") != "error" and "error" not in response):
+    """Whether a reply that came back as JSON says the plan is rate limited, as some gateways do with status 200.
+    Only a reply that is neither a message nor a token count is read, so a model's own words never count."""
+    if isinstance(response, dict) and (isinstance(response.get("content"), list)
+                                       or isinstance(response.get("input_tokens"), int)):
         return False
-    text = json.dumps(response.get("error", response))
-    return "rate_limit" in text or "cooling down" in text.lower()
+    text = json.dumps(response).lower()
+    return "rate_limit" in text or "rate limit" in text or "cooling down" in text
 
 
 def _key():
@@ -61,11 +62,11 @@ def _key():
 
 
 def post(path, body, timeout=300):
-    check_limited()
     headers = {"content-type": "application/json", "anthropic-version": "2023-06-01",
                "authorization": "Bearer " + _key()}
     data = json.dumps(body).encode()
     for attempt in range(ATTEMPTS):
+        check_limited()
         last = attempt == ATTEMPTS - 1
         try:
             req = urllib.request.Request(BASE_URL + path, data=data, headers=headers, method="POST")
