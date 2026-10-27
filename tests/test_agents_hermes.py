@@ -119,6 +119,16 @@ class PluginFileTest(HermesCase):
                          {"context": "from a spaced path"})
         self.assertEqual(get(spaced + ".argv").split(), ["hook", "hermes"])
 
+    def test_a_kb_path_with_an_emoji_still_runs(self):
+        folder = os.path.join(self.tmp.name, "tools-🙂")
+        os.makedirs(folder)
+        kb = script(os.path.join(folder, "kb"), FAKE_KB)
+        hermes.AGENT.install(self.home, agents.command(kb, "hermes"))
+        _, self.hook = self.plugin()
+        put(kb + ".answer", "from an emoji path")
+        self.assertEqual(self.hook(session_id="s", user_message="hello", platform="cli"),
+                         {"context": "from an emoji path"})
+
     def test_the_whole_history_goes_to_kb_which_picks_the_turns(self):
         history = [{"role": "user", "content": "draft the note to Ana"}, {"role": "assistant", "content": "Which items?"}]
         self.call(user_message="all of them", conversation_history=history)
