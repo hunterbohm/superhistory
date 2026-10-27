@@ -6,10 +6,12 @@ never sees the month's email, texts, notes, commits or GitHub threads, because i
 
 Start the worker with an empty store first; CLAUDE_MEM_URL points at it.
 """
+import glob
 import json
 import os
-import urllib.error
 import re
+import subprocess
+import threading
 import time
 import urllib.parse
 import urllib.request
@@ -23,23 +25,54 @@ PLATFORM = {"claude_code": "claude-code", "codex": "codex", "hermes": "hermes"}
 TURN = re.compile(r"\n\n(?=(?:USER|ASSISTANT|RESULT|ERROR|TOOL [\w.:-]+): )")
 SESSION_SECONDS = 15 * 60
 
-AGENT_TOOLS = (
-    {"name": "search",
-     "description": "Step 1: search memory for an index with IDs. Review it, use timeline for context, then "
-                    "get_observations only for selected IDs.",
-     "input_schema": {"type": "object", "properties": {"query": {"type": "string"},
-                                                       "limit": {"type": "number"}}, "required": ["query"]}},
-    {"name": "timeline",
-     "description": "Step 2: get context around results. Params: anchor (observation ID) or query (finds the "
-                    "anchor automatically), depth_before, depth_after.",
-     "input_schema": {"type": "object", "properties": {"anchor": {"type": "number"}, "query": {"type": "string"},
-                                                       "depth_before": {"type": "number"},
-                                                       "depth_after": {"type": "number"}}}},
-    {"name": "get_observations",
-     "description": "Step 3: fetch details for the observation IDs chosen after reviewing the index and timeline.",
-     "input_schema": {"type": "object", "properties": {"ids": {"type": "array", "items": {"type": "number"}}},
-                      "required": ["ids"]}},
-)
+HOME_DIR = os.path.expanduser(os.environ.get("CLAUDE_MEM_HOME", "~/.cache/kb-bench/claude-mem/home"))
+# The three tools of claude-mem's documented search workflow: search, then timeline, then get_observations.
+SEARCH_TOOLS = ("search", "timeline", "get_observations")
+
+
+class MCP:
+    """claude-mem's own MCP server over stdio, started the way its plugin registers it."""
+
+    def __init__(self):
+        script = sorted(glob.glob(os.path.join(
+            HOME_DIR, ".claude/plugins/cache/thedotmack/claude-mem/*/scripts/mcp-server.cjs")))[-1]
+        self.proc = subprocess.Popen(["node", script], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                     stderr=subprocess.DEVNULL, text=True, env={**os.environ, "HOME": HOME_DIR})
+        self.lock = threading.Lock()
+        self.last_id = 0
+        self.request("initialize", {"protocolVersion": "2025-06-18", "capabilities": {},
+                                    "clientInfo": {"name": "bench", "version": "1"}})
+        self._send({"jsonrpc": "2.0", "method": "notifications/initialized"})
+
+    def _send(self, message):
+        self.proc.stdin.write(json.dumps(message) + "\n")
+        self.proc.stdin.flush()
+
+    def request(self, method, params):
+        with self.lock:
+            self.last_id += 1
+            self._send({"jsonrpc": "2.0", "id": self.last_id, "method": method, "params": params})
+            while True:
+                line = self.proc.stdout.readline()
+                if not line:
+                    raise RuntimeError("claude-mem's MCP server stopped")
+                try:
+                    message = json.loads(line)
+                except ValueError:
+                    continue
+                if message.get("id") == self.last_id:
+                    if "error" in message:
+                        raise RuntimeError(f"MCP error: {message['error']}")
+                    return message["result"]
+
+    def tools(self):
+        """The search tools as the server lists them, in the Messages API's tool format."""
+        return tuple({"name": t["name"], "description": t["description"], "input_schema": t["inputSchema"]}
+                     for t in self.request("tools/list", {})["tools"] if t["name"] in SEARCH_TOOLS)
+
+    def call(self, name, args):
+        result = self.request("tools/call", {"name": name, "arguments": args})
+        return "\n".join(part.get("text", "") for part in result.get("content") or [])
 
 
 def worker(method, path, body=None, timeout=120):
@@ -82,9 +115,13 @@ def tool_input(name, text):
 
 class ClaudeMem(Tool):
     label = "claude-mem"
-    agent_tools = AGENT_TOOLS
+
+    def _connect(self):
+        self.mcp = MCP()
+        self.agent_tools = self.mcp.tools()
 
     def load(self, items, workdir):
+        self._connect()
         started = time.monotonic()
         sessions = [i for i in sorted(items, key=lambda i: i["ts"]) if i["source"] in PLATFORM]
         stats = worker("GET", "/api/stats")["database"]
@@ -147,26 +184,10 @@ class ClaudeMem(Tool):
         return Retrieved(text, None, time.monotonic() - started)
 
     def call(self, name, args):
-        """Run one MCP tool through the worker route it calls. A rejected call returns its error to the agent, as
-        an MCP client shows it."""
-        try:
-            return self._call(name, args), []
-        except urllib.error.HTTPError as exc:
-            return f"Error: {exc.code} {exc.read().decode(errors='replace')[:300]}", []
-
-    def _call(self, name, args):
-        if name == "search":
-            reply = worker("GET", "/api/search?" + urllib.parse.urlencode(
-                {"query": str(args.get("query", "")), "limit": int(args.get("limit") or 20)}))
-        elif name == "timeline":
-            params = {k: args[k] for k in ("anchor", "query", "depth_before", "depth_after") if k in args}
-            reply = worker("GET", "/api/timeline?" + urllib.parse.urlencode(params))
-        elif name == "get_observations":
-            ids = [int(i) for i in args.get("ids", []) if str(i).isdigit()]
-            reply = worker("POST", "/api/observations/batch", {"ids": ids})
-        else:
+        """Run one of claude-mem's MCP search tools on its own MCP server, as an agent's MCP client does."""
+        if name not in SEARCH_TOOLS:
             raise KeyError(name)
-        return text_of(reply)
+        return self.mcp.call(name, args), []
 
 
 class ClaudeMemSemantic(ClaudeMem):
@@ -174,6 +195,7 @@ class ClaudeMemSemantic(ClaudeMem):
     label = "claude-mem, per-prompt lookup on"
 
     def load(self, items, workdir):
+        self._connect()
         stats = worker("GET", "/api/stats")["database"]
         return {"reused_store": True, "observations": stats["observations"], "summaries": stats["summaries"]}
 
