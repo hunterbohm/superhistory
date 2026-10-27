@@ -28,6 +28,7 @@ from kb.paths import Paths  # noqa: E402
 from kb.sources import load_type  # noqa: E402
 
 MODEL = "claude-haiku-5-5"
+PARALLEL = 2
 CONFIG = Config()
 
 AGENT_TOOLS = (
@@ -56,9 +57,12 @@ def code_id():
 
 
 def model():
+    """The package's plug-in, with the summarizer held to PARALLEL calls at once: the benchmark shares its plans."""
     key = Secret("env:BENCH_API_KEY" if os.environ.get("BENCH_API_KEY") else f"file:{gateway.KEY_FILE}")
-    return api.Anthropic("anthropic-compatible",
-                         api.AnthropicCompatibleOptions(key=key, model=MODEL, base_url=gateway.BASE_URL))
+    plugin = api.Anthropic("anthropic-compatible",
+                           api.AnthropicCompatibleOptions(key=key, model=MODEL, base_url=gateway.BASE_URL))
+    plugin.traits = plugin.traits._replace(parallel=min(plugin.traits.parallel, PARALLEL))
+    return plugin
 
 
 _post = api.post
