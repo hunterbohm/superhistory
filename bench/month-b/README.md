@@ -14,7 +14,12 @@ Month B keeps month A's persona and background items (`bench/month/noise/`). Its
 
 `items.jsonl` holds 480 items and `questions.jsonl` 171 questions, in the shapes `demo/month/README.md` describes. `SHA256SUMS` fixes both files. Month B is frozen: any change to it needs the coordinator's agreement, with the reason logged.
 
+
 ```bash
 python3 bench/month/build.py --month b           # write bench/month-b/*.jsonl
 python3 bench/month/build.py --month b --check   # rebuild in memory, validate, and fail if the files differ
 ```
+
+## Changes
+
+- 2026-10-27, agreed with the coordinator. A review found two gold answers that left out part of what their evidence says, so an auditor who saw only the questions, gold answers and cited items checked all 171. Six changed: three gold answers now name an exception the evidence states (b2-06, b2-10, b2-11), two questions now name which person or shop they mean (b5-14, b6-13), and one `none` question whose subject appeared in the month asks about something else (b7-11). The items did not change. The held-out baseline's answers to the five were graded again against the corrected gold, and b7-11's row was run again; `bench/results/regrades.tsv` holds before and after.

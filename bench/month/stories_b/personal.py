@@ -181,7 +181,7 @@ tags: [personal, errands]
           ("b6-errands",), evidence_has=("$187.40",)),
         Q("b6-12", "single", "When did I send in the passport renewal?",
           "September 4; they quoted 6 to 8 weeks.", ("b6-errands",), evidence_has=("Mailed Sep 4",)),
-        Q("b6-13", "single", "What did the bike shop actually fix?",
+        Q("b6-13", "single", "What did the bike shop actually fix when I brought my bike in for the squeaky brake?",
           "Replaced the chain and the rear brake pads and trued the back wheel, for $112.50. The squeak was the rear pads, not the front brake.",
           ("b6-bike-0917",), evidence_has=("replaced the chain and the rear brake pads", "$112.50")),
     )

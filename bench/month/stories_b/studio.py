@@ -436,7 +436,7 @@ A: Done. I'll remind you Monday October 5 at 9:00 to reply to Priya about a Janu
         Q("b5-13", "single", "What did I push back on in Noor's docs PR?",
           "The Shopify recipe compared a hex digest, but Shopify sends X-Shopify-Hmac-Sha256 as base64; she fixed it.",
           ("b5-gh-44",), evidence_has=("base64", "hexdigest")),
-        Q("b5-14", "single", "What does Priya want me to do next?",
+        Q("b5-14", "single", "What does Priya from Mile High Automators want me to do next?",
           "Come back in January for a part 2 workshop on retries and idempotency.", ("b5-hermes-debrief",),
           evidence_has=("January", "retries and idempotency")),
         Q("b5-15", "single", "What do I need to plug my laptop into the projector at Ironwick?",
