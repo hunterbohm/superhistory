@@ -532,7 +532,7 @@ def _render(address, thread, bodies):
         msg = email.message_from_bytes(bodies.get(m.uid, b""), policy=policy.default)
         body, names = _body_and_attachments(msg)
         body = _clean_body(body)
-        if mask.is_auth_noise(body):
+        if mask.is_auth_noise(f"{m.subject}\n{body}"):
             continue
         subject = m.subject if subject is None else subject
         last = m

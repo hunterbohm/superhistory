@@ -14,8 +14,8 @@ from kb.ai import Busy, NotReady, Prompt
 from kb.paths import Paths
 
 WATCHED = ("ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL", "CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT", "OPENAI_API_KEY",
-           "CODEX_HOME", "COPILOT_HOME", "XAI_API_KEY", "KB_NESTED", "HOME")
-# Stands in for an agent CLI: records how it was called, then answers as FAKE_MODE says.
+           "CODEX_HOME", "COPILOT_HOME", "XAI_API_KEY", "KB_NESTED", "HOME", "CURSOR_API_KEY", "SOME_VENDOR_API_KEY",
+           "SOME_AUTH_TOKEN")
 FAKE_CLI = """#!{python}
 import json, os, subprocess, sys, time
 args = sys.argv[1:]
@@ -39,7 +39,8 @@ if mode == "hang":
                       "time.sleep(60)"])
     time.sleep(60)
 if mode == "grok-session":
-    folder = os.path.join(os.environ["HOME"], ".grok", "sessions", __import__("urllib.parse").parse.quote(
+    folder = os.path.join(os.environ.get("GROK_HOME") or os.path.join(os.environ["HOME"], ".grok"), "sessions",
+                          __import__("urllib.parse").parse.quote(
         os.path.realpath(os.getcwd()), safe=""))
     os.makedirs(folder)
     open(os.path.join(folder, "prompt_history.jsonl"), "w").write("{{}}")
@@ -71,7 +72,8 @@ class CliCase(unittest.TestCase):
         patcher = mock.patch.dict(os.environ, {
             "HOME": self.home, "ANTHROPIC_API_KEY": "paid-key", "ANTHROPIC_BASE_URL": "http://paid.example",
             "CLAUDECODE": "1", "CLAUDE_CODE_ENTRYPOINT": "cli", "OPENAI_API_KEY": "paid-openai",
-            "XAI_API_KEY": "paid-xai", "CODEX_HOME": os.path.join(self.home, ".codex")})
+            "XAI_API_KEY": "paid-xai", "CODEX_HOME": os.path.join(self.home, ".codex"),
+            "CURSOR_API_KEY": "paid-cursor", "SOME_VENDOR_API_KEY": "paid-vendor", "SOME_AUTH_TOKEN": "paid-token"})
         patcher.start()
         self.addCleanup(patcher.stop)
 
@@ -92,7 +94,7 @@ class CliPluginTest(CliCase):
     def assert_clean_call(self, call):
         self.assertEqual(call["env"]["KB_NESTED"], "1")
         for name in ("ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL", "CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT",
-                     "OPENAI_API_KEY", "XAI_API_KEY"):
+                     "OPENAI_API_KEY", "XAI_API_KEY", "CURSOR_API_KEY", "SOME_VENDOR_API_KEY", "SOME_AUTH_TOKEN"):
             self.assertIsNone(call["env"][name], name)
         self.assertTrue(os.path.basename(call["cwd"]).startswith("kb-ai-"))
         self.assertFalse(os.path.exists(call["cwd"]), "the call's folder is removed")
@@ -132,6 +134,17 @@ class CliPluginTest(CliCase):
         self.assertEqual(call["argv"][call["argv"].index("--model") + 1], "grok-4.7-build-fast")
         session = os.path.join(self.home, ".grok", "sessions", quote(os.path.realpath(call["cwd"]), safe=""))
         self.assertFalse(os.path.exists(session))
+
+    def test_grok_cleanup_follows_grok_home(self):
+        grok_home = os.path.join(self.tmp, "grok-home")
+        self.ask("grok", FAKE_MODE="grok-session", GROK_HOME=grok_home)
+        call, = self.calls()
+        self.assertFalse(os.path.exists(os.path.join(grok_home, "sessions", quote(os.path.realpath(call["cwd"]), safe=""))))
+
+    def test_a_copilot_prompt_too_big_for_one_argument_is_refused_not_a_crash(self):
+        self.assertLessEqual(self.model("copilot").traits.max_prompt_chars * 4, 128 * 1024 - 8 * 1024)
+        with self.assertRaises(ai.Refused):
+            self.model("copilot").ask(Prompt("Answer with one word.", "\u6587" * 50_000), 30)
 
     def test_grok_cleanup_leaves_other_sessions_alone(self):
         other = os.path.join(self.home, ".grok", "sessions", "%2Fhome%2Fsam%2Fcode")

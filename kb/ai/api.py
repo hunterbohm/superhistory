@@ -11,8 +11,8 @@ from kb.config import Secret, SecretError
 
 TRAITS = Traits(check_budget=10.0, hedge_after=3.0, parallel=4, max_prompt_chars=600_000)
 AUTH_CODES = (401, 403)
-# 402 is an account out of credit; like a bad key or model, it will not fix itself between attempts.
-SETUP_CODES = AUTH_CODES + (402, 404)
+PAYMENT_REQUIRED = 402
+SETUP_CODES = AUTH_CODES + (PAYMENT_REQUIRED, 404)
 # Some API hosts sit behind Cloudflare, which refuses Python's default user agent.
 USER_AGENT = f"kb/{__version__}"
 
@@ -67,7 +67,6 @@ class GoogleOptions:
 
 
 class _Http:
-    """A model behind an HTTP API, with its key read from the place the config names at each call."""
     traits = TRAITS
 
     def __init__(self, name, options, key_required=True):
@@ -92,8 +91,6 @@ class _Http:
 
 
 class Anthropic(_Http):
-    """Anthropic's Messages API."""
-
     def _headers(self):
         return {"content-type": "application/json", "anthropic-version": "2023-06-01"}
 
@@ -121,8 +118,6 @@ class OpenCodeGo(Anthropic):
 
 
 class OpenAI(_Http):
-    """The OpenAI chat completions API, which OpenRouter and many local servers also speak."""
-
     def __init__(self, name, options, key_required=True, token_field="max_completion_tokens"):
         super().__init__(name, options, key_required)
         self.token_field = token_field
@@ -147,8 +142,6 @@ class OpenAI(_Http):
 
 
 class Google(_Http):
-    """Google's Gemini API, with an API key."""
-
     def ask(self, prompt, timeout):
         o = self.options
         headers = {"content-type": "application/json", "x-goog-api-key": self._key()}

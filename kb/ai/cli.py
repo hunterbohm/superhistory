@@ -1,10 +1,3 @@
-"""Plug-ins that run an agent CLI the user has installed and signed in to, one process per call. The CLI uses its own
-sign-in; nothing here reads, relays or stores it.
-
-Each call runs in a new temp folder, with the variables that would send the CLI to a paid API key, another server or the
-agent session that started kb removed, and with KB_NESTED set, so the user's own prompt hook does not run the check
-again inside the call. The CLIs' options that keep no session or transcript are on.
-"""
 import atexit
 import os
 import re
@@ -16,41 +9,43 @@ from dataclasses import dataclass
 from typing import Callable, NamedTuple, Optional
 from urllib.parse import quote
 
-from kb.ai import Busy, NotReady, PluginSpec, Traits
+from kb.ai import Busy, NotReady, PluginSpec, Refused, Traits
 
 NESTED_ENV = "KB_NESTED"
-# Session sources leave out sessions whose working folder starts with this, in case a CLI keeps one anyway.
 WORKDIR_PREFIX = "kb-ai-"
-# A CLI starts in seconds, so the check waits longer and sends no duplicate call.
 TRAITS = Traits(check_budget=20.0, hedge_after=None, parallel=2, max_prompt_chars=150_000)
-SCRUB = re.compile(r"^(ANTHROPIC_|OPENAI_|CLAUDE_CODE_|CLAUDECODE$|XAI_|GROK_SESSION|CODEX_(?!HOME$))")
+# Variables that would point a CLI at a paid key, another server or the agent session that started kb. Any *_API_KEY or
+# *_AUTH_TOKEN goes too: a call runs with no tools or MCP servers, so nothing in it needs one.
+SCRUB = re.compile(r"^(ANTHROPIC_|OPENAI_|CLAUDE_CODE_|CLAUDECODE$|XAI_|GROK_SESSION|CODEX_(?!HOME$))|_API_KEY$|_AUTH_TOKEN$")
 SIGNED_OUT = re.compile(r"(?i)not (logged|signed) in|(log|sign) ?in again|please (log|sign) ?in|authenticat|unauthori[sz]ed|"
                         r"session expired|token (has )?expired")
 _running = set()
-# Cleanups of calls still in flight, run at exit too: a check that gives up at its deadline exits while a call runs.
+# Linux caps one command-line argument at 128 KiB. A character takes up to 4 bytes, and the system prompt needs room.
+ARG_BYTES = 128 * 1024 - 1024
+ARG_CHARS = 30_000
 _in_flight = {}
 
 
 @dataclass(frozen=True)
 class CliOptions:
-    binary: str = ""    # default: the program found on PATH
-    model: str = ""     # default: the CLI's own small model, or its default
+    binary: str = ""
+    model: str = ""
 
 
 class Call(NamedTuple):
     argv: list
     stdin: str
     env: dict
-    answer_file: Optional[str] = None   # where the CLI writes its answer, when stdout holds other output
+    answer_file: Optional[str] = None
 
 
 class CliSpec(NamedTuple):
     name: str
     label: str
     program: str
-    build: Callable[[str, CliOptions, object, str], Call]   # binary, options, prompt, workdir
+    build: Callable[[str, CliOptions, object, str], Call]
     default_model: str = "default"
-    cleanup: Optional[Callable[[str], None]] = None          # removes what the CLI left for this workdir
+    cleanup: Optional[Callable[[str], None]] = None
     max_prompt_chars: int = 150_000
     check_budget: float = TRAITS.check_budget
     hidden: bool = False
@@ -84,7 +79,7 @@ class CliModel:
 
 
 def run(call, workdir, timeout, program):
-    env = {k: v for k, v in os.environ.items() if not SCRUB.match(k)}
+    env = {k: v for k, v in os.environ.items() if not SCRUB.search(k)}
     env.update(call.env)
     env[NESTED_ENV] = "1"
     proc = subprocess.Popen(call.argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -108,7 +103,6 @@ def run(call, workdir, timeout, program):
 
 
 def _kill(proc, reap=True):
-    """Stops the CLI and everything it started, so a call that ran out of time leaves nothing running."""
     try:
         os.killpg(proc.pid, signal.SIGKILL)
     except OSError:
@@ -161,21 +155,28 @@ GROK_TOOLS = "read_file,list_dir,grep,web_search,web_fetch,todo_write,run_termin
 
 def _grok_cleanup(workdir):
     """Grok keeps every session in a folder named after its working folder; this one is the call's own."""
-    shutil.rmtree(os.path.join(os.path.expanduser("~/.grok/sessions"), quote(os.path.realpath(workdir), safe="")),
-                  ignore_errors=True)
+    home = os.environ.get("GROK_HOME") or os.path.expanduser("~/.grok")
+    shutil.rmtree(os.path.join(home, "sessions", quote(os.path.realpath(workdir), safe="")), ignore_errors=True)
+
+
+def _one_argument(text, program):
+    """A prompt passed on the command line, which Linux caps at 128 KiB for one argument."""
+    if len(text.encode("utf-8")) > ARG_BYTES:
+        raise Refused(f"the prompt is too long for {program}'s command line")
+    return text
 
 
 def _copilot(binary, o, prompt, workdir):
     home = os.path.join(workdir, "copilot-home")
     os.makedirs(home)
-    argv = [binary, "-p", f"{prompt.system}\n\n{prompt.user}", "-s", "--no-ask-user"]
+    argv = [binary, "-p", _one_argument(f"{prompt.system}\n\n{prompt.user}", "copilot"), "-s", "--no-ask-user"]
     if o.model:
         argv += ["--model", o.model]
     return Call(argv, "", {"COPILOT_HOME": home})
 
 
 def _cursor(binary, o, prompt, workdir):
-    argv = [binary, "-p", f"{prompt.system}\n\n{prompt.user}", "--output-format", "text"]
+    argv = [binary, "-p", _one_argument(f"{prompt.system}\n\n{prompt.user}", "cursor-agent"), "--output-format", "text"]
     if o.model:
         argv += ["--model", o.model]
     return Call(argv, "", {})
@@ -188,9 +189,8 @@ SPECS = (
     CliSpec("grok", "Grok (grok -p, your login)", "grok", _grok, default_model="grok-4.7-build-fast",
             cleanup=_grok_cleanup, check_budget=25.0),
     # The prompt goes on the command line, which Linux caps at 128 KiB for one argument.
-    CliSpec("copilot", "GitHub Copilot (copilot -p, your login)", "copilot", _copilot, max_prompt_chars=100_000),
-    # Off until Cursor confirms its rules allow this use; `allow_unconfirmed = true` under [ai] turns it on.
-    CliSpec("cursor", "Cursor (cursor-agent -p, your login)", "cursor-agent", _cursor, max_prompt_chars=100_000,
+    CliSpec("copilot", "GitHub Copilot (copilot -p, your login)", "copilot", _copilot, max_prompt_chars=ARG_CHARS),
+    CliSpec("cursor", "Cursor (cursor-agent -p, your login)", "cursor-agent", _cursor, max_prompt_chars=ARG_CHARS,
             hidden=True),
 )
 PLUGINS = tuple(PluginSpec(spec.name, spec.label, CliOptions, lambda o, spec=spec: CliModel(spec, o), spec.hidden)
