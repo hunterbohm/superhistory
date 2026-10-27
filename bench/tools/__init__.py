@@ -32,6 +32,10 @@ REGISTRY = {
     "oracle": ("tools.baselines", "Oracle"),
     "check": ("tools.check", "Check"),
     "check-cards": ("tools.check", "Cards"),
+    "mem0": ("tools.mem0", "Mem0"),
+    "supermemory": ("tools.supermemory", "Supermemory"),
+    "claude-mem": ("tools.claude_mem", "ClaudeMem"),
+    "claude-mem-semantic": ("tools.claude_mem", "ClaudeMemSemantic"),
 }
 
 
