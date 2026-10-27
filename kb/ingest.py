@@ -8,7 +8,7 @@ import sys
 import time
 
 from kb import ai, store, summarize
-from kb.mask import mask, masked_log
+from kb.mask import holds_secret, mask, masked_log
 from kb.remote import HostAway, SshReader
 from kb.sources import Excludes, Gone, Item, Progress, Run
 
@@ -45,11 +45,12 @@ class LocalReader:
 
 
 def apply(db, source, host, event):
-    """Stores the event under the id "<host>:<source_id>", masked like the text: an id such as a file name can hold a
-    token. Applying an event twice changes nothing the second time. Returns True when rows changed."""
-    if isinstance(event, Progress):
+    """Stores the event under the id "<host>:<source_id>". An item whose id looks like it holds a secret, such as a
+    file named after a token, is not stored. Applying an event twice changes nothing the second time. Returns True
+    when rows changed."""
+    if isinstance(event, Progress) or holds_secret(event.source_id):
         return False
-    sid = f"{host}:{mask(event.source_id)}"
+    sid = f"{host}:{event.source_id}"
     if isinstance(event, Gone):
         return store.delete_item(db, source, sid) > 0
     return store.store_item(db, source, sid, event.ts, event.title, event.content, {**event.meta, "host": host})
@@ -91,6 +92,9 @@ def run_unit(db, source, host, reader, log):
         try:
             if not isinstance(event, (Item, Gone)):
                 raise TypeError(mask(f"not an event: {event!r}"))
+            if not isinstance(event, Progress) and holds_secret(event.source_id):
+                log.warning("%s@%s: skipped %s, whose name looks like it holds a secret; rename it to index it",
+                            source.name, host, mask(event.source_id))
             changed += apply(db, source.name, host, event)
         except Exception as exc:
             log.warning("%s@%s: skipped %s: %s", source.name, host, getattr(event, "source_id", "?"), exc)
@@ -102,7 +106,7 @@ def run_unit(db, source, host, reader, log):
     pruned = 0
     if source.type.live_ids:
         db.commit()
-        live = {f"{host}:{mask(sid)}" for sid in reader.live_ids(source)}
+        live = {f"{host}:{sid}" for sid in reader.live_ids(source) if not holds_secret(sid)}
         stored = [] if not live else [r[0] for r in db.execute(
             "SELECT DISTINCT source_id FROM docs WHERE source=? AND substr(source_id, 1, ?) = ?",
             (source.name, len(host) + 1, f"{host}:"))]

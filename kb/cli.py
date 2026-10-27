@@ -144,11 +144,13 @@ def _logger(paths):
     log = logging.getLogger("kb")
     log.setLevel(logging.INFO)
     log.propagate = False
-    if not log.handlers:
+    # kb's own handlers, even when a program that runs kb has added its own to this logger.
+    if not any(getattr(handler, "kb_owned", False) for handler in log.handlers):
         fmt = logging.Formatter("%(asctime)s %(levelname)s %(message)s")
         for handler in (logging.FileHandler(paths.log("ingest")), logging.StreamHandler()):
             handler.setFormatter(fmt)
             handler.addFilter(MaskFilter())
+            handler.kb_owned = True
             log.addHandler(handler)
     return masked_log(log)
 

@@ -5,6 +5,7 @@
 "before" holds the conversation turns just ahead of the message, oldest first; hooks send the last two.
 Every failure prints nothing. One JSON line per call goes to the check log, never with the message text.
 """
+import hashlib
 import json
 import os
 import re
@@ -163,7 +164,8 @@ class Seen:
         self.folder = os.fspath(folder)
 
     def _path(self, session):
-        return os.path.join(self.folder, re.sub(r"[^\w.-]", "_", session)[:120] + ".json")
+        # Hashed: a session name comes from the agent, and a file name is no place for whatever it holds.
+        return os.path.join(self.folder, hashlib.sha256(session.encode("utf-8", "replace")).hexdigest()[:32] + ".json")
 
     def load(self, session):
         if not session:

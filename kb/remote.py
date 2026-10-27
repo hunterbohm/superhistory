@@ -11,7 +11,7 @@ import sys
 import tempfile
 
 import kb
-from kb.mask import mask, mask_all
+from kb.mask import holds_secret, mask, mask_all
 from kb.sources import Gone, Item, Progress
 
 # What ssh prints when the computer is off the network, as when a laptop sleeps. A refused login is a fault.
@@ -105,10 +105,12 @@ def serve(request):
         sys.stderr.write(mask("\n".join(problems)) + "\n")
         return 3
     run = Run(options, Excludes(request["exclude"]), request["since"])
+    # Items whose id looks like a secret never leave this computer; the reading side would not store them either.
     if request["verb"] == "live_ids":
-        lines = (json.dumps(sid) for sid in kind.live_ids(run))
+        lines = (json.dumps(sid) for sid in kind.live_ids(run) if not holds_secret(sid))
     else:
-        lines = (encode(event) for event in kind.extract(run))
+        lines = (encode(event) for event in kind.extract(run)
+                 if isinstance(event, Progress) or not holds_secret(event.source_id))
     for line in lines:
         sys.stdout.write(line + "\n")
     sys.stdout.flush()
@@ -135,9 +137,12 @@ class SshReader:
         with tempfile.TemporaryFile() as program, tempfile.TemporaryFile() as err:
             program.write(script(request))
             program.seek(0)
-            proc = subprocess.Popen(["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", self.host.ssh,
-                                     self.host.python, "-"], stdin=program, stdout=subprocess.PIPE, stderr=err,
-                                    text=True, encoding="utf-8", errors="replace")
+            try:
+                proc = subprocess.Popen(["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", self.host.ssh,
+                                         self.host.python, "-"], stdin=program, stdout=subprocess.PIPE, stderr=err,
+                                        text=True, encoding="utf-8", errors="replace")
+            except OSError as exc:
+                raise RuntimeError(mask(f"ssh did not start: {exc}")) from None
             try:
                 yield from proc.stdout
             except BaseException:

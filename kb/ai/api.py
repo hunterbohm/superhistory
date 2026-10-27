@@ -184,6 +184,8 @@ def post(url, body, headers, timeout):
         raise Busy(f"cannot reach {url}: {getattr(e, 'reason', e)}") from None
     except ValueError as e:
         raise Busy(f"{url} answered with something other than JSON: {e}") from None
+    except Exception as e:
+        raise Busy(f"{url} failed: {type(e).__name__}: {e}") from None
 
 
 PLUGINS = (

@@ -67,13 +67,19 @@ def mask(text):
     return ENV_KEY_SECRET.sub(_mask_keyed, KEYED_SECRET.sub(_mask_keyed, text))
 
 
+def holds_secret(text):
+    """Whether mask() would change this text: an item id that does is not stored, because a masked id could stand
+    for two different items."""
+    return mask(text) != text
+
+
 def mask_all(value):
     """mask() over every string in a value of dicts, lists and strings, such as an item's metadata. Only the
     secret-looking parts change, so a link or a path still points where it did."""
     if isinstance(value, str):
         return mask(value)
     if isinstance(value, dict):
-        return {k: mask_all(v) for k, v in value.items()}
+        return {mask(k) if isinstance(k, str) else k: mask_all(v) for k, v in value.items()}
     if isinstance(value, (list, tuple)):
         return [mask_all(v) for v in value]
     return value

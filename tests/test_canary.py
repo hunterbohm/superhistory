@@ -31,9 +31,9 @@ from kb.paths import Paths
 from kb.sources import Item, git, github, gmail
 from tests.test_gmail import FakeGmail
 
-KINDS = ("env", "cmd", "cmdfail", "cmdtimeout", "configkey", "itemtext", "itemmeta", "notepath", "repopath",
-         "sshout", "ssherr", "ghout", "gherr", "gitout", "giterr", "http", "httpbad", "modeltext", "imap", "imapbad",
-         "imaperr", "remoteopt", "aipath")
+KINDS = ("env", "cmd", "cmdfail", "cmdtimeout", "configkey", "itemtext", "itemmeta", "metakey", "notepath",
+         "notepath2", "repopath", "sshout", "ssherr", "ghout", "gherr", "ghpath", "gitout", "giterr", "gitcwd", "http",
+         "httpbad", "httpstatus", "modeltext", "imap", "imapbad", "imaperr", "remoteopt", "aipath", "session")
 CANARY = {kind: f"sk-ant-api03-canary-{kind}-" + "Z" * 24 for kind in KINDS}
 NOW = datetime.now(timezone.utc).replace(microsecond=0)
 ME = "pat@example.com"
@@ -77,6 +77,10 @@ class Model(BaseHTTPRequestHandler):
 
     def do_POST(self):
         self.rfile.read(int(self.headers.get("content-length", 0)))
+        if Model.mode == "status":
+            self.wfile.write(CANARY["httpstatus"].encode() + b"\r\n\r\n")
+            self.close_connection = True
+            return
         if Model.mode == "refuse":
             body = json.dumps({"error": {"message": f"invalid x-api-key {self.headers.get('x-api-key')} "
                                                     f"{CANARY['http']}"}}).encode()
@@ -140,10 +144,14 @@ class CanaryTest(unittest.TestCase):
         Model.mode = "ok"
         self.notes = os.path.join(self.tmp, f"notes-{CANARY['notepath']}")
         os.makedirs(os.path.join(self.notes, "Area"))
-        with open(os.path.join(self.notes, "Area", f"key-{CANARY['notepath']}.md"), "w") as fh:
-            fh.write(f"---\nsource: https://vault.example/?api_key={CANARY['itemmeta']}\n---\n"
-                     f"The staging token is {CANARY['itemtext']}\n" + "Long line of notes.\n" * 800)
-        os.utime(os.path.join(self.notes, "Area", f"key-{CANARY['notepath']}.md"), (time.time() - 86400,) * 2)
+        texts = {"plan.md": f"---\nsource: https://vault.example/?api_key={CANARY['itemmeta']}\n---\n"
+                            f"The pelican staging token is {CANARY['itemtext']}\n" + "Long line of notes.\n" * 800,
+                 f"key-{CANARY['notepath']}.md": "the first file named after a token",
+                 f"key-{CANARY['notepath2']}.md": "the second file named after a token"}
+        for name, text in texts.items():
+            with open(os.path.join(self.notes, "Area", name), "w") as fh:
+                fh.write(text)
+            os.utime(os.path.join(self.notes, "Area", name), (time.time() - 86400,) * 2)
         self.repos = os.path.join(self.home, "code")
         self._repo(os.path.join(self.repos, f"app-{CANARY['repopath']}"))
         broken = os.path.join(self.repos, "broken")
@@ -155,7 +163,8 @@ class CanaryTest(unittest.TestCase):
             fh.write(self._config())
         env = {"HOME": self.home, "KB_HOME": os.path.dirname(self.paths.config_file), "KB_CANARY_KEY": CANARY["env"],
                "PATH": self.bin + os.pathsep + os.environ["PATH"], "GIT_CONFIG_NOSYSTEM": "1"}
-        for patch in (mock.patch.dict(os.environ, env), mock.patch.object(config, "SECRET_TIMEOUT", 0.5),
+        # create=True lets this file run on code from before the masking work, where it must find the leaks.
+        for patch in (mock.patch.dict(os.environ, env), mock.patch.object(config, "SECRET_TIMEOUT", 0.5, create=True),
                       mock.patch.object(gmail, "connect", self._connect), mock.patch.object(github, "SPAN_DAYS", 30)):
             patch.start()
             self.addCleanup(patch.stop)
@@ -285,6 +294,9 @@ password = "cmd:echo {CANARY['cmdfail']} >&2; exit 3"
                 return cli.main(list(argv))
             except SystemExit as exc:
                 return exc.code
+            except Exception as exc:  # a command that crashes prints its traceback, so that is output too
+                self.seen.append("".join(traceback.format_exception(type(exc), exc, exc.__traceback__)))
+                return 1
 
     def call(self, fn, *args, **kwargs):
         """A library call: its printed output and the text of any exception it raises, cause and context included."""
@@ -325,10 +337,11 @@ password = "cmd:echo {CANARY['cmdfail']} >&2; exit 3"
         self.kb("stats")
         self.kb("summarize", "--estimate")
         self.kb("summarize", "--limit", "2")
-        self.kb("context", "--session", "s1", stdin=json.dumps({"message": "What is the staging token for pelican?",
-                                                                 "before": []}))
+        self.kb("context", "--session", CANARY["session"],
+                stdin=json.dumps({"message": "What is the staging token for pelican?", "before": []}))
+        self.assertTrue(os.listdir(self.paths.seen_dir), "the lookup kept its session's records, so it really ran")
         self.kb("ai", "test")
-        for mode in ("refuse", "garbage"):
+        for mode in ("refuse", "garbage", "status"):
             Model.mode = mode
             self.kb("ai", "test")
             self.kb("context", "--session", "s2", stdin=json.dumps({"message": "What did Dana say about pelican?",
@@ -347,6 +360,9 @@ password = "cmd:echo {CANARY['cmdfail']} >&2; exit 3"
         self.kb("stats")
         channels = self.assert_no_canary()
         self.assertIn("[masked]", channels["files"], "masked text was stored, so the canaries were read")
+        names = [r[0] for r in db.execute("SELECT source_id FROM docs")]
+        self.assertFalse([n for n in names if "key-" in n], "files named after a token are never stored")
+        self.assertIn("whose name looks like it holds a secret", channels["files"])
         for unit in ("notes@noisy", "notes@garbage", "issues_down@desk", "mail_refused@desk", "mail_odd@desk",
                      "mail_slow@desk", "mail_failing@desk"):
             self.assertIn(unit, failing, f"{unit} was driven into its failure path")
@@ -359,6 +375,10 @@ password = "cmd:echo {CANARY['cmdfail']} >&2; exit 3"
         self.call(ingest.apply, db, "notes", "desk", Item(f"x-{CANARY['notepath']}.md", NOW.isoformat(),
                                                           CANARY["itemtext"], CANARY["itemtext"],
                                                           {"url": f"https://x.example/?token={CANARY['itemmeta']}"}, 0))
+        self.call(ingest.apply, db, "notes", "desk", Item("meta.md", NOW.isoformat(), "keys", "keys",
+                                                          {CANARY["metakey"]: "public",
+                                                           "nested": {CANARY["metakey"]: [CANARY["metakey"]]}}, 0))
+        self.call(check.write_log, self.paths.log("check"), {"nested": {CANARY["metakey"]: CANARY["metakey"]}})
         db.commit()
         self.call(search.search, db, "staging token")
         model = ai.load(cfg.ai)
@@ -369,7 +389,7 @@ password = "cmd:echo {CANARY['cmdfail']} >&2; exit 3"
                                    json.dumps({"message": "What is the staging token for pelican?", "before": []}),
                                    "s4") or "")
         self.call(summarize.run, db, cfg, model, self.cloud, 2)
-        for mode in ("refuse", "garbage"):
+        for mode in ("refuse", "garbage", "status"):
             Model.mode = mode
             self.call(model.ask, ai.Prompt("s", "u", 10), 10)
             self.call(check.lookup, db, "What did Dana decide about the pelican launch?", [], "", set(), model, 10)
@@ -385,7 +405,12 @@ password = "cmd:echo {CANARY['cmdfail']} >&2; exit 3"
         self.call(remote.serve, {"verb": "extract", "type": "notes", "since": None, "exclude": [],
                                  "options": {"path": "/n", CANARY["remoteopt"]: 1}})
         self.call(github.run_gh, os.path.join(self.bin, "gh-fail"), ["search", "issues"])
+        self.call(github.run_gh, os.path.join(self.tmp, CANARY["ghpath"], "gh"), ["search", "issues"])
         self.call(git.run_git, ["rev-parse", CANARY["giterr"]], self.tmp)
+        self.call(git.run_git, ["status"], os.path.join(self.tmp, CANARY["gitcwd"]))
+        for verb in ("extract", "live_ids"):
+            self.call(remote.serve, {"verb": verb, "type": "notes", "since": None, "exclude": [],
+                                     "options": {"path": self.notes}})
         conn = Gmail("odd@example.com")
         conn.select('"[Gmail]/All Mail"', readonly=True)
         self.call(gmail._search, conn, "ALL")
