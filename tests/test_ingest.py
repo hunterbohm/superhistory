@@ -41,7 +41,7 @@ class Script:
         extra = {"platforms": platforms} if platforms else {}
         self.type = SourceType(NoOptions, self.extract, self.list_live if live is not None else None,
                                summarize=summarize, needs_model=needs_model, **extra)
-        self.source = config.Source(name, "fake", self.type, NoOptions(), (), config.Summarize(summarize))
+        self.source = config.Source(name, "fake", self.type, NoOptions(), (), config.Summarize(summarize), ("m1",))
 
     def extract(self, run):
         self.since_seen.append(run.since)

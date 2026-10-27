@@ -1,3 +1,6 @@
+"""Reads every configured source on every host it names and stores what changed. A failing source is recorded and
+skipped. A reader reads one source on one host: LocalReader on this computer, SshReader on another, and the Sync
+client's reader for a computer whose rows arrive through Sync."""
 import dataclasses
 import hashlib
 import json
@@ -5,23 +8,31 @@ import sys
 import time
 
 from kb import ai, store, summarize
+from kb.remote import HostAway, SshReader
 from kb.sources import Excludes, Gone, Item, Progress, Run
 
 COMMIT_EVERY = 200
 
 
+_UNBUILT = object()
+
+
 class LocalReader:
     def __init__(self, model_factory=None):
-        self._model_factory = model_factory
-        self._model = None
+        self._model_factory = model_factory or (lambda: None)
+        self._built = _UNBUILT
+
+    def _model(self):
+        """The AI plug-in, built once a run, or None when none is set up."""
+        if self._built is _UNBUILT:
+            try:
+                self._built = self._model_factory()
+            except ai.NotReady:
+                self._built = None
+        return self._built
 
     def _run(self, source, since):
-        model = None
-        if source.type.needs_model:
-            if self._model is None:
-                self._model = (self._model_factory or (lambda: None))()
-            model = self._model
-        return Run(source.options, Excludes(source.exclude), since, model)
+        return Run(source.options, Excludes(source.exclude), since, self._model() if source.type.needs_model else None)
 
     def events(self, source, since):
         if sys.platform not in source.type.platforms:
@@ -109,17 +120,29 @@ def run(db, config, log, only=(), with_summaries=True, model_factory=None):
     """Every configured source, or those named in `only`, then summaries for new long items. Returns the number of
     failures. The caller holds the database lock."""
     model_factory = model_factory or (lambda: ai.load(config.ai))
-    reader = LocalReader(model_factory)
+    local = LocalReader(model_factory)
+    remote = {h.name: SshReader(h) for h in config.hosts}
+    away = set()
     failures = 0
     for source in config.sources:
         if only and source.name not in only:
             continue
-        try:
-            run_unit(db, source, config.machine, reader, log)
-        except Exception as exc:
-            log.exception("%s@%s failed", source.name, config.machine)
-            store.record_failure(db, f"{source.name}@{config.machine}", exc)
-            failures += 1
+        for host in source.hosts:
+            if host in away:
+                continue
+            unit = f"{source.name}@{host}"
+            try:
+                run_unit(db, source, host, local if host == config.machine else remote[host], log)
+            except HostAway:
+                db.rollback()
+                away.add(host)
+                store.record_away(db, host)
+                db.commit()
+                log.info("%s is unreachable, probably asleep; its sources wait until it is back", host)
+            except Exception as exc:
+                log.exception("%s failed", unit)
+                store.record_failure(db, unit, exc)
+                failures += 1
     store.set_watermark(db, store.STATE, "last_ingest", store.now_iso())
     db.commit()
     if with_summaries and config.summarize.enabled and config.ai:

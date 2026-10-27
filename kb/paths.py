@@ -25,6 +25,10 @@ class Paths:
         return self.data_dir / "kb.lock"
 
     @property
+    def keys_dir(self):
+        return self.config_file.parent / "keys"
+
+    @property
     def seen_dir(self):
         return self.cache_dir / "seen"
 
