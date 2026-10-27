@@ -481,7 +481,17 @@ def _body_and_attachments(msg):
     return body, names
 
 
+def _lstrip(text):
+    return re.sub(rf"^{SPACE}+", "", text)
+
+
+def _rstrip(text):
+    return re.sub(rf"{SPACE}+\Z", "", text)
+
+
 def _clean_body(body):
+    """The mail's own text, without quoted replies, forwarded originals and signatures. Every marker is found within
+    one line and trimmed of SPACE only: str.strip() would also take a U+2028 and turn "--\u2028" into "--"."""
     if HTMLISH.search(body):
         body = re.sub(r"(?is)<(script|style).*?</\1>", " ", body)
         body = re.sub(r"(?i)<br\s*/?>|</p>|</div>", "\n", body)
@@ -496,10 +506,10 @@ def _clean_body(body):
         line = lines[i]
         head = line
         if re.match(rf"(?i)^{SPACE}*On\b", line) and "wrote:" not in line and i + 1 < len(lines):
-            head = line.rstrip() + " " + lines[i + 1].strip()
+            head = _rstrip(line) + " " + _lstrip(_rstrip(lines[i + 1]))
         if WROTE.match(head):
-            rest = [x for x in lines[i + (2 if head is not line else 1):] if x.strip()]
-            if rest and rest[0].lstrip().startswith(">"):
+            rest = [x for x in lines[i + (2 if head is not line else 1):] if _lstrip(x)]
+            if rest and _lstrip(rest[0]).startswith(">"):
                 i += 2 if head is not line else 1
                 continue
             break
@@ -508,10 +518,10 @@ def _clean_body(body):
         if OUTLOOK_HEAD.match(line) and i + 3 < len(lines) and any(
                 re.match(rf"(?i)^{SPACE}*(?:Sent|Date):{SPACE}", x) for x in lines[i + 1:i + 4]):
             break
-        if line.lstrip().startswith(">"):
+        if _lstrip(line).startswith(">"):
             i += 1
             continue
-        out.append(line.rstrip())
+        out.append(_rstrip(line))
         i += 1
     for n, line in enumerate(out):
         if SIG_DELIM.match(line) and len(out) - n <= 15:
@@ -524,7 +534,7 @@ def _clean_body(body):
     text = "\n".join(out)
     text = LONG_URL.sub(lambda m: m.group(0)[:60] + "…", text)
     text = re.sub(r"[ \t]+\n", "\n", text)
-    text = re.sub(r"\n{3,}", "\n\n", text).strip()
+    text = re.sub(rf"^(?:{SPACE}|\n)+|(?:{SPACE}|\n)+\Z", "", re.sub(r"\n{3,}", "\n\n", text))
     return text if len(text) <= BODY_CHARS else text[:BODY_CHARS] + " …"
 
 

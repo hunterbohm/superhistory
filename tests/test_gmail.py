@@ -552,8 +552,10 @@ class CleanBodyTest(unittest.TestCase):
 
     def test_a_line_separator_does_not_make_a_reply_delimiter(self):
         for body in ("Status\n---\u2028Original Message---\nThe launch is approved.",
+                     "Status\n\u2028> 5, and the launch is approved.",
+                     "Status\n--\u2028\nThe launch is approved.",
                      "Status\nOn\u2028Monday the team wrote:\n> earlier\nThe launch is approved."):
-            self.assertIn("The launch is approved.", gmail._clean_body(body), repr(body))
+            self.assertIn("launch is approved.", gmail._clean_body(body), repr(body))
 
     def test_crlf_mail_still_drops_its_quoted_reply(self):
         body = "Thanks, see you then.\r\n\r\nOn Mon, Oct 5, 2026 at 9:00 AM Dana <dana@example.org> wrote:\r\n> old\r\n"
