@@ -1,6 +1,7 @@
 import os
 import tempfile
 import unittest
+from unittest import mock
 
 from kb import config
 from kb.config import ConfigError, Secret, SecretError
@@ -110,6 +111,15 @@ class SecretTest(unittest.TestCase):
             self.assertEqual(Secret("env:KB_TEST_SECRET").reveal(), "from-env")
             self.assertEqual(Secret(f"file:{path}").reveal(), "from-file")
             self.assertEqual(Secret("cmd:echo from-command").reveal(), "from-command")
+
+    def test_a_secret_keeps_a_line_separator_it_ends_with(self):
+        for separator in ("\u2028", "\u2029", "\x85"):
+            with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(os.environ, {"KB_TEST_SECRET": "pw" + separator}):
+                path = os.path.join(tmp, "key")
+                with open(path, "w", encoding="utf-8") as fh:
+                    fh.write("pw" + separator + "\n")
+                self.assertEqual(Secret("env:KB_TEST_SECRET").reveal(), "pw" + separator, repr(separator))
+                self.assertEqual(Secret(f"file:{path}").reveal(), "pw" + separator, repr(separator))
 
     def test_unreadable_or_empty_secrets_raise(self):
         for ref in ("env:KB_TEST_UNSET_SECRET", "file:/nonexistent/key", "cmd:exit 3", "cmd:true"):

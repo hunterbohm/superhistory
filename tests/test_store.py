@@ -128,6 +128,20 @@ class StoreItemTest(TempDB):
         self.assertIn('"url": "http://x"', meta)
         self.assertIn('"hash"', meta)
 
+    def test_a_secret_with_a_line_separator_inside_is_masked_whole(self):
+        for separator in ("\u2028", "\u2029", "\x85"):
+            for text in (f"export password=abc{separator}def12345", f"export password={separator}password"):
+                self.add("sep", text)
+                stored = self.db.execute("SELECT content FROM docs WHERE source_id='sep'").fetchone()[0]
+                self.assertEqual(stored, "export password=[masked]", repr(text))
+
+    def test_a_long_items_text_comes_back_whole_from_its_chunks(self):
+        for tail in ("\u2028", "\n   \n", "\u2029\x85"):
+            body = "x" * 8000 + tail
+            self.add("whole", body)
+            rid = self.db.execute("SELECT id FROM docs WHERE source_id='whole' LIMIT 1").fetchone()[0]
+            self.assertEqual("".join(r[4] for r in store.item_rows(self.db, rid)), body, repr(tail))
+
     def test_long_item_is_raw_chunks_only(self):
         body = "".join(f"line {i}\n" for i in range(2000))
         self.assertGreater(len(body), 4000)

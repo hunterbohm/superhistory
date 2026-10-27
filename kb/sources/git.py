@@ -71,7 +71,7 @@ def _identity(options):
     known = {value.casefold() for value in options.identities}
     for key in ("user.name", "user.email"):
         try:
-            value = run_git(["config", "--global", "--get", key], os.path.expanduser("~")).strip()
+            value = run_git(["config", "--global", "--get", key], os.path.expanduser("~")).rstrip("\n")
         except RuntimeError:
             continue
         if value:
@@ -101,11 +101,12 @@ def _repos(options, excluded):
             continue
         for path in _walk(root, home, excluded, options.max_depth):
             try:
-                common = run_git(["rev-parse", "--path-format=absolute", "--git-common-dir"], path).strip()
+                # git ends a value with a line feed; strip() would also take a U+2028 the value itself ends with.
+                common = run_git(["rev-parse", "--path-format=absolute", "--git-common-dir"], path).rstrip("\n")
             except RuntimeError:
                 continue  # a linked worktree whose repository is gone
             try:
-                remote = run_git(["config", "--get", "remote.origin.url"], path).strip()
+                remote = run_git(["config", "--get", "remote.origin.url"], path).rstrip("\n")
             except RuntimeError:
                 remote = ""
             main = os.path.dirname(common) if os.path.basename(common) == ".git" else path
@@ -117,22 +118,23 @@ def _repos(options, excluded):
 
 
 def _own_shas(repo, after, identity):
+    # Fields end with NUL, which no name, address or message can hold; any other separator can be inside one.
     out = run_git(["log", "--branches", "--remotes", "--tags", "--no-merges", f"--since={_iso(after)}",
-                   "--format=%H%x1f%an%x1f%ae"], repo.path)
-    return [sha for sha, name, email in (line.split("\x1f") for line in out.splitlines())
+                   "--format=%H%x00%an%x00%ae%x00"], repo.path)
+    fields = out.split("\x00")
+    return [sha.strip("\n") for sha, name, email in zip(fields[0::3], fields[1::3], fields[2::3])
             if name.casefold() in identity or email.casefold() in identity]
 
 
 def _commits(repo, shas):
     commits = []
     for i in range(0, len(shas), SHOW_BATCH):
-        out = run_git(["show", "--no-color", "--name-status", "--format=%x1e%H%x1f%ct%x1f%B%x1f",
+        out = run_git(["show", "--no-color", "--name-status", "--format=%x00%H%x00%ct%x00%B%x00",
                        *shas[i:i + SHOW_BATCH]], repo.path)
-        for record in out.split("\x1e")[1:]:
-            sha, epoch, rest = record.split("\x1f", 2)
-            message, files = rest.rsplit("\x1f", 1)
+        fields = out.split("\x00")[1:]
+        for sha, epoch, message, files in zip(fields[0::4], fields[1::4], fields[2::4], fields[3::4]):
             commits.append(Commit(repo, sha, int(epoch), message.strip(),
-                                  tuple(line for line in files.splitlines() if line.strip())))
+                                  tuple(line for line in files.split("\n") if line.strip())))
     return commits
 
 
