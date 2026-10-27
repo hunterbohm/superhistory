@@ -243,6 +243,13 @@ class LinuxTest(ScheduleCase):
         self.on(kb_path="/home/sam/100%/$bin/kb")
         self.assertEqual(unit_lines(self.unit_dir / SERVICE)["ExecStart"], ['"/home/sam/100%%/$$bin/kb" ingest'])
 
+    def test_a_dollar_sign_in_an_environment_value_stays_single(self):
+        with mock.patch.dict(os.environ, {"XDG_DATA_HOME": "/home/sam/$data", "XDG_STATE_HOME": "/home/sam/100%"}):
+            self.on()
+        env = unit_lines(self.unit_dir / SERVICE)["Environment"]
+        self.assertIn('"XDG_DATA_HOME=/home/sam/$data"', env)
+        self.assertIn('"XDG_STATE_HOME=/home/sam/100%%"', env)
+
     def test_the_service_carries_the_path_it_was_turned_on_with(self):
         path = self.path_with("/home/sam/.local/bin")
         with mock.patch.dict(os.environ, {"PATH": path}):

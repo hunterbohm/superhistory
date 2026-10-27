@@ -133,10 +133,11 @@ def _unit_dir(home):
     return base / "systemd" / "user"
 
 
-def _quote(text):
-    """One systemd word: double quotes, with the escapes systemd expands."""
-    text = text.replace("\\", "\\\\").replace('"', '\\"').replace("%", "%%").replace("$", "$$")
-    return f'"{text}"'
+def _quote(text, dollars=True):
+    """One systemd word in double quotes. systemd expands % specifiers everywhere and $ variables only in Exec lines,
+    so a $ is doubled only where it would be expanded."""
+    text = text.replace("\\", "\\\\").replace('"', '\\"').replace("%", "%%")
+    return f'"{text.replace("$", "$$") if dollars else text}"'
 
 
 def _cron_line(kb_path, minutes):
@@ -148,7 +149,7 @@ def _cron_line(kb_path, minutes):
 def _service_text(kb_path):
     lines = ["[Unit]", f"Description={NAME} knowledge base ingest", "", "[Service]", "Type=oneshot",
              f"ExecStart={_quote(kb_path)} ingest"]
-    lines += [f"Environment={_quote(f'{k}={v}')}" for k, v in _environment().items()]
+    lines += [f"Environment={_quote(f'{k}={v}', dollars=False)}" for k, v in _environment().items()]
     return "\n".join(lines) + "\n"
 
 
