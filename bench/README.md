@@ -35,7 +35,7 @@ The rival tools need their own setup, all local, with no account:
 
 1. The tool loads `demo/month/items.jsonl` into a fresh store. The check stores the items with kb's own code and writes kb's summaries for long items, as ingest does.
 2. The question arrives as a new message to an agent, with no conversation before it. The tool's lookup returns the text an agent would see before the message, or nothing.
-3. The answer model (`claude-sonnet-5-5`) answers from that text. It is told it works for the month's persona and that today is October 1, 2026. When the product gives agents commands to read more, the answer model gets them as tools: `kb search` and `kb get` for the check (its own header tells agents to run them), `search_memory` for Mem0 (OpenMemory MCP's name), a search for Supermemory, and claude-mem's three MCP tools. It gets at most 8 tool turns.
+3. The answer model (`claude-sonnet-5-5`) answers from that text. It is told it works for the month's persona and that today is October 1, 2026. When the product gives agents commands to read more, the answer model gets them as tools: `kb search` and `kb get` for the check (its own header tells agents to run them), `search_memory` for Mem0 (OpenMemory MCP's name), a search for Supermemory, and claude-mem's three MCP search tools (`search`, `timeline`, `get_observations`), served by claude-mem's own MCP server with its own schemas and replies. It gets at most 8 tool turns.
 4. The judge (`gpt-6.1-sol`, a different model family from the answer model and from the check's own `claude-haiku-5-5`) compares the answer with the gold answer and returns correct or not, with a reason.
 
 The check's own two model calls, and kb's summaries at ingest, run on `claude-haiku-5-5`, as they do in kb. The check's two prompts use the product's wording ("the user") from the package's `kb/check.py`; kb's own copy names its owner, and the query writer then put that name into searches.
@@ -67,13 +67,13 @@ Load notes from `run.json` and the run logs:
 - Mem0 made 1,150 memories from 471 adds in 45 minutes. 22 adds stored nothing, because the model's fact-extraction JSON did not parse. Mem0's telemetry was on for this run, its default; the adapter now turns it off.
 - Supermemory finished extracting memories from all 471 documents about two hours after they were posted, at about 3.5 documents a minute. A first run that posted them was stopped by a time limit; the second run reused the posted documents and waited for the rest.
 - claude-mem took 142 minutes to compress the 81 sessions into 504 observations and 54 summaries. Replayed all at once, sessions park behind its two agent slots and never finish, so the replay waits for each session.
-- claude-mem's worker accepts only numeric ids from `get_observations`. The first pass sent strings, and every question whose agent called it failed; those questions ran again after the fix, against the same store.
+- claude-mem's agent tools are its own MCP server's, started the way its plugin registers it, so the agent sees the vendor's tool schemas and formatted replies. The rows in this folder come from that setup, against the same store.
 
 ## Results on the made-up month
 
 ![The check against three rivals on the made-up month](results/month/chart.png)
 
-All rows are in `bench/results/month/`, and `table.md` there has the full table. Graded once, then graded a second time with the same rubric, the rows agree on 1,361 of 1,368; `second-grading.jsonl` holds both verdicts for every row. Four of the seven that flipped are Supermemory's, so a gap of four questions or fewer between two tools is not measurable here. To grade again, copy the per-tool row files to a folder and run `python3 bench/run.py rejudge <folder>`.
+All rows are in `bench/results/month/`, and `table.md` there has the full table. Graded once, then graded a second time with the same rubric, the rows agree on 1,359 of 1,368; `second-grading.jsonl` holds both verdicts for every row. No tool's verdicts flipped on more than 4 of its 171 questions, so a gap of four questions or fewer between two tools is not measurable here. To grade again, copy the per-tool row files to a folder and run `python3 bench/run.py rejudge <folder>`.
 
 | Tool | Right, of 131 with an answer | Added nothing, of 40 with nothing to find | Tokens added per question, mean | Lookup, median |
 |---|---|---|---|---|
@@ -81,8 +81,8 @@ All rows are in `bench/results/month/`, and `table.md` there has the full table.
 | The check, cards only | 59 | 37 | 288 | 3.63 s |
 | Supermemory, self-hosted | 122 | 0 | 8,834 | 0.18 s |
 | Mem0, open source | 103 | 0 | 450 | 0.23 s |
-| claude-mem | 20 | 0 | 5,589 | 0.01 s |
-| claude-mem, per-prompt lookup on | 16 | 0 | 5,052 | 0.18 s |
+| claude-mem | 19 | 0 | 7,067 | 0.01 s |
+| claude-mem, per-prompt lookup on | 19 | 0 | 6,418 | 0.23 s |
 | Gold records | 129 | 40 | 550 | |
 | No lookup | 1 | 40 | 0 | |
 
@@ -93,7 +93,7 @@ What limits each number:
 - **The check and Supermemory.** Each answers 122 and misses 9. For Supermemory, items from the right documents reached the agent in all 9 misses. For the check they reached it in 6, and in 3 neither the lookup nor the agent's own searches found them. The two differ elsewhere. Supermemory's documented harness puts its whole profile, 5 memories and 3 document chunks before every message, about 6,800 tokens at the median, so it never adds nothing. The check adds a median of 266 tokens of cards and adds nothing on 37 of the 40 no-fit questions; the agent then reads about 1,200 tokens at the median with `kb get`. The check's lookup is two `claude-haiku-5-5` calls in a row, a query writer and a picker, so it takes 3.5 s where the rivals' lookups make no model call.
 - **Cards alone.** A card is a 240-character snippet. In 57 of the 72 misses the right item was among the cards, but the snippet did not hold the answer. With `kb get` the same lookup answers 122.
 - **Mem0.** It returns 3 memories for every message. In 22 of its 28 misses, an item that holds the answer was among the memories' sources, but the extracted memory lacked the detail asked for. Its log shows 22 fact-extraction replies that did not parse, and Mem0 stores no memories for those adds.
-- **claude-mem.** It records agent sessions only. Only 37 of the 131 questions with an answer have any evidence in an agent session, and it answered 19 of those. Its per-prompt lookup, off by default, did not help here.
+- **claude-mem.** It records agent sessions only. Only 37 of the 131 questions with an answer have any evidence in an agent session, and it answered 18 of those. Its per-prompt lookup, off by default, answered the same number. Its agent uses claude-mem's own MCP search tools and read about 7,000 tokens per question with them.
 - **The gold records.** With the right items handed over, the answer model and judge still miss 2 of 131. That is the ceiling for every tool.
 - **Lookup times.** These are the month run's, measured while other runs shared the gateway. Timed alone, 80 lookups each, the check's median is 3.28 s (p90 4.81 s), Supermemory's 0.17 s and claude-mem's 0.01 s (`latency.jsonl`).
 - **What this month can't show.** Each question ran once, so run-to-run spread is not measured. The month and its questions were written by the same team as the check. The rivals ran self-hosted on `claude-haiku-5-5`; Mem0 and Supermemory both say their hosted platforms extract memories better. The check ran from kb's code at 4a884a2 with the product's prompt wording, not from the released package.
