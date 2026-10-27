@@ -14,6 +14,7 @@ lock or change what they read, and they drop 2FA and password-reset messages one
 """
 import fnmatch
 import importlib
+import os
 import pkgutil
 import re
 from typing import Any, Callable, FrozenSet, Iterable, Iterator, NamedTuple, Optional, Tuple, Union
@@ -91,6 +92,17 @@ class Excludes:
         if any(fnmatch.fnmatchcase(part, p.strip("/")) for part in parts for p in self._names):
             return True
         return any(r.fullmatch("/".join(parts[:i])) for r in self._paths for i in range(1, len(parts) + 1))
+
+
+def home_key(path, home=None):
+    """A path with the home folder written as "~", which is what patterns such as "~/code/old-client" match."""
+    path = str(path or "")
+    home = (home or os.path.expanduser("~")).rstrip("/")
+    if home and path.rstrip("/") == home:
+        return "~"
+    if home and path.startswith(home + "/"):
+        return "~" + path[len(home):]
+    return path
 
 
 def _path_regex(pattern):
