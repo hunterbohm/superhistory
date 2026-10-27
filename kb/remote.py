@@ -62,7 +62,8 @@ def package_sources():
 
 
 def script(request):
-    return (f"SOURCES = {package_sources()!r}\nREQUEST = {request!r}\n{BOOTSTRAP}").encode("utf-8")
+    # ascii(), not repr(): the far side reads this from stdin, where Python 3.9 on macOS refuses a non-ASCII byte.
+    return (f"SOURCES = {ascii(package_sources())}\nREQUEST = {ascii(request)}\n{BOOTSTRAP}").encode("ascii")
 
 
 def encode(event):

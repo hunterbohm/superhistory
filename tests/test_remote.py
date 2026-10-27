@@ -78,6 +78,12 @@ class RemoteTest(unittest.TestCase):
     def stored_ids(self):
         return sorted(r[0] for r in self.db.execute("SELECT DISTINCT source_id FROM docs"))
 
+    def test_the_program_sent_to_the_far_side_is_ascii(self):
+        program = remote.script({"verb": "extract", "type": "notes", "since": None, "exclude": ["Café/…"],
+                                 "options": {"path": "/notes/Café …"}})
+        self.assertTrue(all(byte < 128 for byte in program), "Python 3.9 on macOS refuses a non-ASCII byte on stdin")
+        self.assertIn("Caf\\xe9", program.decode("ascii"))
+
     def test_a_source_runs_on_a_computer_with_no_copy_of_kb(self):
         self.note("Projects/pelican.md", "Dana approved the pelican quote.")
         failures = ingest.run(self.db, self.config(), LOG, with_summaries=False)
