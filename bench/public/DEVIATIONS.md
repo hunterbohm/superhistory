@@ -1,0 +1,32 @@
+# How these runs differ from each test's published setup
+
+## Both tests
+
+- **Answer model.** `claude-sonnet-5-5`, the month harness's answer model. LongMemEval's paper used GPT-4o and others. Mem0's 2026 numbers use gpt-5, and Supermemory's use gemini-3-pro or gpt-5.
+- **Judge model.** `gpt-6.1-sol` at temperature 0, in place of GPT-4o for LongMemEval and gpt-4o-mini for Mem0's J score. The judge prompts are copied verbatim.
+- **An agent, not a reader.** The published setups hand retrieved text to a reader model once. Here each question goes through the check as a new message, the way the product's hook sends it. The check adds up to 4 records ahead of the question. The answer model can then run `kb search` and `kb get` for up to 4 tool turns, in `bench/run.py`'s loop with its cap set to 4 (`TOOL_TURNS` in `bench/public/common.py`; the month runs allow 8). Mem0's 2026 run is single pass, with one retrieval and one answer. Letta's filesystem agent, with search tools and gpt-4o-mini, is the closest published setup.
+- **The check's prompts.** The check runs from a copy of kb's code. Its query and pick prompts name kb's owner, and the query writer then put that name into its searches. The runs use the product's wording of those two prompts instead, from `kb/check.py` on branch `repo/package` at 18a4335. The only change is "the user" for the owner's name. The rest of the check runs unchanged, and each run records the code's hash.
+- **Summaries for chat history.** The check summarizes long items only from the sources its summarizer lists: agent sessions, mail, texts, client files and meeting notes. Chat history is not on that list. The runs add source `chat` with the same settings as agent sessions, so each item over 4,000 characters gets one Haiku summary call.
+- **Summaries on or off.** A set whose summaries need more than 3,000 calls runs without them, and its results file says so in its name. LongMemEval S would need 20,554 calls, so it runs without summaries. The oracle set needs 925 and LoCoMo needs 55, so both run with summaries.
+- **Recency.** The check's search scores recent items higher, measured from today's date rather than the question's. Every item in both datasets is over two years old, which makes the boost under 1% and the same for every item. In effect it is off.
+- **Short questions.** As shipped, the check makes no search for a message with fewer than 3 search words. That skips 11 LongMemEval questions and 38 LoCoMo questions. The answer model can still search with its tools.
+- **One pass.** Each question runs once, with no seeds or repeats, so the results give no run-to-run spread. The Mem0 paper reports the mean of 10 runs.
+- **Load.** The check's two model calls share a 10-second budget, as shipped. Runs used 8 to 10 workers per set, with up to three sets running at once on one gateway. Each table counts lookup errors.
+
+## LongMemEval
+
+- **Data.** The cleaned release from September 2025, Hugging Face revision 98d7416. The paper's numbers, and Zep's 71.2%, used the release before that cleanup.
+- **Answer prompt.** The system prompt gives the question date as the current date, as the brief asks, and allows at most three sentences, as the month harness does. LongMemEval's own reading prompt instead puts the history chats, then "Current Date:", then the question into one user message.
+- **Judge.** `get_anscheck_prompt` from `src/evaluation/evaluate_qa.py` at commit 9e0b455, verbatim. Like that script, the judge gets max_tokens 10 and temperature 0, and a reply counts as correct when it contains "yes".
+- **Items.** One item per haystack session. Each item has a "Chat session" header and then one `USER:` or `ASSISTANT:` line per turn, in the style of the agent-session connectors. The title is the first user line, and the timestamp is the session's haystack date. The per-turn `has_answer` flags are dropped. In the S set, 13 filler sessions appear twice in their haystack with the same text and different dates. The check stores each one once, with the first date. None of them holds an answer.
+- **Sets.** S and oracle. M was not run.
+
+## LoCoMo
+
+- **Questions.** Categories 1 to 4, 1,540 questions. Category 5 (adversarial, 446 questions) is left out. For 444 of those questions the dataset has no `answer` field, only an `adversarial_answer` that the right reply must not give. LoCoMo scores category 5 as a two-option choice between that answer and "Not mentioned in the conversation", which this agent setup does not pose. Mem0's judge script and Zep both report categories 1 to 4 only.
+- **Category names.** These follow LoCoMo's `task_eval` code and Mem0's `memory-benchmarks`: 1 is multi-hop, 2 is temporal, 3 is open-domain and 4 is single-hop. Some published pages pair the names with other numbers, so compare per-category scores with care.
+- **F1.** `normalize_answer`, `f1_score`, `f1` and the per-category branch of `eval_question_answering`, from `task_eval/evaluation.py` at commit 3eb6f2c, verbatim. The overall F1 is the mean over all questions.
+- **J score.** Mem0's `ACCURACY_PROMPT` from `evaluation/metrics/llm_judge.py` at commit aae5989, verbatim. Mem0 asked gpt-4o-mini in JSON mode. Here gpt-6.1-sol reads it with max_tokens 1000, and the first JSON object in its reply gives the label, asking up to three times. Mem0's 2026 numbers come from a newer, more lenient judge prompt, described in `rivals.json`.
+- **Answer prompt.** The answer is a short phrase of at most six words, using the records' own words, with relative times worked out from the record's date. This follows LoCoMo's QA prompt ("a short phrase … exact words from the context") and Mem0's answer prompt (at most 5 or 6 words, relative times turned into dates). LoCoMo appends "Use DATE of CONVERSATION to answer with an approximate date." to category 2 questions only. Here that rule sits in the system prompt for every question, so no question carries its category.
+- **Today.** The date of the conversation's last session.
+- **Items.** One item per session. Each item has a header with both names and the session's date and time, then one `Name: text` line per turn. A shared image's caption follows its turn as `[shares <caption>]`, since LoCoMo's own prompts include captions.
