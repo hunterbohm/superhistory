@@ -1,3 +1,4 @@
+import json
 import logging
 import os
 import sys
@@ -146,6 +147,22 @@ class SupermemoryTest(unittest.TestCase):
             self.assertTrue(outside.supermemory_ready(2))
         finally:
             outside.tools.supermemory.Supermemory, outside.tools.supermemory.api = make, api
+
+
+class RepetitionTest(unittest.TestCase):
+    def test_the_tables_read_stored_similarities_where_the_working_rows_are_not(self):
+        with tempfile.TemporaryDirectory() as out:
+            saved, outside.OUT = outside.OUT, out
+            try:
+                os.makedirs(os.path.join(out, "sample", "op"))
+                with open(outside.similarity_path(), "w", encoding="utf-8") as fh:
+                    json.dump({"ids": {"p": ["a", "b"]}, "similarity": {"check": {"p": [[1, 0.5], [0.5, 1]]}}}, fh)
+                found = outside.similarities({"check": {}}, {"p": ["a", "b"]}, ["p"])
+                self.assertEqual(found["check"]["p"][0][1], 0.5)
+                with self.assertRaises(SystemExit):
+                    outside.similarities({"check": {}}, {"p": ["a", "c"]}, ["p"])
+            finally:
+                outside.OUT = saved
 
 
 class SampleTest(unittest.TestCase):

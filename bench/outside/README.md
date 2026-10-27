@@ -9,12 +9,12 @@ The paper behind OP-Bench found that every memory system it tried made replies w
 
 ```bash
 python3 bench/outside/outside.py --sample 0.2 --seed 0    # the seeded 20% sample behind the numbers below
-python3 bench/outside/outside.py --sample 0.2 --table     # its tables, from the rows already written
+uv run bench/outside/outside.py --sample 0.2 --table     # its tables, from the committed rows alone
 python3 bench/outside/outside.py                          # every message, every tool, all ten conversations
 python3 bench/outside/outside.py --groups conv-26 --limit 5 --tools none,check
 ```
 
-Run it with the Python that has the rivals' packages, and with a Supermemory server, as for the month (`bench/README.md`). `SUPERMEMORY_URL` and `SUPERMEMORY_KEY_FILE` point the adapter at it. Rows go to `results/<test>/<tool>.jsonl`, one per message; a rerun runs only messages with no row yet. `results/runs.json` records each run's models, data hashes, store stats, rate limits and failures.
+The tables need only the packages pinned in `outside.py`'s header, which `uv run` installs. A run needs the Python that has the rivals' packages, and a Supermemory server, as for the month (`bench/README.md`). `SUPERMEMORY_URL` and `SUPERMEMORY_KEY_FILE` point the adapter at it. Rows go to `results/<test>/<tool>.jsonl`, one per message; a rerun runs only messages with no row yet. `results/runs.json` records each run's models, data hashes, store stats, rate limits and failures.
 
 A run makes at most two model calls at once, the limit for a benchmark run on the shared model plans. Answers, judges, the check's own calls and its summaries all wait for one of two slots, and the check's hedge, which sends a second copy of a call still running after 3 seconds, sends it only when a slot is free. Mem0's calls go through the same slots, with the OpenAI SDK's own retries off; Supermemory's server makes its own, as below. After an HTTP 429 or "cooling down" from a model, no new call goes to it for 30 minutes, checked again whenever a call gets a slot, then it is tried once more; a second limit stops the run. A message whose lookup fails, times out or meets a limit gets no row and runs again, so no reply is graded without the lookup it should have had.
 
@@ -68,7 +68,7 @@ The fact-used mean is estimated stratum by stratum and weighted by each stratum'
 
 These are a baseline. The check will change before release, and these tests will be run again in full with the final check before any of these numbers is published. The Hillclimb track, which changes the check, does not tune on these tests.
 
-All rows behind these numbers are in `results/sample/`, one per tool and message, and `python3 bench/outside/outside.py --sample 0.2 --table` rebuilds the tables in `results/sample-table.md` from them alone.
+All rows behind these numbers are in `results/sample/`, one per tool and message. `uv run bench/outside/outside.py --sample 0.2 --table` rebuilds the tables in `results/sample-table.md` from them alone, on a machine with nothing else installed: uv installs the pinned numpy, nltk and regex. The repetition scores need no embedder there, because `results/sample/op/repetition.json` holds the cosine similarity between every pair of each person's sampled replies. Where the working rows are, the table step computes those again with `BAAI/bge-base-en-v1.5` at revision a5beb1e through sentence-transformers 6.2.0, and records both in the file.
 
 **Speaking up: LoCoMo-Conv's implicit messages.** Fact used, 0 to 1, over 307 sampled messages.
 
