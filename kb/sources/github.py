@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import NamedTuple, Tuple
 
-from kb.mask import mask
+from kb.mask import clip, mask
 from kb.sources import Item, Progress, SourceType
 
 DAY = 86400
@@ -95,7 +95,7 @@ def _epoch(iso):
 
 def _clip(text):
     text = (text or "").strip()
-    return text if len(text) <= BODY_CHARS else text[:BODY_CHARS] + " …"
+    return clip(text, BODY_CHARS)
 
 
 def _login(who):

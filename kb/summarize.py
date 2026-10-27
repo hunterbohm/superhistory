@@ -204,10 +204,10 @@ def rows(item, span, segments, atoms):
     meta.update(span)
     meta["at"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     out = [{"kind": "segment", "ts": item.ts, "title": mask(title)[:200],
-            "content": mask(f"{question[:400]}\n{summary[:1500]}"), "metadata": meta}
+            "content": f"{mask(question)[:400]}\n{mask(summary)[:1500]}", "metadata": meta}
            for title, question, summary in segments]
     for kind, text in atoms:
-        text = mask(text[:2000])
+        text = mask(text)[:2000]
         label = re.sub(r"\s+", " ", text.splitlines()[0] if text.splitlines() else text)[:80]
         out.append({"kind": "atom", "ts": item.ts, "title": f"{kind}: {label}", "content": text,
                     "metadata": {**meta, "atom": kind}})

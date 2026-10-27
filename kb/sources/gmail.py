@@ -540,10 +540,10 @@ def _clean_body(body):
             out = out[:n]
             break
     text = "\n".join(out)
-    text = LONG_URL.sub(lambda m: m.group(0)[:60] + "…", text)
+    text = LONG_URL.sub(lambda m: mask.mask(m.group(0))[:60] + "…", text)
     text = re.sub(r"[ \t]+\n", "\n", text)
     text = re.sub(r"\n{3,}", "\n\n", text).strip()
-    return text if len(text) <= BODY_CHARS else text[:BODY_CHARS] + " …"
+    return mask.clip(text, BODY_CHARS)
 
 
 def _render(address, thread, bodies):

@@ -100,7 +100,7 @@ def plan(message, before, model, timeout, hedge_after):
     query = answer.get("query")
     if not isinstance(query, str) or not query.strip():
         raise BadAnswer("no query in the answer")
-    return query.strip()[:200]
+    return mask(query.strip())[:200]
 
 
 class Lookup(NamedTuple):

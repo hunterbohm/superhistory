@@ -8,6 +8,7 @@ Each canary has a secret's shape, because mask() can only mask what looks like a
 not cover is a missing case: add the input or the call here.
 """
 import contextlib
+import functools
 import imaplib
 import io
 import json
@@ -32,6 +33,7 @@ from kb.ai import cli as ai_cli
 from kb.paths import Paths
 from kb.sources import Excludes, Item, Progress, Run, SourceType, git, github, gmail, notes
 from tests.test_gmail import FakeGmail
+from tests.test_hermes import make_store
 
 KINDS = ("env", "cmd", "cmdfail", "cmdtimeout", "configkey", "itemtext", "itemmeta", "metakey", "notepath",
          "notepath2", "repopath", "sshout", "ssherr", "ghout", "gherr", "ghpath", "gitout", "giterr", "gitcwd", "http",
@@ -42,7 +44,15 @@ KEYED = ("metapw", "metanested", "ghtail", "aitail", "turntail")
 CANARY.update({kind: f"canary{kind}Zz12345678" for kind in KEYED})
 NAMES = ("machinename", "hostname", "sourcename", "timestamp", "mark", "ghargs", "hookprompt", "hooksession",
          "transcript", "hooksettings", "schedout", "sortsubject", "sortsender", "contextmessage", "trialid",
-         "trialsource", "setupkey", "setupexclude", "imaplong", "aimodel", "oauthsecret", "oauthtoken")
+         "trialsource", "setupkey", "setupexclude", "imaplong", "aimodel", "oauthsecret", "oauthtoken", "cctitle",
+         "cxtitle", "cxtool", "hmuser", "hmtitle", "ghbody", "gmbody", "gmurl", "sumq", "sums", "suma")
+# Each of these sits across a limit where kb cuts text, so only the 12-character check sees a cut made before masking.
+CUT = {"cctitle": 84, "cxtitle": 84, "cxtool": 284, "hmtitle": 84, "hmuser": 2984, "ghbody": 19984, "gmbody": 19984,
+       "sumq": 384, "sums": 1484, "suma": 1984}
+
+
+def across(kind):
+    return "." * CUT[kind] + CANARY[kind]
 # A number its field name marks as secret, and a private key's body, whose line breaks repr() would escape.
 NUMBER = 928374615001
 PEM_BODY = "Q2FuYXJ5UHJpdmF0ZUtleUJvZHkxMjM0NTY3OA"
@@ -76,7 +86,7 @@ if sys.argv[1] == "search":
     print(json.dumps([{{"repository": {{"nameWithOwner": "acme/demo"}}, "number": 7, "isPullRequest": False,
                        "updatedAt": "{updated}"}}]))
 else:
-    print(json.dumps({{"title": "Leaked {ghout}", "body": "token {ghout}", "state": "OPEN",
+    print(json.dumps({{"title": "Leaked {ghout}", "body": {ghbody!r}, "state": "OPEN",
                       "author": {{"login": "dana"}}, "createdAt": "{updated}", "updatedAt": "{updated}",
                       "closedAt": None, "labels": [], "url": "https://github.com/acme/demo/issues/7?t={ghout}",
                       "comments": [{{"author": {{"login": "dana"}}, "createdAt": "{updated}", "body": "{ghout}"}}]}}))
@@ -91,6 +101,15 @@ class Model(BaseHTTPRequestHandler):
 
     def do_POST(self):
         Model.sent.append(self.rfile.read(int(self.headers.get("content-length", 0))).decode("utf-8", "replace"))
+        if Model.mode == "long":
+            text = json.dumps({"segments": [{"title": "t", "question": across("sumq"), "summary": across("sums")}],
+                               "atoms": [{"type": "decision", "text": across("suma")}]})
+            body = json.dumps({"content": [{"type": "text", "text": text}], "stop_reason": "end_turn"}).encode()
+            self.send_response(200)
+            self.send_header("content-type", "application/json")
+            self.end_headers()
+            self.wfile.write(body)
+            return
         if Model.mode == "pem":
             body = json.dumps({"content": [{"type": "text", "text": f"Here it is:\n{PEM}"}]}).encode()
             self.send_response(200)
@@ -110,7 +129,8 @@ class Model(BaseHTTPRequestHandler):
             body = f"<html>upstream error {CANARY['httpbad']}</html>".encode()
             self.send_response(200)
         else:
-            text = json.dumps({"query": f"pelican {CANARY['modeltext']}", "search": True, "scores": {"1": 2, "2": 2},
+            text = json.dumps({"query": "pelican " + "." * 176 + CANARY["modeltext"], "search": True,
+                               "scores": {"1": 2, "2": 2},
                                "keep": [1, 2],
                                "segments": [{"title": CANARY["modeltext"], "question": CANARY["modeltext"],
                                              "summary": CANARY["modeltext"]}],
@@ -135,6 +155,9 @@ class Gmail(FakeGmail):
                  f"The deploy key is {CANARY['imap']}", subject=f"Key {CANARY['imap']}")
         self.add("1781000000000000002", NOW - timedelta(hours=5), f"Ops <ops-{CANARY['sortsender']}@example.org>",
                  "Rotate it today.", subject=f"Rotated {CANARY['sortsubject']}")
+        link = "https://files.example.org/" + "a" * 17 + "/" + CANARY["gmurl"] + "b" * 40
+        self.add("1781000000000000003", NOW - timedelta(hours=4), "Dana <dana@example.org>",
+                 f"See {link} and the notes.\n" + across("gmbody"), subject="Notes")
 
     def login(self, user, password):
         if user == "long@example.com":
@@ -163,7 +186,8 @@ class CanaryTest(unittest.TestCase):
         updated = (NOW - timedelta(hours=2)).strftime("%Y-%m-%dT%H:%M:%SZ")
         for name, fail in (("gh-ok", False), ("gh-fail", True)):
             self._program(name, FAKE_GH.format(python=sys.executable, fail=fail, gherr=CANARY["gherr"],
-                                               ghout=CANARY["ghout"], updated=updated))
+                                               ghout=CANARY["ghout"], updated=updated,
+                                               ghbody=f"token {CANARY['ghout']} " + across("ghbody")))
         for tool in ("systemctl", "launchctl", "crontab"):
             # Turning a job on fails, so kb shows the tool's own output, which holds a canary.
             self._program(tool, f"#!{sys.executable}\nimport sys\nprint('unit kb-ingest {CANARY['schedout']}')\n"
@@ -189,6 +213,7 @@ class CanaryTest(unittest.TestCase):
             with open(os.path.join(self.notes, "Area", name), "w") as fh:
                 fh.write(text)
             os.utime(os.path.join(self.notes, "Area", name), (time.time() - 86400,) * 2)
+        self._sessions()
         self.repos = os.path.join(self.home, "code")
         self._repo(os.path.join(self.repos, f"app-{CANARY['repopath']}"))
         broken = os.path.join(self.repos, "broken")
@@ -201,8 +226,10 @@ class CanaryTest(unittest.TestCase):
         env = {"HOME": self.home, "KB_HOME": os.path.dirname(self.paths.config_file), "KB_CANARY_KEY": CANARY["env"],
                "PATH": self.bin + os.pathsep + os.environ["PATH"], "GIT_CONFIG_NOSYSTEM": "1",
                "KB_CANARY_OAUTH": CANARY["oauthsecret"]}
-        # create=True lets this file run on code from before the masking work, where it must find the leaks.
-        for patch in (mock.patch.dict(os.environ, env), mock.patch.object(config, "SECRET_TIMEOUT", 0.5, create=True),
+        # create=True lets this file run on code from before the masking work, where it must find the leaks. Retries
+        # skip their backoff, since the fake plug-in's failures would otherwise wait up to a minute each.
+        no_wait = functools.partial(ai.with_retries, sleep=lambda seconds: None)
+        for patch in (mock.patch.object(ai, "with_retries", no_wait), mock.patch.dict(os.environ, env), mock.patch.object(config, "SECRET_TIMEOUT", 0.5, create=True),
                       mock.patch.object(gmail, "connect", self._connect), mock.patch.object(github, "SPAN_DAYS", 30)):
             patch.start()
             self.addCleanup(patch.stop)
@@ -225,6 +252,38 @@ class CanaryTest(unittest.TestCase):
 
         self.addCleanup(restore)
         self._connections = {}
+
+    def _sessions(self):
+        """Agent sessions whose first prompt, tool call and long message each cross a limit kb cuts at."""
+        stamp = (NOW - timedelta(days=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        claude = os.path.join(self.home, ".claude", "projects", "-work", "c1.jsonl")
+        os.makedirs(os.path.dirname(claude))
+        with open(claude, "w") as fh:
+            for record in ({"type": "user", "timestamp": stamp, "sessionId": "c1", "cwd": "/work",
+                            "message": {"content": across("cctitle")}},
+                           {"type": "assistant", "timestamp": stamp, "sessionId": "c1",
+                            "message": {"content": [{"type": "text", "text": "On it."}]}}):
+                fh.write(json.dumps(record) + "\n")
+        sid = "019e0000-0000-7000-8000-00000000c0de"
+        codex_file = os.path.join(self.home, ".codex", "sessions", "2026", "10", "26", f"rollout-a-{sid}.jsonl")
+        os.makedirs(os.path.dirname(codex_file))
+
+        def rec(n, kind, payload):
+            return json.dumps({"timestamp": stamp, "ordinal": n, "type": kind, "payload": payload},
+                              separators=(",", ":"))
+
+        with open(codex_file, "w") as fh:
+            fh.write("\n".join([
+                rec(0, "session_meta", {"id": sid, "timestamp": stamp, "cwd": "/work", "source": "cli"}),
+                rec(1, "response_item", {"type": "message", "role": "user",
+                                         "content": [{"type": "input_text", "text": across("cxtitle")}]}),
+                rec(2, "response_item", {"type": "function_call", "name": "shell",
+                                         "arguments": json.dumps({"command": across("cxtool")})}),
+                rec(3, "response_item", {"type": "message", "role": "assistant",
+                                         "content": [{"type": "output_text", "text": "Done."}]})]) + "\n")
+        make_store(os.path.join(self.home, ".hermes", "state.db"), [
+            ("h1", "cli", None, time.time() - 86400, [("user", across("hmtitle"), {}), ("assistant", "ok", {}),
+                                                      ("user", across("hmuser"), {}), ("assistant", "ok", {})])])
 
     def _program(self, name, text):
         path = os.path.join(self.bin, name)
@@ -261,6 +320,11 @@ python = "{sys.executable}"
 path = {json.dumps(self.notes)}
 hosts = ["desk", "laptop", "noisy", "garbage"]
 summarize = true
+[sources.claude]
+type = "claude_code"
+[sources.sessions]
+type = "codex"
+[sources.hermes]
 [sources.code]
 type = "git"
 roots = [{json.dumps(self.repos)}]
@@ -374,9 +438,9 @@ password = "cmd:echo {CANARY['cmdfail']} >&2; exit 3"
         for name, text in channels.items():
             for kind, canary in planted.items():
                 self.assertNotIn(canary, text, f"the {kind} canary reached {name}")
-                # A cut before masking can leave a piece too short to mask, so pieces count too.
-                piece = next((canary[i:i + 12] for i in range(len(canary) - 11) if canary[i:i + 12] in text), None)
-                self.assertIsNone(piece, f"part of the {kind} canary reached {name}")
+                # A cut before masking keeps a token's start or its end, too short to mask, so those count too.
+                for part, piece in (("start", canary[:12]), ("end", canary[-12:])):
+                    self.assertNotIn(piece, text, f"the {part} of the {kind} canary reached {name}")
         return channels
 
     def _check_log_lines(self):
@@ -547,6 +611,14 @@ password = "cmd:echo {CANARY['cmdfail']} >&2; exit 3"
                                    json.dumps({"message": "What is the staging token for pelican?", "before": []}),
                                    "s4") or "")
         self.call(summarize.run, db, cfg, model, self.cloud, 2)
+        Model.mode = "long"
+        db.execute("DELETE FROM docs WHERE kind IN ('segment', 'atom')")
+        db.execute("DELETE FROM ingest_state WHERE source = ?", (summarize.FAILED,))
+        db.commit()
+        self.call(summarize.run, db, cfg, model, self.cloud, 1)
+        kinds = {r[0] for r in db.execute("SELECT DISTINCT kind FROM docs WHERE kind IN ('segment', 'atom')")}
+        self.assertEqual(kinds, {"segment", "atom"}, "the long summary was written, so its cuts were made")
+        Model.mode = "ok"
         for mode in ("refuse", "garbage", "status", "pem"):
             Model.mode = mode
             self.call(model.ask, ai.Prompt("s", "u", 10), 10)

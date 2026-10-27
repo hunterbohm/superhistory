@@ -68,6 +68,13 @@ def mask(text):
     return ENV_KEY_SECRET.sub(_mask_keyed, KEYED_SECRET.sub(_mask_keyed, text))
 
 
+def clip(text, limit, more=" …"):
+    """The text masked whole, then cut to `limit` characters. Cutting first could leave the start of a token too
+    short for mask() to know, or drop a secret's field name and keep its value."""
+    text = mask(text)
+    return text if len(text) <= limit else text[:limit] + more
+
+
 def holds_secret(text):
     """Whether mask() would change this text: an item id that does is not stored, because a masked id could stand
     for two different items."""

@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from typing import Tuple
 
 from kb.ai.cli import WORKDIR_PREFIX
-from kb.mask import is_auth_code
+from kb.mask import clip, is_auth_code, mask
 from kb.sources import Gone, Item, Progress, SourceType, home_key
 
 
@@ -56,8 +56,7 @@ FAILED = re.compile(r"Process exited with code [1-9]|exit_code\\?\"?\s*[:=]\s*[1
 
 
 def _clip(text, n):
-    text = text.strip()
-    return text if len(text) <= n else text[:n] + " …"
+    return clip(text.strip(), n)
 
 
 def _parts_text(parts):
@@ -99,7 +98,7 @@ def _title(text):
     for line in text.splitlines():
         line = TAG.sub("", line).strip()
         if line:
-            return line[:100]
+            return mask(line)[:100]
     return ""
 
 
