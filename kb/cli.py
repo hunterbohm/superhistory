@@ -214,7 +214,7 @@ def cmd_ai(paths, config, args):
         return 0
     model = ai.load(config.ai)
     started = time.monotonic()
-    answer = model.ask(ai.Prompt("Answer with the single word ok.", "Say ok."), timeout=120)
+    answer = model.ask(ai.Prompt("Answer with the single word ok.", "Say ok.", 1000), timeout=120)
     print(f"{model.name} ({model.model}) answered in {time.monotonic() - started:.1f} s: {answer.strip()[:80]!r}")
     return 0
 

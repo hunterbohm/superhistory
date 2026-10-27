@@ -128,6 +128,8 @@ class CliPluginTest(CliCase):
         self.assertEqual(call["prompt_file"], "Say ok.")
         self.assertEqual(call["argv"][call["argv"].index("--rules") + 1], "Answer with one word.")
         self.assertEqual(call["argv"][call["argv"].index("--max-turns") + 1], "1")
+        self.assertIn("run_terminal_cmd", call["argv"][call["argv"].index("--disallowed-tools") + 1])
+        self.assertEqual(call["argv"][call["argv"].index("--model") + 1], "grok-4.7-build-fast")
         session = os.path.join(self.home, ".grok", "sessions", quote(os.path.realpath(call["cwd"]), safe=""))
         self.assertFalse(os.path.exists(session))
 
@@ -186,9 +188,33 @@ class CliPluginTest(CliCase):
         else:
             self.fail("the CLI's child process is still running")
 
+    def test_a_call_cut_off_when_kb_exits_still_cleans_up(self):
+        script = (f"import os, sys, threading, time\nsys.path.insert(0, {os.getcwd()!r})\n"
+                  "from kb import ai, config\n"
+                  f"model = ai.load(config.parse('[ai]\\nplugin = \"grok\"\\nbinary = \"{self.binary}\"\\n').ai)\n"
+                  "threading.Thread(target=lambda: model.ask(ai.Prompt('s', 'u'), 30), daemon=True).start()\n"
+                  "time.sleep(1.5)\n")
+        env = dict(os.environ, FAKE_MODE="hang")
+        import subprocess
+        subprocess.run([sys.executable, "-c", script], env=env, timeout=20)
+        call, = self.calls()
+        self.assertFalse(os.path.exists(call["cwd"]))
+        with open(self.child_path) as fh:
+            child = int(fh.read())
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            try:
+                os.kill(child, 0)
+            except ProcessLookupError:
+                break
+            time.sleep(0.05)
+        else:
+            self.fail("the CLI's child process is still running")
+
     def test_cli_plugins_give_the_check_more_time_and_no_duplicate_calls(self):
-        model = self.model("grok")
-        self.assertEqual((model.traits.check_budget, model.traits.hedge_after), (20.0, None))
+        self.assertEqual((self.model("chatgpt").traits.check_budget, self.model("chatgpt").traits.hedge_after),
+                         (20.0, None))
+        self.assertEqual(self.model("grok").traits.check_budget, 25.0)
 
 
 class CheckThroughCliTest(CliCase):
@@ -229,7 +255,7 @@ class AiCommandTest(CliCase):
         self.write_config(f'[ai]\nplugin = "grok"\nbinary = {json.dumps(self.binary)}\n')
         code, out = self.run_cli("ai", "test")
         self.assertEqual(code, 0)
-        self.assertRegex(out, r"^grok \(default\) answered in \d+\.\d s: 'ok'")
+        self.assertRegex(out, r"^grok \(grok-4\.7-build-fast\) answered in \d+\.\d s: 'ok'")
 
     def test_ai_test_without_a_plugin_fails_with_the_next_step(self):
         code, _ = self.run_cli("ai", "test")

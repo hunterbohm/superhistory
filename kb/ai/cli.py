@@ -27,6 +27,8 @@ SCRUB = re.compile(r"^(ANTHROPIC_|OPENAI_|CLAUDE_CODE_|CLAUDECODE$|XAI_|GROK_SES
 SIGNED_OUT = re.compile(r"(?i)not (logged|signed) in|(log|sign) ?in again|please (log|sign) ?in|authenticat|unauthori[sz]ed|"
                         r"session expired|token (has )?expired")
 _running = set()
+# Cleanups of calls still in flight, run at exit too: a check that gives up at its deadline exits while a call runs.
+_in_flight = {}
 
 
 @dataclass(frozen=True)
@@ -50,6 +52,7 @@ class CliSpec(NamedTuple):
     default_model: str = "default"
     cleanup: Optional[Callable[[str], None]] = None          # removes what the CLI left for this workdir
     max_prompt_chars: int = 150_000
+    check_budget: float = TRAITS.check_budget
     hidden: bool = False
 
 
@@ -58,13 +61,14 @@ class CliModel:
         self.spec, self.options = spec, options
         self.name = spec.name
         self.model = options.model or spec.default_model
-        self.traits = TRAITS._replace(max_prompt_chars=spec.max_prompt_chars)
+        self.traits = TRAITS._replace(max_prompt_chars=spec.max_prompt_chars, check_budget=spec.check_budget)
 
     def ask(self, prompt, timeout):
         binary = self.options.binary or shutil.which(self.spec.program)
         if not binary or not os.access(binary, os.X_OK):
             raise NotReady(f"{self.spec.program} is not installed here; install it, or set binary under [ai]")
         workdir = tempfile.mkdtemp(prefix=WORKDIR_PREFIX)
+        _in_flight[workdir] = self.spec.cleanup
         try:
             call = self.spec.build(binary, self.options, prompt, workdir)
             output = run(call, workdir, timeout, self.spec.program)
@@ -76,9 +80,7 @@ class CliModel:
                     raise Busy(f"{self.spec.program} wrote no answer") from None
             return output
         finally:
-            if self.spec.cleanup:
-                self.spec.cleanup(workdir)
-            shutil.rmtree(workdir, ignore_errors=True)
+            _clean(workdir)
 
 
 def run(call, workdir, timeout, program):
@@ -115,7 +117,19 @@ def _kill(proc, reap=True):
         proc.communicate()
 
 
-atexit.register(lambda: [_kill(proc, reap=False) for proc in list(_running)])
+def _clean(workdir):
+    cleanup = _in_flight.pop(workdir, None)
+    if cleanup:
+        cleanup(workdir)
+    shutil.rmtree(workdir, ignore_errors=True)
+
+
+@atexit.register
+def _stop_everything():
+    for proc in list(_running):
+        _kill(proc, reap=False)
+    for workdir in list(_in_flight):
+        _clean(workdir)
 
 
 def _claude(binary, o, prompt, workdir):
@@ -137,11 +151,12 @@ def _grok(binary, o, prompt, workdir):
     prompt_file = os.path.join(workdir, "prompt.txt")
     with open(prompt_file, "w", encoding="utf-8") as fh:
         fh.write(prompt.user)
-    argv = [binary, "--prompt-file", prompt_file, "--rules", prompt.system, "--output-format", "plain",
-            "--max-turns", "1", "--disable-web-search", "--no-auto-update"]
-    if o.model:
-        argv += ["--model", o.model]
-    return Call(argv, "", {})
+    return Call([binary, "--prompt-file", prompt_file, "--rules", prompt.system, "--output-format", "plain",
+                 "--max-turns", "1", "--disable-web-search", "--no-auto-update", "--disallowed-tools", GROK_TOOLS,
+                 "--model", o.model or "grok-4.7-build-fast"], "", {})
+
+
+GROK_TOOLS = "read_file,list_dir,grep,web_search,web_fetch,todo_write,run_terminal_cmd,write,search_replace,task"
 
 
 def _grok_cleanup(workdir):
@@ -169,7 +184,9 @@ def _cursor(binary, o, prompt, workdir):
 SPECS = (
     CliSpec("claude-code", "Your own Claude Code (claude -p, your login)", "claude", _claude, default_model="haiku"),
     CliSpec("chatgpt", "Sign in with ChatGPT (codex exec, your login)", "codex", _codex),
-    CliSpec("grok", "Grok (grok -p, your login)", "grok", _grok, cleanup=_grok_cleanup),
+    # Measured on 2026-10-27: about 10 s a call on its fastest model, so the check gets the longest budget allowed.
+    CliSpec("grok", "Grok (grok -p, your login)", "grok", _grok, default_model="grok-4.7-build-fast",
+            cleanup=_grok_cleanup, check_budget=25.0),
     # The prompt goes on the command line, which Linux caps at 128 KiB for one argument.
     CliSpec("copilot", "GitHub Copilot (copilot -p, your login)", "copilot", _copilot, max_prompt_chars=100_000),
     # Off until Cursor confirms its rules allow this use; `allow_unconfirmed = true` under [ai] turns it on.
