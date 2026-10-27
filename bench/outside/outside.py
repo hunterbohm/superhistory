@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# /// script
+# requires-python = ">=3.10"
+# dependencies = ["nltk==3.9.1", "numpy==2.1.3", "regex==2024.11.6"]
+# ///
 """Two outside tests of memory in conversation, both built on LoCoMo's ten conversations by other labs.
 
     python3 bench/outside/outside.py [--tests implicit,op] [--tools none,oracle,check,mem0,supermemory]
@@ -22,6 +26,7 @@ import ast
 import faulthandler
 import functools
 import gzip
+import hashlib
 import json
 import os
 import random
@@ -648,6 +653,43 @@ def implicit_sample(names, strata):
     return parts, missing
 
 
+def similarity_path():
+    return os.path.join(OUT, "sample", "op", "repetition.json")
+
+
+def replies_hash(rows, keep, people):
+    """A SHA-256 per tool over each person's sampled repetition replies, in order, so stored similarities that no
+    longer match the committed replies are refused."""
+    return {n: hashlib.sha256("\0".join(rs[i]["answer"] for k in people for i in keep[k]).encode()).hexdigest()
+            for n, rs in rows.items()}
+
+
+def similarities(rows, keep, people):
+    """For each tool and person, the cosine similarity between every pair of that person's sampled repetition
+    replies, rounded to 6 places. Where the working rows are on this machine they are computed with the local
+    embedder and written to results/sample/op/repetition.json; elsewhere they are read from it, so the tables
+    rebuild from the committed rows without the embedder."""
+    if any(common.read_rows(rows_path("op", n)) for n in rows):
+        import sentence_transformers
+        model = sentence_transformers.SentenceTransformer(EMBEDDER)
+        similarity = {}
+        for n, rs in rows.items():
+            for k in people:
+                vectors = model.encode([rs[i]["answer"] for i in keep[k]], normalize_embeddings=True)
+                similarity.setdefault(n, {})[k] = np.round(vectors @ vectors.T, 6).tolist()
+        found = {"embedder": EMBEDDER, "model_revision": model.model_card_data.base_model_revision,
+                 "sentence_transformers": sentence_transformers.__version__, "ids": {k: keep[k] for k in people},
+                 "replies_sha256": replies_hash(rows, keep, people), "similarity": similarity}
+        os.makedirs(os.path.dirname(similarity_path()), exist_ok=True)
+        with open(similarity_path(), "w", encoding="utf-8") as fh:
+            json.dump(found, fh, sort_keys=True)
+    with open(similarity_path(), encoding="utf-8") as fh:
+        found = json.load(fh)
+    if found["ids"] != {k: keep[k] for k in people} or found.get("replies_sha256") != replies_hash(rows, keep, people):
+        raise SystemExit(f"{similarity_path()} was written for different replies; rebuild it where the rows are")
+    return found["similarity"]
+
+
 def weighted(values, weights, pick):
     return float((values * weights)[pick].sum() / weights[pick].sum())
 
@@ -656,10 +698,8 @@ def op_sample(names, strata):
     """The six OP-Bench columns and the code's overall score, each a 95% interval from a stratified bootstrap.
     Every column is a mean of per-person means, as in the code; sycophancy weighs its subtypes by their share of the
     400 messages, as each person's 20 do."""
-    from sentence_transformers import SentenceTransformer
     strata = {k: v for k, v in strata.items() if k.startswith("op/")}
     rows, keep, missing = sample_rows("op", [n for n in names if n in TESTS["op"].tools], strata)
-    model = SentenceTransformer(EMBEDDER)
     people = [k for k in strata if k.startswith("op/diversity/") and len(keep[k]) >= 2]
     columns = ["op/irrelevance_easy", "op/irrelevance_hard", "op/sycophancy/fact", "op/sycophancy/value",
                "op/sycophancy/memory"]
@@ -667,12 +707,9 @@ def op_sample(names, strata):
     # Each sampled message stands for its person's share of the task, so the mean estimates the mean of each
     # person's task mean, as OP-Bench's aggregate_metrics computes it.
     weights = {k: np.array([1.0 / strata[k]["people"][person(i)] for i in keep[k]]) for k in columns}
-    similar = {}
-    for n, rs in rows.items():
-        for k in people:
-            answers = [rs[i]["answer"] for i in keep[k]]
-            vectors = model.encode(answers, normalize_embeddings=True)
-            similar[n, k] = (vectors @ vectors.T, np.array([bool(a.strip()) for a in answers], dtype=bool))
+    stored = similarities(rows, keep, people)
+    similar = {(n, k): (np.array(stored[n][k]), np.array([bool(rows[n][i]["answer"].strip()) for i in keep[k]]))
+               for n in rows for k in people}
     syc = {k: strata[k]["population"] for k in columns if k.startswith("op/sycophancy/")}
 
     def repetition(n, k, pick):
