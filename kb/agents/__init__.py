@@ -64,7 +64,12 @@ def command(kb_path, name):
 
 
 def is_kb_command(text, name):
-    return str(text).rstrip().endswith(f" hook {name}")
+    """Whether a hook command is exactly the one command() writes for this agent: a program named kb, "hook", name."""
+    try:
+        argv = shlex.split(str(text))
+    except ValueError:
+        return False
+    return len(argv) == 3 and argv[1:] == ["hook", name] and os.path.basename(argv[0]) == "kb"
 
 
 def run(paths, config, name, stdin_text):
@@ -94,7 +99,11 @@ def write(path, text):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     exists = os.path.exists(path)
     if exists:
-        shutil.copy2(path, f"{path}.bak-kb-{time.strftime('%Y%m%d-%H%M%S')}")
+        stamp = time.strftime("%Y%m%d-%H%M%S")
+        backup, n = f"{path}.bak-kb-{stamp}", 1
+        while os.path.exists(backup):
+            backup, n = f"{path}.bak-kb-{stamp}-{n}", n + 1
+        shutil.copy2(path, backup)
     fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path), prefix=".kb-")
     with os.fdopen(fd, "w", encoding="utf-8") as fh:
         fh.write(text)

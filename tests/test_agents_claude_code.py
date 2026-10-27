@@ -268,3 +268,18 @@ class HookCommandTest(TranscriptCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class BrokenConfigTest(unittest.TestCase):
+    def test_a_broken_config_makes_the_hook_print_nothing_and_exit_0(self):
+        import contextlib
+        import io
+        from kb import cli
+        with tempfile.TemporaryDirectory() as tmp:
+            with open(os.path.join(tmp, "config.toml"), "w") as fh:
+                fh.write("[sources\n")
+            out, err = io.StringIO(), io.StringIO()
+            with mock.patch.dict(os.environ, {"KB_HOME": tmp}), mock.patch("sys.stdin", io.StringIO('{"prompt": "hi"}')), \
+                    contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                code = cli.main(["hook", "claude-code"])
+        self.assertEqual((code, out.getvalue(), err.getvalue()), (0, "", ""))
