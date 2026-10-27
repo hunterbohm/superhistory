@@ -256,6 +256,14 @@ def run_cases(name, cases, groups, out, system, score, summaries, workers, fresh
     return record
 
 
+def exit_status(record):
+    """1 when any question failed and has no row, so a caller can't take a partial run for a whole one."""
+    if record["failed"]:
+        print(f"{record['failed']} questions failed and have no row; run the same command again to retry them",
+              file=sys.stderr)
+    return 1 if record["failed"] else 0
+
+
 def pct(part, whole):
     return f"{100 * part / whole:.1f}%" if whole else "n/a"
 

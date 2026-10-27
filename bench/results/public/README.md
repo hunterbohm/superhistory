@@ -11,7 +11,7 @@ python3 bench/public/longmemeval.py --set s --sample 50 --seed 0
 uv run bench/public/locomo.py
 ```
 
-`--count` prints the model calls a run would make and makes none. `--table` prints the table from the rows already written. A rerun runs only questions with no row yet, unless `--fresh`.
+The check runs from a copy of kb's code at `BENCH_KB_CODE` until the product's package lands in this repo; each run records the copy's hash in its `.run.json`. A run where any question failed exits 1. `--count` prints the model calls a run would make and makes none. `--table` prints the table from the rows already written. A rerun runs only questions with no row yet, unless `--fresh`.
 
 ## Results
 
