@@ -315,13 +315,33 @@ def run_case(name, tool, case):
             **TESTS[case.test].grade(case, reply)}
 
 
-def load(name, sample, items, workdir, build_mem0=False):
+# Stores whose builds make model calls outside a run's own slots, so a run only opens them; --load-only prepares them.
+PREPARED = ("mem0", "supermemory")
+
+
+def supermemory_ready(count):
+    """Supermemory's namespace holds all count items and has finished extracting their memories, so opening it makes
+    no model calls. Its server's own calls cannot go through this run's slots."""
+    store = tools.supermemory.Supermemory()
+    ids = store._documents()
+    if len(ids) != count:
+        return False
+    for doc in ids:
+        status = tools.supermemory.api(f"/v3/documents/{doc}", method="GET")
+        if status["status"] not in ("done", "failed") or status.get("dreamingStatus") not in ("done", "failed", None):
+            return False
+    return True
+
+
+def load(name, sample, items, workdir, prepare=False):
     """A store for one conversation. Supermemory's adapter keeps one namespace per server, so each conversation gets
     its own; conversations run one after another, so the namespace holds while its messages run."""
     group = sample["sample_id"]
     if name == "supermemory":
         tools.supermemory.NAMESPACE = f"locomo-{group}"
-    tool = LocomoMem0(sample, LIMITS.send, build_mem0) if name == "mem0" else tools.make(name)
+        if not prepare and not supermemory_ready(len(items)):
+            raise RuntimeError(f"Supermemory's store for {group} is not ready; prepare it with --load-only")
+    tool = LocomoMem0(sample, LIMITS.send, prepare) if name == "mem0" else tools.make(name)
     folder = os.path.join(STORES if name == "mem0" else workdir, name, group)
     os.makedirs(folder, exist_ok=True)
     LIMITS.wait()
@@ -748,7 +768,8 @@ def main(argv=None):
     p.add_argument("--workers", type=int, default=Limits.PARALLEL, help="at most 2: the plans' limit per run")
     p.add_argument("--limit", type=int, help="run only the first N messages of each test in each conversation")
     p.add_argument("--table", action="store_true", help="print the tables from the rows already written")
-    p.add_argument("--load-only", action="store_true", help="build the kept stores (Mem0's) and stop")
+    p.add_argument("--load-only", action="store_true",
+                   help="prepare Mem0's and Supermemory's stores, one at a time with nothing else running, and stop")
     p.add_argument("--sample", type=float, help="run a seeded stratified sample, such as 0.2 for 20%% of each stratum")
     p.add_argument("--seed", type=int, default=0)
     args = p.parse_args(argv)
@@ -761,12 +782,15 @@ def main(argv=None):
         install_limits()
         samples = {s["sample_id"]: s for s in locomo.load()}
         for group in groups:
-            try:
-                tool, stats = load("mem0", samples[group], [], STORES, build_mem0=True)
-            except RateLimited:
-                LIMITS.wait()
-                tool, stats = load("mem0", samples[group], [], STORES, build_mem0=True)
-            print(group, json.dumps(stats))
+            for name in [n for n in names if n in PREPARED]:
+                items = locomo.session_items(samples[group])
+                with tempfile.TemporaryDirectory(prefix="bench-outside-") as workdir:
+                    try:
+                        tool, stats = load(name, samples[group], items, workdir, prepare=True)
+                    except RateLimited:
+                        LIMITS.wait()
+                        tool, stats = load(name, samples[group], items, workdir, prepare=True)
+                print(group, name, json.dumps(stats))
         record_mem0_stores()
         return 0
     chosen = None

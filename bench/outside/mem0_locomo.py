@@ -25,14 +25,15 @@ PARSE_ERROR = "Error parsing extraction response"
 
 
 class _Count(logging.Handler):
+    """Counts Mem0's extraction replies that did not parse; logging holds the handler's lock around emit."""
+
     def __init__(self):
         super().__init__()
-        self.n, self.lock = 0, threading.Lock()
+        self.n = 0
 
     def emit(self, record):
         if PARSE_ERROR in record.getMessage():
-            with self.lock:
-                self.n += 1
+            self.n += 1
 
 
 class LocomoMem0(Mem0):

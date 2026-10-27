@@ -1,3 +1,4 @@
+import logging
 import os
 import sys
 import tempfile
@@ -111,6 +112,26 @@ class Mem0Test(unittest.TestCase):
         with self.assertRaises(outside.RateLimited):
             mem0.memory.llm.client.chat.completions.create(model="m", messages=[])
         self.assertEqual((retries, mem0.limited), ([0], 1))
+
+
+    def test_a_parse_error_log_is_counted_without_hanging_the_build(self):
+        count, log = mem0_locomo._Count(), logging.getLogger("test-mem0-count")
+        log.addHandler(count)
+        worker = threading.Thread(target=log.error, args=(f"{mem0_locomo.PARSE_ERROR}: bad json",), daemon=True)
+        worker.start()
+        worker.join(2)
+        log.removeHandler(count)
+        self.assertEqual((worker.is_alive(), count.n), (False, 1))
+
+
+class SupermemoryTest(unittest.TestCase):
+    def test_a_benchmark_run_never_feeds_supermemory_a_store(self):
+        ready, outside.supermemory_ready = outside.supermemory_ready, lambda count: False
+        try:
+            with self.assertRaises(RuntimeError):
+                outside.load("supermemory", Mem0Test.sample, [{}], "/nonexistent")
+        finally:
+            outside.supermemory_ready = ready
 
 
 class SampleTest(unittest.TestCase):
