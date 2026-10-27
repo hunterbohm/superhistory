@@ -7,7 +7,7 @@ from pathlib import Path
 
 import kb
 from kb import ai, check, search, store
-from kb.mask import holds_secret, mask
+from kb.mask import holds_secret, mask, secret_in_id
 
 HOST = "demo"
 SHOWN_HITS = 5
@@ -27,7 +27,7 @@ def _lines(path):
 def load(db, folder):
     # A month someone else made can name a record after a secret; such a record is skipped, as ingest skips one.
     items = [item for item in _lines(Path(folder) / "items.jsonl")
-             if not holds_secret(str(item["source"])) and not holds_secret(str(item["source_id"]))]
+             if not holds_secret(str(item["source"])) and not secret_in_id(str(item["source_id"]))]
     for item in items:
         store.store_item(db, item["source"], f"{HOST}:{item['source_id']}", item["ts"], item["title"],
                          item["content"], {**item.get("meta", {}), "host": HOST})

@@ -12,7 +12,7 @@ import tempfile
 import traceback
 
 import kb
-from kb.mask import holds_secret, mask, mask_all
+from kb.mask import holds_secret, mask, mask_all, secret_in_id
 from kb.sources import Gone, Item, Progress
 
 # What ssh prints when the computer is off the network, as when a laptop sleeps. A refused login is a fault.
@@ -118,10 +118,10 @@ def _serve(request):
     run = Run(options, Excludes(request["exclude"]), request["since"])
     # Items whose id looks like a secret never leave this computer; the reading side would not store them either.
     if request["verb"] == "live_ids":
-        lines = (json.dumps(sid) for sid in kind.live_ids(run) if not holds_secret(sid))
+        lines = (json.dumps(sid) for sid in kind.live_ids(run) if not secret_in_id(sid))
     else:
         lines = (encode(event) for event in kind.extract(run) if not holds_secret(json.dumps(event.mark, default=str))
-                 and (isinstance(event, Progress) or not holds_secret(event.source_id)))
+                 and (isinstance(event, Progress) or not secret_in_id(event.source_id)))
     for line in lines:
         sys.stdout.write(line + "\n")
     sys.stdout.flush()

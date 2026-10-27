@@ -8,7 +8,7 @@ import sys
 import time
 
 from kb import ai, store, summarize
-from kb.mask import holds_secret, mask, masked_log
+from kb.mask import holds_secret, mask, masked_log, secret_in_id
 from kb.remote import HostAway, SshReader
 from kb.sources import Excludes, Gone, Item, Progress, Run
 
@@ -52,7 +52,7 @@ def apply(db, source, host, event):
     when rows changed."""
     if holds_secret(source) or holds_secret(host):
         raise ValueError("a source or host name that looks like a secret is not stored")
-    if isinstance(event, Progress) or holds_secret(event.source_id):
+    if isinstance(event, Progress) or secret_in_id(event.source_id):
         return False
     sid = f"{host}:{event.source_id}"
     if isinstance(event, Gone):
@@ -99,7 +99,7 @@ def run_unit(db, source, host, reader, log):
         try:
             if not isinstance(event, (Item, Gone)):
                 raise TypeError(f"not an event: a {type(event).__name__}")
-            if not isinstance(event, Progress) and holds_secret(event.source_id):
+            if not isinstance(event, Progress) and secret_in_id(event.source_id):
                 log.warning("%s@%s: skipped %s, whose name looks like it holds a secret; rename it to index it",
                             source.name, host, mask(event.source_id))
             changed += apply(db, source.name, host, event)
@@ -113,7 +113,7 @@ def run_unit(db, source, host, reader, log):
     pruned = 0
     if source.type.live_ids:
         db.commit()
-        live = {f"{host}:{sid}" for sid in reader.live_ids(source) if not holds_secret(sid)}
+        live = {f"{host}:{sid}" for sid in reader.live_ids(source) if not secret_in_id(sid)}
         stored = [] if not live else [r[0] for r in db.execute(
             "SELECT DISTINCT source_id FROM docs WHERE source=? AND substr(source_id, 1, ?) = ?",
             (source.name, len(host) + 1, f"{host}:"))]
@@ -163,8 +163,8 @@ def run(db, config, log, only=(), with_summaries=True, model_factory=None):
                 failures += 1
     store.set_watermark(db, store.STATE, "last_ingest", store.now_iso())
     db.commit()
-    if store.old_rows(db):
-        changed, left = store.remask(db, REMASK_SECONDS)
+    if store.old_rows(db) or store.rebuild_owed(db):
+        changed, left = store.remask(db, REMASK_SECONDS, log)
         log.info("remask: %d rows masked again, %d older rows left for the next ingest", changed, left)
     if with_summaries and config.summarize.enabled and config.ai:
         try:

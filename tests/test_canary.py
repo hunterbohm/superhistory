@@ -40,7 +40,7 @@ KINDS = ("env", "cmd", "cmdfail", "cmdtimeout", "configkey", "itemtext", "itemme
          "httpbad", "httpstatus", "modeltext", "imap", "imapbad", "imaperr", "remoteopt", "aipath", "session")
 CANARY = {kind: f"sk-ant-api03-canary-{kind}-" + "Z" * 24 for kind in KINDS}
 # Secrets that only their field name gives away, as in "password=...": mask() knows them by the name in front.
-KEYED = ("metapw", "metanested", "ghtail", "aitail", "turntail", "sumjoin", "syncpw")
+KEYED = ("metapw", "metanested", "ghtail", "aitail", "turntail", "sumjoin", "syncpw", "idassign", "syncappend")
 CANARY.update({kind: f"canary{kind}Zz12345678" for kind in KEYED})
 NAMES = ("machinename", "hostname", "sourcename", "timestamp", "mark", "ghargs", "hookprompt", "hooksession",
          "transcript", "hooksettings", "schedout", "sortsubject", "sortsender", "contextmessage", "trialid",
@@ -230,7 +230,8 @@ class CanaryTest(unittest.TestCase):
         texts = {"plan.md": f"---\nsource: https://vault.example/?api_key={CANARY['itemmeta']}\n---\n"
                             f"The pelican staging token is {CANARY['itemtext']}\n" + "Long line of notes.\n" * 800,
                  f"key-{CANARY['notepath']}.md": "the first file named after a token",
-                 f"key-{CANARY['notepath2']}.md": "the second file named after a token"}
+                 f"key-{CANARY['notepath2']}.md": "the second file named after a token",
+                 f"token={CANARY['idassign']}.md": "a file whose name assigns a token by its key's name"}
         for name, text in texts.items():
             with open(os.path.join(self.notes, "Area", name), "w") as fh:
                 fh.write(text)
@@ -513,6 +514,11 @@ password = "cmd:echo {CANARY['cmdfail']} >&2; exit 3"
         with self.assertRaises(ValueError, msg="an id that looks like a secret is refused, as ingest refuses it"):
             store.replace_rows(db, "notes", f"desk:key-{CANARY['syncid']}.md", [
                 {"kind": "doc", "ts": NOW.isoformat(), "title": "t", "content": "walrus id", "metadata": {}}])
+        for n, text in enumerate(("walrus append password=", f"{CANARY['syncappend']} walrus deployment")):
+            with self.assertRaises(ValueError, msg="chunks added one write at a time would be masked apart"):
+                store.replace_rows(db, "notes", "sync-append.md", [
+                    {"kind": "raw", "ts": NOW.isoformat(), "title": "append", "content": text,
+                     "metadata": {"hash": "append", "chunk": n, "chunks": 2}}], kinds=())
         db.commit()
         self.assert_no_canary()  # here, before remask below would mask what replace_rows let through
         old = (NOW - timedelta(hours=2)).isoformat()

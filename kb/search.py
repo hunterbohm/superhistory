@@ -1,10 +1,11 @@
 import json
 import math
 import re
+import sqlite3
 from datetime import datetime, timezone
 
-from kb.mask import holds_secret, mask
-from kb.store import SUMMARY_KINDS, current
+from kb.mask import mask
+from kb.store import SUMMARY_KINDS, TOKENIZE, current, secret_id
 
 STOPWORDS = set("""a an and are as at be been but by can could did do does doing for from had has have
 how i if in into is it its just me my no not of on or our should so than that the their them then there
@@ -115,7 +116,7 @@ def search(db, query, after=None, sources=(), limit=10, before=None, keep=None):
     fresh = current(db, [h["id"] for h in best.values()])
     # A store from before ingest refused such ids can hold an item whose id or source looks like a secret.
     allowed = (h for h in best.values()
-               if h["id"] in fresh or not (holds_secret(h["source"]) or holds_secret(h["source_id"])))
+               if h["id"] in fresh or not secret_id(h["source"], h["source_id"]))
     hits = sorted((h for h in allowed if keep is None or keep(h)), key=lambda h: -h["score"])[:limit]
     for hit in hits:
         if hit["id"] in fresh:
@@ -127,7 +128,7 @@ def search(db, query, after=None, sources=(), limit=10, before=None, keep=None):
         else:
             # Older rows are masked whole before any cut, and the match is found again in the masked text.
             hit["title"], hit["content"] = mask(hit["title"]), _masked_item(db, hit)
-            marked = _marked(hit["content"], terms)
+            marked = _marked(hit["content"], match)
             hit["snippet"] = excerpt(marked.replace(MARK, MARK + "[").replace(END, "]" + END), SNIPPET_CHARS)
             hit["excerpt"] = excerpt(marked)
     return hits
@@ -142,12 +143,17 @@ def _masked_item(db, hit):
         "ORDER BY json_extract(metadata, '$.chunk')", (hit["source"], hit["source_id"]))))
 
 
-def _marked(text, terms):
-    """`text` with each word that starts like a query word marked as snippet() marks it. A long word's last three
-    letters are left off, close to what stemming matches."""
-    words = {w.lower()[:max(4, len(w) - 3)] for term in terms for w in re.findall(r"\w+", term)}
-    pattern = re.compile(r"(?i)\b(?:" + "|".join(map(re.escape, sorted(words, key=len, reverse=True))) + r")\w*")
-    return pattern.sub(lambda m: MARK + m.group(0) + END, text)
+def _marked(text, match):
+    """`text` with the words the FTS query `match` finds marked as snippet() marks them, found by FTS5 itself in an
+    index of just this text, so stemming matches as it does in the store."""
+    index = sqlite3.connect(":memory:")
+    try:
+        index.execute(f"CREATE VIRTUAL TABLE t USING fts5(content, tokenize='{TOKENIZE}')")
+        index.execute("INSERT INTO t(rowid, content) VALUES (1, ?)", (text,))
+        row = index.execute("SELECT highlight(t, 0, char(2), char(3)) FROM t WHERE t MATCH ?", (match,)).fetchone()
+        return row[0] if row else text
+    finally:
+        index.close()
 
 
 def excerpt(marked, chars=EXCERPT_CHARS):

@@ -1,6 +1,6 @@
 import unittest
 
-from kb.mask import is_auth_code, is_auth_noise, mask
+from kb.mask import is_auth_code, is_auth_noise, mask, secret_in_id
 
 
 class MaskTest(unittest.TestCase):
@@ -152,6 +152,33 @@ class MaskTest(unittest.TestCase):
     def test_surrounding_text_survives(self):
         out = mask("key sk-ant-api03-AbCdEfGhIjKlMnOpQrStUvWx and more words")
         self.assertEqual(out, "key [masked] and more words")
+
+
+class SecretInIdTest(unittest.TestCase):
+    """An item id is a name someone chose, read more narrowly than text so a real item is not dropped."""
+
+    def test_a_token_or_a_credential_in_a_name_counts(self):
+        for name in ("key-sk-ant-api03-" + "Z" * 24 + ".md", "ghp_" + "A1" * 18 + ".md", "password=walrus2secret9.md",
+                     "token:abcd1234efgh5678.md", "OPENAI_API_KEY=where-to-find.md",
+                     "https://user:hunter9pw@example.com/notes"):
+            with self.subTest(name=name):
+                self.assertTrue(secret_in_id(name))
+
+    def test_a_title_naming_a_secret_does_not(self):
+        for name in ("Tokens: 2026Q4-plan.md", "Meeting - token: budget2026review.md", "Wifi password is changed.md",
+                     "passcode is 4 digits.md", "Secrets: rotation plan.md", "api_key rotation.md",
+                     "Areas/Security/password manager migration 2026-10.md", "Session token expiry bug.md"):
+            with self.subTest(name=name):
+                self.assertFalse(secret_in_id(name))
+        for name in ("Tokens: 2026Q4-plan.md", "Meeting - token: budget2026review.md"):
+            self.assertNotEqual(mask(name), name, "in text the same words are still masked")
+
+    def test_machine_made_ids_do_not(self):
+        for name in ("acme/app@" + "3f2a9c" * 6 + "e1d4", "1781000000000000001", "<CAFx3k+Q2Fu_ZXJ5=@mail.gmail.com>",
+                     "iMessage;-;+15555550123:2026-10-27", "I_kwDOAbCdEf5Ghij", "default:20260923_121000_71bf95",
+                     "rollout-2026-10-27T20-18-36-01a17f03-c62d-7001-a10a-09292ceb8a27"):
+            with self.subTest(name=name):
+                self.assertFalse(secret_in_id(name))
 
 
 class AuthNoiseTest(unittest.TestCase):

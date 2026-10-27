@@ -359,7 +359,7 @@ def cmd_remask(paths, config, args):
     with store.exclusive(paths.lock) as held:
         if not held:
             raise Fail("an ingest is running; try again when it finishes")
-        changed, _ = store.remask(store.connect(paths.db))
+        changed, _ = store.remask(store.connect(paths.db), log=_logger(paths))
         print(f"Remasked {changed:,} rows and rebuilt {paths.db}")
 
 

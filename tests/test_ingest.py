@@ -403,6 +403,21 @@ class RemaskOnIngestTest(IngestCase):
         self.assertNotIn(token, json.dumps(self.rows()))
         self.assertNotIn("predate", cli.header(self.db, cfg))
 
+    def test_ingest_finishes_a_rebuild_a_remask_left_owed(self):
+        token = "sk-ant-api03-rebuild-" + "Q" * 24
+        self.db.execute("INSERT INTO docs(kind, source, source_id, ts, title, content) VALUES "
+                        "('doc', 'old', 'a', ?, 't', ?)", (store.now_iso(), f"note with {token}"))
+        self.db.commit()
+        with mock.patch.object(store, "_rebuild", side_effect=RuntimeError("interrupted")):
+            with self.assertRaises(RuntimeError):
+                store.remask(self.db, seconds=60)
+        self.assertEqual(store.old_rows(self.db), 0)
+        self.assertEqual(ingest.run(self.db, make_config(Script("good", events=[])), LOG), 0)
+        self.assertFalse(store.rebuild_owed(self.db))
+        path = self.db.execute("PRAGMA database_list").fetchone()[2]
+        with open(path, "rb") as fh:
+            self.assertNotIn(token.encode(), fh.read())
+
     def test_a_remask_cut_short_by_its_time_finishes_on_later_ingests(self):
         for i in range(60):
             self.db.execute("INSERT INTO docs(kind, source, source_id, ts, title, content) VALUES "

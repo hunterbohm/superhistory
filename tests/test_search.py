@@ -59,6 +59,12 @@ class OldRowTest(TempDB):
             self.assertNotIn(line[:12], text)
         self.assertIn("walrus", hit["excerpt"])
 
+    def test_a_stemmed_match_stays_in_the_passage(self):
+        self.old("r.md", "ordinary filler " * 150 + "The run was approved by Dana.")
+        hit = search.search(self.db, "running")[0]
+        self.assertIn("[run] was approved", hit["snippet"])
+        self.assertIn("run was approved", hit["excerpt"])
+
     def test_an_old_item_whose_id_looks_like_a_secret_is_left_out(self):
         self.old("desk:key-sk-ant-api03-old-" + "Z" * 24 + ".md", "walrus deployment")
         self.assertEqual(search.search(self.db, "walrus deployment"), [])

@@ -32,15 +32,19 @@ PREFIXED_SECRETS = [
     re.compile(r"([a-z][a-z0-9+.-]*://[^/ \t\n\r:@'\"]+:)[^/ \t\n\r@'\"]{3,}(?=@)"),
     re.compile(r"(\bcurl\b[^\n|;]*?\s(?:-u|--user)\s+['\"]?[^ \t\n\r:'\"]+:)[^ \t\n\r'\"]+"),
 ]
-KEYED_SECRET = re.compile(
+_KEY_NAME = (
     r"(?i)(?<![A-Za-z0-9_.-])("
     r"[A-Za-z0-9_.-]*?(?:api[_-]?key|access[_-]?key|private[_-]?key|secret|token|credentials?|passw(?:or)?d|passcode|"
     r"session[_-]?(?:token|key|secret|cookie)|bw_session)[A-Za-z0-9_-]*?"
     r"|[A-Za-z0-9]+(?:[_-][A-Za-z0-9]+)*[_-](?:pass|pwd|pw)"
-    r")(?![A-Za-z0-9_.-])"
-    r"((?:[\"'])?[ \t\r\n]*(?:[:=]|=>|\bis\b)[ \t\r\n]*[\"']?)([^ \t\n\r\"'`,;<>)\]}]+)")
-ENV_KEY_SECRET = re.compile(r"(?<![A-Za-z0-9_])([A-Z][A-Z0-9_]*_KEY)(?![A-Za-z0-9_])((?:[\"'])?[ \t\r\n]*[:=][ \t\r\n]*[\"']?)"
-                            r"([^ \t\n\r\"'`,;<>)\]}]+)")
+    r")(?![A-Za-z0-9_.-])")
+_ENV_KEY_NAME = r"(?<![A-Za-z0-9_])([A-Z][A-Z0-9_]*_KEY)(?![A-Za-z0-9_])"
+_VALUE = r"([^ \t\n\r\"'`,;<>)\]}]+)"
+KEYED_SECRET = re.compile(_KEY_NAME + r"((?:[\"'])?[ \t\r\n]*(?:[:=]|=>|\bis\b)[ \t\r\n]*[\"']?)" + _VALUE)
+ENV_KEY_SECRET = re.compile(_ENV_KEY_NAME + r"((?:[\"'])?[ \t\r\n]*[:=][ \t\r\n]*[\"']?)" + _VALUE)
+# In an item id, a value counts by its key's name only in assignment form, "token=..." or "token:...", with no space.
+KEYED_ID = re.compile(_KEY_NAME + r"((?:[\"'])?[:=][\"']?)" + _VALUE)
+ENV_KEY_ID = re.compile(_ENV_KEY_NAME + r"((?:[\"'])?[:=][\"']?)" + _VALUE)
 PASSWORD_NAME = re.compile(r"(?i)passw(?:or)?d|passcode|bw_session|[_-](?:pass|pwd|pw)$")
 PLACEHOLDERS = {"string", "str", "none", "null", "nil", "true", "false", "undefined", "required", "optional",
                 "xxx", "xxxx", "****", "...", "redacted", "<redacted>", "secret", "password", "token"}
@@ -88,9 +92,21 @@ def clip(text, limit, more=" …"):
 
 
 def holds_secret(text):
-    """Whether mask() would change this text: an item id that does is not stored, because a masked id could stand
-    for two different items."""
+    """Whether mask() would change this text, such as a config name."""
     return mask(text) != text
+
+
+def secret_in_id(text):
+    """Whether an item id holds a secret, so that kb does not store the item: a masked id could stand for two items.
+    An id is a name someone chose, so it is read more narrowly than text: a provider's token shape or a credential in
+    a link still counts, but a value its key names counts only in assignment form. A title such as "Tokens: 2026Q4
+    plan" or "the password is changed" is a name, which mask() would mask in text."""
+    masked = text
+    for pattern in SECRET_PATTERNS:
+        masked = pattern.sub("[masked]", masked)
+    for pattern in PREFIXED_SECRETS:
+        masked = pattern.sub(lambda m: m.group(1) + "[masked]", masked)
+    return ENV_KEY_ID.sub(_mask_keyed, KEYED_ID.sub(_mask_keyed, masked)) != text
 
 
 def mask_all(value, key=None):

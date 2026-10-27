@@ -13,7 +13,7 @@ import sqlite3
 import time
 from datetime import datetime, timezone
 
-from .mask import VERSION, clean, holds_secret, mask, mask_all
+from .mask import VERSION, clean, holds_secret, mask, mask_all, masked_log, secret_in_id
 
 CHUNK = 4000
 ITEM_KINDS = ("doc", "raw")
@@ -22,6 +22,7 @@ CHUNK_KEYS = ("chunk", "chunks")
 # The metadata a summary row copies from its item, so a search hit on a summary points at the original.
 POINTER_KEYS = ("url", "path", "host")
 STATE = "_kb"
+TOKENIZE = "porter unicode61"
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS docs(
@@ -39,7 +40,7 @@ CREATE TABLE IF NOT EXISTS docs(
 CREATE INDEX IF NOT EXISTS docs_item ON docs(source, source_id, kind);
 CREATE INDEX IF NOT EXISTS docs_ts ON docs(ts);
 CREATE VIRTUAL TABLE IF NOT EXISTS docs_fts USING fts5(
-  title, content, content='docs', content_rowid='id', tokenize='porter unicode61');
+  title, content, content='docs', content_rowid='id', tokenize='""" + TOKENIZE + """');
 CREATE TRIGGER IF NOT EXISTS docs_ai AFTER INSERT ON docs BEGIN
   INSERT INTO docs_fts(rowid, title, content) VALUES (new.id, new.title, new.content);
 END;
@@ -49,6 +50,11 @@ END;
 CREATE TRIGGER IF NOT EXISTS docs_au AFTER UPDATE OF title, content ON docs BEGIN
   INSERT INTO docs_fts(docs_fts, rowid, title, content) VALUES ('delete', old.id, old.title, old.content);
   INSERT INTO docs_fts(rowid, title, content) VALUES (new.id, new.title, new.content);
+END;
+-- A change to a row's time, title, text or metadata clears its mask version. kb's own writers stamp it again once
+-- they have masked the row; an older kb, which does not, leaves the row to be masked again.
+CREATE TRIGGER IF NOT EXISTS docs_unmask AFTER UPDATE OF ts, title, content, metadata ON docs BEGIN
+  UPDATE docs SET masked = NULL WHERE id = new.id;
 END;
 CREATE TABLE IF NOT EXISTS ingest_state(
   source TEXT NOT NULL, key TEXT NOT NULL, watermark TEXT, PRIMARY KEY(source, key));
@@ -146,12 +152,25 @@ def _whole(rows):
         for i, part in enumerate(parts)]
 
 
+def secret_id(source, source_id):
+    """Whether kb refuses an item under this source and stored id, "<host>:<reader's id>". The host and the reader's
+    id are checked apart, the host as a config name and the id with secret_in_id(): joined by kb's colon, a host such
+    as "tokenbox" would read as the name of a secret."""
+    host, colon, sid = source_id.partition(":")
+    if not colon:
+        host, sid = "", source_id
+    return holds_secret(source) or holds_secret(host) or secret_in_id(sid)
+
+
 def replace_rows(db, source, source_id, rows, kinds=ITEM_KINDS):
     """Swap one item's rows of the given kinds for `rows` (dicts: kind, ts, title, content, metadata), masked with
     today's mask() and marked with its version. Raises ValueError for a source or item id that looks like it holds a
     secret, which ingest does not store either: a masked id could stand for two items."""
-    if holds_secret(source) or holds_secret(source_id):
+    if secret_id(source, source_id):
         raise ValueError("a source or item id that looks like it holds a secret is not stored; rename it")
+    if "raw" not in kinds and any(r["kind"] == "raw" for r in rows):
+        # Chunks added one write at a time would be masked apart, and a secret could run from one into the next.
+        raise ValueError("an item's chunks are replaced all at once, with the raw kind")
     rows = _whole(rows)
     marks = ",".join("?" * len(kinds))
     db.execute(f"DELETE FROM docs WHERE source=? AND source_id=? AND kind IN ({marks})",
@@ -270,17 +289,21 @@ def last_ingest(db):
     return get_watermark(db, STATE, "last_ingest")
 
 
-def remask(db, seconds=None):
+def remask(db, seconds=None, log=None):
     """Mask every row whose version is not today's again, a long item's chunks as one text, and record the version.
-    An item whose source or id looks like a secret is deleted, as ingest would not store it. With `seconds`, stops at
-    the first item past that time and leaves the rest old. Returns (rows changed, rows left). Once none are left,
-    rebuilds the file so the old values leave no bytes behind."""
+    An item whose source or id looks like a secret is deleted, as ingest would not store it, and named masked on
+    `log`. With `seconds`, stops at the first item past that time and leaves the rest old. Returns (rows changed,
+    rows left). Once none are left, rebuilds the file so the old values leave no bytes behind."""
     db.execute("PRAGMA secure_delete=ON")
+    log = masked_log(log) if log else None
     started, changed = time.monotonic(), 0
     items = db.execute("SELECT DISTINCT source, source_id FROM docs WHERE masked IS NOT ?", (VERSION,)).fetchall()
     for n, (source, source_id) in enumerate(items, 1):
-        if holds_secret(source) or holds_secret(source_id):
+        if secret_id(source, source_id):
             changed += delete_item(db, source, source_id)
+            if log:
+                log.warning("remask: deleted %s %s, whose name looks like it holds a secret; rename it to index it",
+                            source, source_id)
         else:
             changed += _remask_item(db, source, source_id)
         if n % 50 == 0 or n == len(items):
@@ -290,15 +313,26 @@ def remask(db, seconds=None):
             if seconds is not None and time.monotonic() - started > seconds:
                 break
     left = old_rows(db)
-    if not left and (seconds is None or get_watermark(db, STATE, "remask")):
-        # FTS keeps deleted terms in old segments until they merge; optimize merges them away.
-        db.execute("INSERT INTO docs_fts(docs_fts) VALUES('optimize')")
-        db.execute("DELETE FROM ingest_state WHERE source=? AND key='remask'", (STATE,))
-        db.commit()
-        db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-        db.execute("VACUUM")
-        db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    if not left and (seconds is None or rebuild_owed(db)):
+        _rebuild(db)
     return changed, left
+
+
+def rebuild_owed(db):
+    """Whether remask changed rows whose old values may still sit in the file, until _rebuild() has run."""
+    return get_watermark(db, STATE, "remask") is not None
+
+
+def _rebuild(db):
+    """Merge FTS's old segments, which keep deleted terms, and rewrite the file, whose free pages keep old bytes.
+    The mark that a rebuild is owed goes only once both are done, so an interrupted one runs again."""
+    db.execute("INSERT INTO docs_fts(docs_fts) VALUES('optimize')")
+    db.commit()
+    db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    db.execute("VACUUM")
+    db.execute("DELETE FROM ingest_state WHERE source=? AND key='remask'", (STATE,))
+    db.commit()
+    db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
 
 
 def _remask_item(db, source, source_id):
@@ -326,7 +360,7 @@ def _remask_item(db, source, source_id):
         if new[:3] == (ts, title, content) and json.loads(new[3]) == json.loads(meta):
             db.execute("UPDATE docs SET masked=? WHERE id=?", (VERSION, rid))
         else:
-            db.execute("UPDATE docs SET ts=?, title=?, content=?, metadata=?, masked=? WHERE id=?",
-                       (*new, VERSION, rid))
+            db.execute("UPDATE docs SET ts=?, title=?, content=?, metadata=? WHERE id=?", (*new, rid))
+            db.execute("UPDATE docs SET masked=? WHERE id=?", (VERSION, rid))  # after docs_unmask cleared it
             changed += 1
     return changed

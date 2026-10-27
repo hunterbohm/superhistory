@@ -1,4 +1,5 @@
 import json
+import logging
 import os
 import random
 import sqlite3
@@ -425,6 +426,57 @@ class MaskVersionTest(TempDB):
             self.assertNotIn(self.TOKEN[:12], str(caught.exception))
         self.assertEqual(self.ids(), [])
 
+    def test_the_host_and_the_readers_id_are_checked_apart(self):
+        for host in ("desk", "tokenbox", "secret-lab", "studio-pw", "passwordless"):
+            with self.subTest(host=host):
+                self.assertFalse(store.secret_id("notes", f"{host}:Areas/notes-2026-10-27.md"))
+                self.assertTrue(store.secret_id("notes", f"{host}:key-{self.TOKEN}.md"))
+        self.assertTrue(store.secret_id("notes", f"{self.TOKEN}:a.md"), "a host that is a token")
+        self.assertTrue(store.secret_id(self.TOKEN, "desk:a.md"), "a source that is a token")
+        row = {"kind": "doc", "ts": iso(), "title": "t", "content": "c", "metadata": {}}
+        store.replace_rows(self.db, "notes", "tokenbox:Areas/notes-2026-10-27.md", [row])
+        self.assertEqual(len(self.ids()), 1)
+
+    def test_chunks_are_written_all_at_once(self):
+        def chunk(text, n):
+            return {"kind": "raw", "ts": iso(), "title": "t", "content": text, "metadata": {"chunk": n, "chunks": 2}}
+        # Two writes that each add a chunk would be masked apart, so "password=" and its value would pass.
+        for kinds in ((), ("doc",), ("segment", "atom")):
+            with self.subTest(kinds=kinds), self.assertRaises(ValueError):
+                store.replace_rows(self.db, "s", "desk:a", [chunk("notes password=", 0)], kinds)
+        self.assertEqual(self.ids(), [])
+        store.replace_rows(self.db, "s", "desk:a", [chunk("notes password=", 0), chunk("walrus2secret9 more", 1)])
+        self.assertNotIn("walrus2secret9", "".join(r[4] for r in self.rows()))
+
+    def test_an_update_by_an_older_kb_clears_the_version(self):
+        # The statements an older kb runs: _repoint's, remask's, and a plain edit of a row's text.
+        self.add("a", "same text", meta={"path": "/one"})
+        rid = self.ids()[0]
+        for sql, args in (("UPDATE docs SET metadata=? WHERE id=?", (json.dumps({"password": "walrus2secret9"}), rid)),
+                          ("UPDATE docs SET title=?, content=?, metadata=? WHERE id=?", ("t", "c", "{}", rid)),
+                          ("UPDATE docs SET ts=? WHERE id=?", (iso(), rid))):
+            with self.subTest(sql=sql):
+                self.db.execute("UPDATE docs SET masked=? WHERE id=?", (store.VERSION, rid))
+                self.db.execute(sql, args)
+                self.assertEqual(store.current(self.db, [rid]), set())
+        self.db.execute("UPDATE docs SET superseded_by=1 WHERE id=?", (rid,))
+        store.remask(self.db)
+        self.assertEqual(store.current(self.db, [rid]), {rid})
+        self.db.execute("UPDATE docs SET superseded_by=NULL WHERE id=?", (rid,))
+        self.assertEqual(store.current(self.db, [rid]), {rid}, "a supersede mark is not the row's text")
+
+    def test_a_rebuild_cut_short_after_the_last_batch_is_finished_by_the_next_remask(self):
+        self.old("a", f"note with {self.TOKEN}")
+        with mock.patch.object(store, "_rebuild", side_effect=RuntimeError("interrupted")):
+            with self.assertRaises(RuntimeError):
+                store.remask(self.db, seconds=60)
+        self.assertEqual(store.old_rows(self.db), 0)
+        self.assertTrue(store.rebuild_owed(self.db))
+        self.assertEqual(store.remask(self.db, seconds=60), (0, 0))
+        self.assertFalse(store.rebuild_owed(self.db))
+        with open(self.path, "rb") as fh:
+            self.assertNotIn(self.TOKEN.encode(), fh.read())
+
     def test_remask_masks_an_old_items_chunks_as_one_text(self):
         text = "." * (store.CHUNK - 16) + self.TOKEN + "." * store.CHUNK
         for n, i in enumerate(range(0, len(text), store.CHUNK)):
@@ -437,7 +489,10 @@ class MaskVersionTest(TempDB):
 
     def test_remask_deletes_an_old_item_whose_id_looks_like_a_secret(self):
         self.old(f"desk:key-{self.TOKEN}.md", "a note")
-        self.assertEqual(store.remask(self.db), (1, 0))
+        with self.assertLogs("varve-test-remask", "WARNING") as logs:
+            self.assertEqual(store.remask(self.db, log=logging.getLogger("varve-test-remask")), (1, 0))
+        self.assertIn("rename it", logs.output[0], "the deletion is logged")
+        self.assertNotIn(self.TOKEN[:12], logs.output[0], "with the id masked")
         self.assertEqual(self.ids(), [])
         with open(self.path, "rb") as fh:
             self.assertNotIn(self.TOKEN.encode(), fh.read())
@@ -457,12 +512,13 @@ class MaskVersionTest(TempDB):
         with open(self.path, "rb") as fh:
             self.assertNotIn(self.TOKEN.encode(), fh.read())
 
-    def test_new_metadata_for_unchanged_text_keeps_a_rows_old_version(self):
+    def test_new_metadata_for_unchanged_text_leaves_the_row_old_until_remask(self):
         self.add("a", "same text", meta={"path": "/one"})
-        self.db.execute("UPDATE docs SET masked=NULL")
         self.add("a", "same text", meta={"path": "/two"})
         self.assertEqual(json.loads(self.rows()[0][5])["path"], "/two")
         self.assertEqual(store.old_rows(self.db), 1)
+        store.remask(self.db)
+        self.assertEqual(store.old_rows(self.db), 0)
 
 
 class FtsTriggerTest(TempDB):
