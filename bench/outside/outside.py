@@ -320,15 +320,16 @@ PREPARED = ("mem0", "supermemory")
 
 
 def supermemory_ready(count):
-    """Supermemory's namespace holds all count items and has finished extracting their memories, so opening it makes
-    no model calls. Its server's own calls cannot go through this run's slots."""
+    """Supermemory's namespace holds all count items and has extracted every one's memories, so opening it makes no
+    model calls and no store is missing a session. A failed extraction is not ready, though the month's adapter
+    counts it as settled. The server's own calls cannot go through this run's slots."""
     store = tools.supermemory.Supermemory()
     ids = store._documents()
     if len(ids) != count:
         return False
     for doc in ids:
         status = tools.supermemory.api(f"/v3/documents/{doc}", method="GET")
-        if status["status"] not in ("done", "failed") or status.get("dreamingStatus") not in ("done", "failed", None):
+        if status["status"] != "done" or status.get("dreamingStatus") not in ("done", None):
             return False
     return True
 

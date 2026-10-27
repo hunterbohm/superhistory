@@ -134,6 +134,20 @@ class SupermemoryTest(unittest.TestCase):
             outside.supermemory_ready = ready
 
 
+    def test_a_session_whose_extraction_failed_is_not_ready(self):
+        statuses = {"a": {"status": "done", "dreamingStatus": "done"}, "b": {"status": "done", "dreamingStatus": "failed"}}
+        store = SimpleNamespace(_documents=lambda: list(statuses))
+        make, api = outside.tools.supermemory.Supermemory, outside.tools.supermemory.api
+        outside.tools.supermemory.Supermemory = lambda: store
+        outside.tools.supermemory.api = lambda path, body=None, method="POST": statuses[path.rsplit("/", 1)[1]]
+        try:
+            self.assertFalse(outside.supermemory_ready(2))
+            statuses["b"]["dreamingStatus"] = "done"
+            self.assertTrue(outside.supermemory_ready(2))
+        finally:
+            outside.tools.supermemory.Supermemory, outside.tools.supermemory.api = make, api
+
+
 class SampleTest(unittest.TestCase):
     def test_op_strata_record_each_persons_count_and_messages_weigh_by_it(self):
         cases = [outside.Case("op", f"g/{p}/irrelevance_easy/{n}", "g", "irrelevance_easy", p, "q", "", "", ())
