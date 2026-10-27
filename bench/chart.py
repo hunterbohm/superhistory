@@ -30,6 +30,14 @@ FONTS = {"Newsreader": "ofl/newsreader/Newsreader%5Bopsz,wght%5D.ttf", "Inter": 
          "JetBrains Mono": "ofl/jetbrainsmono/JetBrainsMono%5Bwght%5D.ttf"}
 
 
+def lookup_seconds(results, tool, rows):
+    """The median of the tool's lookups timed alone (latency.jsonl), or of its month run when it has no such run.
+    README's table reads the same numbers."""
+    path = os.path.join(results, "latency.jsonl")
+    alone = [r["seconds"] for r in run.read_jsonl(path) if r["tool"] == tool] if os.path.exists(path) else []
+    return statistics.median(alone or [r["lookup_seconds"] for r in rows])
+
+
 def measures(results):
     """Per tool: answered right, added nothing when nothing fit, mean tokens added, median lookup seconds."""
     found = {}
@@ -41,7 +49,7 @@ def measures(results):
                        "right": sum(r["correct"] for r in answerable) / len(answerable),
                        "quiet": sum(not r["context"] for r in none) / len(none),
                        "tokens": statistics.mean(r["context_tokens"] + r["tool_tokens"] for r in rows),
-                       "seconds": statistics.median(r["lookup_seconds"] for r in rows),
+                       "seconds": lookup_seconds(results, tool, rows),
                        "answerable": len(answerable), "none": len(none)}
     return found
 
@@ -99,7 +107,8 @@ body {{ margin: 0; background: {PAPER}; }}
 {panel(840, 170, "Added nothing when nothing fit", f"{first['none']} questions with nothing to find", found, "quiet", 1, pct)}
 {panel(80, 520, "Tokens added per question", "mean, lookup plus what the agent read; fewer is cheaper", found, "tokens",
        tokens, lambda v: f"{v:,.0f}")}
-{panel(840, 520, "Seconds per lookup", "median; fewer is faster", found, "seconds", seconds, lambda v: f"{v:.2f} s")}
+{panel(840, 520, "Seconds per lookup", "median of lookups timed alone (Mem0: its month run)", found, "seconds", seconds,
+       lambda v: f"{v:.2f} s")}
 <text x="80" y="{HEIGHT - 34}" class="f">Same answer model and judge for every tool; rivals self-hosted. Method and every row: bench/README.md</text>
 </svg></body></html>"""
 
