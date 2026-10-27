@@ -17,6 +17,7 @@ import importlib
 import json
 import os
 import pkgutil
+import re
 import shlex
 import shutil
 import tempfile
@@ -84,6 +85,12 @@ def run(paths, config, name, stdin_text):
     message, before, session = found
     text = check.answer(paths, config, json.dumps({"message": message, "before": before}), session or "")
     return load(name).reply(text) if text else ""
+
+
+def fill(template, values):
+    """Puts each value in for its placeholder in one pass, so a value that holds a placeholder, such as a kb path
+    with one in a folder name, stays as it is."""
+    return re.sub("|".join(map(re.escape, values)), lambda m: values[m.group()], template)
 
 
 def read(path):

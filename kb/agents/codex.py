@@ -82,10 +82,16 @@ def _trusted_line(lines, start, end):
     return next((i for i in range(start + 1, end) if lines[i].split("=")[0].strip() == "trusted_hash"), None)
 
 
+def _lines(text):
+    """TOML's lines, split at line feeds only: splitlines() also splits at characters a path may hold, such as U+2028."""
+    parts = text.split("\n")
+    return [part + "\n" for part in parts[:-1]] + ([parts[-1]] if parts[-1] else [])
+
+
 def trust(path, key, digest):
     text = agents.read(path)
     entry = f'trusted_hash = "{digest}"'
-    lines = text.splitlines(keepends=True)
+    lines = _lines(text)
     section = _section(lines, key)
     if section is None:
         if text and not text.endswith("\n"):
@@ -110,7 +116,7 @@ def trust(path, key, digest):
 
 
 def _untrust(path, key):
-    lines = agents.read(path).splitlines(keepends=True)
+    lines = _lines(agents.read(path))
     section = _section(lines, key)
     if section is None:
         return False

@@ -381,7 +381,7 @@ class ShiftedTrustTest(Home):
         self.assertIn(moved_from, self.text(self.config), "the old trust stays when the new one could not be written")
 
     def test_a_home_with_an_emoji_or_a_delete_character_is_trusted_and_untrusted(self):
-        for name in ("team-🙂", "odd\x7fname"):
+        for name in ("team-🙂", "odd\x7fname", "team-\u2028", "a\x85b"):
             home = os.path.join(self.home, name)
             config = os.path.join(home, ".codex", "config.toml")
             os.makedirs(os.path.join(home, ".codex"))

@@ -313,6 +313,11 @@ class TurnsTest(TempDir):
         self.assertEqual(_turns.turns_before(path, "  now this \n"), [{"role": "user", "text": "first"},
                                                                      {"role": "assistant", "text": "answer"}])
 
+    def test_a_turn_holding_a_line_separator_character_is_read_whole(self):
+        raw = json.dumps(self.claude("user", "one\u2028two\x85three"), ensure_ascii=False)  # as JavaScript writes it
+        path = self.transcript([raw, self.claude("assistant", "answer")])
+        self.assertEqual(_turns.turns_before(path, "next")[0], {"role": "user", "text": "one\u2028two\x85three"})
+
     def test_a_different_last_user_turn_is_kept(self):
         path = self.transcript([self.claude("assistant", "answer"), self.claude("user", "something else")])
         self.assertEqual(_turns.turns_before(path, "now this")[-1], {"role": "user", "text": "something else"})

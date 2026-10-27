@@ -9,6 +9,7 @@ import unittest
 from unittest import mock
 
 from kb import agents
+from kb.agents import opencode
 
 AGENT = agents.load("opencode")
 JS_RUNTIME = shutil.which("bun") or shutil.which("node")
@@ -119,6 +120,14 @@ class InstallTest(OpenCodeCase):
         self.assertEqual([c.action for c in AGENT.uninstall(self.home)], ["skipped"])
         self.assertEqual(self.read(), theirs)
         self.assertEqual(self.files(), ["kb-context.js"])
+
+
+class RenderTest(unittest.TestCase):
+    def test_a_kb_path_holding_a_placeholder_is_kept_as_it_is(self):
+        path = "/opt/tools-__TIMEOUT_MS__/kb"
+        rendered = opencode._render(agents.command(path, "opencode"))
+        self.assertIn(json.dumps([path, "hook", "opencode"]), rendered)
+        self.assertIn(f"const TIMEOUT_MS = {agents.HOOK_TIMEOUT * 1000};", rendered)
 
 
 class UninstallTest(OpenCodeCase):
