@@ -9,7 +9,7 @@ import kb
 from kb import _install
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-MONTH = os.path.join(REPO, "tests", "fixtures", "month")
+MONTH = os.path.join(REPO, "kb", "sample_month")
 
 
 class InstallTest(unittest.TestCase):
@@ -43,7 +43,7 @@ class InstallTest(unittest.TestCase):
         version = self.kb("--version")
         self.assertEqual(version.returncode, 0, version.stderr)
         self.assertIn(kb.__version__, version.stdout)
-        tried = self.kb("try", "--month", MONTH)
+        tried = self.kb("try")
         self.assertEqual(tried.returncode, 0, tried.stderr)
         self.assertIn("Loaded 8 made-up records", tried.stdout)
 

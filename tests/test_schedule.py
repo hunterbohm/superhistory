@@ -146,6 +146,14 @@ class MacTest(ScheduleCase):
             self.on()
         self.assertEqual(self.read_plist()["EnvironmentVariables"]["KB_HOME"], "/home/sam/trial")
 
+    def test_the_agent_carries_custom_xdg_folders(self):
+        folders = {"XDG_CONFIG_HOME": "/home/sam/cfg", "XDG_DATA_HOME": "/home/sam/data",
+                   "XDG_STATE_HOME": "/home/sam/state", "XDG_CACHE_HOME": "/home/sam/cache"}
+        with mock.patch.dict(os.environ, folders):
+            self.on()
+        env = self.read_plist()["EnvironmentVariables"]
+        self.assertEqual({k: env.get(k) for k in folders}, folders)
+
     def test_on_twice_leaves_one_loaded_job(self):
         self.on()
         self.on()
@@ -241,6 +249,13 @@ class LinuxTest(ScheduleCase):
             self.on()
         env = unit_lines(self.unit_dir / SERVICE)["Environment"]
         self.assertEqual(env, [f'"PATH={path}"'])
+
+    def test_the_service_carries_custom_xdg_folders(self):
+        with mock.patch.dict(os.environ, {"XDG_DATA_HOME": "/home/sam/data", "XDG_STATE_HOME": "/home/sam/state"}):
+            self.on()
+        env = unit_lines(self.unit_dir / SERVICE)["Environment"]
+        self.assertIn('"XDG_DATA_HOME=/home/sam/data"', env)
+        self.assertIn('"XDG_STATE_HOME=/home/sam/state"', env)
 
     def test_the_service_carries_kb_home_when_it_is_set(self):
         with mock.patch.dict(os.environ, {"KB_HOME": "/home/sam/trial"}):

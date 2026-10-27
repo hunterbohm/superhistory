@@ -30,8 +30,10 @@ def _home(home):
 
 def _environment():
     env = {"PATH": os.environ.get("PATH") or FALLBACK_PATH}
-    if os.environ.get(HOME_ENV):
-        env[HOME_ENV] = os.environ[HOME_ENV]
+    # Where kb's config, database, logs and cache are; the job must find the same ones.
+    for name in (HOME_ENV, "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "XDG_CACHE_HOME"):
+        if os.environ.get(name):
+            env[name] = os.environ[name]
     return env
 
 

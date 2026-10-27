@@ -183,6 +183,12 @@ class NotesTest(SetupCase):
         self.assertEqual(self.asked_about(asked, "leave out"), [])
         self.assertEqual(self.sources(), {})
 
+    def test_a_folder_with_an_emoji_in_its_name_is_written_and_read_back(self):
+        notes = self.home / "Notes" / "\U0001f4da reading"
+        notes.mkdir(parents=True)
+        self.run_setup(["sam", "no", "no", str(notes), "", "", "", "no", "no", "no"])
+        self.assertEqual(self.sources()["notes"].options.path, "~/Notes/\U0001f4da reading")
+
     def test_a_folder_outside_home_is_kept_as_an_absolute_path(self):
         outside = self.root / "shared notes"
         outside.mkdir()

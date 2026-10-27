@@ -59,7 +59,7 @@ def _toml(value):
         return "true" if value else "false"
     if isinstance(value, (list, tuple)):
         return "[" + ", ".join(_toml(v) for v in value) + "]"
-    return json.dumps(value)
+    return json.dumps(value, ensure_ascii=False)
 
 
 def default_machine():

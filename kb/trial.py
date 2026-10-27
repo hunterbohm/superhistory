@@ -13,7 +13,9 @@ SHOWN_HITS = 5
 
 
 def month_dir():
-    return Path(kb.__file__).resolve().parent.parent / "demo" / "month"
+    """The Benchmarks track's month when it ships beside the package (demo/month), else the small one inside it."""
+    beside = Path(kb.__file__).resolve().parent.parent / "demo" / "month"
+    return beside if (beside / "items.jsonl").exists() else Path(kb.__file__).resolve().parent / "sample_month"
 
 
 def _lines(path):

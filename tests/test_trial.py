@@ -9,7 +9,7 @@ from kb import ai, cli, config, store, trial
 from kb.paths import Paths
 from tests.support import FakeModel, plan_and_pick
 
-MONTH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures", "month")
+MONTH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "kb", "sample_month")
 
 
 class TrialTest(unittest.TestCase):
@@ -81,6 +81,11 @@ class TryCommandTest(unittest.TestCase):
         self.assertIn("Pelican Bakery checkout bug", out)
         code, _, err = self.run_cli("search", "sandbox key")
         self.assertEqual(code, 1, "the user's own knowledge base is separate")
+
+    def test_plain_kb_try_works_without_the_benchmarks_month(self):
+        code, out, _ = self.run_cli("try")
+        self.assertEqual(code, 0)
+        self.assertIn("made-up records", out)
 
     def test_a_missing_month_says_how_to_point_at_one(self):
         code, _, err = self.run_cli("try", "--month", "/nonexistent/month")
