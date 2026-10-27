@@ -249,7 +249,7 @@ def table(out):
     head = None
     for name in names:
         path = os.path.join(out, f"{name}.jsonl")
-        if not os.path.exists(path):
+        if not os.path.exists(path) or not read_jsonl(path):
             continue
         s = summarize(read_jsonl(path))
         if head is None:
@@ -261,7 +261,7 @@ def table(out):
     lines += ["", "| Tool | " + " | ".join(kinds) + " |", "|---" * (len(kinds) + 1) + "|"]
     for name in names:
         path = os.path.join(out, f"{name}.jsonl")
-        if os.path.exists(path):
+        if os.path.exists(path) and read_jsonl(path):
             rows = read_jsonl(path)
             cells = [pct(sum(r["correct"] for r in rows if r["kind"] == k), sum(r["kind"] == k for r in rows))
                      for k in kinds]
@@ -352,7 +352,10 @@ def main(argv=None):
     with open(meta_path, "w", encoding="utf-8") as fh:
         json.dump(meta, fh, indent=1)
     print(table(args.out))
-    return 0
+    failed = sum(t["failed"] for t in ran)
+    if failed:
+        print(f"{failed} questions failed and have no row; run the same command again to retry them", file=sys.stderr)
+    return 1 if failed else 0
 
 
 if __name__ == "__main__":

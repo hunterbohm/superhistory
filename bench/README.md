@@ -19,7 +19,7 @@ Rows go to `bench/results/month/<tool>.jsonl`, and the table to `bench/results/m
 
 Model calls go to any endpoint that speaks Anthropic's Messages API: `BENCH_BASE_URL` (default `http://127.0.0.1:8317`, a local CLIProxyAPI gateway) and `BENCH_API_KEY`. The judge model is a GPT model served through that gateway; with a plain Anthropic key, change `JUDGE_MODEL` in `run.py`.
 
-The check runs from kb's own code. `BENCH_KB_CODE` points at a copy of it; the numbers below used `git archive` of kb at 4a884a2, recorded in `run.json` by hash.
+The check runs from kb's own code until the product's package lands in this repo. `BENCH_KB_CODE` points at a copy of it; the numbers below used `git archive` of kb at 4a884a2, recorded in `run.json` by hash. Without the copy, the check's tools stop with a message saying so.
 
 ## How a question runs
 
