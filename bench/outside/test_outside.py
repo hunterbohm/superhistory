@@ -150,17 +150,21 @@ class SupermemoryTest(unittest.TestCase):
 
 
 class RepetitionTest(unittest.TestCase):
-    def test_the_tables_read_stored_similarities_where_the_working_rows_are_not(self):
+    def test_the_tables_read_stored_similarities_only_for_the_replies_they_were_made_from(self):
         with tempfile.TemporaryDirectory() as out:
             saved, outside.OUT = outside.OUT, out
             try:
                 os.makedirs(os.path.join(out, "sample", "op"))
+                rows, keep = {"check": {"a": {"answer": "one"}, "b": {"answer": "two"}}}, {"p": ["a", "b"]}
                 with open(outside.similarity_path(), "w", encoding="utf-8") as fh:
-                    json.dump({"ids": {"p": ["a", "b"]}, "similarity": {"check": {"p": [[1, 0.5], [0.5, 1]]}}}, fh)
-                found = outside.similarities({"check": {}}, {"p": ["a", "b"]}, ["p"])
-                self.assertEqual(found["check"]["p"][0][1], 0.5)
+                    json.dump({"ids": keep, "replies_sha256": outside.replies_hash(rows, keep, ["p"]),
+                               "similarity": {"check": {"p": [[1, 0.5], [0.5, 1]]}}}, fh)
+                self.assertEqual(outside.similarities(rows, keep, ["p"])["check"]["p"][0][1], 0.5)
+                rows["check"]["b"]["answer"] = "two, edited"
                 with self.assertRaises(SystemExit):
-                    outside.similarities({"check": {}}, {"p": ["a", "c"]}, ["p"])
+                    outside.similarities(rows, keep, ["p"])
+                with self.assertRaises(SystemExit):
+                    outside.similarities(rows, {"p": ["a", "c"]}, ["p"])
             finally:
                 outside.OUT = saved
 

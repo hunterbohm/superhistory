@@ -26,6 +26,7 @@ import ast
 import faulthandler
 import functools
 import gzip
+import hashlib
 import json
 import os
 import random
@@ -656,6 +657,13 @@ def similarity_path():
     return os.path.join(OUT, "sample", "op", "repetition.json")
 
 
+def replies_hash(rows, keep, people):
+    """A SHA-256 per tool over each person's sampled repetition replies, in order, so stored similarities that no
+    longer match the committed replies are refused."""
+    return {n: hashlib.sha256("\0".join(rs[i]["answer"] for k in people for i in keep[k]).encode()).hexdigest()
+            for n, rs in rows.items()}
+
+
 def similarities(rows, keep, people):
     """For each tool and person, the cosine similarity between every pair of that person's sampled repetition
     replies, rounded to 6 places. Where the working rows are on this machine they are computed with the local
@@ -671,13 +679,13 @@ def similarities(rows, keep, people):
                 similarity.setdefault(n, {})[k] = np.round(vectors @ vectors.T, 6).tolist()
         found = {"embedder": EMBEDDER, "model_revision": model.model_card_data.base_model_revision,
                  "sentence_transformers": sentence_transformers.__version__, "ids": {k: keep[k] for k in people},
-                 "similarity": similarity}
+                 "replies_sha256": replies_hash(rows, keep, people), "similarity": similarity}
         os.makedirs(os.path.dirname(similarity_path()), exist_ok=True)
         with open(similarity_path(), "w", encoding="utf-8") as fh:
             json.dump(found, fh, sort_keys=True)
     with open(similarity_path(), encoding="utf-8") as fh:
         found = json.load(fh)
-    if found["ids"] != {k: keep[k] for k in people}:
+    if found["ids"] != {k: keep[k] for k in people} or found.get("replies_sha256") != replies_hash(rows, keep, people):
         raise SystemExit(f"{similarity_path()} was written for different replies; rebuild it where the rows are")
     return found["similarity"]
 
