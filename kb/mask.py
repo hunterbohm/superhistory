@@ -77,8 +77,8 @@ def is_auth_noise(text):
     return bool(AUTH_NOISE.search(text[:600]))
 
 
-# A code of 4 to 8 digits standing alone, not part of a date, version, time or path.
-CODE = re.compile(r"(?<![\d.,:/-])\d{4,8}(?![\d,:/-]|\.\d)")
+# A code of 4 to 8 digits standing alone, not part of a date, version, decimal or path.
+CODE = re.compile(r"(?<![\d./-])\d{4,8}(?![\d/-]|[.,]\d)")
 
 
 def is_auth_code(text):
