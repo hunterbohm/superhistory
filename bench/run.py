@@ -2,6 +2,7 @@
 """Run tools on the made-up month, then print the table.
 
     python3 bench/run.py month [--tools none,oracle,check,check-cards] [--limit N] [--fresh]
+    python3 bench/run.py month --month a|b --label NAME --tools check   # a split run: month A is dev, B is test
     python3 bench/run.py table [DIR]
 
 Each tool loads demo/month/items.jsonl into a fresh store. Each question goes through the tool's lookup as a new
@@ -27,11 +28,14 @@ sys.path.insert(0, HERE)
 
 import gateway
 import product
+import splits
 import tools
 
 ROOT = os.path.dirname(HERE)
-MONTH = os.path.join(ROOT, "demo", "month")
+MONTHS = {"a": os.path.join(ROOT, "demo", "month"), "b": os.path.join(HERE, "month-b")}
+MONTH = MONTHS["a"]
 RESULTS = os.path.join(HERE, "results", "month")
+SPLIT_RESULTS = os.path.join(HERE, "results", "hillclimb", "month")
 ANSWER_MODEL = "claude-sonnet-5-5"
 JUDGE_MODEL = "gpt-6.1-sol"
 MAX_TOOL_TURNS = 8
@@ -217,8 +221,20 @@ def latency(args):
               f"range {times[0]:.2f} to {times[-1]:.2f} s, {sum(bool(r['error']) for r in rows if r['tool'] == name)} errors")
 
 
+def git_head():
+    """This checkout's commit, marked when the package has uncommitted changes."""
+    head = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True, cwd=ROOT).stdout.strip()
+    dirty = subprocess.run(["git", "diff", "--quiet", "HEAD", "--", "kb"], cwd=ROOT).returncode
+    return head + ("+uncommitted" if dirty else "")
+
+
 def pct(part, whole):
     return f"{100 * part / whole:.1f}%" if whole else "n/a"
+
+
+def handled(row):
+    """Right for the user: a correct answer, and for a question nothing fits, a lookup that also added nothing."""
+    return row["correct"] and (row["kind"] != "none" or not row["context"])
 
 
 def summarize(rows):
@@ -229,12 +245,14 @@ def summarize(rows):
     found = sum(bool(set(r["evidence"]) & set((r["context_items"] or []) + r["read_items"])) for r in known)
     return {
         "questions": len(rows),
+        "handled right": pct(sum(map(handled, rows)), len(rows)),
         "accuracy": pct(sum(r["correct"] for r in rows), len(rows)),
         "answerable": pct(sum(r["correct"] for r in answerable), len(answerable)),
         "nothing fits": pct(sum(r["correct"] for r in none), len(none)),
         "added nothing when nothing fits": pct(sum(not r["context"] for r in none), len(none)),
         "evidence reached": pct(found, len(known)) if known else "n/a",
         "tokens added per question": round(statistics.mean(r["context_tokens"] + r["tool_tokens"] for r in rows)),
+        "check model tokens per question": round(statistics.mean(r["lookup_model_tokens"] for r in rows)),
         "lookup p50 s": f"{timed[len(timed) // 2]:.2f}" if timed else "0",
         "lookup p90 s": f"{timed[int(len(timed) * 0.9)]:.2f}" if timed else "0",
         "lookup errors": sum(bool(r["lookup_error"]) for r in rows),
@@ -281,6 +299,9 @@ def main(argv=None):
     m.add_argument("--workers", type=int, default=4)
     m.add_argument("--out", default=RESULTS)
     m.add_argument("--fresh", action="store_true", help="drop earlier rows and rerun every question")
+    m.add_argument("--month", choices=sorted(MONTHS), default="a", help="a is the dev month, b the held-out one")
+    m.add_argument("--label", help="a split run, written to results/hillclimb/month/<month>-<label>; month B "
+                                   "takes " + ", ".join(splits.RUNS))
     t = sub.add_parser("table")
     t.add_argument("out", nargs="?", default=RESULTS)
     lt = sub.add_parser("latency", help="time lookups alone, one at a time, alternating between tools")
@@ -316,7 +337,6 @@ def main(argv=None):
     ran = []
     if args.cmd == "live":
         from tools import check
-        check.PRODUCT_WORDING = False
         if args.hide:
             with open(args.hide, encoding="utf-8") as fh:
                 check.HIDE.extend(line.strip() for line in fh if line.strip())
@@ -325,13 +345,24 @@ def main(argv=None):
         setup = Setup(LIVE_SYSTEM.format(today=today), args.judge, f"- The agent was told today is {today}.")
         for name in args.tools.split(","):
             tool = tools.make(name)
-            tool.store = check.Store(args.db)
+            tool.store = check.Store.at(args.db)
             ran.append(run_tool(name, tool, {"db": "existing, read-only"}, questions, args.out, args.workers,
                                 args.fresh, setup))
         source = {"questions": os.path.basename(args.questions), "hidden_fragments": len(check.HIDE)}
     else:
-        items = read_jsonl(os.path.join(MONTH, "items.jsonl"))
-        questions = read_jsonl(os.path.join(MONTH, "questions.jsonl"))[:args.limit]
+        month = MONTHS[args.month]
+        if args.label and args.out == RESULTS:
+            args.out = os.path.join(SPLIT_RESULTS, f"{args.month}-{args.label}")
+        elif args.month == "b" or args.label:
+            raise SystemExit("a split run takes --label and writes to its own folder; leave out --out")
+        os.makedirs(args.out, exist_ok=True)
+        if args.month == "b":
+            if args.limit:
+                raise SystemExit("a held-out run takes the whole month")
+            from tools import check
+            splits.held_out_run("month", args.label, check.code_id(), git_head())
+        items = read_jsonl(os.path.join(month, "items.jsonl"))
+        questions = read_jsonl(os.path.join(month, "questions.jsonl"))[:args.limit]
         setup = MONTH_SETUP
         with tempfile.TemporaryDirectory(prefix="bench-month-") as workdir:
             for name in args.tools.split(","):
@@ -340,8 +371,9 @@ def main(argv=None):
                 stats = tool.load(items, workdir)
                 print(f"{name}: loaded in {time.monotonic() - started:.0f}s {json.dumps(stats)}", file=sys.stderr)
                 ran.append(run_tool(name, tool, stats, questions, args.out, args.workers, args.fresh, setup))
-        source = {"month": subprocess.run(["git", "log", "-1", "--format=%H", "--", MONTH], capture_output=True,
-                                          text=True, cwd=ROOT).stdout.strip()}
+        source = {"month": args.month, "month_commit": subprocess.run(
+            ["git", "log", "-1", "--format=%H", "--", month], capture_output=True, text=True, cwd=ROOT).stdout.strip(),
+            "check_commit": git_head()}
     meta_path = os.path.join(args.out, "run.json")
     earlier = json.load(open(meta_path)).get("tools", []) if os.path.exists(meta_path) else []
     names = {t["tool"] for t in ran}
