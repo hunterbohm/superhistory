@@ -179,6 +179,22 @@ class NotesTest(NotesCase, SeparatorCase):
                 self.assertEqual(got["b.md"].ts[:10], "2026-05-06")
                 self.assertIn(f"Decision{sep}the launch is approved{sep}", got["a.md"].content)
 
+    def test_only_a_whole_delimiter_line_opens_or_closes_front_matter(self):
+        june = 1780272000  # 2026-06-01, the files' mtime, which a note without front matter is dated by
+        controls = {"plain.md": "---\ndate: 2026-05-06\n---\nbody", "crlf.md": "---\r\ndate: 2026-05-06\r\n---\r\nbody",
+                    "spaces.md": "--- \t\ndate: 2026-05-06\n---\t\nbody"}
+        for rel, text in controls.items():
+            write(self.root, rel, text, june)
+        for name, sep in SEPARATORS.items():
+            with self.subTest(separator=name):
+                write(self.root, "open.md", f"---{sep}\ndate: 2019-01-02\n---\nDecision: launch approved.\n", june)
+                write(self.root, "close.md", f"---\ntitle: x\n---{sep}\ndate: 2019-01-02\n---\nbody", june)
+                got = self.items()
+                self.assertEqual(got["open.md"].ts[:10], "2026-06-01", "a first line of ---{sep} opens nothing")
+                self.assertEqual(got["close.md"].ts[:10], "2019-01-02", "a line of ---{sep} closes nothing")
+                for rel in controls:
+                    self.assertEqual(got[rel].ts[:10], "2026-05-06", rel)
+
 
 class GmailTest(SeparatorCase):
     def render(self, body, subtype="plain"):
