@@ -1,0 +1,152 @@
+{
+ "conv-26": {
+  "add_failures": 0,
+  "batch": 2,
+  "embedder": "BAAI/bge-base-en-v1.5",
+  "extraction_parse_errors": 0,
+  "llm": "claude-haiku-5-5",
+  "memories": 501,
+  "seconds": 824,
+  "top_k": 10,
+  "users": [
+   "Caroline",
+   "Melanie"
+  ],
+  "version": "2.2.1"
+ },
+ "conv-30": {
+  "add_failures": 0,
+  "batch": 2,
+  "embedder": "BAAI/bge-base-en-v1.5",
+  "extraction_parse_errors": 0,
+  "llm": "claude-haiku-5-5",
+  "memories": 370,
+  "seconds": 640,
+  "top_k": 10,
+  "users": [
+   "Jon",
+   "Gina"
+  ],
+  "version": "2.2.1"
+ },
+ "conv-41": {
+  "add_failures": 0,
+  "batch": 2,
+  "embedder": "BAAI/bge-base-en-v1.5",
+  "extraction_parse_errors": 0,
+  "llm": "claude-haiku-5-5",
+  "memories": 675,
+  "seconds": 1304,
+  "top_k": 10,
+  "users": [
+   "John",
+   "Maria"
+  ],
+  "version": "2.2.1"
+ },
+ "conv-42": {
+  "add_failures": 0,
+  "batch": 2,
+  "embedder": "BAAI/bge-base-en-v1.5",
+  "extraction_parse_errors": 0,
+  "llm": "claude-haiku-5-5",
+  "memories": 777,
+  "seconds": 1260,
+  "top_k": 10,
+  "users": [
+   "Joanna",
+   "Nate"
+  ],
+  "version": "2.2.1"
+ },
+ "conv-43": {
+  "add_failures": 0,
+  "batch": 2,
+  "embedder": "BAAI/bge-base-en-v1.5",
+  "extraction_parse_errors": 0,
+  "llm": "claude-haiku-5-5",
+  "memories": 780,
+  "seconds": 1335,
+  "top_k": 10,
+  "users": [
+   "Tim",
+   "John"
+  ],
+  "version": "2.2.1"
+ },
+ "conv-44": {
+  "add_failures": 0,
+  "batch": 2,
+  "embedder": "BAAI/bge-base-en-v1.5",
+  "extraction_parse_errors": 0,
+  "llm": "claude-haiku-5-5",
+  "memories": 765,
+  "seconds": 1299,
+  "top_k": 10,
+  "users": [
+   "Audrey",
+   "Andrew"
+  ],
+  "version": "2.2.1"
+ },
+ "conv-47": {
+  "add_failures": 0,
+  "batch": 2,
+  "embedder": "BAAI/bge-base-en-v1.5",
+  "extraction_parse_errors": 0,
+  "llm": "claude-haiku-5-5",
+  "memories": 863,
+  "seconds": 1379,
+  "top_k": 10,
+  "users": [
+   "James",
+   "John"
+  ],
+  "version": "2.2.1"
+ },
+ "conv-48": {
+  "add_failures": 0,
+  "batch": 2,
+  "embedder": "BAAI/bge-base-en-v1.5",
+  "extraction_parse_errors": 0,
+  "llm": "claude-haiku-5-5",
+  "memories": 791,
+  "seconds": 1268,
+  "top_k": 10,
+  "users": [
+   "Deborah",
+   "Jolene"
+  ],
+  "version": "2.2.1"
+ },
+ "conv-49": {
+  "add_failures": 0,
+  "batch": 2,
+  "embedder": "BAAI/bge-base-en-v1.5",
+  "extraction_parse_errors": 0,
+  "llm": "claude-haiku-5-5",
+  "memories": 580,
+  "seconds": 914,
+  "top_k": 10,
+  "users": [
+   "Evan",
+   "Sam"
+  ],
+  "version": "2.2.1"
+ },
+ "conv-50": {
+  "add_failures": 0,
+  "batch": 2,
+  "embedder": "BAAI/bge-base-en-v1.5",
+  "extraction_parse_errors": 0,
+  "llm": "claude-haiku-5-5",
+  "memories": 655,
+  "seconds": 1036,
+  "top_k": 10,
+  "users": [
+   "Calvin",
+   "Dave"
+  ],
+  "version": "2.2.1"
+ }
+}

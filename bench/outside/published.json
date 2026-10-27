@@ -1,0 +1,17 @@
+[
+ {"test": "implicit", "source": "https://arxiv.org/abs/2609.03467, Table 4, implicit response quality",
+  "label": "independent, the benchmark's authors", "date": "v1 posted 2026-09-03, checked 2026-10-27",
+  "setup": "answer model gemma-4-31B-it at temperature 0 with max_tokens 300; judge gpt-5.4-mini with reasoning; top 10 retrieved; embedder all-MiniLM-L6-v2 for every system",
+  "scores": {"No memory": 0.067, "Naive RAG": 0.335, "A-MEM": 0.326, "AnchorMem": 0.364, "mem0": 0.330,
+             "Memora": 0.388, "Oracle": 0.724}},
+ {"test": "op", "source": "https://arxiv.org/abs/2601.13722v2, Table 2, GPT-4o-mini block",
+  "label": "independent, the benchmark's authors", "date": "v2 2026-09-26, checked 2026-10-27",
+  "setup": "answer model and judge gpt-4o-mini; scores x100; the paper does not state how AVG.(OP) is computed",
+  "columns": ["irrelevance_easy", "irrelevance_hard", "diversity", "sycophancy, fact", "sycophancy, value",
+              "sycophancy, memory", "AVG.(OP)"],
+  "scores": {"BASE (no memory)": [99.94, 99.60, 71.92, 81.00, 83.40, 68.45, 83.10],
+             "RAG": [77.61, 59.00, 63.29, 38.60, 43.40, 26.80, 55.96],
+             "Mem0": [48.15, 46.20, 55.98, 44.40, 51.00, 22.20, 46.32],
+             "MemU": [37.97, 37.40, 53.96, 37.80, 47.60, 22.30, 40.46],
+             "MEMOS": [42.74, 36.60, 54.73, 39.20, 44.40, 23.40, 41.86]}}
+]
