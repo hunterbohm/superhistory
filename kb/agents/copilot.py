@@ -1,6 +1,5 @@
-"""GitHub Copilot CLI: a userPromptSubmitted command hook in ~/.copilot/config.json ($COPILOT_HOME when set). The
-additionalContext the hook prints is added to the user's message. This format comes from reports on Copilot CLI 1.0.79
-and was not verified on a live install."""
+"""The hook format (userPromptSubmitted, bash, timeoutSec, printed additionalContext added to the user's message) comes
+from reports on Copilot CLI 1.0.79 and was not verified on a live install."""
 import json
 import os
 import shutil
@@ -17,7 +16,6 @@ def _config(home):
 
 
 def _load(path):
-    """(text, config, the event's hook list); raises ValueError when the file is not a config kb can edit."""
     text = agents.read(path)
     data = json.loads(text) if text.strip() else {}
     if not isinstance(data, dict) or not isinstance(data.get("hooks", {}), dict) \
@@ -84,10 +82,10 @@ def uninstall(home):
 
 
 def request(event):
-    """The prompt and session id; Copilot passes no transcript, so no turns before."""
     prompt = str(event.get("prompt") or "")
     if not prompt.strip():
         return None
+    # Copilot passes no transcript, so there are no earlier turns.
     return prompt, [], str(event.get("sessionId") or "")
 
 

@@ -1,9 +1,4 @@
-"""Hermes: a plugin in ~/.hermes/plugins/kb-context/. Its pre_llm_call hook returns {"context": text}, which Hermes
-appends to the user message.
-
-The plugin is thin: it passes the hook's arguments as JSON to `kb hook hermes` and returns what that prints. The plugin's
-text lives here as strings, because kb is imported from memory on remote computers and has no package data.
-"""
+"""Hermes appends the {"context": text} a plugin's pre_llm_call hook returns to the user message."""
 import json
 import os
 import shutil
@@ -13,17 +8,10 @@ from kb import agents
 from kb.agents import Agent, _turns
 
 PLUGIN = "kb-context"
-# The marker that says a plugin folder is kb's, so a plugin someone else wrote under this name is left alone.
 MARKER = "kb-managed Hermes plugin"
-# Platforms the user talks on; cron, subagent, kanban, webhook and tool turns are skipped.
 PLATFORMS = {"discord", "desktop", "tui", "cli", "acp", "imessage", "photon", "bluebubbles", "telegram", "api_server"}
 
-PLUGIN_INIT = '''# ''' + MARKER + ''' written by `kb hooks install`; run it again to change this file.
-"""kb-context: knowledge-base records for each message the user sends, from `kb hook hermes`.
-
-pre_llm_call context is appended to the user message. The work is done by kb; this file only hands it the hook's
-arguments as JSON on stdin and returns what it prints.
-"""
+PLUGIN_INIT = '''# ''' + MARKER + '''
 import json
 import shlex
 import subprocess
@@ -72,7 +60,6 @@ def _ours(home):
 
 
 def _hermes(action):
-    """Runs `hermes plugins <action> kb-context` when hermes is on PATH. Returns None when it is not, else (ok, detail)."""
     binary = shutil.which("hermes")
     if not binary:
         return None
@@ -133,7 +120,6 @@ def _text(message):
 
 
 def _turns_before(history, text):
-    """The last two user or assistant turns before the message, oldest first, as [{"role", "text"}]."""
     turns = []
     for message in history or []:
         role = message.get("role") if isinstance(message, dict) else None
@@ -152,7 +138,6 @@ def _turns_before(history, text):
 
 
 def request(event):
-    """The message, the two turns before it from the conversation history, and the session id."""
     if str(event.get("platform") or "").lower() not in PLATFORMS or event.get("parent_session_id"):
         return None
     text = _text(event.get("user_message"))

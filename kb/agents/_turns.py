@@ -1,12 +1,9 @@
-"""The last two conversation turns before a prompt, from a Claude Code or Codex session transcript, so the check can
-tell what "this" or "him" means."""
 import json
 import os
 import re
 
 TAIL_BYTES = 1_000_000
 BEFORE_CHARS = {"assistant": 1500, "user": 600}
-# Turns a harness injects as the user's; nobody typed them.
 INJECTED = re.compile(r"^\s*(<task-notification>|<system-reminder>|<command-|<local-command|# AGENTS\.md instructions"
                       r"|<environment_context>|<user_instructions>|<skill>|Caveat:|\[Request interrupted)")
 
@@ -21,7 +18,6 @@ def _text(content):
 
 
 def _turn(entry):
-    """(role, text) for a Claude Code or Codex transcript line that holds a conversation turn, else None."""
     if entry.get("type") in ("user", "assistant") and not entry.get("isMeta") and not entry.get("isSidechain"):
         role, text = entry["type"], _text((entry.get("message") or {}).get("content"))
     elif entry.get("type") == "response_item" and (entry.get("payload") or {}).get("type") == "message":
@@ -35,13 +31,12 @@ def _turn(entry):
 
 
 def turns_before(transcript_path, prompt):
-    """The last two turns before the prompt, oldest first, as [{"role", "text"}]."""
     with open(transcript_path, "rb") as fh:
         start = max(0, os.path.getsize(transcript_path) - TAIL_BYTES)
         fh.seek(start)
         lines = fh.read().decode("utf-8", "replace").splitlines()
         if start:
-            lines = lines[1:]  # the first line read after a seek is cut off
+            lines = lines[1:]
     turns = []
     for line in lines:
         try:

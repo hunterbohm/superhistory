@@ -24,17 +24,18 @@ import time
 from typing import Callable, List, NamedTuple, Optional
 
 from kb import check
+from kb.config import MAX_CHECK_BUDGET
 from kb.ai.cli import NESTED_ENV
 
-# Above the check's longest budget (25 s), so the agent never cuts the check off whichever plug-in runs it.
-HOOK_TIMEOUT = 30
+# A few seconds above the check's longest budget, so the agent never cuts the check off.
+HOOK_TIMEOUT = int(MAX_CHECK_BUDGET) + 5
 # Grok runs the hooks in Claude Code's settings file too, but drops what a prompt hook prints.
 GROK_ENV = "GROK_HOOK_EVENT"
 
 
 class Change(NamedTuple):
     path: str
-    action: str          # added, updated, removed, unchanged or skipped
+    action: str
     note: str = ""
 
 
@@ -63,12 +64,10 @@ def command(kb_path, name):
 
 
 def is_kb_command(text, name):
-    """Whether a hook command is the one `command()` writes for this agent, whatever kb's path."""
     return str(text).rstrip().endswith(f" hook {name}")
 
 
 def run(paths, config, name, stdin_text):
-    """The output for one `kb hook <name>` call. Never raises; prints nothing it cannot stand behind."""
     if os.environ.get(NESTED_ENV) or os.environ.get(GROK_ENV):
         return ""
     try:
@@ -91,7 +90,6 @@ def read(path):
 
 
 def write(path, text):
-    """Back up the current file beside it, then replace it in one rename, keeping its mode."""
     path = os.path.realpath(path)
     os.makedirs(os.path.dirname(path), exist_ok=True)
     exists = os.path.exists(path)
@@ -110,7 +108,7 @@ def _dump(data, old_text):
 
 
 class Unreadable(ValueError):
-    """A settings file that is not the JSON object kb expects; kb leaves it alone."""
+    pass
 
 
 def _load(path):
@@ -125,8 +123,6 @@ def _load(path):
 
 
 def add_json_hook(path, event, name, kb_command):
-    """Ensures a group under hooks.<event> in a Claude-style JSON hooks file runs kb's hook with HOOK_TIMEOUT.
-    Returns (group index, handler index, handler, Change)."""
     text, data = _load(path)
     groups = data.setdefault("hooks", {}).setdefault(event, [])
     found = next(((gi, hi, handler) for gi, group in enumerate(groups) for hi, handler in enumerate(group.get("hooks") or [])

@@ -1,6 +1,4 @@
-"""Codex: a UserPromptSubmit hook in ~/.codex/hooks.json, plus the trust entry in ~/.codex/config.toml.
-
-Codex does not run a hook until the user has reviewed it with /hooks. That review stores a hash of the hook under
+"""Codex does not run a hook until the user has reviewed it with /hooks. That review stores a hash of the hook under
 [hooks.state."<hooks.json>:user_prompt_submit:<group>:<handler>"], so install writes the same entry and the hook
 runs at once. Codex sends the same prompt, transcript_path and session_id fields as Claude Code and reads the same
 hookSpecificOutput.additionalContext reply, so the request and reply are Claude Code's.
@@ -14,7 +12,6 @@ from kb.agents import Agent, claude_code
 
 EVENT = "UserPromptSubmit"
 CODEX_EVENT = "user_prompt_submit"
-# Handler fields codex_hook_hash knows how to normalize; any other field means the hash can't be trusted.
 CODEX_FIELDS = {"type", "command", "commandWindows", "timeout", "async", "statusMessage"}
 
 request = claude_code.request
@@ -59,7 +56,6 @@ def _header(key):
 
 
 def _section(lines, key):
-    """(start, end) of the trust table for `key`, end being the next table's line, or None."""
     header = _header(key)
     start = next((i for i, line in enumerate(lines) if line.strip() == header), None)
     if start is None:
@@ -73,8 +69,6 @@ def _trusted_line(lines, start, end):
 
 
 def trust(path, key, digest):
-    """Ensure config.toml has [hooks.state."<key>"] trusted_hash = digest. Returns "added", "updated" or
-    "unchanged". Raises ValueError when the result would not parse back."""
     text = agents.read(path)
     entry = f'trusted_hash = "{digest}"'
     lines = text.splitlines(keepends=True)
@@ -85,7 +79,6 @@ def trust(path, key, digest):
         new = text + ("\n" if text else "") + f"{_header(key)}\n{entry}\n"
         action = "added"
     else:
-        # The key names a position in hooks.json, so an old entry there trusted whatever hook used to sit in it.
         start, end = section
         found = _trusted_line(lines, start, end)
         if found is not None and lines[found].strip() == entry:
@@ -107,7 +100,6 @@ def trust(path, key, digest):
 
 
 def _untrust(path, key):
-    """Remove the trust table for `key`, and the blank line install put before it when the table ends the file. Returns whether it changed."""
     lines = agents.read(path).splitlines(keepends=True)
     section = _section(lines, key)
     if section is None:
@@ -129,7 +121,6 @@ def _is_trusted(path, key, digest):
 
 
 def _find(hooks_json):
-    """(group index, handler index, handler) of kb's hook in hooks.json, or None."""
     text = agents.read(hooks_json)
     data = json.loads(text) if text.strip() else {}
     groups = (data.get("hooks") or {}).get(EVENT) or []

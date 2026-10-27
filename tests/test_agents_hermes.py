@@ -55,7 +55,6 @@ class HermesCase(unittest.TestCase):
         os.makedirs(self.bin)
         self.kb = script(os.path.join(self.tmp.name, "kb"), FAKE_KB)
         self.command = agents.command(self.kb, "hermes")
-        # No hermes on PATH unless a test puts one there.
         patch = mock.patch.dict(os.environ, {"PATH": self.bin})
         patch.start()
         self.addCleanup(patch.stop)

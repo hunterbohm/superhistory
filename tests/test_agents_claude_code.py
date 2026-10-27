@@ -13,7 +13,6 @@ from kb.ai.cli import NESTED_ENV
 AGENT = claude_code.AGENT
 COMMAND = "'/opt/kb tools/kb' hook claude-code"
 
-# Shaped like a real settings file, with private values replaced.
 SETTINGS = {
     "cleanupPeriodDays": 36500,
     "env": {"CLAUDE_CODE_NO_FLICKER": "1", "ENABLE_TOOL_SEARCH": "true"},
@@ -63,7 +62,6 @@ class InstallTest(Home):
         self.assertEqual(AGENT.install(self.home, COMMAND), [Change(self.settings, "added")])
         expected = json.loads(json.dumps(SETTINGS))
         expected["hooks"]["UserPromptSubmit"].append(self.our_group())
-        # Same formatting as before, so the diff is only the added group.
         self.assertEqual(self.text(), json.dumps(expected, indent=2, ensure_ascii=False) + "\n")
         backups = self.backups()
         self.assertEqual(len(backups), 1)
@@ -157,7 +155,6 @@ class TranscriptCase(unittest.TestCase):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         path = os.path.join(tmp.name, "session.jsonl")
-        # A real transcript opens with a line that is no turn.
         lines = [{"type": "summary", "summary": "x"}] + lines
         with open(path, "w", encoding="utf-8") as fh:
             fh.write("\n".join(json.dumps(line) for line in lines) + "\n")
@@ -214,8 +211,6 @@ class ReplyTest(unittest.TestCase):
 
 
 class HookCommandTest(TranscriptCase):
-    """`kb hook claude-code` from the command line, with the check itself faked."""
-
     def setUp(self):
         env = mock.patch.dict(os.environ)
         env.start()

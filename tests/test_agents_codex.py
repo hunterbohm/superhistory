@@ -17,7 +17,6 @@ AGENT = codex.AGENT
 COMMAND = "'/opt/kb tools/kb' hook codex"
 TIMEOUT = agents.HOOK_TIMEOUT
 
-# Shaped like real Codex files, with private values replaced.
 HOOKS = {"hooks": {"SessionStart": [{"hooks": [
     {"command": "bash '/home/user/.codex/agent-state.sh' session", "timeout": 10, "type": "command"}]}]}}
 CONFIG = """model = "gpt-6.1"

@@ -296,7 +296,6 @@ class JsonHookTest(TempDir):
 
 class TurnsTest(TempDir):
     def transcript(self, lines, header=True):
-        # Real transcripts open with a non-turn line (a summary or session metadata).
         lines = ([{"type": "summary", "summary": "x"}] if header else []) + list(lines)
         path = os.path.join(self.dir, "session.jsonl")
         with open(path, "w", encoding="utf-8") as fh:

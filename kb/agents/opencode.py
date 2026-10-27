@@ -1,6 +1,3 @@
-"""OpenCode: a plugin file, kb-context.js, in OpenCode's global plugins folder. On each message the user sends, it runs
-`kb hook opencode` and appends what that prints to the message's text. Messages in child sessions (subagents,
-other plugins' helper sessions) are skipped."""
 import json
 import os
 import shlex
@@ -13,9 +10,7 @@ FILE_NAME = "kb-context.js"
 MARKER = "// kb-context: written by `kb hooks install opencode`"
 
 # OpenCode calls every function the module exports as a plugin, so only the plugin is exported.
-PLUGIN = MARKER + """; `kb hooks uninstall opencode` removes it.
-// Appends the knowledge-base records related to each message the user sends to that message. Subagent and other
-// child sessions are skipped. Never throws.
+PLUGIN = MARKER + """
 import { spawn } from "node:child_process";
 
 const KB = __KB_ARGV__;
@@ -121,10 +116,10 @@ def uninstall(home):
 
 
 def request(event):
-    """The message and session id the plugin sends; OpenCode gives the plugin no transcript, so no turns before."""
     message = str(event.get("message") or "")
     if not message.strip():
         return None
+    # OpenCode gives the plugin no transcript, so there are no earlier turns.
     return message, [], str(event.get("session_id") or "")
 
 
