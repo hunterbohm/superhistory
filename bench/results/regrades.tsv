@@ -17,3 +17,4 @@ date	why	run	tool	questions	flipped	handled right before	handled right after	acc
 2026-10-27T19:35:15Z	month A second gold audit 2026-10-27: gold answers that left out a qualification their evidence states	results/hillclimb/month/a-k3	check	cop-22,har-01	cop-22	93.0%	92.4%	94.2%	93.6%
 2026-10-27T19:35:18Z	month A second gold audit 2026-10-27: gold answers that left out a qualification their evidence states	results/hillclimb/month/a-k4	check	cop-22,har-01		94.7%	94.7%	95.3%	95.3%
 2026-10-27T19:35:32Z	month B second gold audit 2026-10-27: gold answers that left out a qualification their evidence states	results/hillclimb/month/b-baseline	check	b2-01,b2-03,b2-04,b2-09,b3-04,b3-13,b5-01,b5-19	b3-13,b5-01	94.2%	94.2%	95.3%	95.3%
+2026-10-27T19:45:53Z	month B b2-01 2026-10-27: the second audit's gold left out the 30-minute closure its evidence states	results/hillclimb/month/b-baseline	check	b2-01		94.2%	94.2%	95.3%	95.3%

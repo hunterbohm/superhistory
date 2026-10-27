@@ -396,10 +396,11 @@ Jules""", cc=CALLUM),
     s.ask(
         Q("b2-01", "update", "How long does someone on the Kindling waitlist have to claim an open spot?",
           "15 minutes, at both studios. It started as 20 minutes; Noor asked for 15 on September 19. Inside 90 "
-          "minutes of class, last call texts everyone left at once and the first YES gets the spot.",
+          "minutes of class, last call texts everyone left at once and the first YES gets the spot. Nothing goes "
+          "out within 30 minutes of class, when the waitlist closes.",
           ("b2-texts-noor", "b2-commit-claim", "b2-codex-twilio", "b2-discovery", "b2-claude-scaffold",
            "b2-commit-scaffold"),
-          evidence_has=("15 minutes",)),
+          evidence_has=("15 minutes", "30 minutes before")),
         Q("b2-02", "single", "What booking system is Kindling on?",
           "Bendwise, which handles their booking and billing and has a REST API and webhooks.",
           ("b2-discovery", "b2-overview"), evidence_has=("Bendwise",)),
