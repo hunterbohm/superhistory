@@ -14,16 +14,20 @@ COMMIT_EVERY = 200
 
 class LocalReader:
     def __init__(self, model_factory=None):
-        self._model_factory = model_factory
-        self._model = None
+        self._model_factory = model_factory or (lambda: None)
+        self._models = []
+
+    def _model(self):
+        """The AI plug-in, built once a run, or None when none is set up; a source asks for it only if it needs it."""
+        if not self._models:
+            try:
+                self._models.append(self._model_factory())
+            except ai.NotReady:
+                self._models.append(None)
+        return self._models[0]
 
     def _run(self, source, since):
-        model = None
-        if source.type.needs_model:
-            if self._model is None:
-                self._model = (self._model_factory or (lambda: None))()
-            model = self._model
-        return Run(source.options, Excludes(source.exclude), since, model)
+        return Run(source.options, Excludes(source.exclude), since, self._model() if source.type.needs_model else None)
 
     def events(self, source, since):
         if sys.platform not in source.type.platforms:
