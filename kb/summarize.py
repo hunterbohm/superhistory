@@ -8,7 +8,7 @@ from typing import NamedTuple, Optional
 
 from kb import ai, store
 from kb.ai import BadAnswer, Prompt, Refused
-from kb.mask import mask, masked_log
+from kb.mask import holds_secret, mask, masked_log
 
 MAX_INPUT_CHARS = 150_000
 SLICES = 8
@@ -131,7 +131,9 @@ def pending(db, scope, limit=None):
     now = datetime.now(timezone.utc)
     items = (Item(src, sid, ts, title, h, json.loads(meta), chars, json.loads(previous) if previous else None)
              for src, sid, ts, title, h, meta, chars, previous in db.execute(sql, names))
+    # A store from before ingest refused such ids can hold an item whose id looks like a secret; remask deletes it.
     return list(itertools.islice((i for i in items if scope.covers(i.source, i.source_id)
+                                  and not (holds_secret(i.source) or holds_secret(i.source_id))
                                   and not (waits(i.chars, i.previous, now) and extends(item_text(db, i), i.previous))),
                                  limit))
 

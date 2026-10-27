@@ -123,6 +123,16 @@ class SummarizeTest(unittest.TestCase):
         found = {(i.source, i.source_id) for i in self.pending()}
         self.assertEqual(found, {("sessions", "test:s1"), ("meetings", "test:Meetings/2026-10-01 0900 Kim.md")})
 
+    def test_an_old_item_whose_id_looks_like_a_secret_is_not_summarized(self):
+        sid = "test:key-sk-ant-api03-summary-" + "Q" * 24
+        self.db.executemany("INSERT INTO docs(kind, source, source_id, ts, title, content, metadata) "
+                            "VALUES ('raw', 'sessions', ?, '2026-10-18T10:00:00Z', 't', ?, ?)",
+                            [(sid, part, json.dumps({**SESSION_META, "hash": "h", "chunk": i, "chunks": 2}))
+                             for i, part in enumerate(store.chunk(long_text("beta"))[:2])])
+        self.db.commit()
+        self.assertEqual(self.pending_ids(), ["test:s1"])
+        self.assertEqual(self.run_once(FakeModel(summary_text([segment("t")], []))), (1, 0))
+
     def test_a_source_can_be_run_alone(self):
         self.store("chats", "test:c1", long_text("chat"), {"path": "/c/1"})
         model = FakeModel(summary_text())

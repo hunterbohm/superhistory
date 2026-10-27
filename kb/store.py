@@ -10,9 +10,10 @@ import json
 import os
 import pathlib
 import sqlite3
+import time
 from datetime import datetime, timezone
 
-from .mask import clean, mask, mask_all
+from .mask import VERSION, clean, holds_secret, mask, mask_all
 
 CHUNK = 4000
 ITEM_KINDS = ("doc", "raw")
@@ -32,7 +33,8 @@ CREATE TABLE IF NOT EXISTS docs(
   title TEXT NOT NULL DEFAULT '',
   content TEXT NOT NULL,
   metadata TEXT NOT NULL DEFAULT '{}',
-  superseded_by INTEGER
+  superseded_by INTEGER,
+  masked TEXT
 );
 CREATE INDEX IF NOT EXISTS docs_item ON docs(source, source_id, kind);
 CREATE INDEX IF NOT EXISTS docs_ts ON docs(ts);
@@ -62,8 +64,34 @@ def connect(path, readonly=False):
         db = sqlite3.connect(path)
         db.execute("PRAGMA journal_mode=WAL")
         db.executescript(SCHEMA)
+        if not _versioned(db):
+            db.execute("ALTER TABLE docs ADD COLUMN masked TEXT")  # a store from before rows recorded it: all old
+        db.execute("CREATE INDEX IF NOT EXISTS docs_masked ON docs(masked)")
     db.execute("PRAGMA busy_timeout=30000")
     return db
+
+
+def _versioned(db):
+    return any(column[1] == "masked" for column in db.execute("PRAGMA table_info(docs)"))
+
+
+def current(db, ids):
+    """The ids among `ids` whose text was masked whole with today's mask(): the row records mask.VERSION, and for a
+    chunk so does every chunk of its item, since a secret could run from one chunk into the next. Only these may be
+    cut as they are stored."""
+    if not ids or not _versioned(db):
+        return set()
+    return {rid for (rid,) in db.execute(
+        f"SELECT r.id FROM docs r WHERE r.id IN ({','.join('?' * len(ids))}) AND r.masked = ? AND (r.kind != 'raw' "
+        f"OR NOT EXISTS (SELECT 1 FROM docs c WHERE c.source = r.source AND c.source_id = r.source_id "
+        f"AND c.kind = 'raw' AND c.masked IS NOT ?))", (*ids, VERSION, VERSION))}
+
+
+def old_rows(db):
+    """How many rows were masked with another version of mask(), or before rows recorded one."""
+    if not _versioned(db):
+        return db.execute("SELECT count(*) FROM docs").fetchone()[0]
+    return db.execute("SELECT count(*) FROM docs WHERE masked IS NOT ?", (VERSION,)).fetchone()[0]
 
 
 @contextlib.contextmanager
@@ -119,16 +147,20 @@ def _whole(rows):
 
 
 def replace_rows(db, source, source_id, rows, kinds=ITEM_KINDS):
-    """Swap one item's rows of the given kinds for `rows` (dicts: kind, ts, title, content, metadata)."""
+    """Swap one item's rows of the given kinds for `rows` (dicts: kind, ts, title, content, metadata), masked with
+    today's mask() and marked with its version. Raises ValueError for a source or item id that looks like it holds a
+    secret, which ingest does not store either: a masked id could stand for two items."""
+    if holds_secret(source) or holds_secret(source_id):
+        raise ValueError("a source or item id that looks like it holds a secret is not stored; rename it")
     rows = _whole(rows)
     marks = ",".join("?" * len(kinds))
     db.execute(f"DELETE FROM docs WHERE source=? AND source_id=? AND kind IN ({marks})",
                (source, source_id, *kinds))
     # Masked here too, since Sync and Cloud write rows another store sent; for rows store_item made it changes nothing.
     db.executemany(
-        "INSERT INTO docs(kind, source, source_id, ts, title, content, metadata) VALUES (?,?,?,?,?,?,?)",
+        "INSERT INTO docs(kind, source, source_id, ts, title, content, metadata, masked) VALUES (?,?,?,?,?,?,?,?)",
         [(r["kind"], source, source_id, mask(str(r["ts"])), mask(r["title"]), mask(r["content"]),
-          json.dumps(mask_all(r["metadata"]))) for r in rows])
+          json.dumps(mask_all(r["metadata"])), VERSION) for r in rows])
 
 
 def delete_item(db, source, source_id):
@@ -238,38 +270,63 @@ def last_ingest(db):
     return get_watermark(db, STATE, "last_ingest")
 
 
-def remask(db):
-    """Reapply mask() to every stored row's title, text and metadata, a long item's chunks as one text, then rebuild
-    the file so the old values leave no bytes behind."""
+def remask(db, seconds=None):
+    """Mask every row whose version is not today's again, a long item's chunks as one text, and record the version.
+    An item whose source or id looks like a secret is deleted, as ingest would not store it. With `seconds`, stops at
+    the first item past that time and leaves the rest old. Returns (rows changed, rows left). Once none are left,
+    rebuilds the file so the old values leave no bytes behind."""
     db.execute("PRAGMA secure_delete=ON")
-    changed, last = 0, 0
-    for source, source_id in db.execute("SELECT DISTINCT source, source_id FROM docs WHERE kind='raw'").fetchall():
-        rows = [{"kind": "raw", "ts": ts, "title": title, "content": content, "metadata": json.loads(meta)}
-                for ts, title, content, meta in db.execute(
-                    "SELECT ts, title, content, metadata FROM docs WHERE source=? AND source_id=? AND kind='raw'",
-                    (source, source_id))]
-        if _whole(rows) is not rows:
-            replace_rows(db, source, source_id, rows, ("raw",))
+    started, changed = time.monotonic(), 0
+    items = db.execute("SELECT DISTINCT source, source_id FROM docs WHERE masked IS NOT ?", (VERSION,)).fetchall()
+    for n, (source, source_id) in enumerate(items, 1):
+        if holds_secret(source) or holds_secret(source_id):
+            changed += delete_item(db, source, source_id)
+        else:
+            changed += _remask_item(db, source, source_id)
+        if n % 50 == 0 or n == len(items):
+            if changed:
+                set_watermark(db, STATE, "remask", "rebuild")
             db.commit()
-            changed += len(rows)
-    while True:
-        batch = db.execute("SELECT id, title, content, metadata FROM docs WHERE id > ? ORDER BY id LIMIT 2000",
-                           (last,)).fetchall()
-        if not batch:
-            break
-        updates = []
-        for rid, title, content, meta in batch:
-            new_title, new_content, new_meta = mask(title), mask(content), json.dumps(mask_all(json.loads(meta)))
-            if (new_title, new_content, json.loads(new_meta)) != (title, content, json.loads(meta)):
-                updates.append((new_title, new_content, new_meta, rid))
-        db.executemany("UPDATE docs SET title=?, content=?, metadata=? WHERE id=?", updates)
+            if seconds is not None and time.monotonic() - started > seconds:
+                break
+    left = old_rows(db)
+    if not left and (seconds is None or get_watermark(db, STATE, "remask")):
+        # FTS keeps deleted terms in old segments until they merge; optimize merges them away.
+        db.execute("INSERT INTO docs_fts(docs_fts) VALUES('optimize')")
+        db.execute("DELETE FROM ingest_state WHERE source=? AND key='remask'", (STATE,))
         db.commit()
-        changed += len(updates)
-        last = batch[-1][0]
-    # FTS keeps deleted terms in old segments until they merge; optimize merges them away.
-    db.execute("INSERT INTO docs_fts(docs_fts) VALUES('optimize')")
-    db.commit()
-    db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-    db.execute("VACUUM")
-    db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        db.execute("VACUUM")
+        db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    return changed, left
+
+
+def _remask_item(db, source, source_id):
+    """remask() for one item: its chunks as one text if any is old, and each other old row by itself. Returns the
+    number of rows whose text changed."""
+    changed = 0
+    raw = [{"kind": "raw", "ts": ts, "title": title, "content": content, "metadata": json.loads(meta), "masked": v}
+           for ts, title, content, meta, v in db.execute(
+               "SELECT ts, title, content, metadata, masked FROM docs WHERE source=? AND source_id=? AND kind='raw'",
+               (source, source_id))]
+    if any(r["masked"] != VERSION for r in raw):
+        same = _whole(raw) is raw and all(
+            (mask(str(r["ts"])), mask(r["title"]), mask(r["content"]), mask_all(r["metadata"]))
+            == (r["ts"], r["title"], r["content"], r["metadata"]) for r in raw)
+        if same:
+            db.execute("UPDATE docs SET masked=? WHERE source=? AND source_id=? AND kind='raw'",
+                       (VERSION, source, source_id))
+        else:
+            replace_rows(db, source, source_id, raw, ("raw",))
+            changed += len(raw)
+    for rid, ts, title, content, meta in db.execute(
+            "SELECT id, ts, title, content, metadata FROM docs WHERE source=? AND source_id=? AND kind != 'raw' "
+            "AND masked IS NOT ?", (source, source_id, VERSION)).fetchall():
+        new = (mask(ts), mask(title), mask(content), json.dumps(mask_all(json.loads(meta))))
+        if new[:3] == (ts, title, content) and json.loads(new[3]) == json.loads(meta):
+            db.execute("UPDATE docs SET masked=? WHERE id=?", (VERSION, rid))
+        else:
+            db.execute("UPDATE docs SET ts=?, title=?, content=?, metadata=?, masked=? WHERE id=?",
+                       (*new, VERSION, rid))
+            changed += 1
     return changed

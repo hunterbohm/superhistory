@@ -13,6 +13,8 @@ from kb.remote import HostAway, SshReader
 from kb.sources import Excludes, Gone, Item, Progress, Run
 
 COMMIT_EVERY = 200
+# How long one ingest spends masking older rows again; the rest wait for the next ingest, read masked meanwhile.
+REMASK_SECONDS = 60
 
 
 _UNBUILT = object()
@@ -161,6 +163,9 @@ def run(db, config, log, only=(), with_summaries=True, model_factory=None):
                 failures += 1
     store.set_watermark(db, store.STATE, "last_ingest", store.now_iso())
     db.commit()
+    if store.old_rows(db):
+        changed, left = store.remask(db, REMASK_SECONDS)
+        log.info("remask: %d rows masked again, %d older rows left for the next ingest", changed, left)
     if with_summaries and config.summarize.enabled and config.ai:
         try:
             summarize.run(db, config, model_factory(), log)

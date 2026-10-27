@@ -46,7 +46,7 @@ NAMES = ("machinename", "hostname", "sourcename", "timestamp", "mark", "ghargs",
          "transcript", "hooksettings", "schedout", "sortsubject", "sortsender", "contextmessage", "trialid",
          "trialsource", "setupkey", "setupexclude", "imaplong", "aimodel", "oauthsecret", "oauthtoken", "cctitle",
          "cxtitle", "cxtool", "hmuser", "hmtitle", "ghbody", "gmbody", "gmurl", "sumq", "sums", "suma", "synctitle",
-         "synctext", "syncmeta", "syncsplit", "oldtitle", "oldcheck", "oldsnip", "oldpage", "oldslice", "oldsplit", "hugeerror")
+         "synctext", "syncmeta", "syncsplit", "syncid", "oldtitle", "oldcheck", "oldid", "oldsnip", "oldpage", "oldslice", "oldsplit", "hugeerror")
 # Each of these sits across a limit where kb cuts text, so only the 12-character check sees a cut made before masking.
 CUT = {"cctitle": 84, "cxtitle": 84, "cxtool": 284, "hmtitle": 84, "hmuser": 2984, "ghbody": 19984, "gmbody": 19984,
        "sumq": 384, "sums": 1484, "suma": 1984, "synctitle": 74, "oldtitle": 74, "oldcheck": 104, "oldpage": cli.PAGE - 16,
@@ -59,6 +59,9 @@ def across(kind):
 NUMBER = 928374615001
 PEM_BODY = "Q2FuYXJ5UHJpdmF0ZUtleUJvZHkxMjM0NTY3OA"
 PEM = f"-----BEGIN PRIVATE KEY-----\n{PEM_BODY}\n{PEM_BODY[::-1]}\n-----END PRIVATE KEY-----"
+# A key long enough that its body fills a whole chunk, so a chunk can hold body lines and neither of its ends.
+LONG_PEM_LINE = ("T2xkUGVtQm9keUxpbmU" * 4)[:64]
+LONG_PEM = "-----BEGIN PRIVATE KEY-----\n" + f"{LONG_PEM_LINE}\n" * 90 + "-----END PRIVATE KEY-----"
 CANARY.update({kind: f"sk-ant-api03-canary-{kind}-" + "z" * 24 for kind in NAMES})
 NOW = datetime.now(timezone.utc).replace(microsecond=0)
 ME = "pat@example.com"
@@ -453,7 +456,8 @@ password = "cmd:echo {CANARY['cmdfail']} >&2; exit 3"
     def assert_no_canary(self):
         channels = {"output and exceptions": "\n".join(self.seen), "log records": "\n".join(self.records),
                     "files": "\n".join(self.written()), "AI requests": "\n".join(Model.sent)}
-        planted = {**CANARY, "number": str(NUMBER), "pem": PEM_BODY, "pem reversed": PEM_BODY[::-1]}
+        planted = {**CANARY, "number": str(NUMBER), "pem": PEM_BODY, "pem reversed": PEM_BODY[::-1],
+                   "long pem": LONG_PEM_LINE}
         for name, text in channels.items():
             for kind, canary in planted.items():
                 self.assertNotIn(canary, text, f"the {kind} canary reached {name}")
@@ -506,6 +510,9 @@ password = "cmd:echo {CANARY['cmdfail']} >&2; exit 3"
             {"kind": "raw", "ts": NOW.isoformat(), "title": "split", "content": split[i:i + store.CHUNK],
              "metadata": {"hash": "synclong", "chunk": n, "chunks": 3}}
             for n, i in enumerate(range(0, len(split), store.CHUNK))])
+        with self.assertRaises(ValueError, msg="an id that looks like a secret is refused, as ingest refuses it"):
+            store.replace_rows(db, "notes", f"desk:key-{CANARY['syncid']}.md", [
+                {"kind": "doc", "ts": NOW.isoformat(), "title": "t", "content": "walrus id", "metadata": {}}])
         db.commit()
         self.assert_no_canary()  # here, before remask below would mask what replace_rows let through
         old = (NOW - timedelta(hours=2)).isoformat()
@@ -521,9 +528,16 @@ password = "cmd:echo {CANARY['cmdfail']} >&2; exit 3"
         parts = store.chunk(long)
         rows += [("raw", "old-long.md", "Long notes", part, {"hash": "oldlong", "chunk": i, "chunks": len(parts)})
                  for i, part in enumerate(parts)]
+        # A key across three chunks: the chunk that matches holds body lines and the footer, but not the header.
+        parts = store.chunk("p" * 3820 + "\n" + LONG_PEM + "\nwalrus ledger deployment notes\n")
+        rows += [("raw", "old-pem.md", "Key notes", part, {"hash": "oldpem", "chunk": i, "chunks": len(parts)})
+                 for i, part in enumerate(parts)]
+        rows.append(("doc", f"desk:key-{CANARY['oldid']}.md", "zebra", "zebra quokka ledger", {"hash": "oldid"}))
+        older = (NOW - timedelta(hours=3)).isoformat()
         db.executemany("INSERT INTO docs(kind, source, source_id, ts, title, content, metadata) "
                        "VALUES (?, 'notes', ?, ?, ?, ?, ?)",
-                       [(kind, sid, old, title, text, json.dumps(meta)) for kind, sid, title, text, meta in rows])
+                       [(kind, sid, older if sid == "old-pem.md" else old, title, text, json.dumps(meta))
+                        for kind, sid, title, text, meta in rows])
         db.commit()
         ids = [r[0] for r in db.execute("SELECT id FROM docs WHERE source_id IN ('sync.md', 'old-short.md', "
                                         "'old-long.md') ORDER BY id")]
@@ -533,9 +547,15 @@ password = "cmd:echo {CANARY['cmdfail']} >&2; exit 3"
         sent = len(Model.sent)
         self.kb("context", "--session", "s5",
                 stdin=json.dumps({"message": "What does the walrus ledger record about deploys?", "before": []}))
-        Model.query = None
         self.assertTrue(any("[Records]" in body and "walrus" in body for body in Model.sent[sent:]),
                         "the check read the rows' excerpts")
+        Model.query = "zebra quokka"  # only the old row whose id holds a secret matches, so the lookup would pick it
+        self.kb("context", "--session", "s6",
+                stdin=json.dumps({"message": "What did the zebra quokka ledger record?", "before": []}))
+        Model.query = None
+        pem = [r[0] for r in store.connect(self.paths.db, readonly=True).execute(
+            "SELECT id FROM docs WHERE source_id = 'old-pem.md' ORDER BY id")]
+        self.kb("get", str(pem[-1]))
         for rid in (ids[0], ids[1], ids[2], ids[-1]):
             self.kb("get", str(rid))
         sent = len(Model.sent)

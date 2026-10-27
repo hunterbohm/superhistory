@@ -3,8 +3,8 @@ import math
 import re
 from datetime import datetime, timezone
 
-from kb.mask import mask
-from kb.store import SUMMARY_KINDS
+from kb.mask import holds_secret, mask
+from kb.store import SUMMARY_KINDS, current
 
 STOPWORDS = set("""a an and are as at be been but by can could did do does doing for from had has have
 how i if in into is it its just me my no not of on or our should so than that the their them then there
@@ -16,6 +16,7 @@ CANDIDATES = 60
 # The longest passage FTS5's snippet() gives: the stretch of a record where its matching words cluster.
 EXCERPT_TOKENS = 64
 EXCERPT_CHARS = 500
+SNIPPET_CHARS = 220
 MARK, END = "\x02", "\x03"
 
 
@@ -111,35 +112,42 @@ def search(db, query, after=None, sources=(), limit=10, before=None, keep=None):
             best[(src, sid)] = hit
     for key, hit in best.items():
         hit["score"] = total[key]
-    hits = sorted((h for h in best.values() if keep is None or keep(h)), key=lambda h: -h["score"])[:limit]
+    fresh = current(db, [h["id"] for h in best.values()])
+    # A store from before ingest refused such ids can hold an item whose id or source looks like a secret.
+    allowed = (h for h in best.values()
+               if h["id"] in fresh or not (holds_secret(h["source"]) or holds_secret(h["source_id"])))
+    hits = sorted((h for h in allowed if keep is None or keep(h)), key=lambda h: -h["score"])[:limit]
     for hit in hits:
-        snip, marked = db.execute(
-            f"SELECT snippet(docs_fts, 1, '[', ']', ' … ', 24), snippet(docs_fts, 1, char(2), char(3), ' … ', "
-            f"{EXCERPT_TOKENS}) FROM docs_fts WHERE docs_fts MATCH ? AND rowid = ?", (match, hit["id"])).fetchone()
-        content = _masked(db, hit)
-        # Snippets cut the stored text, so they are used only when that text holds no secret mask() still finds.
-        usable = content == hit["content"]
-        hit["content"] = content
-        hit["snippet"] = re.sub(r"\s+", " ", snip if usable and "[" in snip else content[:220]).strip()
-        hit["excerpt"] = excerpt(marked if usable and MARK in marked else content)
+        if hit["id"] in fresh:
+            snip, marked = db.execute(
+                f"SELECT snippet(docs_fts, 1, '[', ']', ' … ', 24), snippet(docs_fts, 1, char(2), char(3), ' … ', "
+                f"{EXCERPT_TOKENS}) FROM docs_fts WHERE docs_fts MATCH ? AND rowid = ?", (match, hit["id"])).fetchone()
+            hit["snippet"] = re.sub(r"\s+", " ", snip if "[" in snip else hit["content"][:SNIPPET_CHARS]).strip()
+            hit["excerpt"] = excerpt(marked if MARK in marked else hit["content"])
+        else:
+            # Older rows are masked whole before any cut, and the match is found again in the masked text.
+            hit["title"], hit["content"] = mask(hit["title"]), _masked_item(db, hit)
+            marked = _marked(hit["content"], terms)
+            hit["snippet"] = excerpt(marked.replace(MARK, MARK + "[").replace(END, "]" + END), SNIPPET_CHARS)
+            hit["excerpt"] = excerpt(marked)
     return hits
 
 
-def _masked(db, hit):
-    """The hit's text, masked. A chunk is masked with the chunks either side of it: a store written before today's
-    masks can hold a secret they find split across two chunks. Masked text is safe to cut wherever the cut lands."""
+def _masked_item(db, hit):
+    """The hit's text masked whole: a doc or summary row by itself, a chunk as its item's chunks joined in order."""
     if hit["kind"] != "raw":
         return mask(hit["content"])
-    n = hit["meta"].get("chunk", 0)
-    near = dict(db.execute("SELECT json_extract(metadata, '$.chunk'), content FROM docs WHERE source=? AND "
-                           "source_id=? AND kind='raw' AND json_extract(metadata, '$.chunk') IN (?, ?)",
-                           (hit["source"], hit["source_id"], n - 1, n + 1)))
-    before, after = near.get(n - 1, ""), near.get(n + 1, "")
-    text = before + hit["content"] + after
-    masked = mask(text)
-    if masked == text:
-        return hit["content"]
-    return masked[len(mask(before)):len(masked) - len(mask(after))]
+    return mask("".join(r[0] for r in db.execute(
+        "SELECT content FROM docs WHERE source=? AND source_id=? AND kind='raw' "
+        "ORDER BY json_extract(metadata, '$.chunk')", (hit["source"], hit["source_id"]))))
+
+
+def _marked(text, terms):
+    """`text` with each word that starts like a query word marked as snippet() marks it. A long word's last three
+    letters are left off, close to what stemming matches."""
+    words = {w.lower()[:max(4, len(w) - 3)] for term in terms for w in re.findall(r"\w+", term)}
+    pattern = re.compile(r"(?i)\b(?:" + "|".join(map(re.escape, sorted(words, key=len, reverse=True))) + r")\w*")
+    return pattern.sub(lambda m: MARK + m.group(0) + END, text)
 
 
 def excerpt(marked, chars=EXCERPT_CHARS):

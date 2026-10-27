@@ -389,6 +389,33 @@ class RunTest(IngestCase):
         self.assertEqual(len(built), 1)
 
 
+class RemaskOnIngestTest(IngestCase):
+    def test_ingest_masks_older_rows_again_and_the_header_says_so_until_it_has(self):
+        token = "sk-ant-api03-ingest-" + "Q" * 24
+        self.db.execute("INSERT INTO docs(kind, source, source_id, ts, title, content) VALUES "
+                        "('doc', 'old', 'a', ?, 't', ?)", (store.now_iso(), f"note with {token}"))
+        self.db.commit()
+        cfg = make_config(Script("good", events=[item("g1")]))
+        store.set_watermark(self.db, store.STATE, "last_ingest", store.now_iso())
+        self.assertIn("1 rows predate today's masking", cli.header(self.db, cfg))
+        self.assertEqual(ingest.run(self.db, cfg, LOG), 0)
+        self.assertEqual(store.old_rows(self.db), 0)
+        self.assertNotIn(token, json.dumps(self.rows()))
+        self.assertNotIn("predate", cli.header(self.db, cfg))
+
+    def test_a_remask_cut_short_by_its_time_finishes_on_later_ingests(self):
+        for i in range(60):
+            self.db.execute("INSERT INTO docs(kind, source, source_id, ts, title, content) VALUES "
+                            "('doc', 'old', ?, ?, 't', 'x')", (f"a{i}", store.now_iso()))
+        self.db.commit()
+        cfg = make_config(Script("good", events=[]))
+        with mock.patch.object(ingest, "REMASK_SECONDS", 0):
+            ingest.run(self.db, cfg, LOG)
+            self.assertEqual(store.old_rows(self.db), 10)
+            ingest.run(self.db, cfg, LOG)
+        self.assertEqual(store.old_rows(self.db), 0)
+
+
 class SummaryTest(IngestCase):
     def long_source(self):
         return Script("notes", events=[item("long", "word " * 3000), item("short", "tiny")], summarize=True)

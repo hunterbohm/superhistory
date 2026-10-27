@@ -53,6 +53,9 @@ def header(db, config):
             if _hours_since(since) > AWAY_HOURS]
     if bad:
         line += " Not refreshing: " + ", ".join(bad) + " (see `kb stats`)."
+    old = store.old_rows(db)
+    if old:
+        line += f" {old:,} rows predate today's masking; ingest masks them again, or run `kb remask`."
     return line
 
 
@@ -356,7 +359,8 @@ def cmd_remask(paths, config, args):
     with store.exclusive(paths.lock) as held:
         if not held:
             raise Fail("an ingest is running; try again when it finishes")
-        print(f"Remasked {store.remask(store.connect(paths.db)):,} rows and rebuilt {paths.db}")
+        changed, _ = store.remask(store.connect(paths.db))
+        print(f"Remasked {changed:,} rows and rebuilt {paths.db}")
 
 
 def cmd_supersede(paths, config, args):

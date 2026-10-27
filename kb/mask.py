@@ -1,3 +1,4 @@
+import hashlib
 import logging
 import re
 import sys
@@ -48,6 +49,14 @@ PLACEHOLDERS = {"string", "str", "none", "null", "nil", "true", "false", "undefi
 REFERENCE = re.compile(r"^(?:[$%{<(\[*/~]|\.\.?/|os\.|process\.|env\.|getenv|secrets\.|vars\.|self\.|this\.|[a-z]+://|"
                        r"(?:env|file|cmd):)|"
                        r"^[A-Za-z_]+(?:\.[A-Za-z_]+)+$|^[A-Z][A-Z_]{2,}$|^[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+$|\(")
+
+# Which mask() a stored row was masked with. A row of another version, or of none, is masked again when read and by
+# the next ingest. The patterns change it by themselves; bump REVISION when the code that applies them changes what
+# it masks.
+REVISION = 1
+VERSION = hashlib.sha256(repr((REVISION, [p.pattern for p in SECRET_PATTERNS + PREFIXED_SECRETS], KEYED_SECRET.pattern,
+                                ENV_KEY_SECRET.pattern, PASSWORD_NAME.pattern, sorted(PLACEHOLDERS),
+                                REFERENCE.pattern)).encode()).hexdigest()[:16]
 
 
 def _mask_keyed(m):

@@ -5,6 +5,7 @@ import sqlite3
 import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
+from unittest import mock
 
 from kb import store
 
@@ -344,13 +345,124 @@ class RemaskTest(TempDB):
                         "('doc', 's', 'a', ?, 't', ?)", (iso(), f"deploy with {leaked} today"))
         self.db.commit()
         self.assertEqual(self.fts_ids("abcdef1234567890abcdef1234567890"), [1])
-        self.assertEqual(store.remask(self.db), 1)
+        self.assertEqual(store.remask(self.db), (1, 0))
         self.assertNotIn("abcdef1234567890", self.rows()[0][4])
         self.assertEqual(self.fts_ids("abcdef1234567890abcdef1234567890"), [])
         self.assert_fts_consistent()
-        self.assertEqual(store.remask(self.db), 0)
+        self.assertEqual(store.remask(self.db), (0, 0))
         with open(self.path, "rb") as fh:
             self.assertNotIn(b"abcdef1234567890abcdef1234567890", fh.read())
+
+
+class MaskVersionTest(TempDB):
+    """A row records the mask() version it was masked with. Only a row of today's version, and for a chunk only if
+    every chunk of its item is, may be cut as it is stored; ingest and remask bring the rest up to date."""
+    TOKEN = "sk-ant-api03-version-" + "Q" * 24
+
+    def old(self, sid, content, kind="doc", meta=None, version=None):
+        self.db.execute("INSERT INTO docs(kind, source, source_id, ts, title, content, metadata, masked) "
+                        "VALUES (?, 's', ?, ?, 't', ?, ?, ?)", (kind, sid, iso(), content, json.dumps(meta or {}),
+                                                                 version))
+        self.db.commit()
+
+    def ids(self, sid=None):
+        sql, args = "SELECT id FROM docs", ()
+        if sid:
+            sql, args = sql + " WHERE source_id=?", (sid,)
+        return [r[0] for r in self.db.execute(sql + " ORDER BY id", args)]
+
+    def test_rows_store_writes_are_current(self):
+        self.add("a", "short note")
+        self.add("b", long_body("kumquat"))
+        self.db.commit()
+        self.assertEqual(store.current(self.db, self.ids()), set(self.ids()))
+        self.assertEqual(store.old_rows(self.db), 0)
+
+    def test_rows_of_no_version_or_another_are_old(self):
+        self.add("a", "short note")
+        self.old("b", "older note")
+        self.old("c", "older note", version="0123456789abcdef")
+        self.assertEqual(store.current(self.db, self.ids()), set(self.ids("a")))
+        self.assertEqual(store.old_rows(self.db), 2)
+
+    def test_a_chunk_is_current_only_while_every_chunk_of_its_item_is(self):
+        self.add("a", long_body("kumquat"))
+        chunks = self.ids("a")
+        self.db.execute("UPDATE docs SET masked=NULL WHERE id=?", (chunks[-1],))
+        self.assertEqual(store.current(self.db, chunks), set())
+
+    def test_a_new_mask_version_makes_every_stored_row_old(self):
+        self.add("a", "short note")
+        with mock.patch.object(store, "VERSION", "next"):
+            self.assertEqual(store.current(self.db, self.ids()), set())
+            self.assertEqual(store.old_rows(self.db), 1)
+            store.remask(self.db)
+            self.assertEqual(store.current(self.db, self.ids()), set(self.ids()))
+
+    def test_a_store_from_before_versions_gains_the_column_with_every_row_old(self):
+        path = os.path.join(self.tmp.name, "old.sqlite")
+        old = sqlite3.connect(path)
+        old.executescript(store.SCHEMA.replace("  superseded_by INTEGER,\n  masked TEXT\n", "  superseded_by INTEGER\n"))
+        self.assertNotIn("masked", [column[1] for column in old.execute("PRAGMA table_info(docs)")])
+        old.execute("INSERT INTO docs(kind, source, source_id, ts, title, content) VALUES ('doc','s','a',?,'t','x')",
+                    (iso(),))
+        old.commit()
+        old.close()
+        reader = store.connect(path, readonly=True)
+        self.addCleanup(reader.close)
+        self.assertEqual((store.current(reader, [1]), store.old_rows(reader)), (set(), 1))
+        writer = store.connect(path)
+        self.addCleanup(writer.close)
+        self.assertEqual((store.current(writer, [1]), store.old_rows(writer)), (set(), 1))
+        self.assertEqual(store.remask(writer), (0, 0))
+        self.assertEqual(store.current(writer, [1]), {1})
+
+    def test_replace_rows_refuses_an_id_or_source_that_looks_like_a_secret(self):
+        row = {"kind": "doc", "ts": iso(), "title": "t", "content": "c", "metadata": {}}
+        for source, sid in (("s", f"desk:key-{self.TOKEN}.md"), (self.TOKEN, "a")):
+            with self.assertRaises(ValueError) as caught:
+                store.replace_rows(self.db, source, sid, [row])
+            self.assertNotIn(self.TOKEN[:12], str(caught.exception))
+        self.assertEqual(self.ids(), [])
+
+    def test_remask_masks_an_old_items_chunks_as_one_text(self):
+        text = "." * (store.CHUNK - 16) + self.TOKEN + "." * store.CHUNK
+        for n, i in enumerate(range(0, len(text), store.CHUNK)):
+            self.old("long", text[i:i + store.CHUNK], kind="raw", meta={"chunk": n, "chunks": 3})
+        self.assertEqual(store.remask(self.db)[1], 0)
+        joined = "".join(r[4] for r in self.rows(source_id="long"))
+        self.assertNotIn(self.TOKEN[:12], joined)
+        self.assertNotIn(self.TOKEN[-12:], joined)
+        self.assertEqual(store.current(self.db, self.ids("long")), set(self.ids("long")))
+
+    def test_remask_deletes_an_old_item_whose_id_looks_like_a_secret(self):
+        self.old(f"desk:key-{self.TOKEN}.md", "a note")
+        self.assertEqual(store.remask(self.db), (1, 0))
+        self.assertEqual(self.ids(), [])
+        with open(self.path, "rb") as fh:
+            self.assertNotIn(self.TOKEN.encode(), fh.read())
+
+    def test_remask_stopped_by_its_time_leaves_the_rest_old(self):
+        for i in range(120):
+            self.old(f"n{i}", f"note {i} with {self.TOKEN}")
+        changed, left = store.remask(self.db, seconds=0)
+        self.assertEqual((changed, left), (50, 70))
+        done = store.current(self.db, self.ids())
+        self.assertEqual(len(done), 50)
+        for rid in done:
+            self.assertNotIn(self.TOKEN, self.db.execute("SELECT content FROM docs WHERE id=?", (rid,)).fetchone()[0])
+        self.assertEqual(store.get_watermark(self.db, store.STATE, "remask"), "rebuild")
+        self.assertEqual(store.remask(self.db, seconds=60), (70, 0))
+        self.assertIsNone(store.get_watermark(self.db, store.STATE, "remask"))
+        with open(self.path, "rb") as fh:
+            self.assertNotIn(self.TOKEN.encode(), fh.read())
+
+    def test_new_metadata_for_unchanged_text_keeps_a_rows_old_version(self):
+        self.add("a", "same text", meta={"path": "/one"})
+        self.db.execute("UPDATE docs SET masked=NULL")
+        self.add("a", "same text", meta={"path": "/two"})
+        self.assertEqual(json.loads(self.rows()[0][5])["path"], "/two")
+        self.assertEqual(store.old_rows(self.db), 1)
 
 
 class FtsTriggerTest(TempDB):
