@@ -185,6 +185,25 @@ def cmd_context(paths, config, args):
     return 0
 
 
+def cmd_login(paths, config, args):
+    from kb.sources import gmail
+    source = config.source(args.source)
+    if not source or source.type_name != "gmail" or source.options.auth != "oauth":
+        raise Fail(f"{args.source} is not a gmail source with auth = \"oauth\" in {paths.config_file}")
+    o = source.options
+    if not (o.client_id and o.client_secret):
+        raise Fail(f"set client_id and client_secret under [sources.{args.source}] first")
+    token = gmail.oauth_login(o.client_id, o.client_secret.reveal())
+    os.makedirs(paths.keys_dir, mode=0o700, exist_ok=True)
+    key_file = paths.keys_dir / f"{args.source}.refresh-token"
+    fd = os.open(key_file, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as fh:
+        fh.write(token + "\n")
+    print(f"Signed in. Saved the refresh token to {key_file}, readable only by you.")
+    if o.refresh_token != config_mod.Secret(f"file:{key_file}"):
+        print(f"Add this line under [sources.{args.source}]:\n\nrefresh_token = \"file:{key_file}\"")
+
+
 def cmd_paths(paths, config, args):
     for label, where in (("config", paths.config_file), ("database", paths.db), ("logs", paths.log_dir),
                          ("cache", paths.cache_dir)):
@@ -240,6 +259,9 @@ def parser():
     c = sub.add_parser("context", help="print records related to the message on stdin, for agent hooks")
     c.add_argument("--session", required=True, help="the agent session id; empty means no per-session state")
     c.set_defaults(fn=cmd_context)
+    lg = sub.add_parser("login", help="sign in to Gmail with your own Google OAuth client")
+    lg.add_argument("source", help="the name of a gmail source with auth = \"oauth\"")
+    lg.set_defaults(fn=cmd_login)
     sub.add_parser("paths", help="where the config, database, logs and cache live").set_defaults(fn=cmd_paths)
     sub.add_parser("config", help="check the config file and list its sources").set_defaults(fn=cmd_config)
     sub.add_parser("remask", help="reapply masking to stored rows after the patterns change").set_defaults(

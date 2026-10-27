@@ -275,3 +275,43 @@ class CliTest(TempHome):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class LoginTest(unittest.TestCase):
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.home = tmp.name
+        patcher = mock.patch.dict(os.environ, {"KB_HOME": self.home, "KB_TEST_CLIENT_SECRET": "shh"})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def write_config(self, extra):
+        with open(os.path.join(self.home, "config.toml"), "w") as fh:
+            fh.write('[sources.mail]\ntype = "gmail"\naddress = "sam@example.com"\n' + extra)
+
+    def run_cli(self, *argv):
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = cli.main(list(argv))
+        return code, out.getvalue(), err.getvalue()
+
+    def test_login_saves_the_refresh_token_where_only_the_user_can_read_it(self):
+        from kb.sources import gmail
+        self.write_config('auth = "oauth"\nclient_id = "id-1.apps.example.com"\nclient_secret = "env:KB_TEST_CLIENT_SECRET"\n')
+        calls = []
+        with mock.patch.object(gmail, "oauth_login", lambda cid, secret: calls.append((cid, secret)) or "token-123"):
+            code, out, _ = self.run_cli("login", "mail")
+        self.assertEqual(code, 0)
+        self.assertEqual(calls, [("id-1.apps.example.com", "shh")])
+        key = os.path.join(self.home, "keys", "mail.refresh-token")
+        with open(key) as fh:
+            self.assertEqual(fh.read().strip(), "token-123")
+        self.assertEqual(os.stat(key).st_mode & 0o777, 0o600)
+        self.assertIn(f'refresh_token = "file:{key}"', out)
+
+    def test_login_refuses_a_source_that_does_not_use_oauth(self):
+        self.write_config('password = "env:KB_TEST_CLIENT_SECRET"\n')
+        code, _, err = self.run_cli("login", "mail")
+        self.assertEqual(code, 1)
+        self.assertIn('auth = "oauth"', err)
