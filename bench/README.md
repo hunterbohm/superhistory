@@ -27,7 +27,7 @@ The rival tools need their own setup, all local, with no account:
 |---|---|
 | `mem0` | A Python with `pip install "mem0ai[nlp,extras]==2.2.1" sentence-transformers` and the spaCy model `en_core_web_sm`. Run `run.py` with that Python. |
 | `supermemory` | `docker run -d --name sm-bench --network host -e OPENAI_API_KEY=<gateway key> -e OPENAI_BASE_URL=http://127.0.0.1:8317/v1 -e OPENAI_MODEL=claude-haiku-5-5 -e SUPERMEMORY_DISABLE_TELEMETRY=1 -v <dir>:/data supermemory/supermemory:0.0.9`, then `SUPERMEMORY_KEY_FILE=<dir>/api-key`. |
-| `claude-mem` | `HOME=<scratch> npx claude-mem@15.3.0 install --provider claude --no-auto-start`; in `<scratch>/.claude-mem/settings.json` set `CLAUDE_MEM_CLAUDE_AUTH_METHOD` to `gateway` and `CLAUDE_MEM_MODEL` to `claude-haiku-5-5`; put `ANTHROPIC_BASE_URL` and `ANTHROPIC_AUTH_TOKEN` in `<scratch>/.claude-mem/.env`; run `HOME=<scratch> claude-mem start`. |
+| `claude-mem` | `HOME=<scratch> npx claude-mem@15.3.0 install --provider claude --no-auto-start`; in `<scratch>/.claude-mem/settings.json` set `CLAUDE_MEM_CLAUDE_AUTH_METHOD` to `gateway` and `CLAUDE_MEM_MODEL` to `claude-haiku-5-5`; put `ANTHROPIC_BASE_URL` and `ANTHROPIC_AUTH_TOKEN` in `<scratch>/.claude-mem/.env`; run `HOME=<scratch> claude-mem start`, then set `CLAUDE_MEM_HOME=<scratch>` for the run; the adapter and claude-mem's MCP server both read the worker's address from the settings there. |
 
 `python3 bench/run.py latency --tools check,supermemory,claude-mem` times lookups alone, one at a time and alternating between tools, into `bench/results/month/latency.jsonl`.
 
