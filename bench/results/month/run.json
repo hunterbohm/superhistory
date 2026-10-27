@@ -1,0 +1,104 @@
+{
+ "date": "2026-10-27T12:22:06Z",
+ "month": "953cba6ddd9330e3323843e29ba286eeecaa9686",
+ "answer_model": "claude-sonnet-5-5",
+ "judge_model": "gpt-6.1-sol",
+ "base_url": "http://127.0.0.1:8317",
+ "questions": 171,
+ "workers": 4,
+ "tools": [
+  {
+   "tool": "none",
+   "load": {},
+   "ran": 171,
+   "failed": 0
+  },
+  {
+   "tool": "oracle",
+   "load": {},
+   "ran": 171,
+   "failed": 0
+  },
+  {
+   "tool": "mem0",
+   "load": {
+    "version": "2.2.1",
+    "llm": "claude-haiku-5-5",
+    "embedder": "BAAI/bge-base-en-v1.5",
+    "memories": 1150,
+    "add_failures": 0,
+    "seconds": 2687
+   },
+   "ran": 171,
+   "failed": 0
+  },
+  {
+   "tool": "check",
+   "load": {
+    "store_seconds": 0.32,
+    "summarized": 42,
+    "summary_failures": 0,
+    "summarize_seconds": 53.8,
+    "rows": {
+     "atom": 363,
+     "doc": 429,
+     "raw": 95,
+     "segment": 123
+    },
+    "code": "32456fbb48ad1e7d"
+   },
+   "ran": 171,
+   "failed": 0
+  },
+  {
+   "tool": "check-cards",
+   "load": {
+    "store_seconds": 0.32,
+    "summarized": 42,
+    "summary_failures": 0,
+    "summarize_seconds": 53.8,
+    "rows": {
+     "atom": 363,
+     "doc": 429,
+     "raw": 95,
+     "segment": 123
+    },
+    "code": "32456fbb48ad1e7d"
+   },
+   "ran": 171,
+   "failed": 0
+  },
+  {
+   "tool": "supermemory",
+   "load": {
+    "documents": 471,
+    "reused": true,
+    "unsettled": 0,
+    "seconds": 5986,
+    "llm": "claude-haiku-5-5"
+   },
+   "ran": 171,
+   "failed": 0
+  },
+  {
+   "tool": "claude-mem",
+   "load": {
+    "reused_store": true,
+    "observations": 504,
+    "summaries": 54
+   },
+   "ran": 171,
+   "failed": 0
+  },
+  {
+   "tool": "claude-mem-semantic",
+   "load": {
+    "reused_store": true,
+    "observations": 504,
+    "summaries": 54
+   },
+   "ran": 171,
+   "failed": 0
+  }
+ ]
+}

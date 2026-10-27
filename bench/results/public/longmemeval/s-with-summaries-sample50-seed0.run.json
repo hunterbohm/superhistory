@@ -1,0 +1,31 @@
+{
+ "runs": [
+  {
+   "test": "longmemeval",
+   "set": "s",
+   "data_revision": "98d7416c24c778c2fee6e6f3006e7a073259d48f",
+   "data_sha256": "d6f21ea9d60a0d56f34a05b609c79c88a451d2ae03597821ea3d5a9678c3a442",
+   "judge_model": "gpt-6.1-sol",
+   "questions": 50,
+   "planned": {
+    "questions": 50,
+    "stores": 50,
+    "summary calls (one per long item)": 2047,
+    "check calls (at most 2 per question it searches for)": 94,
+    "questions the check skips as too short": 3,
+    "answer calls (1 to 5 per question)": "50 to 250",
+    "judge calls": 50
+   },
+   "started": "2026-10-27T08:30:31Z",
+   "seconds": 445,
+   "summaries": true,
+   "answer_model": "claude-sonnet-5-5",
+   "check_code": "32456fbb48ad1e7d",
+   "check_prompts": "the product's wording, kb/check.py on repo/package at 18a4335",
+   "workers": 8,
+   "ran": 50,
+   "failed": 0,
+   "failures": []
+  }
+ ]
+}
