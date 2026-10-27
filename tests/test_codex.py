@@ -90,6 +90,11 @@ class ReadingTest(CodexCase):
             self.assertNotIn(dropped, content)
         self.assertLess(len(content), 2500)
 
+    def test_a_line_separator_inside_a_message_is_read_whole(self):
+        lines = [json.dumps(json.loads(line), ensure_ascii=False, separators=(",", ":"))  # raw, as Codex may write it
+                 for line in conversation(prompt="Fix the zebra test\u2028then the\x85lint")]
+        self.assertIn("Fix the zebra test\u2028then the\x85lint", self.write_and_read(lines).content)
+
     def test_a_request_marker_in_the_first_prompt_gives_the_title_its_text(self):
         prompt = "Context the harness added\n## My request for Codex:\n\nRename the giraffe module\nthen test"
         self.assertEqual(self.write_and_read(conversation(prompt=prompt)).title, "Rename the giraffe module")

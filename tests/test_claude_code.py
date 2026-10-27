@@ -130,6 +130,16 @@ class ReadingTest(ClaudeCodeCase):
         self.assertNotIn("k" * 400, content)
         self.assertIn(" …", content)
 
+    def test_a_line_separator_inside_a_message_is_read_whole(self):
+        records = turns("s1", "first\u2028second\x85third", reply="done\u2029for now")
+        path = os.path.join(self.root, "-work-app", "s1.jsonl")
+        os.makedirs(os.path.dirname(path))
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in records))  # as JavaScript writes it
+        content = self.items()["s1"].content
+        self.assertIn("first\u2028second\x85third", content)
+        self.assertIn("done\u2029for now", content)
+
     def test_missing_roots_give_no_items(self):
         self.assertEqual(self.items(roots=(os.path.join(self.tmp.name, "nowhere"),)), {})
 

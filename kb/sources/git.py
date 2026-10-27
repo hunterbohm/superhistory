@@ -119,7 +119,8 @@ def _repos(options, excluded):
 def _own_shas(repo, after, identity):
     out = run_git(["log", "--branches", "--remotes", "--tags", "--no-merges", f"--since={_iso(after)}",
                    "--format=%H%x1f%an%x1f%ae"], repo.path)
-    return [sha for sha, name, email in (line.split("\x1f") for line in out.splitlines())
+    # git ends each line with a line feed; splitlines() would also split at U+2028 or U+0085 in an author's name.
+    return [sha for sha, name, email in (line.split("\x1f") for line in out.split("\n") if line)
             if name.casefold() in identity or email.casefold() in identity]
 
 
@@ -132,7 +133,7 @@ def _commits(repo, shas):
             sha, epoch, rest = record.split("\x1f", 2)
             message, files = rest.rsplit("\x1f", 1)
             commits.append(Commit(repo, sha, int(epoch), message.strip(),
-                                  tuple(line for line in files.splitlines() if line.strip())))
+                                  tuple(line for line in files.split("\n") if line.strip())))
     return commits
 
 

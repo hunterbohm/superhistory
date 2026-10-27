@@ -38,7 +38,7 @@ def item_ts(stem, text, mtime):
         ts = _stamp(m)
         if ts:
             return ts
-    for line in frontmatter(text).splitlines():
+    for line in frontmatter(text).split("\n"):  # YAML breaks lines at line feeds, not at U+2028
         fm = FRONT_DATE.match(line)
         m = fm and ANY_DATE.search(fm.group(1))
         if m:

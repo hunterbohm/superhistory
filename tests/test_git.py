@@ -94,6 +94,14 @@ class GitSourceTest(GitCase):
         self.assertAlmostEqual(done.mark, time.time(), delta=5)
         self.assertEqual(item.mark, done.mark)
 
+    def test_a_line_separator_in_an_authors_name_or_a_file_name_is_kept_whole(self):
+        path = self.repo("code/tools/notes-cli")
+        self.commit(path, "Draft the intro", who=("Ana\u2028Lee", "ana@example.org"))
+        sha = self.commit(path, "Index the notes", files=("notes\u2028draft.md",))
+        [item, _] = self.read()
+        self.assertTrue(item.source_id.endswith(sha))
+        self.assertIn("A\tnotes\u2028draft.md", item.content)
+
     def test_a_repository_with_no_github_remote_is_named_by_its_folder(self):
         path = self.repo("code/tools/notes-cli")
         sha = self.commit(path, "Index the notes")
