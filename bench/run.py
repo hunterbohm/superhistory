@@ -358,10 +358,11 @@ def main(argv=None):
             raise SystemExit("a split run takes --label and writes to its own folder; leave out --out")
         os.makedirs(args.out, exist_ok=True)
         if args.month == "b":
-            if args.limit:
-                raise SystemExit("a held-out run takes the whole month")
+            if args.limit or args.fresh:
+                raise SystemExit("a held-out run takes the whole month and cannot start over; rerunning its label "
+                                 "fills in only the questions with no row")
             from tools import check
-            splits.held_out_run("month", args.label, check.code_id(), git_head())
+            splits.held_out_run("month", args.label, check.code_id(), git_head(), f"b-{args.label}")
         items = read_jsonl(os.path.join(month, "items.jsonl"))
         questions = read_jsonl(os.path.join(month, "questions.jsonl"))[:args.limit]
         setup = MONTH_SETUP

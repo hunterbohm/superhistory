@@ -252,7 +252,7 @@ def main(argv=None):
     print(f"{name}: {json.dumps(planned)}", file=sys.stderr)
     if args.count:
         return 0
-    common.log_held_out("locomo", args)
+    common.log_held_out("locomo", args, name)
 
     def system(case):
         a, b = people[case.group]

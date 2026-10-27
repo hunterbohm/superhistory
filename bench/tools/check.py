@@ -83,25 +83,36 @@ api.post = _counted_post
 
 
 class Counted:
-    """A model that adds up the tokens of the calls it answers. A hedged copy runs on its own thread and counts too,
-    if it answers before the lookup ends."""
+    """A model that adds up the tokens of the calls it answers, hedged copies included. A call cut off at its deadline
+    returns no usage, so it cannot be counted."""
 
     def __init__(self, inner):
         self.inner, self.name, self.model, self.traits = inner, inner.name, inner.model, inner.traits
-        self.tokens = self.calls = 0
-        self.lock = threading.Lock()
+        self.tokens = self.calls = self.running = 0
+        self.changed = threading.Condition()
 
     def add(self, tokens):
-        with self.lock:
+        with self.changed:
             self.tokens += tokens
             self.calls += 1
 
     def ask(self, prompt, timeout):
+        with self.changed:
+            self.running += 1
         _local.sink = self
         try:
             return self.inner.ask(prompt, timeout)
         finally:
             _local.sink = None
+            with self.changed:
+                self.running -= 1
+                self.changed.notify_all()
+
+    def settle(self, timeout):
+        """The tokens once every call has returned, such as a hedged copy that lost the race."""
+        with self.changed:
+            self.changed.wait_for(lambda: not self.running, timeout)
+            return self.tokens
 
 
 _search = search.search
@@ -188,11 +199,13 @@ class Store:
         try:
             found = check.lookup(db, message, list(before), "", set(), counted, counted.traits.check_budget,
                                  counted.traits.hedge_after)
-            return Retrieved(check.render(found.hits, CONFIG.machine), [h["source_id"] for h in found.hits],
-                             time.monotonic() - started, None, counted.tokens, found.query)
+            seconds = time.monotonic() - started
+            return Retrieved(check.render(found.hits, CONFIG.machine), [h["source_id"] for h in found.hits], seconds,
+                             None, counted.settle(counted.traits.check_budget), found.query)
         except Exception as exc:
             # The hook prints nothing when the check fails, so the agent sees nothing.
-            return Retrieved("", [], time.monotonic() - started, type(exc).__name__, counted.tokens)
+            seconds = time.monotonic() - started
+            return Retrieved("", [], seconds, type(exc).__name__, counted.settle(counted.traits.check_budget))
         finally:
             db.close()
 
