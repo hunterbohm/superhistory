@@ -1,5 +1,6 @@
 import os
 import sys
+import threading
 import time
 import unittest
 from unittest import mock
@@ -31,6 +32,18 @@ class TokenCountTest(unittest.TestCase):
             self.assertEqual(ai.hedged(model, ai.Prompt("system", "user"), timeout=2, hedge_after=0.1), "ok")
             self.assertEqual(model.settle(2), 200)
         self.assertEqual(model.calls, 2)
+
+    def test_a_hedged_copy_whose_thread_reaches_ask_late_still_counts(self):
+        def gateway(url, body, headers, timeout):
+            return {"content": [{"type": "text", "text": "ok"}], "usage": USAGE}
+
+        model = check.Counted(check.model())
+        with mock.patch.object(check, "_post", gateway):
+            model.ask(ai.Prompt("system", "user"), 1)
+            late = threading.Timer(0.1, model.ask, (ai.Prompt("system", "user"), 1))
+            late.start()
+            self.assertEqual(model.settle(2), 200)
+            late.join()
 
     def test_the_summarizer_is_held_to_two_calls_at_once(self):
         self.assertLessEqual(check.model().traits.parallel, 2)

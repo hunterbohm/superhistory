@@ -29,6 +29,9 @@ from kb.sources import load_type  # noqa: E402
 
 MODEL = "claude-haiku-5-5"
 PARALLEL = 2
+# A hedged copy's thread can start just as the lookup ends, before it reaches ask(); the count waits this long with no
+# call running before it is read.
+SETTLE_GRACE = 0.25
 CONFIG = Config()
 
 AGENT_TOOLS = (
@@ -99,6 +102,7 @@ class Counted:
     def ask(self, prompt, timeout):
         with self.changed:
             self.running += 1
+            self.changed.notify_all()
         _local.sink = self
         try:
             return self.inner.ask(prompt, timeout)
@@ -109,9 +113,14 @@ class Counted:
                 self.changed.notify_all()
 
     def settle(self, timeout):
-        """The tokens once every call has returned, such as a hedged copy that lost the race."""
+        """The tokens once every call has returned, such as a hedged copy that lost the race, and no call has
+        started for SETTLE_GRACE seconds."""
+        deadline = time.monotonic() + timeout
         with self.changed:
-            self.changed.wait_for(lambda: not self.running, timeout)
+            while time.monotonic() < deadline:
+                self.changed.wait_for(lambda: not self.running, deadline - time.monotonic())
+                if not self.changed.wait_for(lambda: self.running, SETTLE_GRACE):
+                    break
             return self.tokens
 
 

@@ -399,7 +399,8 @@ def main(argv=None):
                 raise SystemExit("a held-out run takes the whole month and cannot start over; rerunning its label "
                                  "fills in only the questions with no row")
             from tools import check
-            splits.held_out_run("month", args.label, check.code_id(), git_head(), f"b-{args.label}")
+            splits.held_out_run("month", args.label, check.code_id(), git_head(),
+                                f"b-{args.label}:{','.join(sorted(args.tools.split(',')))}")
         items = read_jsonl(os.path.join(month, "items.jsonl"))
         questions = read_jsonl(os.path.join(month, "questions.jsonl"))[:args.limit]
         setup = MONTH_SETUP
