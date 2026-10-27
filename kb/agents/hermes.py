@@ -81,7 +81,8 @@ def installed(home):
 
 def install(home, kb_command):
     init = _init(home)
-    if agents.read(init) and not _ours(home):
+    # Any file already in the folder, even an empty one, belongs to whoever put it there unless it is kb's plugin.
+    if os.path.isdir(_folder(home)) and os.listdir(_folder(home)) and not _ours(home):
         return [agents.Change(init, "skipped", f"a plugin named {PLUGIN} that kb did not write is already there")]
     changes = []
     for path, text in ((init, plugin_source(kb_command)), (os.path.join(_folder(home), "plugin.yaml"), PLUGIN_YAML)):
@@ -106,7 +107,14 @@ def uninstall(home):
     if not _ours(home):
         return [agents.Change(folder, "skipped", f"the {PLUGIN} plugin there was not written by kb")]
     _hermes("disable")
-    shutil.rmtree(folder)
+    # Only kb's own files go; anything else someone put in the folder stays, and so does the folder then.
+    for name in ("__init__.py", "plugin.yaml"):
+        if os.path.exists(os.path.join(folder, name)):
+            os.remove(os.path.join(folder, name))
+    shutil.rmtree(os.path.join(folder, "__pycache__"), ignore_errors=True)
+    if os.listdir(folder):
+        return [agents.Change(folder, "removed", "kept the files in it that kb did not write")]
+    os.rmdir(folder)
     return [agents.Change(folder, "removed")]
 
 

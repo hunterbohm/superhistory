@@ -98,7 +98,7 @@ def install(home, kb_command):
     old, new = agents.read(path), _render(kb_command)
     if old == new:
         return [Change(path, "unchanged")]
-    if old and MARKER not in old:
+    if os.path.exists(path) and MARKER not in old:
         return [Change(path, "skipped", "a file kb did not write has this name")]
     agents.write(path, new)
     return [Change(path, "updated" if old else "added")]
