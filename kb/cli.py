@@ -2,6 +2,7 @@ import argparse
 import json
 import logging
 import os
+import shutil
 import sqlite3
 import sys
 import time
@@ -219,6 +220,46 @@ def cmd_ai(paths, config, args):
     return 0
 
 
+def cmd_hook(paths, config, args):
+    from kb import agents
+    output = agents.run(paths, config, args.agent, sys.stdin.read())
+    if output:
+        print(output)
+    return 0
+
+
+def _kb_path(args):
+    path = args.kb or shutil.which("kb")
+    if not path:
+        raise Fail("cannot find the kb command on PATH; pass its full path with --kb")
+    return os.path.abspath(path)
+
+
+def cmd_hooks(paths, config, args):
+    from kb import agents
+    home = os.path.expanduser("~")
+    chosen = args.agents or [n for n in agents.names() if agents.load(n).detect(home)]
+    unknown = sorted(set(chosen) - set(agents.names()))
+    if unknown:
+        raise Fail(f"unknown agent {', '.join(unknown)}; the agents are {', '.join(agents.names())}")
+    if args.action == "status":
+        for name in agents.names():
+            agent = agents.load(name)
+            state = "hook on" if agent.installed(home) else "found, no hook" if agent.detect(home) else "not found"
+            print(f"{name:<14}{state}")
+        return 0
+    if not chosen:
+        print("No supported agent found here.")
+        return 0
+    kb_path = _kb_path(args) if args.action == "install" else None
+    for name in chosen:
+        agent = agents.load(name)
+        changes = agent.install(home, agents.command(kb_path, name)) if args.action == "install" else agent.uninstall(home)
+        for change in changes:
+            print(f"{agent.label}: {change.path}: {change.action}" + (f" ({change.note})" if change.note else ""))
+    return 0
+
+
 def cmd_paths(paths, config, args):
     for label, where in (("config", paths.config_file), ("database", paths.db), ("logs", paths.log_dir),
                          ("cache", paths.cache_dir)):
@@ -280,6 +321,14 @@ def parser():
     a = sub.add_parser("ai", help="list the AI plug-ins, or test the one in the config with one tiny call")
     a.add_argument("action", choices=("list", "test"))
     a.set_defaults(fn=cmd_ai)
+    hk = sub.add_parser("hook", help="run by an agent on each prompt: print the check's records for it")
+    hk.add_argument("agent")
+    hk.set_defaults(fn=cmd_hook)
+    hs = sub.add_parser("hooks", help="add or remove the hook that runs the check in your agents")
+    hs.add_argument("action", choices=("install", "uninstall", "status"))
+    hs.add_argument("agents", nargs="*", help="agent names; default: every agent found here")
+    hs.add_argument("--kb", help="the kb command the hooks run; default: kb on PATH")
+    hs.set_defaults(fn=cmd_hooks)
     sub.add_parser("paths", help="where the config, database, logs and cache live").set_defaults(fn=cmd_paths)
     sub.add_parser("config", help="check the config file and list its sources").set_defaults(fn=cmd_config)
     sub.add_parser("remask", help="reapply masking to stored rows after the patterns change").set_defaults(
