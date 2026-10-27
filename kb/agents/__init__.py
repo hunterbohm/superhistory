@@ -129,23 +129,36 @@ class Unreadable(ValueError):
 
 def _load(path):
     text = read(path)
+    return text, _parse(text, path)
+
+
+def _parse(text, path):
     try:
         data = json.loads(text) if text.strip() else {}
     except ValueError:
         raise Unreadable(f"{path} is not valid JSON; fix it, then run this again") from None
     if not isinstance(data, dict):
         raise Unreadable(f"{path} does not hold a JSON object")
-    return text, data
+    return data
 
 
 def add_json_hook(path, event, name, kb_command):
-    text, data = _load(path)
+    text = read(path)
+    new, gi, hi, handler, action = json_hook_added(text, path, event, name, kb_command)
+    if new != text:
+        write(path, new)
+    return gi, hi, handler, Change(path, action)
+
+
+def json_hook_added(text, path, event, name, kb_command):
+    """The file's text with kb's hook added or brought up to date: (text, group, position, handler, action)."""
+    data = _parse(text, path)
     groups = data.setdefault("hooks", {}).setdefault(event, [])
     found = next(((gi, hi, handler) for gi, group in enumerate(groups) for hi, handler in enumerate(group.get("hooks") or [])
                   if is_kb_command(handler.get("command", ""), name)), None)
     wanted = {"type": "command", "command": kb_command, "timeout": HOOK_TIMEOUT}
     if found and all(found[2].get(k) == v for k, v in wanted.items()):
-        return (*found, Change(path, "unchanged"))
+        return (text, *found, "unchanged")
     if found:
         found[2].update(wanted)
         action = "updated"
@@ -153,8 +166,7 @@ def add_json_hook(path, event, name, kb_command):
         groups.append({"hooks": [dict(wanted)]})
         found = (len(groups) - 1, 0, groups[-1]["hooks"][0])
         action = "added"
-    write(path, _dump(data, text))
-    return (*found, Change(path, action))
+    return (_dump(data, text), *found, action)
 
 
 def has_json_hook(path, event, name):
@@ -166,9 +178,18 @@ def has_json_hook(path, event, name):
 
 
 def remove_json_hook(path, event, name):
-    text, data = _load(path)
+    text = read(path)
+    new, action = json_hook_removed(text, path, event, name)
+    if new != text:
+        write(path, new)
+    return Change(path, action)
+
+
+def json_hook_removed(text, path, event, name):
+    """The file's text without kb's hook: (text, action)."""
+    data = _parse(text, path)
     if not text.strip():
-        return Change(path, "unchanged")
+        return text, "unchanged"
     groups = (data.get("hooks") or {}).get(event) or []
     kept = []
     removed = False
@@ -178,12 +199,11 @@ def remove_json_hook(path, event, name):
         if handlers:
             kept.append({**group, "hooks": handlers})
     if not removed:
-        return Change(path, "unchanged")
+        return text, "unchanged"
     if kept:
         data["hooks"][event] = kept
     else:
         del data["hooks"][event]
         if not data["hooks"]:
             del data["hooks"]
-    write(path, _dump(data, text))
-    return Change(path, "removed")
+    return _dump(data, text), "removed"

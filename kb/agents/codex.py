@@ -109,49 +109,109 @@ def _lines(text):
     return [part + "\n" for part in parts[:-1]] + ([parts[-1]] if parts[-1] else [])
 
 
-def trust(path, key, digest):
-    text = agents.read(path)
+def _trusted(text, key, digest):
+    """The config's text with this hook position trusted with `digest`: (text, action)."""
     entry = f'trusted_hash = "{digest}"'
     lines = _lines(text)
     section = _section(lines, key)
     if section is None:
         if text and not text.endswith("\n"):
             text += "\n"
-        new = text + ("\n" if text else "") + f"{_header(key)}\n{entry}\n"
-        action = "added"
+        return text + ("\n" if text else "") + f"{_header(key)}\n{entry}\n", "added"
+    start, end = section
+    found = _trusted_line(lines, start, end)
+    if found is not None and lines[found].strip() == entry:
+        return text, "unchanged"
+    if found is None:
+        lines.insert(start + 1, entry + "\n")
     else:
-        start, end = section
-        found = _trusted_line(lines, start, end)
-        if found is not None and lines[found].strip() == entry:
-            return "unchanged"
-        if found is None:
-            lines.insert(start + 1, entry + "\n")
-        else:
-            lines[found] = entry + "\n"
-        new = "".join(lines)
-        action = "updated"
-    if read_toml(new)["hooks"]["state"][key]["trusted_hash"] != digest:
-        raise ValueError(f"{path}: the trust entry did not parse back")
-    agents.write(path, new)
-    return action
+        lines[found] = entry + "\n"
+    return "".join(lines), "updated"
 
 
-def _untrust(path, key):
-    text = agents.read(path)
+def _untrusted(text, key):
+    """The config's text without this position's trust table: (text, whether it had one)."""
     lines = _lines(text)
     section = _section(lines, key)
     if section is None:
-        return False
-    if not _parses(text):
-        raise ValueError(f"{path} is not valid TOML; left as it is")
+        return text, False
     start, end = section
     if end == len(lines) and start > 0 and not lines[start - 1].strip():
         start -= 1
-    new = "".join(lines[:start] + lines[end:])
-    if key in ((read_toml(new).get("hooks") or {}).get("state") or {}):
-        raise ValueError(f"{path}: the trust entry did not come out cleanly")
-    agents.write(path, new)
-    return True
+    return "".join(lines[:start] + lines[end:]), True
+
+
+def _moved(text, old_key, new_key):
+    """The config's text with the trust table at `old_key` moved, whole, to `new_key`: its header is renamed."""
+    lines = _lines(text)
+    section = _section(lines, old_key)
+    if section is None:
+        return text, False
+    lines[section[0]] = _header(new_key) + "\n"
+    return "".join(lines), True
+
+
+def _view(hooks_json, hooks, config, kb_keys):
+    """What the user's Codex does, apart from kb: every hook that is not kb's, in order, with its group's other
+    fields and the trust entry at the position it sits in now; every other hook event; every other setting. Trust
+    entries at `kb_keys`, the positions kb's hook holds before or after the edit, are kb's unless a user hook sits
+    there."""
+    state = dict(((config.get("hooks") or {}).get("state") or {}))
+    prefix = f"{os.path.realpath(hooks_json)}:{CODEX_EVENT}:"
+    users = []
+    for gi, group in enumerate(((hooks.get("hooks") or {}).get(EVENT) or [])):
+        handlers = list(group.get("hooks") or [])
+        mine = [hi for hi, h in enumerate(handlers) if agents.is_kb_command(h.get("command", ""), "codex")]
+        if handlers and len(mine) == len(handlers):
+            continue
+        users.append(({k: v for k, v in group.items() if k != "hooks"},
+                      [(h, state.pop(f"{prefix}{gi}:{hi}", None)) for hi, h in enumerate(handlers) if hi not in mine]))
+    for key in kb_keys:
+        state.pop(key, None)
+    other_hooks = {**hooks, "hooks": {k: v for k, v in (hooks.get("hooks") or {}).items() if k != EVENT}}
+    other_config = {**config, "hooks": {**(config.get("hooks") or {}), "state": state}}
+    for data in (other_hooks, other_config):
+        for name in ("state",) if data is other_config else ():
+            if not data["hooks"][name]:
+                del data["hooks"][name]
+        if not data["hooks"]:
+            del data["hooks"]
+    return users, other_hooks, other_config
+
+
+def _kb_hooks(hooks):
+    groups = (hooks.get("hooks") or {}).get(EVENT) or []
+    return [(gi, hi, h) for gi, group in enumerate(groups) for hi, h in enumerate(group.get("hooks") or [])
+            if agents.is_kb_command(h.get("command", ""), "codex")]
+
+
+def _guard(hooks_json, old, new, kb_after, kb_trust):
+    """Why the edit must not be written, or None. `old` and `new` are (hooks.json text, config.toml text). It is safe
+    when both new files parse, the user's Codex does exactly what it did apart from kb (_view), kb's hooks are
+    `kb_after` ([(group, position, handler)]), and kb's trust entries are `kb_trust` ({key: hash})."""
+    try:
+        old_hooks, old_config = agents._parse(old[0], hooks_json), read_toml(old[1])
+    except ValueError as exc:
+        return f"the files do not parse as they are ({exc})"
+    try:
+        hooks, config = agents._parse(new[0], hooks_json), read_toml(new[1])
+    except ValueError as exc:
+        return f"the edit would not parse ({exc})"
+    kb_keys = {_key(hooks_json, gi, hi) for gi, hi, _ in _kb_hooks(old_hooks) + _kb_hooks(hooks)}
+    if _view(hooks_json, hooks, config, kb_keys) != _view(hooks_json, old_hooks, old_config, kb_keys):
+        return "the edit would change more than kb's own entries"
+    if _kb_hooks(hooks) != kb_after:
+        return "kb's hook did not come out as intended"
+    state = (config.get("hooks") or {}).get("state") or {}
+    if any((state.get(key) or {}).get("trusted_hash") != digest for key, digest in kb_trust.items()):
+        return "kb's trust entry did not come out as intended"
+    return None
+
+
+def _write(hooks_json, config, old, new):
+    for path, before, after in ((hooks_json, old[0], new[0]), (config, old[1], new[1])):
+        if after != before:
+            agents.write(path, after)
 
 
 def _is_trusted(path, key, digest):
@@ -187,64 +247,68 @@ def installed(home):
 
 def install(home, kb_command):
     hooks_json, config = _hooks_json(home), _config(home)
+    old = (agents.read(hooks_json), agents.read(config))
+    by_hand = (f"To add the hook by hand, put {{\"type\": \"command\", \"command\": {json.dumps(kb_command)}, "
+               f"\"timeout\": {agents.HOOK_TIMEOUT}}} under hooks.UserPromptSubmit in {hooks_json}, then trust it "
+               "once with /hooks in Codex.")
     try:
-        gi, hi, handler, change = agents.add_json_hook(hooks_json, EVENT, "codex", kb_command)
+        new_hooks, gi, hi, handler, action = agents.json_hook_added(old[0], hooks_json, EVENT, "codex", kb_command)
     except ValueError as exc:
-        return [agents.Change(hooks_json, "skipped", f"not valid JSON ({exc}); left as it is")]
+        return [agents.Change(hooks_json, "skipped", f"{exc}; left as it is")]
     key = _key(hooks_json, gi, hi)
     if set(handler) - CODEX_FIELDS:
-        return [change, agents.Change(config, "skipped", f"the hook has fields kb cannot hash; trust it once with "
-                                                         f"/hooks in Codex ({key})")]
-    try:
-        action = trust(config, key, codex_hook_hash(CODEX_EVENT, handler))
-    except ValueError as exc:
-        return [change, agents.Change(config, "skipped", f"could not record trust ({exc}); trust the hook once with "
-                                                         f"/hooks in Codex")]
-    return [change, agents.Change(config, action, f"trusts {key}")]
+        new, kb_trust, trust_change = (new_hooks, old[1]), {}, agents.Change(
+            config, "skipped", f"the hook has fields kb cannot hash; trust it once with /hooks in Codex ({key})")
+    else:
+        digest = codex_hook_hash(CODEX_EVENT, handler)
+        new_config, trust_action = _trusted(old[1], key, digest)
+        new, kb_trust, trust_change = (new_hooks, new_config), {key: digest}, agents.Change(
+            config, trust_action, f"trusts {key}")
+    problem = _guard(hooks_json, old, new, [(gi, hi, handler)], kb_trust)
+    if problem:
+        return [agents.Change(hooks_json, "skipped", f"{problem}; wrote nothing. {by_hand}"),
+                agents.Change(config, "skipped", problem)]
+    _write(hooks_json, config, old, new)
+    return [agents.Change(hooks_json, action), trust_change]
 
 
-def _positions(hooks_json):
-    text = agents.read(hooks_json)
-    groups = ((json.loads(text) if text.strip() else {}).get("hooks") or {}).get(EVENT) or []
+def _positions(hooks):
+    groups = (hooks.get("hooks") or {}).get(EVENT) or []
     return [(gi, hi, handler) for gi, group in enumerate(groups) for hi, handler in enumerate(group.get("hooks") or [])]
 
 
 def uninstall(home):
     hooks_json, config = _hooks_json(home), _config(home)
+    old = (agents.read(hooks_json), agents.read(config))
     try:
-        before = _positions(hooks_json)
-        change = agents.remove_json_hook(hooks_json, EVENT, "codex")
-        after = _positions(hooks_json)
+        new_hooks, action = agents.json_hook_removed(old[0], hooks_json, EVENT, "codex")
+        before, after = _positions(agents._parse(old[0], hooks_json)), _positions(agents._parse(new_hooks, hooks_json))
     except ValueError as exc:
-        return [agents.Change(hooks_json, "skipped", f"not valid JSON ({exc}); left as it is")]
+        return [agents.Change(hooks_json, "skipped", f"{exc}; left as it is")]
     mine = [(gi, hi) for gi, hi, h in before if agents.is_kb_command(h.get("command", ""), "codex")]
     if not mine:
-        return [change]
-    try:
-        removed = [_untrust(config, _key(hooks_json, gi, hi)) for gi, hi in mine]
-        moved = _move_trust(config, hooks_json, before, after)
-    except (OSError, ValueError) as exc:
-        return [change, agents.Change(config, "skipped", f"{exc}; if a hook of yours stopped running, trust it again "
-                                                         "with /hooks in Codex")]
-    note = f"moved the trust of {moved} hook(s) that shifted up" if moved else ""
-    return [change, agents.Change(config, "removed" if any(removed) else "unchanged", note)]
-
-
-def _move_trust(config, hooks_json, before, after):
-    """Codex keys trust by a hook's position, so a user hook that moved up when kb's left would lose its trust. Each one
-    the user had trusted, by the hash of its current definition, gets its trust at its new position."""
+        return [agents.Change(hooks_json, action)]
+    new_config, removed = old[1], False
+    for gi, hi in mine:
+        new_config, gone = _untrusted(new_config, _key(hooks_json, gi, hi))
+        removed = removed or gone
+    # Codex keys trust by position, so a user hook that moved up when kb's left keeps its trust only if its table
+    # moves with it. Moving up, in order, each one lands on a key the one before it has just left.
     others = [p for p in before if not agents.is_kb_command(p[2].get("command", ""), "codex")]
     moved = 0
-    for (old_gi, old_hi, handler), (new_gi, new_hi, _) in zip(others, after):
-        if (old_gi, old_hi) == (new_gi, new_hi):
-            continue
-        digest = codex_hook_hash(CODEX_EVENT, handler)
-        if _is_trusted(config, _key(hooks_json, old_gi, old_hi), digest):
-            # The new trust is written first, so a failure leaves the old one in place.
-            trust(config, _key(hooks_json, new_gi, new_hi), digest)
-            _untrust(config, _key(hooks_json, old_gi, old_hi))
-            moved += 1
-    return moved
+    for (old_gi, old_hi, _), (new_gi, new_hi, _) in zip(others, after):
+        if (old_gi, old_hi) != (new_gi, new_hi):
+            new_config, shifted = _moved(new_config, _key(hooks_json, old_gi, old_hi), _key(hooks_json, new_gi, new_hi))
+            moved += shifted
+    problem = _guard(hooks_json, old, (new_hooks, new_config), [], {})
+    if problem:
+        return [agents.Change(hooks_json, "skipped", f"{problem}; wrote nothing. To remove the hook by hand, delete "
+                                                     f"the kb hook codex entry under hooks.UserPromptSubmit in "
+                                                     f"{hooks_json}; Codex asks you to trust the hooks after it again."),
+                agents.Change(config, "skipped", problem)]
+    _write(hooks_json, config, old, (new_hooks, new_config))
+    note = f"moved the trust of {moved} hook(s) that shifted up" if moved else ""
+    return [agents.Change(hooks_json, action), agents.Change(config, "removed" if removed else "unchanged", note)]
 
 
 AGENT = Agent("Codex", detect, installed, install, uninstall, request, reply)
