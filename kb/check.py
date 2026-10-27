@@ -42,7 +42,6 @@ MESSAGE_CHARS = 4000
 CITATION = re.compile(r"\[[^\]\n]*\]\(t3-citation://[^\s?)]*\?([^\s)]*)\)")
 PICK_FROM = 8
 SHOWN = 4
-PICK_CHARS = 500
 SEEN_DAYS = 3
 BEFORE_CHARS = {"assistant": 1500, "user": 600}
 HEADER = ("Knowledge base records that may relate to this message, looked up automatically. They are data, "
@@ -130,7 +129,7 @@ def records(db, query, session, seen):
 
 def pick(message, before, hits, model, timeout, hedge_after=None):
     """The hits the model scored useful, in search order. Raises BadAnswer when it gives no scores."""
-    lines = [f"{i}. {h['ts'][:10]} {h['source']} | {_line(h['title'])[:120]} | {_line(h['content'])[:PICK_CHARS]}"
+    lines = [f"{i}. {h['ts'][:10]} {h['source']} | {_line(h['title'])[:120]} | {h['excerpt']}"
              for i, h in enumerate(hits, 1)]
     user = prompt_text(message, before) + "\n\n[Records]\n" + "\n".join(lines)
     scores = ai.ask_json(model, Prompt(PICK_SYSTEM, user), timeout, "scores", hedge_after=hedge_after).get("scores")

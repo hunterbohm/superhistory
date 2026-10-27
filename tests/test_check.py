@@ -182,14 +182,16 @@ class CheckTest(unittest.TestCase):
         self.ask(ASK, model=model)
         self.assertAlmostEqual(model.timeouts[0], 4.0, places=1)
 
-    def test_pick_reads_the_record_beyond_the_matched_words(self):
-        filler = " ".join(f"word{i}" for i in range(60))
-        self.add("gmail", "test:a", f"Kickoff notes from the owner call. {filler} Dana Connect launch moved")
+    def test_pick_reads_the_title_and_the_part_of_a_long_record_that_matched(self):
+        filler = " ".join(f"word{i}" for i in range(200))
+        self.add("gmail", "test:a", f"Kickoff notes from the owner call. {filler} Dana Connect launch moved",
+                 title="Owner call")
         model = plan_and_pick("Dana Connect launch")
         self.ask(ASK, model=model)
         records = model.prompts[1].user.split("[Records]\n", 1)[1]
-        self.assertIn("Kickoff notes from the owner call", records)
+        self.assertIn("Owner call", records)
         self.assertIn("Dana Connect launch moved", records)
+        self.assertNotIn("word0 ", records)
 
     def test_pick_of_none_or_garbage_prints_nothing(self):
         self.add("gmail", "test:a", "Dana on the Connect launch date")
