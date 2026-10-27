@@ -171,9 +171,9 @@ def main(argv=None):
         return 0
     meta = {"test": "longmemeval", "set": args.set, "data_revision": REVISION, "data_sha256": SETS[args.set][1],
             "judge_model": JUDGE_MODEL, "questions": len(cases), "planned": planned}
-    common.run_cases(name, cases, groups, OUT, system, score, summaries, args.workers, args.fresh, meta)
+    record = common.run_cases(name, cases, groups, OUT, system, score, summaries, args.workers, args.fresh, meta)
     print(table(common.run_names(OUT)))
-    return 0
+    return common.exit_status(record)
 
 
 if __name__ == "__main__":

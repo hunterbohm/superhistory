@@ -256,9 +256,9 @@ def main(argv=None):
 
     meta = {"test": "locomo", "data_revision": REVISION, "data_sha256": SHA256, "judge_model": JUDGE_MODEL,
             "questions": len(cases), "categories": list(CATEGORIES.values()), "planned": planned}
-    common.run_cases(name, cases, groups, OUT, system, scorer, summaries, args.workers, args.fresh, meta)
+    record = common.run_cases(name, cases, groups, OUT, system, scorer, summaries, args.workers, args.fresh, meta)
     print(table(common.run_names(OUT)))
-    return 0
+    return common.exit_status(record)
 
 
 if __name__ == "__main__":
