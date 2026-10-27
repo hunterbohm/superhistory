@@ -283,3 +283,15 @@ class BrokenConfigTest(unittest.TestCase):
                     contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
                 code = cli.main(["hook", "claude-code"])
         self.assertEqual((code, out.getvalue(), err.getvalue()), (0, "", ""))
+
+
+class UnreadableConfigTest(unittest.TestCase):
+    def test_an_unreadable_config_makes_the_hook_print_nothing_and_exit_0(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out, err = io.StringIO(), io.StringIO()
+            with mock.patch.dict(os.environ, {"KB_HOME": tmp}), \
+                    mock.patch("kb.config.open", side_effect=PermissionError(13, "Permission denied"), create=True), \
+                    mock.patch("sys.stdin", io.StringIO('{"prompt": "hi"}')), \
+                    contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                code = cli.main(["hook", "claude-code"])
+        self.assertEqual((code, out.getvalue(), err.getvalue()), (0, "", ""))

@@ -340,6 +340,16 @@ class ShiftedTrustTest(Home):
         self.assertNotIn(moved_from, config)
         self.assertNotIn(self.digest(), config)
 
+    def test_trust_written_with_single_quotes_and_a_comment_still_moves(self):
+        user = {"type": "command", "command": "/usr/local/bin/notify-prompt", "timeout": 5}
+        self.put(self.hooks_json, {"hooks": {"UserPromptSubmit": [{"hooks": [self.handler()]}, {"hooks": [user]}]}})
+        user_digest = codex.codex_hook_hash("user_prompt_submit", user)
+        moved_from = f"{self.hooks_json}:user_prompt_submit:1:0"
+        self.put(self.config, self.trust_table() + f'\n[hooks.state."{moved_from}"]\n'
+                                                   f"trusted_hash = '{user_digest}'  # approved in /hooks\n")
+        AGENT.uninstall(self.home)
+        self.assertIn(self.trust_table(self.key, user_digest), self.text(self.config))
+
     def test_an_untrusted_user_hook_that_moves_up_gains_no_trust(self):
         user = {"type": "command", "command": "/usr/local/bin/notify-prompt", "timeout": 5}
         self.put(self.hooks_json, {"hooks": {"UserPromptSubmit": [{"hooks": [self.handler()]}, {"hooks": [user]}]}})
