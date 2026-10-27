@@ -139,7 +139,7 @@ def pending(db, scope, limit=None):
 def item_text(db, item):
     rows = db.execute("SELECT content FROM docs WHERE source=? AND source_id=? AND kind='raw' "
                       "ORDER BY json_extract(metadata, '$.chunk')", (item.source, item.source_id))
-    return "".join(r[0] for r in rows)
+    return mask("".join(r[0] for r in rows))  # masked whole, before any cut, in case rows predate masking
 
 
 def cap(text, limit=MAX_INPUT_CHARS, slices=SLICES):
@@ -204,7 +204,7 @@ def rows(item, span, segments, atoms):
     meta.update(span)
     meta["at"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     out = [{"kind": "segment", "ts": item.ts, "title": mask(title)[:200],
-            "content": f"{mask(question)[:400]}\n{mask(summary)[:1500]}", "metadata": meta}
+            "content": mask(f"{mask(question)[:400]}\n{mask(summary)[:1500]}"), "metadata": meta}
            for title, question, summary in segments]
     for kind, text in atoms:
         text = mask(text)[:2000]

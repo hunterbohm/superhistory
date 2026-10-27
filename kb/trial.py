@@ -7,7 +7,7 @@ from pathlib import Path
 
 import kb
 from kb import ai, check, search, store
-from kb.mask import holds_secret
+from kb.mask import holds_secret, mask
 
 HOST = "demo"
 SHOWN_HITS = 5
@@ -56,7 +56,7 @@ def show(db, question, config, model, out):
         hits = search.search(db, question["question"], limit=SHOWN_HITS)
         out(f"Search finds {len(hits)} candidate record{'s' if len(hits) != 1 else ''}:" if hits else "Search finds nothing.")
         for h in hits:
-            out(f"  {h['ts'][:10]}  {h['source']}  {h['title'][:80]}")
+            out(f"  {h['ts'][:10]}  {h['source']}  {mask(h['title'])[:80]}")
         out("The check would now ask your AI plug-in which of these fit, and add only those. "
             "Set one up with `kb setup` to see it.")
         return

@@ -111,9 +111,29 @@ def search(db, query, after=None, sources=(), limit=10, before=None, keep=None):
     for hit in hits:
         snip = db.execute("SELECT snippet(docs_fts, 1, '[', ']', ' … ', 24) FROM docs_fts "
                           "WHERE docs_fts MATCH ? AND rowid = ?", (match, hit["id"])).fetchone()
-        text = snip[0] if snip and "[" in snip[0] else hit["content"][:220]
-        hit["snippet"] = re.sub(r"\s+", " ", text).strip()
+        content = _masked(db, hit)
+        # A snippet cuts the stored text, so it is used only when that text holds no secret mask() still finds.
+        usable = snip and "[" in snip[0] and content == hit["content"]
+        hit["content"] = content
+        hit["snippet"] = re.sub(r"\s+", " ", snip[0] if usable else content[:220]).strip()
     return hits
+
+
+def _masked(db, hit):
+    """The hit's text, masked. A chunk is masked with the chunks either side of it: a store written before today's
+    masks can hold a secret they find split across two chunks. Masked text is safe to cut wherever the cut lands."""
+    if hit["kind"] != "raw":
+        return mask(hit["content"])
+    n = hit["meta"].get("chunk", 0)
+    near = dict(db.execute("SELECT json_extract(metadata, '$.chunk'), content FROM docs WHERE source=? AND "
+                           "source_id=? AND kind='raw' AND json_extract(metadata, '$.chunk') IN (?, ?)",
+                           (hit["source"], hit["source_id"], n - 1, n + 1)))
+    before, after = near.get(n - 1, ""), near.get(n + 1, "")
+    text = before + hit["content"] + after
+    masked = mask(text)
+    if masked == text:
+        return hit["content"]
+    return masked[len(mask(before)):len(masked) - len(mask(after))]
 
 
 def pointer(meta, machine=None):

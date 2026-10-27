@@ -34,7 +34,10 @@ The Sync client goes in `kb/sync/`. It meets the engine at two points.
 `mask()` in `kb/mask.py` replaces secret-looking text. kb applies it at every boundary text crosses:
 
 - Into the store: an item's title, text and metadata (only the secret-looking parts, so links and paths still
-  work), and the source's id for the item. Summary rows are masked too.
+  work), and the source's id for the item. Summary rows are masked too. `store.replace_rows`, the one way rows
+  enter, masks again, so rows another store sent are masked as well, and masks a long item's chunks as one text: a
+  store that cut an item before masking it can split a secret in two that neither chunk shows. `kb remask` does
+  the same for rows already stored.
 - Out of kb: the kb command's stdout and stderr, every log line (through `masked_log`, whatever logger the caller
   passes, plus a filter on kb's own handlers), `check.log`, the remote reader's output, recorded failures, and the
   text of every error kb raises from outside text: AI answers, secrets, ssh, gh and git output, IMAP and Google
@@ -44,6 +47,11 @@ The Sync client goes in `kb/sync/`. It meets the engine at two points.
   for a model a caller made itself. The check's prompt (the user's message, earlier turns, the records) and the Gmail
   sorter's lines are masked, so the plug-in, which can be another provider than the user's agent, never sees a
   secret's value. kb's own instructions in those prompts contain nothing mask() changes.
+
+Text is masked before it is cut, never after: a cut can keep part of a secret too short for mask() to know. Readers
+of stored text mask it again before cutting it, since a store written before today's patterns may hold what they
+find: `kb search` masks a chunk with its neighbors, and `kb get` and the summarizer mask the whole item. An HTTP
+error body longer than kb reads is left out of the error.
 
 Records that other code sends through its own loggers to its own handlers are that code's to mask.
 `tests/test_canary.py` plants a different secret in every kind of input, runs every command and every library entry

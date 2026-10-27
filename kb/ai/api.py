@@ -170,7 +170,10 @@ def post(url, body, headers, timeout):
         with urllib.request.urlopen(request, timeout=timeout) as resp:
             return json.load(resp)
     except urllib.error.HTTPError as e:
-        detail = " ".join(mask(e.read(65536).decode(errors="replace")).split())[:300]
+        body = e.read(65537)
+        # A body cut at the 65,536 bytes read could end in part of a secret mask() cannot know, so it is left out.
+        detail = ("(longer than 64 KB, left out)" if len(body) > 65536
+                  else " ".join(mask(body.decode(errors="replace")).split())[:300])
         message = f"HTTP {e.code} from {url}: {detail}"
         if e.code in SETUP_CODES:
             raise NotReady(message) from None

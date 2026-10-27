@@ -40,15 +40,17 @@ KINDS = ("env", "cmd", "cmdfail", "cmdtimeout", "configkey", "itemtext", "itemme
          "httpbad", "httpstatus", "modeltext", "imap", "imapbad", "imaperr", "remoteopt", "aipath", "session")
 CANARY = {kind: f"sk-ant-api03-canary-{kind}-" + "Z" * 24 for kind in KINDS}
 # Secrets that only their field name gives away, as in "password=...": mask() knows them by the name in front.
-KEYED = ("metapw", "metanested", "ghtail", "aitail", "turntail")
+KEYED = ("metapw", "metanested", "ghtail", "aitail", "turntail", "sumjoin", "syncpw")
 CANARY.update({kind: f"canary{kind}Zz12345678" for kind in KEYED})
 NAMES = ("machinename", "hostname", "sourcename", "timestamp", "mark", "ghargs", "hookprompt", "hooksession",
          "transcript", "hooksettings", "schedout", "sortsubject", "sortsender", "contextmessage", "trialid",
          "trialsource", "setupkey", "setupexclude", "imaplong", "aimodel", "oauthsecret", "oauthtoken", "cctitle",
-         "cxtitle", "cxtool", "hmuser", "hmtitle", "ghbody", "gmbody", "gmurl", "sumq", "sums", "suma")
+         "cxtitle", "cxtool", "hmuser", "hmtitle", "ghbody", "gmbody", "gmurl", "sumq", "sums", "suma", "synctitle",
+         "synctext", "syncmeta", "syncsplit", "oldtitle", "oldsnip", "oldpage", "oldslice", "oldsplit", "hugeerror")
 # Each of these sits across a limit where kb cuts text, so only the 12-character check sees a cut made before masking.
 CUT = {"cctitle": 84, "cxtitle": 84, "cxtool": 284, "hmtitle": 84, "hmuser": 2984, "ghbody": 19984, "gmbody": 19984,
-       "sumq": 384, "sums": 1484, "suma": 1984}
+       "sumq": 384, "sums": 1484, "suma": 1984, "synctitle": 74, "oldtitle": 74, "oldpage": cli.PAGE - 16,
+       "oldslice": summarize.MAX_INPUT_CHARS // summarize.SLICES - 16, "oldsplit": 10 * store.CHUNK - 16}
 
 
 def across(kind):
@@ -109,6 +111,22 @@ class Model(BaseHTTPRequestHandler):
             self.send_header("content-type", "application/json")
             self.end_headers()
             self.wfile.write(body)
+            return
+        if Model.mode == "joined":
+            # Each part holds no secret alone; a segment's row puts the question's last line before the summary.
+            text = json.dumps({"segments": [{"title": "t", "question": "Which one? password=",
+                                             "summary": CANARY["sumjoin"] + " was the one"}], "atoms": []})
+            body = json.dumps({"content": [{"type": "text", "text": text}], "stop_reason": "end_turn"}).encode()
+            self.send_response(200)
+            self.send_header("content-type", "application/json")
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        if Model.mode == "hugeerror":
+            # Past the 65,536 bytes an error body is read to, after spaces that splitting the detail removes.
+            self.send_response(401)
+            self.end_headers()
+            self.wfile.write(b" " * 65520 + CANARY["hugeerror"].encode())
             return
         if Model.mode == "pem":
             body = json.dumps({"content": [{"type": "text", "text": f"Here it is:\n{PEM}"}]}).encode()
@@ -472,6 +490,48 @@ password = "cmd:echo {CANARY['cmdfail']} >&2; exit 3"
         with open(self.paths.config_file, "w") as fh:
             fh.write(kept)
 
+    def drive_stored_rows(self):
+        """Rows that reach the store without store_item: an item another store sent, written as Sync and Cloud
+        write it, and an old store's rows from before kb masked what it stores. Search, get and summarize read
+        both, and an old row's text is cut at a title, a snippet, a page, a summarizer slice and between two chunks,
+        which remask has to join to mask."""
+        db = store.connect(self.paths.db)
+        store.replace_rows(db, "notes", "sync.md", [
+            {"kind": "doc", "ts": NOW.isoformat(), "title": "walrus sync" + across("synctitle")[11:],
+             "content": f"walrus ledger {CANARY['synctext']}",
+             "metadata": {"url": f"https://x.example/?token={CANARY['syncmeta']}", "password": CANARY["syncpw"]}}])
+        split = "." * (store.CHUNK - 16) + CANARY["syncsplit"] + "." * store.CHUNK
+        store.replace_rows(db, "notes", "sync-long.md", [
+            {"kind": "raw", "ts": NOW.isoformat(), "title": "split", "content": split[i:i + store.CHUNK],
+             "metadata": {"hash": "synclong", "chunk": n, "chunks": 3}}
+            for n, i in enumerate(range(0, len(split), store.CHUNK))])
+        db.commit()
+        self.assert_no_canary()  # here, before remask below would mask what replace_rows let through
+        old = (NOW - timedelta(hours=2)).isoformat()
+        size = 200_000
+        long = across("oldslice") + "." * (CUT["oldpage"] - len(across("oldslice"))) + CANARY["oldpage"]
+        pad = CUT["oldsplit"] - 14 - len(long)  # words, so the snippet around the match is short enough to show
+        long += "." * (pad % 6) + "lorem " * (pad // 6) + "walrus ledger " + CANARY["oldsplit"]
+        long += "." * (size - len(long))
+        rows = [("doc", "old-short.md", "walrus old" + across("oldtitle")[10:],
+                 f"walrus ledger {CANARY['oldsnip']} end", {"hash": "oldshort"})]
+        parts = store.chunk(long)
+        rows += [("raw", "old-long.md", "Long notes", part, {"hash": "oldlong", "chunk": i, "chunks": len(parts)})
+                 for i, part in enumerate(parts)]
+        db.executemany("INSERT INTO docs(kind, source, source_id, ts, title, content, metadata) "
+                       "VALUES (?, 'notes', ?, ?, ?, ?, ?)",
+                       [(kind, sid, old, title, text, json.dumps(meta)) for kind, sid, title, text, meta in rows])
+        db.commit()
+        ids = [r[0] for r in db.execute("SELECT id FROM docs WHERE source_id IN ('sync.md', 'old-short.md', "
+                                        "'old-long.md') ORDER BY id")]
+        db.close()
+        self.kb("search", "walrus ledger")
+        for rid in (ids[0], ids[1], ids[2], ids[-1]):
+            self.kb("get", str(rid))
+        sent = len(Model.sent)
+        self.kb("summarize", "--limit", "2")
+        self.assertTrue(any("Long notes" in body for body in Model.sent[sent:]), "the old long item was summarized")
+
     def drive_trial_month(self):
         month = os.path.join(self.tmp, "month")
         os.makedirs(month)
@@ -522,6 +582,7 @@ password = "cmd:echo {CANARY['cmdfail']} >&2; exit 3"
         rows = [r[0] for r in db.execute("SELECT id FROM docs ORDER BY id")]
         self.assertTrue(rows, "ingest stored something to search")
         failing = dict(store.failing(db))
+        self.drive_stored_rows()
         self.kb("search", "staging token")
         self.kb("search", "pelican", "--source", "issues")
         for rid in rows[:40]:
@@ -535,7 +596,7 @@ password = "cmd:echo {CANARY['cmdfail']} >&2; exit 3"
                                              {"role": "assistant", "text": self.cut_turn()}]}))
         self.assertTrue(os.listdir(self.paths.seen_dir), "the lookup kept its session's records, so it really ran")
         self.kb("ai", "test")
-        for mode in ("refuse", "garbage", "status", "pem"):
+        for mode in ("refuse", "garbage", "status", "pem", "hugeerror"):
             Model.mode = mode
             self.kb("ai", "test")
             self.kb("context", "--session", "s2", stdin=json.dumps({"message": "What did Dana say about pelican?",
@@ -619,7 +680,13 @@ password = "cmd:echo {CANARY['cmdfail']} >&2; exit 3"
         kinds = {r[0] for r in db.execute("SELECT DISTINCT kind FROM docs WHERE kind IN ('segment', 'atom')")}
         self.assertEqual(kinds, {"segment", "atom"}, "the long summary was written, so its cuts were made")
         Model.mode = "ok"
-        for mode in ("refuse", "garbage", "status", "pem"):
+        Model.mode = "joined"
+        db.execute("DELETE FROM docs WHERE kind IN ('segment', 'atom')")
+        db.execute("DELETE FROM ingest_state WHERE source = ?", (summarize.FAILED,))
+        db.commit()
+        self.call(summarize.run, db, cfg, model, self.cloud, 1)
+        self.assertTrue(db.execute("SELECT 1 FROM docs WHERE kind = 'segment'").fetchone(), "the joined row is stored")
+        for mode in ("refuse", "garbage", "status", "pem", "hugeerror"):
             Model.mode = mode
             self.call(model.ask, ai.Prompt("s", "u", 10), 10)
             self.call(check.lookup, db, "What did Dana decide about the pelican launch?", [], "", set(), model, 10)

@@ -103,15 +103,32 @@ def chunk(text, size=CHUNK):
     return chunks
 
 
+def _whole(rows):
+    """`rows` with any raw chunks masked as one text and cut again where it changed: a store that cut an item before
+    masking it, as an older kb did and another store may, can split a secret in two that neither chunk shows."""
+    raw = sorted((r for r in rows if r["kind"] == "raw"), key=lambda r: r["metadata"].get("chunk", 0))
+    text = "".join(r["content"] for r in raw)
+    masked = mask(text)
+    if masked == text:
+        return rows
+    parts = chunk(masked)
+    meta = {k: v for k, v in raw[0]["metadata"].items() if k not in CHUNK_KEYS}
+    return [r for r in rows if r["kind"] != "raw"] + [
+        {**raw[0], "content": part, "metadata": {**meta, "chunk": i, "chunks": len(parts)}}
+        for i, part in enumerate(parts)]
+
+
 def replace_rows(db, source, source_id, rows, kinds=ITEM_KINDS):
     """Swap one item's rows of the given kinds for `rows` (dicts: kind, ts, title, content, metadata)."""
+    rows = _whole(rows)
     marks = ",".join("?" * len(kinds))
     db.execute(f"DELETE FROM docs WHERE source=? AND source_id=? AND kind IN ({marks})",
                (source, source_id, *kinds))
+    # Masked here too, since Sync and Cloud write rows another store sent; for rows store_item made it changes nothing.
     db.executemany(
         "INSERT INTO docs(kind, source, source_id, ts, title, content, metadata) VALUES (?,?,?,?,?,?,?)",
-        [(r["kind"], source, source_id, r["ts"], r["title"], r["content"], json.dumps(r["metadata"]))
-         for r in rows])
+        [(r["kind"], source, source_id, mask(str(r["ts"])), mask(r["title"]), mask(r["content"]),
+          json.dumps(mask_all(r["metadata"]))) for r in rows])
 
 
 def delete_item(db, source, source_id):
@@ -222,9 +239,19 @@ def last_ingest(db):
 
 
 def remask(db):
-    """Reapply mask() to every stored row's title, text and metadata, then rebuild the file so the old values leave no bytes behind."""
+    """Reapply mask() to every stored row's title, text and metadata, a long item's chunks as one text, then rebuild
+    the file so the old values leave no bytes behind."""
     db.execute("PRAGMA secure_delete=ON")
     changed, last = 0, 0
+    for source, source_id in db.execute("SELECT DISTINCT source, source_id FROM docs WHERE kind='raw'").fetchall():
+        rows = [{"kind": "raw", "ts": ts, "title": title, "content": content, "metadata": json.loads(meta)}
+                for ts, title, content, meta in db.execute(
+                    "SELECT ts, title, content, metadata FROM docs WHERE source=? AND source_id=? AND kind='raw'",
+                    (source, source_id))]
+        if _whole(rows) is not rows:
+            replace_rows(db, source, source_id, rows, ("raw",))
+            db.commit()
+            changed += len(rows)
     while True:
         batch = db.execute("SELECT id, title, content, metadata FROM docs WHERE id > ? ORDER BY id LIMIT 2000",
                            (last,)).fetchall()
