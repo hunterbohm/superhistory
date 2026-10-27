@@ -17,7 +17,7 @@ def _config(home):
 
 def _load(path):
     text = agents.read(path)
-    data = json.loads(text) if text.strip() else {}
+    data = agents._parse(text, path)
     if not isinstance(data, dict) or not isinstance(data.get("hooks", {}), dict) \
             or not isinstance(data.get("hooks", {}).get(EVENT, []), list):
         raise ValueError(path)
@@ -58,7 +58,9 @@ def install(home, kb_command):
         found.update(wanted)
     else:
         entries.append(wanted)
-    agents.write(path, agents._dump(data, text))
+    problem = agents.checked_write(path, text, agents._dump(data, text), EVENT, _is_kb, [found or wanted], grouped=False)
+    if problem:
+        return [Change(path, "skipped", f"{problem}; wrote nothing")]
     return [Change(path, "updated" if found else "added")]
 
 
@@ -77,7 +79,9 @@ def uninstall(home):
         del data["hooks"][EVENT]
         if not data["hooks"]:
             del data["hooks"]
-    agents.write(path, agents._dump(data, text))
+    problem = agents.checked_write(path, text, agents._dump(data, text), EVENT, _is_kb, [], grouped=False)
+    if problem:
+        return [Change(path, "skipped", f"{problem}; wrote nothing")]
     return [Change(path, "removed")]
 
 

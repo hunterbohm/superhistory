@@ -379,6 +379,87 @@ if __name__ == "__main__":
     unittest.main()
 
 
+class GuardedJsonWritesTest(unittest.TestCase):
+    """Claude Code, Codex and Copilot keep their hooks in the user's JSON. kb writes there only when the file reads
+    back exactly and nothing but kb's entry changes."""
+
+    FILES = {"claude-code": (".claude", "settings.json"), "codex": (".codex", "hooks.json"),
+             "copilot": (".copilot", "config.json")}
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.home = tmp.name
+        patch = mock.patch.dict(os.environ, {"COPILOT_HOME": ""})
+        patch.start()
+        self.addCleanup(patch.stop)
+
+    def path(self, name):
+        return os.path.join(self.home, *self.FILES[name])
+
+    def put(self, name, text):
+        os.makedirs(os.path.dirname(self.path(name)), exist_ok=True)
+        with open(self.path(name), "w", encoding="utf-8") as fh:
+            fh.write(text)
+
+    def text(self, name):
+        with open(self.path(name), encoding="utf-8") as fh:
+            return fh.read()
+
+    def act(self, name, action):
+        agent = agents.load(name)
+        try:
+            changes = agent.install(self.home, agents.command("/opt/kb", name)) if action == "install" \
+                else agent.uninstall(self.home)
+        except agents.Unreadable as exc:
+            return ["skipped", str(exc)]
+        return [c.action for c in changes]
+
+    def test_a_number_json_cannot_write_back_is_left_alone(self):
+        for name in self.FILES:
+            for odd in ('{"custom_number": 1e400}', '{"custom": NaN}', '{"custom": -Infinity}'):
+                with self.subTest(agent=name, file=odd):
+                    self.put(name, odd)
+                    self.assertIn("skipped", self.act(name, "install"))
+                    self.assertEqual(self.text(name), odd)
+
+    def test_an_empty_group_of_the_users_survives_install_and_uninstall(self):
+        for name, event in (("claude-code", "UserPromptSubmit"), ("codex", "UserPromptSubmit")):
+            with self.subTest(agent=name):
+                original = {"model": "user", "hooks": {event: [{"matcher": "saved", "hooks": []}]}}
+                self.put(name, json.dumps(original))
+                self.assertNotIn("skipped", self.act(name, "install"))
+                self.assertNotIn("skipped", self.act(name, "uninstall"))
+                self.assertEqual(json.loads(self.text(name)), original)
+
+    def test_a_wrong_json_edit_writes_nothing(self):
+        def also_drops_a_setting(text, path, event, name):
+            new, action = removed(text, path, event, name)
+            data = json.loads(new)
+            data.pop("model", None)
+            return json.dumps(data), action
+
+        removed = agents.json_hook_removed
+        self.put("claude-code", json.dumps({"model": "user"}))
+        self.act("claude-code", "install")
+        before = self.text("claude-code")
+        with mock.patch.object(agents, "json_hook_removed", also_drops_a_setting):
+            result = self.act("claude-code", "uninstall")
+        self.assertEqual(result[0], "skipped")
+        self.assertIn("more than kb's own entries", result[1])
+        self.assertEqual(self.text("claude-code"), before)
+
+    def test_copilot_writes_only_its_own_entry(self):
+        original = {"theme": "dark", "hooks": {"userPromptSubmitted": [{"type": "command", "bash": "notify"}]}}
+        self.put("copilot", json.dumps(original))
+        self.assertEqual(self.act("copilot", "install"), ["added"])
+        self.assertEqual(self.act("copilot", "uninstall"), ["removed"])
+        self.assertEqual(json.loads(self.text("copilot")), original)
+        with mock.patch.object(agents, "_dump", lambda data, old: json.dumps({**data, "theme": "light"})):
+            self.assertEqual(self.act("copilot", "install"), ["skipped"])
+        self.assertEqual(json.loads(self.text("copilot")), original)
+
+
 class UnreadableSettingsTest(unittest.TestCase):
     def test_a_malformed_settings_file_is_left_alone(self):
         with tempfile.TemporaryDirectory() as tmp:
