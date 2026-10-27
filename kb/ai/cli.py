@@ -14,7 +14,9 @@ from kb.ai import Busy, NotReady, PluginSpec, Refused, Traits
 NESTED_ENV = "KB_NESTED"
 WORKDIR_PREFIX = "kb-ai-"
 TRAITS = Traits(check_budget=20.0, hedge_after=None, parallel=2, max_prompt_chars=150_000)
-SCRUB = re.compile(r"^(ANTHROPIC_|OPENAI_|CLAUDE_CODE_|CLAUDECODE$|XAI_|GROK_SESSION|CODEX_(?!HOME$))")
+# Variables that would point a CLI at a paid key, another server or the agent session that started kb. Any *_API_KEY or
+# *_AUTH_TOKEN goes too: a call runs with no tools or MCP servers, so nothing in it needs one.
+SCRUB = re.compile(r"^(ANTHROPIC_|OPENAI_|CLAUDE_CODE_|CLAUDECODE$|XAI_|GROK_SESSION|CODEX_(?!HOME$))|_API_KEY$|_AUTH_TOKEN$")
 SIGNED_OUT = re.compile(r"(?i)not (logged|signed) in|(log|sign) ?in again|please (log|sign) ?in|authenticat|unauthori[sz]ed|"
                         r"session expired|token (has )?expired")
 _running = set()
@@ -77,7 +79,7 @@ class CliModel:
 
 
 def run(call, workdir, timeout, program):
-    env = {k: v for k, v in os.environ.items() if not SCRUB.match(k)}
+    env = {k: v for k, v in os.environ.items() if not SCRUB.search(k)}
     env.update(call.env)
     env[NESTED_ENV] = "1"
     proc = subprocess.Popen(call.argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,

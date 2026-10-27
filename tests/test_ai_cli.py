@@ -14,7 +14,8 @@ from kb.ai import Busy, NotReady, Prompt
 from kb.paths import Paths
 
 WATCHED = ("ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL", "CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT", "OPENAI_API_KEY",
-           "CODEX_HOME", "COPILOT_HOME", "XAI_API_KEY", "KB_NESTED", "HOME")
+           "CODEX_HOME", "COPILOT_HOME", "XAI_API_KEY", "KB_NESTED", "HOME", "CURSOR_API_KEY", "SOME_VENDOR_API_KEY",
+           "SOME_AUTH_TOKEN")
 FAKE_CLI = """#!{python}
 import json, os, subprocess, sys, time
 args = sys.argv[1:]
@@ -71,7 +72,8 @@ class CliCase(unittest.TestCase):
         patcher = mock.patch.dict(os.environ, {
             "HOME": self.home, "ANTHROPIC_API_KEY": "paid-key", "ANTHROPIC_BASE_URL": "http://paid.example",
             "CLAUDECODE": "1", "CLAUDE_CODE_ENTRYPOINT": "cli", "OPENAI_API_KEY": "paid-openai",
-            "XAI_API_KEY": "paid-xai", "CODEX_HOME": os.path.join(self.home, ".codex")})
+            "XAI_API_KEY": "paid-xai", "CODEX_HOME": os.path.join(self.home, ".codex"),
+            "CURSOR_API_KEY": "paid-cursor", "SOME_VENDOR_API_KEY": "paid-vendor", "SOME_AUTH_TOKEN": "paid-token"})
         patcher.start()
         self.addCleanup(patcher.stop)
 
@@ -92,7 +94,7 @@ class CliPluginTest(CliCase):
     def assert_clean_call(self, call):
         self.assertEqual(call["env"]["KB_NESTED"], "1")
         for name in ("ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL", "CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT",
-                     "OPENAI_API_KEY", "XAI_API_KEY"):
+                     "OPENAI_API_KEY", "XAI_API_KEY", "CURSOR_API_KEY", "SOME_VENDOR_API_KEY", "SOME_AUTH_TOKEN"):
             self.assertIsNone(call["env"][name], name)
         self.assertTrue(os.path.basename(call["cwd"]).startswith("kb-ai-"))
         self.assertFalse(os.path.exists(call["cwd"]), "the call's folder is removed")
