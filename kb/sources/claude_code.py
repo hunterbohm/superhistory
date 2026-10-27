@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from typing import Tuple
 
 from kb.ai.cli import WORKDIR_PREFIX
+from kb.mask import is_auth_code
 from kb.sources import Gone, Item, Progress, SourceType, home_key
 
 TOOL_CHARS = 300
@@ -86,7 +87,7 @@ def render(path, mark):
                 ptype = part.get("type")
                 if ptype == "text":
                     text = REMINDER.sub("", part.get("text", "")).strip()
-                    if not text:
+                    if not text or is_auth_code(text):
                         continue
                     if kind == "user":
                         first_prompt = first_prompt or text

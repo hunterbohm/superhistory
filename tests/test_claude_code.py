@@ -134,6 +134,19 @@ class ReadingTest(ClaudeCodeCase):
         self.assertEqual(self.items(roots=(os.path.join(self.tmp.name, "nowhere"),)), {})
 
 
+class AuthCodeTest(ClaudeCodeCase):
+    def test_a_turn_that_hands_over_a_code_is_dropped_and_talk_about_codes_stays(self):
+        records = turns("s-auth", "Why does the verification code email never arrive on staging?",
+                        reply="The mail queue was paused.")
+        records.append({"type": "user", "timestamp": "2026-10-18T10:02:00Z", "sessionId": "s-auth",
+                        "message": {"content": "Your verification code is 482913."}})
+        self.write("proj/s-auth.jsonl", records)
+        content = self.items()["s-auth"].content
+        self.assertNotIn("482913", content)
+        self.assertIn("verification code email never arrive", content)
+        self.assertIn("The mail queue was paused.", content)
+
+
 class RootsTest(ClaudeCodeCase):
     def test_the_default_root_is_the_claude_projects_folder_in_the_home_folder(self):
         self.assertEqual(Options().roots, ("~/.claude/projects",))
