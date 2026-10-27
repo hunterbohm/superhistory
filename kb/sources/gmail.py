@@ -281,7 +281,7 @@ def oauth_login(client_id, client_secret, open_browser=webbrowser.open, timeout=
 def _ok(answer):
     status, data = answer
     if status != "OK":
-        raise RuntimeError(f"IMAP answered {mask.mask(str(status))}: " + mask.mask(repr(data))[:200])
+        raise RuntimeError(f"IMAP answered {mask.mask(str(status))}: " + repr(mask.mask_all(_decoded(data)))[:200])
     return data
 
 
@@ -329,7 +329,16 @@ def _number(value, what):
     try:
         return int(value)
     except (TypeError, ValueError):
-        raise RuntimeError(f"Gmail sent {what} that is not a number: " + mask.mask(repr(value))[:80]) from None
+        raise RuntimeError(f"Gmail sent {what} that is not a number: " + repr(mask.mask_all(_decoded(value)))[:80]) from None
+
+
+def _decoded(data):
+    """IMAP's answer as text, so it is masked before repr() escapes its line breaks."""
+    if isinstance(data, bytes):
+        return data.decode("utf-8", "replace")
+    if isinstance(data, (list, tuple)):
+        return [_decoded(d) for d in data]
+    return data
 
 
 def _list(conn, since, window_days):

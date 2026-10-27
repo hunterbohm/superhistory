@@ -81,7 +81,7 @@ def run_gh(binary, args):
     except (OSError, subprocess.SubprocessError) as exc:
         raise RuntimeError(mask(f"gh did not run: {exc}")) from None
     if proc.returncode:
-        raise RuntimeError(f"gh {' '.join(args[:3])} exited {proc.returncode}: {mask(proc.stderr.strip())[-400:]}")
+        raise RuntimeError(mask(f"gh {' '.join(args[:3])} exited {proc.returncode}: ") + mask(proc.stderr.strip())[-400:])
     return json.loads(proc.stdout)
 
 

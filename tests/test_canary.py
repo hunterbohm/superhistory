@@ -40,7 +40,11 @@ CANARY = {kind: f"sk-ant-api03-canary-{kind}-" + "Z" * 24 for kind in KINDS}
 # Secrets that only their field name gives away, as in "password=...": mask() knows them by the name in front.
 KEYED = ("metapw", "metanested", "ghtail", "aitail")
 CANARY.update({kind: f"canary{kind}Zz12345678" for kind in KEYED})
-NAMES = ("machinename", "hostname", "sourcename", "timestamp", "mark")
+NAMES = ("machinename", "hostname", "sourcename", "timestamp", "mark", "ghargs")
+# A number its field name marks as secret, and a private key's body, whose line breaks repr() would escape.
+NUMBER = 928374615001
+PEM_BODY = "Q2FuYXJ5UHJpdmF0ZUtleUJvZHkxMjM0NTY3OA"
+PEM = f"-----BEGIN PRIVATE KEY-----\n{PEM_BODY}\n{PEM_BODY[::-1]}\n-----END PRIVATE KEY-----"
 CANARY.update({kind: f"sk-ant-api03-canary-{kind}-" + "z" * 24 for kind in NAMES})
 NOW = datetime.now(timezone.utc).replace(microsecond=0)
 ME = "pat@example.com"
@@ -84,6 +88,13 @@ class Model(BaseHTTPRequestHandler):
 
     def do_POST(self):
         self.rfile.read(int(self.headers.get("content-length", 0)))
+        if Model.mode == "pem":
+            body = json.dumps({"content": [{"type": "text", "text": f"Here it is:\n{PEM}"}]}).encode()
+            self.send_response(200)
+            self.send_header("content-type", "application/json")
+            self.end_headers()
+            self.wfile.write(body)
+            return
         if Model.mode == "status":
             self.wfile.write(CANARY["httpstatus"].encode() + b"\r\n\r\n")
             self.close_connection = True
@@ -329,8 +340,9 @@ password = "cmd:echo {CANARY['cmdfail']} >&2; exit 3"
     def assert_no_canary(self):
         channels = {"output and exceptions": "\n".join(self.seen), "log records": "\n".join(self.records),
                     "files": "\n".join(self.written())}
+        planted = {**CANARY, "number": str(NUMBER), "pem": PEM_BODY, "pem reversed": PEM_BODY[::-1]}
         for name, text in channels.items():
-            for kind, canary in CANARY.items():
+            for kind, canary in planted.items():
                 self.assertNotIn(canary, text, f"the {kind} canary reached {name}")
         return channels
 
@@ -352,7 +364,7 @@ password = "cmd:echo {CANARY['cmdfail']} >&2; exit 3"
                 stdin=json.dumps({"message": "What is the staging token for pelican?", "before": []}))
         self.assertTrue(os.listdir(self.paths.seen_dir), "the lookup kept its session's records, so it really ran")
         self.kb("ai", "test")
-        for mode in ("refuse", "garbage", "status"):
+        for mode in ("refuse", "garbage", "status", "pem"):
             Model.mode = mode
             self.kb("ai", "test")
             self.kb("context", "--session", "s2", stdin=json.dumps({"message": "What did Dana say about pelican?",
@@ -390,6 +402,12 @@ password = "cmd:echo {CANARY['cmdfail']} >&2; exit 3"
                                                           {CANARY["metakey"]: "public",
                                                            "nested": {CANARY["metakey"]: [CANARY["metakey"]]}}, 0))
         self.call(check.write_log, self.paths.log("check"), {"nested": {CANARY["metakey"]: CANARY["metakey"]}})
+        self.call(ingest.apply, db, "notes", "desk", Item("numbers.md", NOW.isoformat(), "n", "n",
+                                                          {"password": NUMBER, "auth": {"passcode": NUMBER}}, 0))
+        self.call(check.write_log, self.paths.log("check"), {"password": NUMBER})
+        self.call(remote.decode, json.dumps({"oops": PEM}))
+        self.call(gmail._ok, ("NO", [PEM.encode()]))
+        self.call(github.run_gh, os.path.join(self.bin, "gh-fail"), ["issue", "view", CANARY["ghargs"]])
         db.commit()
         self.call(search.search, db, "staging token")
         model = ai.load(cfg.ai)
@@ -400,7 +418,7 @@ password = "cmd:echo {CANARY['cmdfail']} >&2; exit 3"
                                    json.dumps({"message": "What is the staging token for pelican?", "before": []}),
                                    "s4") or "")
         self.call(summarize.run, db, cfg, model, self.cloud, 2)
-        for mode in ("refuse", "garbage", "status"):
+        for mode in ("refuse", "garbage", "status", "pem"):
             Model.mode = mode
             self.call(model.ask, ai.Prompt("s", "u", 10), 10)
             self.call(check.lookup, db, "What did Dana decide about the pelican launch?", [], "", set(), model, 10)
@@ -428,7 +446,8 @@ password = "cmd:echo {CANARY['cmdfail']} >&2; exit 3"
             dataclasses.replace(s, name=CANARY["sourcename"], hosts=(CANARY["machinename"],)) for s in cfg.sources[:1]))
         self.call(ingest.run, db, odd, self.cloud, with_summaries=False)
         marked = SourceType(notes.Options, lambda run: iter([
-            Item("marked.md", NOW.isoformat(), "marked", "marked", {}, CANARY["mark"]), Progress(CANARY["mark"])]))
+            Item("marked.md", NOW.isoformat(), "marked", "marked", {}, CANARY["mark"]), Progress(CANARY["mark"]),
+            Item("numbered.md", NOW.isoformat(), "numbered", "numbered", {"passcode": NUMBER}, 1)]))
         with mock.patch.object(notes, "TYPE", marked):
             self.call(remote.serve, {"verb": "extract", "type": "notes", "since": None, "exclude": [],
                                      "options": {"path": self.notes}})

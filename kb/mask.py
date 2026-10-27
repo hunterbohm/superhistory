@@ -5,7 +5,8 @@ import traceback
 
 _NB = r"(?<![A-Za-z0-9])"
 SECRET_PATTERNS = [
-    re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----[A-Za-z0-9+/=\s]*(?:-----END [A-Z ]*PRIVATE KEY-----)?"),
+    # The body may come with its line breaks escaped, as in a service account's JSON key or a repr().
+    re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----(?:[A-Za-z0-9+/=\s]|\\[nr])*(?:-----END [A-Z ]*PRIVATE KEY-----)?"),
     re.compile(_NB + r"sk-(?:ant-|proj-|or-v1-)?[A-Za-z0-9_-]{20,}"),
     re.compile(_NB + r"(?:sk|rk|pk)_(?:live|test)_[A-Za-z0-9]{16,}"),
     re.compile(_NB + r"(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})"),
@@ -88,6 +89,9 @@ def mask_all(value, key=None):
                 for k, v in value.items()}
     if isinstance(value, (list, tuple)):
         return [mask_all(v, key) for v in value]
+    if key is not None and isinstance(value, (int, float)) and not isinstance(value, bool) \
+            and mask(f"{key}={value}") != f"{mask(key)}={value}":
+        return "[masked]"  # a number its field name marks as secret, such as a numeric passcode
     return value
 
 

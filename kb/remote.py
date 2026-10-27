@@ -78,7 +78,7 @@ def decode(line):
     """An event from one line a remote run printed. Raises ValueError on anything else."""
     data = json.loads(line)
     if not isinstance(data, dict) or "mark" not in data:
-        raise ValueError("not an event: " + mask(repr(line))[:200])
+        raise ValueError("not an event: " + repr(mask_all(data))[:200])
     if set(data) == {"mark"}:
         return Progress(data["mark"])
     if data.get("delete") is True and isinstance(data.get("source_id"), str):
@@ -86,7 +86,7 @@ def decode(line):
     try:
         return Item(**data)
     except TypeError:
-        raise ValueError("not an event: " + mask(repr(line))[:200]) from None
+        raise ValueError("not an event: " + repr(mask_all(data))[:200]) from None
 
 
 def serve(request):

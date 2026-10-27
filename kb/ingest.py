@@ -96,7 +96,7 @@ def run_unit(db, source, host, reader, log):
             continue
         try:
             if not isinstance(event, (Item, Gone)):
-                raise TypeError(mask(f"not an event: {event!r}"))
+                raise TypeError(f"not an event: a {type(event).__name__}")
             if not isinstance(event, Progress) and holds_secret(event.source_id):
                 log.warning("%s@%s: skipped %s, whose name looks like it holds a secret; rename it to index it",
                             source.name, host, mask(event.source_id))
