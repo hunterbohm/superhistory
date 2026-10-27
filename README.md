@@ -151,6 +151,12 @@ Grok runs Claude Code's hooks too, and kb's hook stays quiet there.
 
 Each hook waits at most 30 seconds. When the check finds nothing that fits, or fails, the agent gets nothing.
 
+These files are yours, so kb edits them carefully. Before it writes, it works out the new file and checks that the
+file still reads back and that nothing but kb's own entry changed. If anything else would change, it writes nothing and
+tells you how to make the change by hand. Every edit keeps a backup beside the file. In `~/.codex/config.toml` the check
+also makes sure every comment on a line of its own survives. A comment at the end of one of your settings lines is kept
+because kb never edits that line, but the check itself does not look at it.
+
 ## Privacy
 
 Everything stays in one file on your computer. The only thing that leaves it is the AI call you chose: the plug-in

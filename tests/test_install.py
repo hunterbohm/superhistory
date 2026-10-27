@@ -45,7 +45,8 @@ class InstallTest(unittest.TestCase):
         self.assertIn(kb.__version__, version.stdout)
         tried = self.kb("try")
         self.assertEqual(tried.returncode, 0, tried.stderr)
-        self.assertIn("Loaded 8 made-up records", tried.stdout)
+        # Whichever month the checkout ships: the Benchmarks month in demo/month, or the small one inside kb.
+        self.assertRegex(tried.stdout, r"Loaded \d+ made-up records")
 
     def test_the_command_ignores_the_checkout_and_pythonpath(self):
         self.assertEqual(self.install_sh().returncode, 0)
