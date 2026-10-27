@@ -40,7 +40,8 @@ CANARY = {kind: f"sk-ant-api03-canary-{kind}-" + "Z" * 24 for kind in KINDS}
 # Secrets that only their field name gives away, as in "password=...": mask() knows them by the name in front.
 KEYED = ("metapw", "metanested", "ghtail", "aitail")
 CANARY.update({kind: f"canary{kind}Zz12345678" for kind in KEYED})
-NAMES = ("machinename", "hostname", "sourcename", "timestamp", "mark", "ghargs")
+NAMES = ("machinename", "hostname", "sourcename", "timestamp", "mark", "ghargs", "hookprompt", "hooksession",
+         "transcript", "hooksettings", "schedout")
 # A number its field name marks as secret, and a private key's body, whose line breaks repr() would escape.
 NUMBER = 928374615001
 PEM_BODY = "Q2FuYXJ5UHJpdmF0ZUtleUJvZHkxMjM0NTY3OA"
@@ -155,6 +156,11 @@ class CanaryTest(unittest.TestCase):
         for name, fail in (("gh-ok", False), ("gh-fail", True)):
             self._program(name, FAKE_GH.format(python=sys.executable, fail=fail, gherr=CANARY["gherr"],
                                                ghout=CANARY["ghout"], updated=updated))
+        for tool in ("systemctl", "launchctl", "crontab"):
+            # Turning a job on fails, so kb shows the tool's own output, which holds a canary.
+            self._program(tool, f"#!{sys.executable}\nimport sys\nprint('unit kb-ingest {CANARY['schedout']}')\n"
+                                f"sys.stderr.write('note {CANARY['schedout']}\\n')\n"
+                                "sys.exit(1 if {'enable', 'load', 'bootstrap', 'start', '-'} & set(sys.argv[1:]) else 0)\n")
         for kind in ("ghtail", "aitail"):
             # The field name ends up outside the last 400 characters an error keeps; only masking first catches it.
             tail = f"password={CANARY[kind]} " + "." * (400 - len(CANARY[kind]) - 1)
@@ -346,6 +352,41 @@ password = "cmd:echo {CANARY['cmdfail']} >&2; exit 3"
                 self.assertNotIn(canary, text, f"the {kind} canary reached {name}")
         return channels
 
+    def _check_log_lines(self):
+        try:
+            with open(self.paths.log("check")) as fh:
+                return sum(1 for _ in fh)
+        except FileNotFoundError:
+            return 0
+
+    def drive_hooks(self):
+        """Every agent's hook gets a prompt, a session name and earlier turns that hold secrets, and kb hooks edits a
+        user's settings that hold one."""
+        transcript = os.path.join(self.tmp, "session.jsonl")
+        with open(transcript, "w") as fh:
+            for role, text in (("user", f"the deploy key is {CANARY['transcript']}"), ("assistant", "Noted.")):
+                fh.write(json.dumps({"type": role, "message": {"content": text}}) + "\n")
+        prompt = f"What is the pelican staging token? Mine is {CANARY['hookprompt']}"
+        events = {
+            "claude-code": {"prompt": prompt, "session_id": CANARY["hooksession"], "transcript_path": transcript},
+            "codex": {"prompt": prompt, "session_id": CANARY["hooksession"], "transcript_path": transcript},
+            "hermes": {"session_id": CANARY["hooksession"], "user_message": prompt, "platform": "cli",
+                       "conversation_history": [{"role": "user", "content": CANARY["transcript"]}]},
+            "opencode": {"session_id": CANARY["hooksession"], "message": prompt},
+            "copilot": {"prompt": prompt, "sessionId": CANARY["hooksession"]},
+        }
+        logged = self._check_log_lines()
+        for agent, event in events.items():
+            self.kb("hook", agent, stdin=json.dumps(event))
+        self.assertGreaterEqual(self._check_log_lines() - logged, len(events), "every agent's hook ran the check")
+        settings = os.path.join(self.home, ".claude", "settings.json")
+        os.makedirs(os.path.dirname(settings), exist_ok=True)
+        with open(settings, "w") as fh:
+            json.dump({"env": {"API_TOKEN": CANARY["hooksettings"]}}, fh)
+        os.makedirs(os.path.join(self.home, ".codex"), exist_ok=True)
+        for action in ("status", "install", "status", "uninstall"):
+            self.kb("hooks", action, "--kb", os.path.join(self.bin, "kb"))
+
     def test_every_command(self):
         self.kb("ingest")
         db = store.connect(self.paths.db, readonly=True)
@@ -378,6 +419,15 @@ password = "cmd:echo {CANARY['cmdfail']} >&2; exit 3"
         self.kb("remask")
         with mock.patch.object(gmail, "oauth_login", side_effect=RuntimeError(f"denied {CANARY['http']}")):
             self.kb("login", "mail")
+        self.drive_hooks()
+        self.kb("try")
+        self.kb("try", "--question", "q1")
+        shown = len(self.seen)
+        for action in ("status", "on", "status", "off"):
+            self.kb("schedule", action, "--kb", os.path.join(self.bin, "kb"))
+        self.assertIn("[masked]", "".join(self.seen[shown:]), "the scheduler's own output was shown, masked")
+        with mock.patch.object(cli, "cmd_ingest", lambda paths, config, args: 0):
+            self.kb("setup", stdin="\n" * 40)
         with open(self.paths.config_file, "a") as fh:
             fh.write(f'"{CANARY["configkey"]}" = 1\n')
         self.kb("stats")
