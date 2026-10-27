@@ -4,6 +4,9 @@ import sys
 import traceback
 
 _NB = r"(?<![A-Za-z0-9])"
+# A secret's value ends at a space, tab or line break, and the space around its "=" is spaces, tabs and line breaks (a
+# JSON or YAML value can sit on the next line): \s would also take U+2028, U+2029, U+0085, a vertical tab or a form
+# feed, which end a value early or make "password=\u2028password" look like a placeholder.
 SECRET_PATTERNS = [
     # The body may come with its line breaks escaped, as in a service account's JSON key or a repr().
     re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----(?:[A-Za-z0-9+/=\s]|\\[nr])*(?:-----END [A-Z ]*PRIVATE KEY-----)?"),
@@ -25,8 +28,8 @@ SECRET_PATTERNS = [
 ]
 PREFIXED_SECRETS = [
     re.compile(r"(?i)(\b(?:set-)?cookie[\"']?\s*:\s*)[^\"'\n]{8,}"),
-    re.compile(r"([a-z][a-z0-9+.-]*://[^/\s:@'\"]+:)[^/\s@'\"]{3,}(?=@)"),
-    re.compile(r"(\bcurl\b[^\n|;]*?\s(?:-u|--user)\s+['\"]?[^\s:'\"]+:)[^\s'\"]+"),
+    re.compile(r"([a-z][a-z0-9+.-]*://[^/ \t\n\r:@'\"]+:)[^/ \t\n\r@'\"]{3,}(?=@)"),
+    re.compile(r"(\bcurl\b[^\n|;]*?\s(?:-u|--user)\s+['\"]?[^ \t\n\r:'\"]+:)[^ \t\n\r'\"]+"),
 ]
 KEYED_SECRET = re.compile(
     r"(?i)(?<![A-Za-z0-9_.-])("
@@ -34,9 +37,9 @@ KEYED_SECRET = re.compile(
     r"session[_-]?(?:token|key|secret|cookie)|bw_session)[A-Za-z0-9_-]*?"
     r"|[A-Za-z0-9]+(?:[_-][A-Za-z0-9]+)*[_-](?:pass|pwd|pw)"
     r")(?![A-Za-z0-9_.-])"
-    r"((?:[\"'])?\s*(?:[:=]|=>|\bis\b)\s*[\"']?)([^\s\"'`,;<>)\]}]+)")
-ENV_KEY_SECRET = re.compile(r"(?<![A-Za-z0-9_])([A-Z][A-Z0-9_]*_KEY)(?![A-Za-z0-9_])((?:[\"'])?\s*[:=]\s*[\"']?)"
-                            r"([^\s\"'`,;<>)\]}]+)")
+    r"((?:[\"'])?[ \t\r\n]*(?:[:=]|=>|\bis\b)[ \t\r\n]*[\"']?)([^ \t\n\r\"'`,;<>)\]}]+)")
+ENV_KEY_SECRET = re.compile(r"(?<![A-Za-z0-9_])([A-Z][A-Z0-9_]*_KEY)(?![A-Za-z0-9_])((?:[\"'])?[ \t\r\n]*[:=][ \t\r\n]*[\"']?)"
+                            r"([^ \t\n\r\"'`,;<>)\]}]+)")
 PASSWORD_NAME = re.compile(r"(?i)passw(?:or)?d|passcode|bw_session|[_-](?:pass|pwd|pw)$")
 PLACEHOLDERS = {"string", "str", "none", "null", "nil", "true", "false", "undefined", "required", "optional",
                 "xxx", "xxxx", "****", "...", "redacted", "<redacted>", "secret", "password", "token"}

@@ -54,7 +54,7 @@ class Options:
 
 
 def _clip(text, n):
-    text = " ".join(text.split())
+    text = " ".join(mask(text).split())  # masked first: joining would break a secret around a U+2028 in two
     return clip(text, n)
 
 

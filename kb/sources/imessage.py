@@ -181,7 +181,8 @@ def _day_lines(db, chat_id, day, names, me):
     lines, last = [], None
     for rowid, date, from_me, text, body, _has_files, handle in rows:
         text = text if text else decode_attributed(body)
-        text = re.sub(r"\s+", " ", (text or "").replace(OBJECT_REPLACEMENT, " ")).strip()
+        # Masked before the message becomes one line: joining would break a secret around a U+2028 in two.
+        text = re.sub(r"\s+", " ", mask.mask((text or "").replace(OBJECT_REPLACEMENT, " "))).strip()
         if text and mask.is_auth_noise(text):
             continue
         parts = [text] if text else []

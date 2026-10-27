@@ -99,6 +99,11 @@ class FullTest(HermesCase):
             ]),
         ])
 
+    def test_a_line_separator_inside_a_message_is_read_whole(self):
+        root = os.path.join(self.tmp.name, "other")
+        make_store(os.path.join(root, "state.db"), [("s", "cli", None, 1000.0, chat("one\u2028two\x85three", "ok"))])
+        self.assertIn("one\u2028two\x85three", self.items(root=root)["default:s"].content)
+
     def test_fields_and_one_item_per_session_across_profiles(self):
         items = self.items()
         self.assertEqual(set(items), {"default:disc1", "default:bb1", "default:cron_def456_20261018_110000",

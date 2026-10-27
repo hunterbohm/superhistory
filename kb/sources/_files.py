@@ -3,12 +3,13 @@ import re
 import time
 from datetime import datetime, timezone
 
-from kb.sources import Item
+from kb.sources import SPACE, Item
 
 MAX_BYTES = 1_000_000
 FILENAME_DATE = re.compile(r"^(\d{4})-(\d{2})-(\d{2})(?:[ T_-](\d{2})(\d{2}))?(?!\d)")
-FRONT_DATE = re.compile(r"^(?:date|created)\s*:\s*(.*)$", re.I)
+FRONT_DATE = re.compile(rf"^(?:date|created){SPACE}*:{SPACE}*(.*)$", re.I)
 ANY_DATE = re.compile(r"(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{2}):(\d{2}))?")
+DELIMITER = re.compile(r"---[ \t]*\r?")
 
 
 def _iso(dt):
@@ -26,10 +27,15 @@ def _stamp(m):
 
 
 def frontmatter(text):
-    if not text.startswith("---"):
-        return ""
-    end = text.find("\n---", 3)
-    return text[3:end] if end > 0 else ""
+    """The lines between a first line of `---` and the next line of `---`, or "". Only a line feed ends a line here,
+    so `---` followed by U+2028 or a form feed is no delimiter."""
+    first, _, rest = text.partition("\n")
+    if DELIMITER.fullmatch(first):
+        lines = rest.split("\n")
+        for i, line in enumerate(lines):
+            if DELIMITER.fullmatch(line):
+                return "\n".join(lines[:i])
+    return ""
 
 
 def item_ts(stem, text, mtime):
@@ -38,7 +44,7 @@ def item_ts(stem, text, mtime):
         ts = _stamp(m)
         if ts:
             return ts
-    for line in frontmatter(text).splitlines():
+    for line in frontmatter(text).split("\n"):  # YAML breaks lines at line feeds, not at U+2028
         fm = FRONT_DATE.match(line)
         m = fm and ANY_DATE.search(fm.group(1))
         if m:

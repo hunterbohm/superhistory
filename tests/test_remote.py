@@ -94,6 +94,12 @@ class RemoteTest(unittest.TestCase):
         self.assertEqual(search.pointer(hit["meta"], "desk"), f"laptop:{self.notes}/Projects/pelican.md")
         self.assertIn("notes@laptop", dict(store.succeeded(self.db)))
 
+    def test_a_line_separator_in_a_remote_item_comes_back_whole(self):
+        self.note("Projects/sep.md", "Dana approved\u2028the pelican\x85quote.")
+        self.assertEqual(ingest.run(self.db, self.config(), LOG, with_summaries=False), 0)
+        [content] = [r[0] for r in self.db.execute("SELECT content FROM docs")]
+        self.assertIn("Dana approved\u2028the pelican\x85quote.", content)
+
     def test_the_watermark_reaches_the_remote_run_and_only_changes_come_back(self):
         self.note("a.md", "first")
         ingest.run(self.db, self.config(), LOG, with_summaries=False)

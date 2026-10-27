@@ -98,7 +98,7 @@ def chunk(text, size=CHUNK):
             chunks.append(cur)
             cur = ""
         cur += line
-    if cur.strip():
+    if cur:
         chunks.append(cur)
     return chunks
 
