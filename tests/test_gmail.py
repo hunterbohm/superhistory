@@ -557,6 +557,19 @@ class RenderedBodyTest(unittest.TestCase):
             self.assertIn("launch is approved.", item.content, repr(separator))
 
 
+class HtmlBreakTest(unittest.TestCase):
+    def test_a_br_with_a_line_separator_inside_is_not_a_line_break(self):
+        for separator in ("\u2028", "\u2029", "\x85"):
+            msg = EmailMessage()
+            msg["From"], msg["Subject"] = "Dana <dana@example.org>", "Launch"
+            msg.set_content(f"<div>Decision: the required comparison is<br{separator}>&gt; 5, and the launch is "
+                            "approved.</div>", subtype="html")
+            thread = gmail.Thread(PRICING, 0, (gmail.Message(1, ago(days=1).timestamp(), ("\\Inbox",),
+                                                             "Dana <dana@example.org>", "Launch"),))
+            self.assertIn("launch is approved.", gmail._render(ME, thread, {1: msg.as_bytes()}).content,
+                          repr(separator))
+
+
 class CleanBodyTest(unittest.TestCase):
     def test_a_line_separator_does_not_start_a_quoted_line(self):
         body = "Decision: the required comparison is\u2028> 5, and the launch is approved."

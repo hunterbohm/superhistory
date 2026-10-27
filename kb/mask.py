@@ -1,6 +1,7 @@
 import re
 
 _NB = r"(?<![A-Za-z0-9])"
+# A secret's value ends at ASCII whitespace only: \s would also end it at U+2028, U+2029 or U+0085 and leave the rest.
 SECRET_PATTERNS = [
     re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----[A-Za-z0-9+/=\s]*(?:-----END [A-Z ]*PRIVATE KEY-----)?"),
     re.compile(_NB + r"sk-(?:ant-|proj-|or-v1-)?[A-Za-z0-9_-]{20,}"),
@@ -21,8 +22,8 @@ SECRET_PATTERNS = [
 ]
 PREFIXED_SECRETS = [
     re.compile(r"(?i)(\b(?:set-)?cookie[\"']?\s*:\s*)[^\"'\n]{8,}"),
-    re.compile(r"([a-z][a-z0-9+.-]*://[^/\s:@'\"]+:)[^/\s@'\"]{3,}(?=@)"),
-    re.compile(r"(\bcurl\b[^\n|;]*?\s(?:-u|--user)\s+['\"]?[^\s:'\"]+:)[^\s'\"]+"),
+    re.compile(r"([a-z][a-z0-9+.-]*://[^/ \t\n\r\f\v:@'\"]+:)[^/ \t\n\r\f\v@'\"]{3,}(?=@)"),
+    re.compile(r"(\bcurl\b[^\n|;]*?\s(?:-u|--user)\s+['\"]?[^ \t\n\r\f\v:'\"]+:)[^ \t\n\r\f\v'\"]+"),
 ]
 KEYED_SECRET = re.compile(
     r"(?i)(?<![A-Za-z0-9_.-])("
@@ -30,9 +31,9 @@ KEYED_SECRET = re.compile(
     r"session[_-]?(?:token|key|secret|cookie)|bw_session)[A-Za-z0-9_-]*?"
     r"|[A-Za-z0-9]+(?:[_-][A-Za-z0-9]+)*[_-](?:pass|pwd|pw)"
     r")(?![A-Za-z0-9_.-])"
-    r"((?:[\"'])?\s*(?:[:=]|=>|\bis\b)\s*[\"']?)([^\s\"'`,;<>)\]}]+)")
+    r"((?:[\"'])?\s*(?:[:=]|=>|\bis\b)\s*[\"']?)([^ \t\n\r\f\v\"'`,;<>)\]}]+)")
 ENV_KEY_SECRET = re.compile(r"(?<![A-Za-z0-9_])([A-Z][A-Z0-9_]*_KEY)(?![A-Za-z0-9_])((?:[\"'])?\s*[:=]\s*[\"']?)"
-                            r"([^\s\"'`,;<>)\]}]+)")
+                            r"([^ \t\n\r\f\v\"'`,;<>)\]}]+)")
 PASSWORD_NAME = re.compile(r"(?i)passw(?:or)?d|passcode|bw_session|[_-](?:pass|pwd|pw)$")
 PLACEHOLDERS = {"string", "str", "none", "null", "nil", "true", "false", "undefined", "required", "optional",
                 "xxx", "xxxx", "****", "...", "redacted", "<redacted>", "secret", "password", "token"}

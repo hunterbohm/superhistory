@@ -497,7 +497,7 @@ def _clean_body(body):
     one line and trimmed of SPACE only: str.strip() would also take a U+2028 and turn "--\u2028" into "--"."""
     if HTMLISH.search(body):
         body = re.sub(r"(?is)<(script|style).*?</\1>", " ", body)
-        body = re.sub(r"(?i)<br\s*/?>|</p>|</div>", "\n", body)
+        body = re.sub(r"(?i)<br[ \t\r\n\f]*/?>|</p>|</div>", "\n", body)  # HTML's own whitespace, not \s
         body = TAG.sub(" ", body)
     if ENTITY.search(body):
         body = unescape(body).replace("\xa0", " ")
