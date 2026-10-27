@@ -8,6 +8,7 @@ import hashlib
 import json
 import os
 import random
+import shutil
 import sys
 import tempfile
 import threading
@@ -23,9 +24,15 @@ sys.path.insert(0, BENCH)
 
 import gateway
 import run
+import splits
 from tools import check
 
+from kb.check import worth_asking  # noqa: E402
+from kb.mask import clean, mask  # noqa: E402
+from kb.store import chunk  # noqa: E402
+
 RESULTS = os.path.join(BENCH, "results", "public")
+SPLIT_RESULTS = os.path.join(BENCH, "results", "hillclimb")
 DATA = os.path.expanduser(os.environ.get("BENCH_DATA", "~/.cache/kb-bench/data"))
 # Past this many summary calls, a set runs without summaries or on a labelled sample with them.
 MAX_SUMMARY_CALLS = 3000
@@ -67,24 +74,15 @@ def fetch(url, name, sha256):
     return path
 
 
-def summarized_sources():
-    """The check summarizes long items only from the sources its summarizer lists. Chat history is not one of them
-    as shipped, so the runs add it with the agent-session settings."""
-    _, _, summarize = check.modules()
-    summarize.SOURCES.setdefault(SOURCE, None)
-
-
 def long_items(items):
     """How many of the items the check stores as chunks, which is what gets one summary call each."""
-    kb, _, _ = check.modules()
-    return sum(len(kb.chunk(kb.mask(kb.clean(i["content"])))) > 1 for i in items)
+    return sum(len(chunk(mask(clean(i["content"])))) > 1 for i in items)
 
 
 def plan(cases, groups):
     """Model calls a run of these cases would make, before any is made."""
-    _, context, _ = check.modules()
     used = {c.group for c in cases}
-    searched = sum(context.worth_asking(c.question, []) for c in cases)
+    searched = sum(worth_asking(c.question, []) for c in cases)
     return {"questions": len(cases), "stores": len(used),
             "summary calls (one per long item)": sum(long_items(groups[g]) for g in used),
             "check calls (at most 2 per question it searches for)": 2 * searched,
@@ -109,6 +107,54 @@ def run_name(base, summaries, sample, seed, limit):
     return name
 
 
+def stratified(cases, n, seed=0):
+    """n cases drawn from each kind in proportion to its share, the same n and seed always giving the same cases."""
+    kinds = sorted({c.kind for c in cases})
+    exact = {k: n * sum(c.kind == k for c in cases) / len(cases) for k in kinds}
+    shares = {k: int(v) for k, v in exact.items()}
+    for k in sorted(kinds, key=lambda k: exact[k] - shares[k], reverse=True)[:n - sum(shares.values())]:
+        shares[k] += 1
+    picked = set()
+    for k in kinds:
+        picked.update(random.Random(f"{seed}:{k}").sample(sorted(c.id for c in cases if c.kind == k), shares[k]))
+    return [c for c in cases if c.id in picked]
+
+
+def split_args(p):
+    p.add_argument("--split", choices=(*splits.SPLITS, "all"),
+                   help="dev or test: one half; all: both, which counts as a run on the held-out half")
+    p.add_argument("--label", help="names a split run; a test run is labelled " + ", ".join(splits.RUNS))
+    p.add_argument("--slice", type=int, help="with --split dev: N questions, drawn from each kind in proportion")
+
+
+def in_split(test, cases, name, args):
+    """The cases and run name for --split, --label and --slice. Every run that makes model calls names its half, so
+    none reaches the held-out half without counting as one of its runs."""
+    if not args.split:
+        if args.count:
+            return cases, name
+        raise SystemExit("pick --split dev, test or all: the whole set holds the held-out half")
+    if not args.label:
+        raise SystemExit("--split needs --label")
+    if args.split != "dev" and (args.slice or args.sample or args.limit):
+        raise SystemExit("a run on the held-out half takes all of it")
+    if args.split != "dev" and args.fresh:
+        raise SystemExit("a run on the held-out half cannot start over; rerunning its label fills in only the "
+                         "questions with no row")
+    keep = splits.read(test, "dev") | splits.read(test, "test") if args.split == "all" else splits.read(test, args.split)
+    cases = [c for c in cases if c.id in keep or c.group in keep]
+    if args.slice:
+        cases = stratified(cases, args.slice)
+        name += f"-slice{args.slice}"
+    return cases, f"{name}-{args.split}-{args.label}"
+
+
+def log_held_out(test, args, name):
+    """Log run `name` on the held-out half just before it starts. Refuses past the three runs it gets."""
+    if args.split in ("test", "all"):
+        splits.held_out_run(test, args.label, check.code_id(), run.git_head(), name)
+
+
 def run_names(out):
     return sorted(f[:-6] for f in os.listdir(out) if f.endswith(".jsonl"))
 
@@ -127,7 +173,7 @@ class Stores:
         self.built = {}
 
     def path(self, group):
-        return os.path.join(self.workdir, hashlib.sha1(group.encode()).hexdigest()[:16] + ".sqlite")
+        return os.path.join(self.workdir, hashlib.sha1(group.encode()).hexdigest()[:16])
 
     def get(self, group):
         with self.locks[group]:
@@ -143,9 +189,7 @@ class Stores:
             self.left[group] -= 1
             if self.left[group] == 0:
                 self.built.pop(group, None)
-                for suffix in ("", "-wal", "-shm"):
-                    if os.path.exists(self.path(group) + suffix):
-                        os.remove(self.path(group) + suffix)
+                shutil.rmtree(self.path(group), ignore_errors=True)
 
 
 def ask(body, empty):
@@ -171,10 +215,10 @@ def nudged(messages):
 
 def answer(store, system, question, context):
     """bench/run.py's answer loop, with the system prompt passed in and empty replies asked again: the answer
-    model's reply, the tool calls it made, the source_ids they showed, how many characters they printed, and the
-    empty replies it gave."""
+    model's reply, the tool calls it made, the source_ids they showed, the text they printed, and the empty replies
+    it gave."""
     messages = [{"role": "user", "content": f"{context}\n\n{question}" if context else question}]
-    calls, shown, chars, empty = [], [], 0, []
+    calls, shown, printed, empty = [], [], [], []
     for turn in range(TOOL_TURNS + 1):
         body = {"model": run.ANSWER_MODEL, "max_tokens": 2000, "system": system, "messages": messages,
                 "tools": list(check.AGENT_TOOLS)}
@@ -183,14 +227,15 @@ def answer(store, system, question, context):
         response = ask(body, empty)
         uses = [b for b in response["content"] if b.get("type") == "tool_use"]
         if not uses:
-            return gateway.text(response), calls, shown, chars, empty
+            return gateway.text(response), calls, shown, printed, empty
         messages.append({"role": "assistant", "content": response["content"]})
         results = []
         for use in uses:
             out, ids = store.call(use["name"], use.get("input") or {})
-            calls.append({"name": use["name"], "input": use.get("input")})
+            calls.append({"name": use["name"], "input": use.get("input"),
+                          "tokens": gateway.count_tokens(run.ANSWER_MODEL, out)})
             shown += [i for i in ids if i not in shown]
-            chars += len(out)
+            printed.append(out)
             results.append({"type": "tool_result", "tool_use_id": use["id"], "content": out})
         messages.append({"role": "user", "content": results})
     raise RuntimeError("the answer model kept calling tools")
@@ -199,12 +244,15 @@ def answer(store, system, question, context):
 def run_case(stores, case, system, score):
     store, stats = stores.get(case.group)
     found = store.lookup(case.question)
-    text, calls, shown, chars, empty = answer(store, system(case), case.question, found.context)
+    text, calls, shown, printed, empty = answer(store, system(case), case.question, found.context)
     return {"id": case.id, "group": case.group, "kind": case.kind, "question": case.question, "gold": case.gold,
             "today": case.today, "evidence": list(case.evidence), "store": stats, "query": found.query,
             "context": found.context, "context_items": found.items, "lookup_seconds": round(found.seconds, 3),
             "lookup_error": found.error, "lookup_model_tokens": found.model_tokens, "tool_calls": calls,
-            "read_items": shown, "tool_chars": chars, "empty_replies": empty, "answer": text, **score(case, text)}
+            "read_items": shown, "tool_chars": sum(map(len, printed)),
+            "context_tokens": gateway.count_tokens(run.ANSWER_MODEL, found.context),
+            "tool_tokens": sum(c["tokens"] for c in calls),
+            "empty_replies": empty, "answer": text, **score(case, text)}
 
 
 def run_cases(name, cases, groups, out, system, score, summaries, workers, fresh, meta):
@@ -215,8 +263,6 @@ def run_cases(name, cases, groups, out, system, score, summaries, workers, fresh
         os.remove(path)
     done = {r["id"] for r in read_rows(path)}
     todo = [c for c in cases if c.id not in done]
-    if summaries:
-        summarized_sources()
     started, lock, failures = time.monotonic(), threading.Lock(), []
     print(f"{name}: {len(todo)} of {len(cases)} questions to run", file=sys.stderr)
     with tempfile.TemporaryDirectory(prefix="bench-public-") as workdir:
@@ -246,7 +292,7 @@ def run_cases(name, cases, groups, out, system, score, summaries, workers, fresh
     record = {**meta, "started": datetime.fromtimestamp(time.time() - (time.monotonic() - started), timezone.utc)
               .strftime("%Y-%m-%dT%H:%M:%SZ"), "seconds": round(time.monotonic() - started),
               "summaries": summaries, "answer_model": run.ANSWER_MODEL, "check_code": check.code_id(),
-              "check_prompts": "the product's wording, kb/check.py on repo/package at 18a4335",
+              "check_commit": run.git_head(),
               "workers": workers, "ran": len(todo) - len(failures), "failed": len(failures),
               "failures": failures[:50]}
     meta_path = os.path.join(out, f"{name}.run.json")

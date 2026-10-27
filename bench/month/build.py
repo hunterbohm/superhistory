@@ -4,8 +4,11 @@
     python3 bench/month/build.py              # write the files
     python3 bench/month/build.py --check      # rebuild in memory, validate, and fail if the files differ
     python3 bench/month/build.py --deny FILE  # also fail on any line of FILE (names that must not appear)
+    python3 bench/month/build.py --month b    # the held-out month: bench/month-b/*.jsonl
 
-The same seed always writes the same bytes.
+The same seed always writes the same bytes. Month B shares month A's persona and background items, and has its own
+stories and questions, written apart from any tuning of the check. A seed alone changes only ids and the seconds of
+each time, so it cannot make a held-out month.
 """
 import argparse
 import importlib
@@ -14,6 +17,7 @@ import os
 import re
 import sys
 from collections import Counter
+from typing import NamedTuple
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
@@ -24,20 +28,32 @@ sys.path.insert(0, os.path.dirname(HERE))
 import product
 
 ROOT = os.path.dirname(os.path.dirname(HERE))
-OUT = os.path.join(ROOT, "demo", "month")
-SEED = 2026
-MODULES = ("stories.copperline", "stories.fernbrook", "stories.harbor", "stories.quill", "stories.studio",
-           "stories.personal", "noise.mail", "noise.sessions", "noise.life", "noise.code", "stories.none")
+NOISE = ("noise.mail", "noise.sessions", "noise.life", "noise.code")
+
+
+class Month(NamedTuple):
+    seed: int
+    modules: tuple
+    out: str
+
+
+MONTHS = {
+    "a": Month(2026, ("stories.copperline", "stories.fernbrook", "stories.harbor", "stories.quill", "stories.studio",
+                      "stories.personal", *NOISE, "stories.none"), os.path.join(ROOT, "demo", "month")),
+    "b": Month(2027, ("stories_b.client1", "stories_b.client2", "stories_b.client3", "stories_b.prospect",
+                      "stories_b.studio", "stories_b.personal", *NOISE, "stories_b.none"),
+               os.path.join(ROOT, "bench", "month-b")),
+}
 KINDS = ("single", "multi", "update", "temporal", "none")
 FIRST, LAST = "2026-09-01T06:00:00Z", "2026-10-01T06:00:00Z"
 HOME_PATH = re.compile(r"/(?:home|users)/[\w.-]+")
 PHONE = re.compile(r"\+1\d{10}\b|\(\d{3}\) \d{3}-\d{4}\b|\b\d{3}-\d{3}-\d{4}\b")
 
 
-def collect(seed):
-    model.configure(seed)
+def collect(month):
+    model.configure(month.seed)
     items, questions = [], []
-    for name in MODULES:
+    for name in month.modules:
         story = importlib.import_module(name).build()
         items += story.items
         questions += story.questions
@@ -99,8 +115,8 @@ def render(items, questions):
 
 def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--seed", type=int, default=SEED)
-    p.add_argument("--out", default=OUT)
+    p.add_argument("--month", choices=sorted(MONTHS), default="a")
+    p.add_argument("--out", help="default: the month's own folder")
     p.add_argument("--check", action="store_true", help="validate and compare with the files in --out")
     p.add_argument("--deny", help="a file with one denied name per line")
     args = p.parse_args(argv)
@@ -108,22 +124,24 @@ def main(argv=None):
     if args.deny:
         with open(args.deny, encoding="utf-8") as fh:
             deny = tuple(line.strip() for line in fh if line.strip())
-    items, questions = collect(args.seed)
+    month = MONTHS[args.month]
+    out = args.out or month.out
+    items, questions = collect(month)
     bad = problems(items, questions, deny)
     files = render(items, questions)
     if args.check:
         for name, body in files.items():
-            path = os.path.join(args.out, name)
+            path = os.path.join(out, name)
             if not os.path.exists(path) or open(path, encoding="utf-8").read() != body:
-                bad.append(f"{path} differs from a fresh build; run bench/month/build.py")
+                bad.append(f"{path} differs from a fresh build; run bench/month/build.py --month {args.month}")
     for line in bad:
         print("problem:", line, file=sys.stderr)
     if bad:
         return 1
     if not args.check:
-        os.makedirs(args.out, exist_ok=True)
+        os.makedirs(out, exist_ok=True)
         for name, body in files.items():
-            with open(os.path.join(args.out, name), "w", encoding="utf-8") as fh:
+            with open(os.path.join(out, name), "w", encoding="utf-8") as fh:
                 fh.write(body)
     kinds = Counter(q.kind for q in questions)
     sources = Counter(i.source for i in items)

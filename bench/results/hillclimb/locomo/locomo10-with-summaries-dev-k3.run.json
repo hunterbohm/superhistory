@@ -1,0 +1,70 @@
+{
+ "runs": [
+  {
+   "test": "locomo",
+   "data_revision": "3eb6f2c585f5e1699204e3c3bdf7adc5c28cb376",
+   "data_sha256": "79fa87e90f04081343b8c8debecb80a9a6842b76a7aa537dc9fdf651ea698ff4",
+   "judge_model": "gpt-6.1-sol",
+   "questions": 762,
+   "categories": [
+    "single-hop",
+    "multi-hop",
+    "temporal",
+    "open-domain"
+   ],
+   "planned": {
+    "questions": 762,
+    "stores": 5,
+    "summary calls (one per long item)": 29,
+    "check calls (at most 2 per question it searches for)": 1474,
+    "questions the check skips as too short": 25,
+    "answer calls (1 to 5 per question)": "762 to 3810",
+    "judge calls": 762
+   },
+   "started": "2026-10-27T18:03:29Z",
+   "seconds": 1259,
+   "summaries": true,
+   "answer_model": "claude-sonnet-5-5",
+   "check_code": "990dc7635ab29c16",
+   "check_commit": "8b0ce0435861fbb7acc3c91b4e6535d7b2e92123",
+   "workers": 8,
+   "ran": 761,
+   "failed": 1,
+   "failures": [
+    "conv-30/9: RuntimeError: HTTP 429 from http://127.0.0.1:8317/v1/messages: {\"type\":\"error\",\"error\":{\"type\":\"rate_limit_error\",\"message\":\"All credentials for model gpt-6.1-sol are cooling down (last error: {\\\"detail\\\":\\\"Rate limit exceeded\\\"})\"}}"
+   ]
+  },
+  {
+   "test": "locomo",
+   "data_revision": "3eb6f2c585f5e1699204e3c3bdf7adc5c28cb376",
+   "data_sha256": "79fa87e90f04081343b8c8debecb80a9a6842b76a7aa537dc9fdf651ea698ff4",
+   "judge_model": "gpt-6.1-sol",
+   "questions": 762,
+   "categories": [
+    "single-hop",
+    "multi-hop",
+    "temporal",
+    "open-domain"
+   ],
+   "planned": {
+    "questions": 762,
+    "stores": 5,
+    "summary calls (one per long item)": 29,
+    "check calls (at most 2 per question it searches for)": 1474,
+    "questions the check skips as too short": 25,
+    "answer calls (1 to 5 per question)": "762 to 3810",
+    "judge calls": 762
+   },
+   "started": "2026-10-27T18:56:20Z",
+   "seconds": 21,
+   "summaries": true,
+   "answer_model": "claude-sonnet-5-5",
+   "check_code": "990dc7635ab29c16",
+   "check_commit": "f73d12bc18540d21462c77ceba9898ba79825bdf",
+   "workers": 2,
+   "ran": 1,
+   "failed": 0,
+   "failures": []
+  }
+ ]
+}

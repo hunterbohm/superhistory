@@ -477,8 +477,9 @@ MM/DD/YYYY and weights as whole pounds, and take the header from AP_Import_v3.""
           evidence_has=("MM/DD/YYYY", "whole pounds")),
         Q("cop-22", "single", "How do Bluestem's bills of lading break the table extraction, and what was the fix?",
           "The line-item table runs across two pages and repeats its header row on page 2; the fix joins "
-          "per-page tables with matching headers and drops the repeated header.",
-          ("cop-codex-bluestem", "cop-commit-bluestem"), evidence_has=("repeat",)),
+          "per-page tables with matching headers and drops the repeated header. Bluestem also gets vertical_strategy: "
+          "lines for its ruled tables, since the text strategy split the description column in two.",
+          ("cop-codex-bluestem", "cop-commit-bluestem"), evidence_has=("repeat", "vertical_strategy: lines")),
         Q("cop-23", "single", "What does the Bluestem accessorial code LFTG mean?",
           "Liftgate service.", ("cop-codex-bluestem",), evidence_has=("liftgate",)),
         Q("cop-24", "single", "When is the weekly Copperline check-in?",

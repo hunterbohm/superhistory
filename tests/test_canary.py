@@ -46,10 +46,10 @@ NAMES = ("machinename", "hostname", "sourcename", "timestamp", "mark", "ghargs",
          "transcript", "hooksettings", "schedout", "sortsubject", "sortsender", "contextmessage", "trialid",
          "trialsource", "setupkey", "setupexclude", "imaplong", "aimodel", "oauthsecret", "oauthtoken", "cctitle",
          "cxtitle", "cxtool", "hmuser", "hmtitle", "ghbody", "gmbody", "gmurl", "sumq", "sums", "suma", "synctitle",
-         "synctext", "syncmeta", "syncsplit", "oldtitle", "oldsnip", "oldpage", "oldslice", "oldsplit", "hugeerror")
+         "synctext", "syncmeta", "syncsplit", "oldtitle", "oldcheck", "oldsnip", "oldpage", "oldslice", "oldsplit", "hugeerror")
 # Each of these sits across a limit where kb cuts text, so only the 12-character check sees a cut made before masking.
 CUT = {"cctitle": 84, "cxtitle": 84, "cxtool": 284, "hmtitle": 84, "hmuser": 2984, "ghbody": 19984, "gmbody": 19984,
-       "sumq": 384, "sums": 1484, "suma": 1984, "synctitle": 74, "oldtitle": 74, "oldpage": cli.PAGE - 16,
+       "sumq": 384, "sums": 1484, "suma": 1984, "synctitle": 74, "oldtitle": 74, "oldcheck": 104, "oldpage": cli.PAGE - 16,
        "oldslice": summarize.MAX_INPUT_CHARS // summarize.SLICES - 16, "oldsplit": 10 * store.CHUNK - 16}
 
 
@@ -99,6 +99,7 @@ class Model(BaseHTTPRequestHandler):
     """An Anthropic-compatible server. In "ok" it answers every call with JSON that carries a canary; in "refuse"
     it echoes the key it was sent; in "garbage" it answers with something other than JSON."""
     mode = "ok"
+    query = None  # the search "ok" writes for the check, when not its own
     sent = []  # every request body: what the configured model was sent
 
     def do_POST(self):
@@ -147,7 +148,7 @@ class Model(BaseHTTPRequestHandler):
             body = f"<html>upstream error {CANARY['httpbad']}</html>".encode()
             self.send_response(200)
         else:
-            text = json.dumps({"query": "pelican " + "." * 176 + CANARY["modeltext"], "search": True,
+            text = json.dumps({"query": Model.query or "pelican " + "." * 176 + CANARY["modeltext"], "search": True,
                                "scores": {"1": 2, "2": 2},
                                "keep": [1, 2],
                                "segments": [{"title": CANARY["modeltext"], "question": CANARY["modeltext"],
@@ -514,7 +515,9 @@ password = "cmd:echo {CANARY['cmdfail']} >&2; exit 3"
         long += "." * (pad % 6) + "lorem " * (pad // 6) + "walrus ledger " + CANARY["oldsplit"]
         long += "." * (size - len(long))
         rows = [("doc", "old-short.md", "walrus old" + across("oldtitle")[10:],
-                 f"walrus ledger {CANARY['oldsnip']} end", {"hash": "oldshort"})]
+                 f"walrus ledger {CANARY['oldsnip']} end", {"hash": "oldshort"}),
+                ("doc", "old-check.md", "walrus check" + across("oldcheck")[12:], "walrus ledger deploys",
+                 {"hash": "oldcheck"})]
         parts = store.chunk(long)
         rows += [("raw", "old-long.md", "Long notes", part, {"hash": "oldlong", "chunk": i, "chunks": len(parts)})
                  for i, part in enumerate(parts)]
@@ -526,6 +529,13 @@ password = "cmd:echo {CANARY['cmdfail']} >&2; exit 3"
                                         "'old-long.md') ORDER BY id")]
         db.close()
         self.kb("search", "walrus ledger")
+        Model.query = "walrus ledger"
+        sent = len(Model.sent)
+        self.kb("context", "--session", "s5",
+                stdin=json.dumps({"message": "What does the walrus ledger record about deploys?", "before": []}))
+        Model.query = None
+        self.assertTrue(any("[Records]" in body and "walrus" in body for body in Model.sent[sent:]),
+                        "the check read the rows' excerpts")
         for rid in (ids[0], ids[1], ids[2], ids[-1]):
             self.kb("get", str(rid))
         sent = len(Model.sent)

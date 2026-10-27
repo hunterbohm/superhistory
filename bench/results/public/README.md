@@ -5,13 +5,12 @@ Each question goes to the check as a new message, the way the product's hook sen
 ## Commands
 
 ```
-python3 bench/public/longmemeval.py --set oracle
-python3 bench/public/longmemeval.py --set s
-python3 bench/public/longmemeval.py --set s --sample 50 --seed 0
-uv run bench/public/locomo.py
+python3 bench/public/longmemeval.py --set s --split dev --label NAME
+python3 bench/public/longmemeval.py --set s --split test --label baseline|midpoint|final
+uv run bench/public/locomo.py --split dev --label NAME
 ```
 
-The check runs from a copy of kb's code at `BENCH_KB_CODE` until the product's package lands in this repo; each run records the copy's hash in its `.run.json`. A run where any question failed exits 1. `--count` prints the model calls a run would make and makes none. `--table` prints the table from the rows already written. A rerun runs only questions with no row yet, unless `--fresh`.
+The rows in this folder ran on whole sets, before the sets were split into dev and test halves (`bench/splits.py`), and from a copy of kb's code, before the package landed. A run now names its half: `dev`, `test`, or `all` for both. A run that reaches the test half counts as one of its three runs, takes all of it, and cannot start over; `bench/splits/heldout-runs.tsv` logs each one. Split runs write to `bench/results/hillclimb/`. The check runs from this repo's package, and each run records the code's hash and commit in its `.run.json`. A run where any question failed exits 1. `--count` prints the model calls a run would make and makes none. `--table` prints the table from the rows already written. A rerun runs only questions with no row yet, unless `--fresh`.
 
 ## Results
 

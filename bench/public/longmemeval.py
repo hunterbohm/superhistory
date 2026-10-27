@@ -121,8 +121,8 @@ def misses(rows):
     return [len(wrong), len(wrong) - len(shown), len(shown), unparsed]
 
 
-def table(names):
-    runs = [(n, common.read_rows(os.path.join(OUT, f"{n}.jsonl"))) for n in names]
+def table(names, out=OUT):
+    runs = [(n, common.read_rows(os.path.join(out, f"{n}.jsonl"))) for n in names]
     runs = [(n, rows) for n, rows in runs if rows]
     if not runs:
         return "no rows yet\n"
@@ -139,7 +139,7 @@ def table(names):
         [[r["system"], r["score"], r["set"], r["answer_model"], r["judge"], r["label"], r["date"], r["source"]]
          for r in common.rivals("longmemeval")]))
     text = "\n\n".join(parts) + "\n"
-    with open(os.path.join(OUT, "table.md"), "w", encoding="utf-8") as fh:
+    with open(os.path.join(out, "table.md" if out == OUT else f"{names[0]}.md"), "w", encoding="utf-8") as fh:
         fh.write(text)
     return text
 
@@ -156,23 +156,27 @@ def main(argv=None):
     p.add_argument("--fresh", action="store_true", help="drop earlier rows and rerun every question")
     p.add_argument("--count", action="store_true", help="print the model calls the run would make, and stop")
     p.add_argument("--table", action="store_true", help="print the table from the rows already written")
+    common.split_args(p)
     args = p.parse_args(argv)
     if args.table:
         print(table(common.run_names(OUT)))
         return 0
     cases, groups = cases_and_groups(load(args.set))
+    cases, suffix = common.in_split("longmemeval-s", cases, "", args)
     cases = common.choose(cases, args.sample, args.seed, args.limit)
     planned = common.plan(cases, groups)
     summaries = {"on": True, "off": False}.get(
         args.summaries, planned["summary calls (one per long item)"] <= common.MAX_SUMMARY_CALLS)
-    name = common.run_name(args.set, summaries, args.sample, args.seed, args.limit)
+    name = common.run_name(args.set, summaries, args.sample, args.seed, args.limit) + suffix
+    out = os.path.join(common.SPLIT_RESULTS, "longmemeval") if args.split else OUT
     print(f"{name}: {json.dumps(planned)}", file=sys.stderr)
     if args.count:
         return 0
+    common.log_held_out("longmemeval-s", args, name)
     meta = {"test": "longmemeval", "set": args.set, "data_revision": REVISION, "data_sha256": SETS[args.set][1],
             "judge_model": JUDGE_MODEL, "questions": len(cases), "planned": planned}
-    record = common.run_cases(name, cases, groups, OUT, system, score, summaries, args.workers, args.fresh, meta)
-    print(table(common.run_names(OUT)))
+    record = common.run_cases(name, cases, groups, out, system, score, summaries, args.workers, args.fresh, meta)
+    print(table([name], out) if args.split else table(common.run_names(OUT)))
     return common.exit_status(record)
 
 
