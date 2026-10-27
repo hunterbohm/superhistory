@@ -39,7 +39,8 @@ The Sync client goes in `kb/sync/`, imported as `kb.sync`.
   a forgotten reader's deletions still go out. A failure, a missing client included, is the `sync` health unit and
   makes `kb ingest` exit 1. Everything kb logs is masked, tracebacks included.
 - `store.mark_superseded`, `clear_superseded` and `superseded_by` keep one mark per marking install in the
-  `supersedes` table, keyed by item, not row, so a mark survives a refresh. A clear keeps the row with no target.
+  `supersedes` table, keyed by item, not row, so a mark survives a refresh. A clear keeps the row with no target, and
+  deleting an item keeps the marks on it, so the result does not depend on the order records arrive in.
   Of several marks the one with no `v` (not synced yet) wins, then the highest `v`, then the highest install id, and
   a winning clear means the item is not superseded.
 - For the client and the engine to import: `store.replace_rows`, `search.search_stores`, `check.lookup_with`,

@@ -582,7 +582,7 @@ class CliTest(unittest.TestCase):
         self.addCleanup(db.close)
         self.assertEqual(db.execute("SELECT count(*) FROM ingest_state WHERE source='notes' OR key LIKE '%notes@%'")
                          .fetchone()[0], 0)
-        self.assertEqual(db.execute("SELECT count(*) FROM supersedes").fetchone()[0], 0)
+        self.assertEqual(db.execute("SELECT count(*) FROM supersedes").fetchone()[0], 1, "a mark stays, as on any delete")
 
     def test_the_summarize_estimate_counts_this_computers_items(self):
         notes = self.make_notes()

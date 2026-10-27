@@ -118,8 +118,8 @@ def replace_rows(db, source, source_id, rows, kinds=ITEM_KINDS):
 
 
 def delete_item(db, source, source_id):
-    """Removes the item's rows and every supersede mark on it. Returns the number of rows removed."""
-    db.execute("DELETE FROM supersedes WHERE source=? AND source_id=?", (source, source_id))
+    """Removes the item's rows. Returns the number of rows removed. Supersede marks on it stay, so a store reaches the
+    same marks whether Sync delivers a mark before or after the item's deletion."""
     return db.execute("DELETE FROM docs WHERE source=? AND source_id=?", (source, source_id)).rowcount
 
 

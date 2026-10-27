@@ -231,16 +231,30 @@ class SearchTest(TempDB):
         store.mark_superseded(self.db, "s", "old", ("s", "new"), MINE)
         self.assertEqual(self.titles("gecko"), ["new", "old"])
 
-    def test_a_mark_survives_a_refresh_of_the_item_and_leaves_with_its_deletion(self):
+    def test_a_mark_survives_a_refresh_of_the_item(self):
         self.add("old", "gecko first words", title="old")
         store.mark_superseded(self.db, "s", "old", ("s", "new"), MINE)
         self.add("old", "gecko changed words", title="old")
         self.assertEqual(search.search(self.db, "gecko")[0]["superseded_by"], ("s", "new"))
         store.clear_superseded(self.db, "s", "old", MINE)
         self.assertIsNone(search.search(self.db, "gecko")[0]["superseded_by"])
-        store.mark_superseded(self.db, "s", "old", ("s", "new"), MINE)
-        store.delete_item(self.db, "s", "old")
-        self.assertEqual(store.superseded(self.db, [("s", "old")]), {})
+
+    def test_a_mark_and_a_deletion_give_one_answer_in_either_order(self):
+        """Sync applies records one at a time as they arrive, or in a batch with marks after items. A mark from another
+        computer, the item's deletion and its return reach the same store either way."""
+        def apply(order):
+            db = store.connect(os.path.join(self.tmp.name, f"{order}.sqlite"))
+            self.addCleanup(db.close)
+            steps = {"item": lambda: store.store_item(db, "s", "old", iso(), "old", "gecko", {}),
+                     "mark": lambda: store.mark_superseded(db, "s", "old", ("s", "new"), THEIRS, "2026-10-01", v=1),
+                     "gone": lambda: store.delete_item(db, "s", "old")}
+            for step in order.split("-"):
+                steps[step]()
+            return store.superseded_by(db, "s", "old")
+
+        one_at_a_time = apply("item-mark-gone-item")
+        self.assertEqual(one_at_a_time, ("s", "new"))
+        self.assertEqual(apply("item-gone-item-mark"), one_at_a_time, "a batch applies marks after items")
 
     def test_each_computer_keeps_its_own_mark_and_the_latest_wins(self):
         self.add("old", "gecko", title="old")
