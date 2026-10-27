@@ -17,7 +17,7 @@ from typing import NamedTuple, Optional
 
 from kb import ai, search, store
 from kb.ai import BadAnswer, Prompt
-from kb.mask import mask_all
+from kb.mask import mask, mask_all
 
 QUERY_SYSTEM = """The user types a message to one of their AI agents. You see the message and the conversation turns \
 just before it. Their knowledge base holds their past email, texts, notes, meeting notes, commits, GitHub threads \
@@ -79,11 +79,13 @@ def read_request(text):
 
 def prompt_text(message, before):
     parts = []
+    # Masked whole before it is cut, so a cut cannot drop a secret's field name and keep its value.
     for turn in before:
         limit = BEFORE_CHARS[turn["role"]]
-        text = turn["text"][-limit:] if turn["role"] == "assistant" else turn["text"][:limit]
+        text = mask(turn["text"])
+        text = text[-limit:] if turn["role"] == "assistant" else text[:limit]
         parts.append(f"[{turn['role']} turn before]\n{text}")
-    parts.append("[The user's message]\n" + message[:MESSAGE_CHARS])
+    parts.append("[The user's message]\n" + mask(message)[:MESSAGE_CHARS])
     return "\n\n".join(parts)
 
 
@@ -132,7 +134,8 @@ def records(db, query, session, seen):
 
 def pick(message, before, hits, model, timeout, hedge_after=None):
     """The hits the model scored useful, in search order. Raises BadAnswer when it gives no scores."""
-    lines = [f"{i}. {h['ts'][:10]} {h['source']} | {_line(h['title'])[:120]} | {_line(h['content'])[:PICK_CHARS]}"
+    lines = [f"{i}. {h['ts'][:10]} {h['source']} | {_line(mask(h['title']))[:120]} | "
+             f"{_line(mask(h['content']))[:PICK_CHARS]}"
              for i, h in enumerate(hits, 1)]
     user = prompt_text(message, before) + "\n\n[Records]\n" + "\n".join(lines)
     scores = ai.ask_json(model, Prompt(PICK_SYSTEM, user), timeout, "scores", hedge_after=hedge_after).get("scores")
@@ -151,8 +154,8 @@ def render(hits, machine=None):
         return ""
     lines = [HEADER]
     for i, h in enumerate(hits, 1):
-        lines.append(f"{i}. {h['ts'][:10]}  {h['source']}  #{h['id']}  {_line(h['title'])[:120]}")
-        lines.append(f"   {_line(h['snippet'])[:SNIPPET_CHARS]}")
+        lines.append(f"{i}. {h['ts'][:10]}  {h['source']}  #{h['id']}  {_line(mask(h['title']))[:120]}")
+        lines.append(f"   {_line(mask(h['snippet']))[:SNIPPET_CHARS]}")
         lines.append(f"   -> {search.pointer(h['meta'], machine)}")
     return "\n".join(lines)
 

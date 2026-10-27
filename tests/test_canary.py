@@ -38,10 +38,11 @@ KINDS = ("env", "cmd", "cmdfail", "cmdtimeout", "configkey", "itemtext", "itemme
          "httpbad", "httpstatus", "modeltext", "imap", "imapbad", "imaperr", "remoteopt", "aipath", "session")
 CANARY = {kind: f"sk-ant-api03-canary-{kind}-" + "Z" * 24 for kind in KINDS}
 # Secrets that only their field name gives away, as in "password=...": mask() knows them by the name in front.
-KEYED = ("metapw", "metanested", "ghtail", "aitail")
+KEYED = ("metapw", "metanested", "ghtail", "aitail", "turntail")
 CANARY.update({kind: f"canary{kind}Zz12345678" for kind in KEYED})
 NAMES = ("machinename", "hostname", "sourcename", "timestamp", "mark", "ghargs", "hookprompt", "hooksession",
-         "transcript", "hooksettings", "schedout", "sortsubject", "sortsender", "contextmessage")
+         "transcript", "hooksettings", "schedout", "sortsubject", "sortsender", "contextmessage", "trialid",
+         "trialsource", "setupkey", "setupexclude")
 # A number its field name marks as secret, and a private key's body, whose line breaks repr() would escape.
 NUMBER = 928374615001
 PEM_BODY = "Q2FuYXJ5UHJpdmF0ZUtleUJvZHkxMjM0NTY3OA"
@@ -370,19 +371,56 @@ password = "cmd:echo {CANARY['cmdfail']} >&2; exit 3"
         except FileNotFoundError:
             return 0
 
+    @staticmethod
+    def cut_turn():
+        """An assistant turn whose last 1,500 characters, all the check keeps, hold a password but not its name."""
+        return "password=" + CANARY["turntail"] + " " + "." * (1499 - len(CANARY["turntail"]))
+
+    def drive_setup(self):
+        """kb setup from the start, over the existing config, with answers and a typed key that hold secrets."""
+        kept = open(self.paths.config_file).read()
+        answers = {"Replace it": "yes", "computer's name": "desk", "Folder of notes": self.notes,
+                   "leave out": f"Private, {CANARY['setupexclude']}", "Gmail address": "", "Which one": "anthropic",
+                   "Install the hook": "no", "in the background": "no", "Read everything now": "no"}
+
+        def ask(question, default=""):
+            return next((a for q, a in answers.items() if q in question), default)
+
+        shown = len(self.seen)
+        with mock.patch.object(cli, "_ask", ask), mock.patch.object(cli, "_secret", lambda q: CANARY["setupkey"]):
+            self.kb("setup")
+        self.assertIn("Wrote ", "".join(self.seen[shown:]), "setup ran to the end")
+        with open(self.paths.config_file, "w") as fh:
+            fh.write(kept)
+
+    def drive_trial_month(self):
+        month = os.path.join(self.tmp, "month")
+        os.makedirs(month)
+        records = [("notes", "ok.md"), ("notes", f"key-{CANARY['trialid']}.md"), (CANARY["trialsource"], "x.md")]
+        with open(os.path.join(month, "items.jsonl"), "w") as fh:
+            for source, sid in records:
+                fh.write(json.dumps({"source": source, "source_id": sid, "ts": NOW.isoformat(), "title": "t",
+                                     "content": "pelican notes", "meta": {}}) + "\n")
+        with open(os.path.join(month, "questions.jsonl"), "w") as fh:
+            fh.write(json.dumps({"id": "q1", "question": "Pelican?", "answer": "", "evidence": [], "kind": "none"}))
+        shown = len(self.seen)
+        self.kb("try", "--month", month)
+        self.assertIn("Loaded 1 made-up records", "".join(self.seen[shown:]), "only the ordinary record loads")
+
     def drive_hooks(self):
         """Every agent's hook gets a prompt, a session name and earlier turns that hold secrets, and kb hooks edits a
         user's settings that hold one."""
         transcript = os.path.join(self.tmp, "session.jsonl")
         with open(transcript, "w") as fh:
-            for role, text in (("user", f"the deploy key is {CANARY['transcript']}"), ("assistant", "Noted.")):
+            for role, text in (("user", f"the deploy key is {CANARY['transcript']}"), ("assistant", self.cut_turn())):
                 fh.write(json.dumps({"type": role, "message": {"content": text}}) + "\n")
         prompt = f"What is the pelican staging token? Mine is {CANARY['hookprompt']}"
         events = {
             "claude-code": {"prompt": prompt, "session_id": CANARY["hooksession"], "transcript_path": transcript},
             "codex": {"prompt": prompt, "session_id": CANARY["hooksession"], "transcript_path": transcript},
             "hermes": {"session_id": CANARY["hooksession"], "user_message": prompt, "platform": "cli",
-                       "conversation_history": [{"role": "user", "content": CANARY["transcript"]}]},
+                       "conversation_history": [{"role": "user", "content": CANARY["transcript"]},
+                                                {"role": "assistant", "content": self.cut_turn()}]},
             "opencode": {"session_id": CANARY["hooksession"], "message": prompt},
             "copilot": {"prompt": prompt, "sessionId": CANARY["hooksession"]},
         }
@@ -414,7 +452,8 @@ password = "cmd:echo {CANARY['cmdfail']} >&2; exit 3"
         self.kb("summarize", "--limit", "2")
         self.kb("context", "--session", CANARY["session"],
                 stdin=json.dumps({"message": f"What is the staging token for pelican? {CANARY['contextmessage']}",
-                                  "before": [{"role": "assistant", "text": f"It was {CANARY['transcript']}"}]}))
+                                  "before": [{"role": "user", "text": f"It was {CANARY['transcript']}"},
+                                             {"role": "assistant", "text": self.cut_turn()}]}))
         self.assertTrue(os.listdir(self.paths.seen_dir), "the lookup kept its session's records, so it really ran")
         self.kb("ai", "test")
         for mode in ("refuse", "garbage", "status", "pem"):
@@ -438,8 +477,8 @@ password = "cmd:echo {CANARY['cmdfail']} >&2; exit 3"
         for action in ("status", "on", "status", "off"):
             self.kb("schedule", action, "--kb", os.path.join(self.bin, "kb"))
         self.assertIn("[masked]", "".join(self.seen[shown:]), "the scheduler's own output was shown, masked")
-        with mock.patch.object(cli, "cmd_ingest", lambda paths, config, args: 0):
-            self.kb("setup", stdin="\n" * 40)
+        self.drive_trial_month()
+        self.drive_setup()
         with open(self.paths.config_file, "a") as fh:
             fh.write(f'"{CANARY["configkey"]}" = 1\n')
         self.kb("stats")
