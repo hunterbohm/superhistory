@@ -144,7 +144,7 @@ key is the fast path.
 | Codex | a `UserPromptSubmit` hook in `~/.codex/hooks.json`, trusted in `~/.codex/config.toml` |
 | Hermes | a `pre_llm_call` plugin in `~/.hermes/plugins/kb-context` |
 | OpenCode | a `chat.message` plugin in `~/.config/opencode/plugins` |
-| GitHub Copilot CLI | a `userPromptSubmitted` hook in `~/.copilot/config.json` |
+| GitHub Copilot CLI | a `userPromptSubmitted` hook in `~/.copilot/config.json`, built from the format Copilot CLI 1.0.79 is reported to use and not yet run on a live install |
 
 Cursor's documented prompt hook cannot add context, and Grok drops what a prompt hook prints, so neither gets a hook.
 Grok runs Claude Code's hooks too, and kb's hook stays quiet there.
