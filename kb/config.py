@@ -26,11 +26,13 @@ import re
 import subprocess
 import typing
 from dataclasses import dataclass
-from typing import Any, Optional, Tuple
+from typing import Any, Mapping, Optional, Tuple
 
 NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,39}$")
 SOURCE_KEYS = {"type", "enabled", "exclude", "exclude_defaults", "summarize", "hosts"}
 MAX_CHECK_BUDGET = 25.0
+# Tables kb keeps as they are for the packages that read them: [sync] for the Sync client (kb/sync), [cloud] for Cloud.
+EXTENSION_TABLES = ("sync", "cloud")
 
 
 class ConfigError(ValueError):
@@ -142,6 +144,14 @@ class Config:
     schedule: Schedule = Schedule()
     sources: Tuple[Source, ...] = ()
     hosts: Tuple[Host, ...] = ()
+    # Whose items these are: the install id kb fills in when it writes (kb.ids). A Config built elsewhere, such as a
+    # hosted store's, may leave it empty; its items are then prefixed by `machine`.
+    install: str = ""
+    extra: Mapping[str, Any] = dataclasses.field(default_factory=dict)
+
+    @property
+    def owner(self):
+        return self.install or self.machine
 
     def source(self, name):
         return next((s for s in self.sources if s.name == name), None)
@@ -149,9 +159,16 @@ class Config:
     def host(self, name):
         return next((h for h in self.hosts if h.name == name), None)
 
+    def account_keys(self):
+        """{source name: account key} for the sources that read an online account (SourceType.account). A key names
+        the account, a mail address for Gmail, so it goes only where item text may go: Sync compares keys inside its
+        encrypted roster, never in the clear to the app or the relay."""
+        return {s.name: s.type.account(s.options) for s in self.sources if s.type.account}
+
     def units(self):
         """Every health unit this config owns."""
-        return tuple(f"{s.name}@{h}" for s in self.sources for h in s.hosts) + ("summarize",)
+        units = tuple(f"{s.name}@{h}" for s in self.sources for h in s.hosts) + ("summarize",)
+        return units + (("sync",) if any(key in self.extra for key in EXTENSION_TABLES) else ())
 
 
 def read_toml(text):
@@ -183,6 +200,7 @@ def parse(text):
         problems.append("machine: use lowercase letters, digits, - and _, up to 40 characters")
         machine = "local"
     tables = {key: raw.pop(key, {}) for key in ("ai", "check", "summarize", "schedule", "hosts", "sources")}
+    extra = {key: raw.pop(key) for key in EXTENSION_TABLES if key in raw}
     problems += [f"{key}: unknown key" for key in raw]
     for key, value in tables.items():
         if not isinstance(value, dict):
@@ -210,9 +228,10 @@ def parse(text):
         source = _source(name, table, machine, known, problems)
         if source:
             sources.append(source)
+    problems += [f"{key}: expected a table" for key, value in extra.items() if not isinstance(value, dict)]
     if problems:
         raise ConfigError(problems)
-    return Config(machine, ai, check, summarize, schedule, tuple(sources), tuple(hosts))
+    return Config(machine, ai, check, summarize, schedule, tuple(sources), tuple(hosts), extra=extra)
 
 
 def _ai(table, problems):

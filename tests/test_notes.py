@@ -259,7 +259,7 @@ class ChangeTrackingTest(NotesCase):
 
 class IngestNotesTest(NotesCase):
     def run_unit(self, db):
-        ingest.run_unit(db, parse_source(self.root), "m1", ingest.LocalReader(), LOG)
+        ingest.run_unit(db, parse_source(self.root), "m1", ingest.LocalReader(), LOG, "m1:")
 
     def test_a_renamed_note_is_found_only_under_its_new_name(self):
         write(self.root, "Areas/old name.md", "walrus facts")

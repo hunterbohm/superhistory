@@ -15,6 +15,9 @@ def long_body(term):
     return f"{term} leads the first line\n" + "padding line of ordinary text\n" * 200
 
 
+MINE, THEIRS = "c-aaaaaaaaaaaaa", "c-bbbbbbbbbbbbb"
+
+
 class TempDB(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -213,20 +216,52 @@ class SearchTest(TempDB):
         self.add("b", "ibis", title="good", ts=iso())
         self.assertEqual(self.titles("ibis"), ["good", "bad"])
 
-    def test_superseded_row_score_is_halved(self):
+    def test_superseded_item_score_is_halved(self):
         self.add("a", "gecko", title="a")
         before = search.search(self.db, "gecko")[0]["score"]
-        self.db.execute("UPDATE docs SET superseded_by=123")
+        store.mark_superseded(self.db, "s", "a", ("s", "b"), MINE)
         hit = search.search(self.db, "gecko")[0]
         self.assertAlmostEqual(hit["score"], before / 2, places=9)
-        self.assertEqual(hit["superseded_by"], 123)
+        self.assertEqual(hit["superseded_by"], ("s", "b"))
 
     def test_superseded_loses_to_equal_current_row(self):
         ts = iso()
         self.add("old", "gecko", title="old", ts=ts)
         self.add("new", "gecko", title="new", ts=ts)
-        self.db.execute("UPDATE docs SET superseded_by=2 WHERE source_id='old'")
+        store.mark_superseded(self.db, "s", "old", ("s", "new"), MINE)
         self.assertEqual(self.titles("gecko"), ["new", "old"])
+
+    def test_a_mark_survives_a_refresh_of_the_item_and_leaves_with_its_deletion(self):
+        self.add("old", "gecko first words", title="old")
+        store.mark_superseded(self.db, "s", "old", ("s", "new"), MINE)
+        self.add("old", "gecko changed words", title="old")
+        self.assertEqual(search.search(self.db, "gecko")[0]["superseded_by"], ("s", "new"))
+        store.clear_superseded(self.db, "s", "old", MINE)
+        self.assertIsNone(search.search(self.db, "gecko")[0]["superseded_by"])
+        store.mark_superseded(self.db, "s", "old", ("s", "new"), MINE)
+        store.delete_item(self.db, "s", "old")
+        self.assertEqual(store.superseded(self.db, [("s", "old")]), {})
+
+    def test_each_computer_keeps_its_own_mark_and_the_latest_wins(self):
+        self.add("old", "gecko", title="old")
+        store.mark_superseded(self.db, "s", "old", ("s", "theirs"), THEIRS, "2026-10-01", v=3)
+        store.mark_superseded(self.db, "s", "old", ("s", "mine"), MINE, "2026-10-02", v=2)
+        self.assertEqual(store.superseded_by(self.db, "s", "old"), ("s", "theirs"), "the higher version wins")
+        store.mark_superseded(self.db, "s", "old", ("s", "mine"), MINE)
+        self.assertEqual(store.superseded_by(self.db, "s", "old"), ("s", "mine"), "a mark not synced yet is newest")
+        store.clear_superseded(self.db, "s", "old", MINE)
+        self.assertEqual(store.superseded_by(self.db, "s", "old"), ("s", "theirs"), "clearing one leaves the other")
+
+    def test_search_over_several_stores_merges_by_score_and_names_each_store(self):
+        other = store.connect(os.path.join(self.tmp.name, "other.sqlite"))
+        self.addCleanup(other.close)
+        self.add("a", "heron heron heron", title="strong here")
+        store.store_item(other, "s", "b", iso(), "weak there", "heron and many other words besides", {})
+        store.store_item(other, "s", "c", iso(), "strong there", "heron heron heron", {})
+        other.commit()
+        hits = search.search_stores([("mine", self.db), ("team", other)], "heron", limit=2)
+        self.assertEqual(sorted((h["store"], h["title"]) for h in hits), [("mine", "strong here"), ("team", "strong there")])
+        self.assertEqual(len(search.search_stores([("mine", self.db), ("team", other)], "heron")), 3)
 
     def test_after_filter(self):
         self.add("a", "lynx", title="before", ts="2025-12-31T23:59:59Z")

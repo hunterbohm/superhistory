@@ -2,12 +2,13 @@
 skipped. A reader reads one source on one host: LocalReader on this computer, SshReader on another, and the Sync
 client's reader for a computer whose rows arrive through Sync."""
 import dataclasses
+import importlib
 import hashlib
 import json
 import sys
 import time
 
-from kb import ai, store, summarize
+from kb import ai, ids, store, summarize
 from kb.remote import HostAway, SshReader
 from kb.sources import Excludes, Gone, Item, Progress, Run
 
@@ -43,12 +44,13 @@ class LocalReader:
         return list(source.type.live_ids(self._run(source, None)))
 
 
-def apply(db, source, host, event):
-    """Stores the event under the id "<host>:<source_id>". Applying an event twice changes nothing the second time.
+def apply(db, source, prefix, event, host):
+    """The one write path for what a reader saw: stores the event under "<prefix><source_id>" (kb.ids.prefix), with
+    `host`, the computer it was read on, in its meta. Applying an event twice changes nothing the second time.
     Returns True when rows changed."""
     if isinstance(event, Progress):
         return False
-    sid = f"{host}:{event.source_id}"
+    sid = prefix + event.source_id
     if isinstance(event, Gone):
         return store.delete_item(db, source, sid) > 0
     return store.store_item(db, source, sid, event.ts, event.title, event.content, {**event.meta, "host": host})
@@ -75,9 +77,9 @@ def _forget_mark_if_settings_changed(db, source, host):
         store.set_watermark(db, source.name, key, digest)
 
 
-def run_unit(db, source, host, reader, log):
-    """Read one source on one host: store each event, move the watermark to the largest mark seen, and prune items
-    whose files are gone when the type lists them."""
+def run_unit(db, source, host, reader, log, prefix):
+    """Read one source on one host: store each event under `prefix`, move the watermark to the largest mark seen, and
+    prune items under that prefix whose files are gone when the type lists them."""
     _forget_mark_if_settings_changed(db, source, host)
     since = load_mark(db, source.name, host)
     seen = changed = 0
@@ -90,7 +92,7 @@ def run_unit(db, source, host, reader, log):
         try:
             if not isinstance(event, (Item, Gone)):
                 raise TypeError(f"not an event: {event!r}")
-            changed += apply(db, source.name, host, event)
+            changed += apply(db, source.name, prefix, event, host)
         except Exception as exc:
             log.warning("%s@%s: skipped %s: %s", source.name, host, getattr(event, "source_id", "?"), exc)
         seen += 1
@@ -101,10 +103,10 @@ def run_unit(db, source, host, reader, log):
     pruned = 0
     if source.type.live_ids:
         db.commit()
-        live = {f"{host}:{sid}" for sid in reader.live_ids(source)}
+        live = {prefix + sid for sid in reader.live_ids(source)}
         stored = [] if not live else [r[0] for r in db.execute(
             "SELECT DISTINCT source_id FROM docs WHERE source=? AND substr(source_id, 1, ?) = ?",
-            (source.name, len(host) + 1, f"{host}:"))]
+            (source.name, len(prefix), prefix))]
         for sid in stored:
             if sid not in live:
                 store.delete_item(db, source.name, sid)
@@ -132,7 +134,10 @@ def run(db, config, log, only=(), with_summaries=True, model_factory=None):
                 continue
             unit = f"{source.name}@{host}"
             try:
-                run_unit(db, source, host, local if host == config.machine else remote[host], log)
+                if host == config.machine:
+                    run_unit(db, source, host, local, log, ids.prefix(config.owner))
+                else:
+                    run_unit(db, source, host, remote[host], log, ids.prefix(config.owner, host))
             except HostAway:
                 db.rollback()
                 away.add(host)
@@ -157,3 +162,21 @@ def run(db, config, log, only=(), with_summaries=True, model_factory=None):
             db.commit()
     log.info("ingest done: %d failures", failures)
     return failures
+
+
+def after(paths, config, db, log):
+    """Hands the store to the Sync client after an ingest, when [sync] or [cloud] is in the config. The Sync track's
+    package, kb/sync, defines after_ingest(paths, config, db, log) and runs `kb sync` and `kb push` from it. A failure
+    is recorded as the "sync" unit, as a source's is. Returns the number of failures."""
+    if "sync" not in config.units():
+        return 0
+    try:
+        hook = importlib.import_module("kb.sync").after_ingest
+        hook(paths, config, db, log)
+    except Exception as exc:
+        log.exception("sync after ingest failed")
+        store.record_failure(db, "sync", exc)
+        return 1
+    store.record_ok(db, "sync")
+    db.commit()
+    return 0

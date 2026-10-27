@@ -31,6 +31,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from email import policy
+from email.message import EmailMessage
 from email.utils import getaddresses, parseaddr
 from html import unescape
 from typing import Dict, List, Literal, NamedTuple, Optional, Tuple
@@ -526,20 +527,29 @@ def _clean_body(body):
     return text if len(text) <= BODY_CHARS else text[:BODY_CHARS] + " …"
 
 
-def _render(address, thread, bodies):
-    blocks, people, subject, last = [], [], None, None
-    for m in thread.messages:
-        msg = email.message_from_bytes(bodies.get(m.uid, b""), policy=policy.default)
+def render_thread(account, thread_id, messages, mark=0):
+    """One Gmail thread as an Item, from its messages as `email.message` objects, each with its Gmail labels and its
+    time in epoch seconds: [(message, labels, epoch), ...]. A message from the `mailbox` module works too. Drafts,
+    trash, spam and sign-in or reset codes are dropped one message at a time; returns None when none is left.
+    `thread_id` is the item's source_id; a decimal X-GM-THRID also gives the item its Gmail link."""
+    blocks, people, labels_seen, subject, last = [], [], [], None, None
+    for msg, labels, epoch in sorted(messages, key=lambda m: m[2]):
+        if SKIP_MESSAGE_LABELS & {str(label).strip("\\").upper() for label in labels}:
+            continue
+        if not isinstance(msg, EmailMessage):
+            msg = email.message_from_bytes(msg.as_bytes(), policy=policy.default)
         body, names = _body_and_attachments(msg)
         body = _clean_body(body)
-        if mask.is_auth_noise(f"{m.subject}\n{body}"):
+        msg_subject = _header(msg, "subject")
+        if mask.is_auth_noise(f"{msg_subject}\n{body}"):
             continue
-        subject = m.subject if subject is None else subject
-        last = m
+        subject = msg_subject if subject is None else subject
+        last = epoch
+        labels_seen += [label for label in labels if label not in labels_seen]
         head = {key: _header(msg, key) for key in ("from", "to", "cc")}
-        lines = [f"From: {head['from'] or m.sender}"]
+        lines = [f"From: {head['from']}"]
         lines += [f"{label}: {head[key]}" for label, key in (("To", "to"), ("Cc", "cc")) if head[key]]
-        lines.append(f"Date: {_iso(m.epoch)}")
+        lines.append(f"Date: {_iso(epoch)}")
         text = "\n".join([body, *(f"[attachment: {n}]" for n in names)]).strip()
         blocks.append("\n".join(lines) + "\n\n" + text)
         for _, addr in getaddresses(list(head.values())):
@@ -548,11 +558,18 @@ def _render(address, thread, bodies):
                 people.append(addr)
     if last is None:
         return None
-    url = f"https://mail.google.com/mail/u/?authuser={quote(address)}#all/{int(thread.id):x}"
-    return Item(thread.id, _iso(last.epoch), PREFIX.sub("", subject).strip() or "(no subject)",
-                "\n\n---\n\n".join(blocks),
-                {"url": url, "account": address, "participants": people[:30], "labels": list(thread.labels)},
-                thread.mark)
+    meta = {"account": account, "participants": people[:30], "labels": labels_seen}
+    if str(thread_id).isdigit():
+        meta["url"] = f"https://mail.google.com/mail/u/?authuser={quote(account)}#all/{int(thread_id):x}"
+    return Item(thread_id, _iso(last), PREFIX.sub("", subject).strip() or "(no subject)", "\n\n---\n\n".join(blocks),
+                meta, mark)
 
 
-TYPE = SourceType(Options, extract, others_wrote=True, needs_model=True)
+def _render(address, thread, bodies):
+    messages = [(email.message_from_bytes(bodies.get(m.uid, b""), policy=policy.default), m.labels, m.epoch)
+                for m in thread.messages]
+    return render_thread(address, thread.id, messages, thread.mark)
+
+
+TYPE = SourceType(Options, extract, others_wrote=True, needs_model=True,
+                  account=lambda o: f"gmail:{o.address.strip().lower()}")

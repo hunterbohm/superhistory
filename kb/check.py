@@ -106,13 +106,20 @@ class Lookup(NamedTuple):
 
 
 def lookup(db, message, before, session, seen, model, budget, hedge_after=None):
-    """before: the conversation turns just ahead of the message, as [{"role", "text"}], oldest first.
-    Both model calls share `budget` seconds."""
+    """The check over one store. before: the conversation turns just ahead of the message, as [{"role", "text"}],
+    oldest first. Both model calls share `budget` seconds."""
+    return lookup_with(lambda query, limit, keep: search.search(db, query, limit=limit, keep=keep),
+                       message, before, session, seen, model, budget, hedge_after)
+
+
+def lookup_with(search_fn, message, before, session, seen, model, budget, hedge_after=None):
+    """The check over any search: search_fn(query, limit, keep) returns hits as search.search does, such as
+    search.search_stores over several stores."""
     deadline = time.monotonic() + budget
     query = plan(message, before, model, budget, hedge_after)
     if not query:
         return Lookup(None, [], [])
-    candidates = records(db, query, session, seen)
+    candidates = records(search_fn, query, session, seen)
     if not candidates:
         return Lookup(query, [], [])
     remaining = deadline - time.monotonic()
@@ -121,11 +128,11 @@ def lookup(db, message, before, session, seen, model, budget, hedge_after=None):
     return Lookup(query, candidates, pick(message, before, candidates, model, remaining, hedge_after)[:SHOWN])
 
 
-def records(db, query, session, seen):
+def records(search_fn, query, session, seen):
     """The first PICK_FROM hits that are not this session itself and were not shown earlier in it."""
     def fresh(h):
         return not (session and session in h["source_id"]) and (h["source"], h["source_id"]) not in seen
-    return search.search(db, query, limit=PICK_FROM, keep=fresh)
+    return search_fn(query, PICK_FROM, fresh)
 
 
 def pick(message, before, hits, model, timeout, hedge_after=None):

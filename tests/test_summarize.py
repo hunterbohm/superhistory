@@ -96,6 +96,30 @@ class SummarizeTest(unittest.TestCase):
         return json.loads(self.db.execute("SELECT metadata FROM docs WHERE source_id=? AND kind='raw' LIMIT 1",
                                           (sid,)).fetchone()[0])["hash"]
 
+    def test_only_this_install_s_items_are_summarized(self):
+        config = dataclasses.replace(self.config, install="c-aaaaaaaaaaaaa")
+        self.store("sessions", "c-aaaaaaaaaaaaa:mine", long_text("mine"), SESSION_META)
+        self.store("sessions", "c-aaaaaaaaaaaaa@laptop:mine-there", long_text("there"), SESSION_META)
+        self.store("sessions", "c-bbbbbbbbbbbbb:theirs", long_text("theirs"), SESSION_META)
+        self.store("sessions", "c-aaaaaaaaaaaaab:near", long_text("near"), SESSION_META)
+        rules = summarize.scope(config)
+        self.assertEqual(sorted(i.source_id for i in summarize.pending(self.db, rules, owner=config.owner)),
+                         ["c-aaaaaaaaaaaaa:mine", "c-aaaaaaaaaaaaa@laptop:mine-there"])
+        self.assertEqual(summarize.estimate(self.db, config)["sessions"][0], 2)
+
+    def test_request_parse_and_rows_summarize_an_item_outside_summarize(self):
+        item = summarize.Item("sessions", "c-aaaaaaaaaaaaa:s9", "2026-10-01T00:00:00Z", "Pelican checkout", "h9",
+                              {"path": "/s/9.jsonl"}, 12, None)
+        prompt = summarize.request(item, "USER: the checkout fails\nASSISTANT: the key expired", summarize.OTHERS_ATOMS)
+        self.assertIn("Pelican checkout", prompt.user)
+        self.assertIn("the key expired", prompt.user)
+        self.assertIn("decision, path", prompt.system)
+        segments, atoms = summarize.parse(summary_text(), summarize.OTHERS_ATOMS)
+        rows = summarize.rows(item, {"from_chars": 0, "of_chars": 12}, segments, atoms)
+        self.assertTrue(rows)
+        self.assertEqual({r["metadata"]["of_hash"] for r in rows}, {"h9"})
+        self.assertEqual({r["metadata"]["path"] for r in rows}, {"/s/9.jsonl"})
+
     def grow(self, text, sid="test:s1"):
         self.store("sessions", sid, text, SESSION_META)
         return text

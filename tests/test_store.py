@@ -373,7 +373,7 @@ class FtsTriggerTest(TempDB):
 
     def test_updating_other_columns_keeps_index_intact(self):
         self.add("a", "kumquat marmalade")
-        self.db.execute("UPDATE docs SET superseded_by=99")
+        self.db.execute("UPDATE docs SET metadata='{\"note\": 1}'")
         self.assertEqual(len(self.fts_ids("kumquat")), 1)
         self.assert_fts_consistent()
 

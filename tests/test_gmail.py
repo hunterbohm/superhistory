@@ -1,6 +1,8 @@
 import base64
 import hashlib
 import http.server
+import email
+import email.message
 import imaplib
 import json
 import logging
@@ -547,3 +549,35 @@ class IngestTest(GmailCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RenderThreadTest(unittest.TestCase):
+    def message(self, sender, body, subject="Plans", factory=None):
+        msg = (factory or email.message.Message)()
+        msg["From"], msg["To"], msg["Subject"] = sender, ME, subject
+        msg.set_payload(body)
+        return msg
+
+    def test_a_thread_renders_from_mailbox_messages_with_takeout_labels(self):
+        import mailbox
+        messages = [
+            (self.message("Dana <dana@example.com>", "Can we move the launch?", factory=mailbox.mboxMessage),
+             ("Inbox", "Opened"), 1793000000.0),
+            (self.message("Acme <no-reply@acme.example.com>", "Your verification code is 482913."), ("Inbox",),
+             1793000100.0),
+            (self.message("Spammer <x@spam.example.com>", "Win a prize"), ("Spam",), 1793000200.0),
+            (self.message(f"Me <{ME}>", "Yes, November 14 works.", "Re: Plans"), ("Sent",), 1793000300.0),
+        ]
+        item = gmail.render_thread(ME, "1781000000000000009", messages, mark=7)
+        self.assertEqual((item.source_id, item.title, item.mark), ("1781000000000000009", "Plans", 7))
+        self.assertIn("Can we move the launch?", item.content)
+        self.assertIn("November 14 works", item.content)
+        self.assertNotIn("482913", item.content)
+        self.assertNotIn("prize", item.content)
+        self.assertEqual(item.meta["labels"], ["Inbox", "Opened", "Sent"])
+        self.assertIn(f"#all/{1781000000000000009:x}", item.meta["url"])
+
+    def test_a_thread_with_nothing_left_is_none_and_a_non_gmail_id_has_no_link(self):
+        self.assertIsNone(gmail.render_thread(ME, "x", [(self.message("A <a@example.com>", "hi"), ("Trash",), 1.0)]))
+        item = gmail.render_thread(ME, "fwd:abc", [(self.message("A <a@example.com>", "hi"), (), 1.0)])
+        self.assertNotIn("url", item.meta)

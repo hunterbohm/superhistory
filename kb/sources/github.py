@@ -178,4 +178,4 @@ def extract(run):
         yield Progress(now)
 
 
-TYPE = SourceType(Options, extract)
+TYPE = SourceType(Options, extract, account=lambda o: f"github:{o.involves}")

@@ -99,6 +99,23 @@ class ParseTest(unittest.TestCase):
         self.assertEqual(c.units(), ("notes@studio", "summarize"))
 
 
+class ExtensionTest(unittest.TestCase):
+    def test_sync_and_cloud_tables_are_kept_for_their_clients_and_add_a_health_unit(self):
+        cfg = config.parse('[sync]\nrelay = "https://relay.example"\n')
+        self.assertEqual(cfg.extra, {"sync": {"relay": "https://relay.example"}})
+        self.assertIn("sync", cfg.units())
+        self.assertNotIn("sync", config.parse("").units())
+
+    def test_a_sync_key_that_is_not_a_table_is_refused(self):
+        with self.assertRaisesRegex(ConfigError, "sync: expected a table"):
+            config.parse('sync = "on"\n')
+
+    def test_account_keys_name_the_account_each_online_source_reads(self):
+        cfg = config.parse('[sources.mail]\ntype = "gmail"\naddress = "Sam@Example.com"\npassword = "env:X"\n'
+                           '[sources.github]\n[sources.notes]\npath = "/n"\n')
+        self.assertEqual(cfg.account_keys(), {"mail": "gmail:sam@example.com", "github": "github:@me"})
+
+
 class SecretTest(unittest.TestCase):
     def test_env_file_and_command(self):
         with tempfile.TemporaryDirectory() as tmp:

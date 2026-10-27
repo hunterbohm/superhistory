@@ -31,8 +31,7 @@ CREATE TABLE IF NOT EXISTS docs(
   ts TEXT NOT NULL,
   title TEXT NOT NULL DEFAULT '',
   content TEXT NOT NULL,
-  metadata TEXT NOT NULL DEFAULT '{}',
-  superseded_by INTEGER
+  metadata TEXT NOT NULL DEFAULT '{}'
 );
 CREATE INDEX IF NOT EXISTS docs_item ON docs(source, source_id, kind);
 CREATE INDEX IF NOT EXISTS docs_ts ON docs(ts);
@@ -48,6 +47,10 @@ CREATE TRIGGER IF NOT EXISTS docs_au AFTER UPDATE OF title, content ON docs BEGI
   INSERT INTO docs_fts(docs_fts, rowid, title, content) VALUES ('delete', old.id, old.title, old.content);
   INSERT INTO docs_fts(rowid, title, content) VALUES (new.id, new.title, new.content);
 END;
+CREATE TABLE IF NOT EXISTS supersedes(
+  source TEXT NOT NULL, source_id TEXT NOT NULL, marked_by TEXT NOT NULL,
+  new_source TEXT NOT NULL, new_source_id TEXT NOT NULL, at TEXT NOT NULL, v INTEGER,
+  PRIMARY KEY(source, source_id, marked_by));
 CREATE TABLE IF NOT EXISTS ingest_state(
   source TEXT NOT NULL, key TEXT NOT NULL, watermark TEXT, PRIMARY KEY(source, key));
 """
@@ -115,8 +118,44 @@ def replace_rows(db, source, source_id, rows, kinds=ITEM_KINDS):
 
 
 def delete_item(db, source, source_id):
-    """Returns the number of rows removed."""
+    """Removes the item's rows and every supersede mark on it. Returns the number of rows removed."""
+    db.execute("DELETE FROM supersedes WHERE source=? AND source_id=?", (source, source_id))
     return db.execute("DELETE FROM docs WHERE source=? AND source_id=?", (source, source_id)).rowcount
+
+
+def mark_superseded(db, source, source_id, new, by, at=None, v=None):
+    """Marks the item as replaced by `new`, a (source, source_id) pair. The mark is about items, not rows, so it
+    survives a refresh of either. `by` is the install that made it, and each install keeps its own mark on an item, so
+    a mark synced from another computer never overwrites this one's. `v` is Sync's version of the mark."""
+    db.execute("INSERT INTO supersedes(source, source_id, marked_by, new_source, new_source_id, at, v) "
+               "VALUES (?,?,?,?,?,?,?) ON CONFLICT(source, source_id, marked_by) DO UPDATE SET "
+               "new_source=excluded.new_source, new_source_id=excluded.new_source_id, at=excluded.at, v=excluded.v",
+               (source, source_id, by, new[0], new[1], at or now_iso(), v))
+
+
+def clear_superseded(db, source, source_id, by):
+    db.execute("DELETE FROM supersedes WHERE source=? AND source_id=? AND marked_by=?", (source, source_id, by))
+
+
+def superseded_by(db, source, source_id):
+    return superseded(db, [(source, source_id)]).get((source, source_id))
+
+
+def superseded(db, items):
+    """{item: the item that replaces it} for those of `items` with a mark. Of several marks the latest wins: one not
+    synced yet (no `v`), else the highest `v`, then the highest marking install."""
+    marks = {}
+    items = list(items)
+    for i in range(0, len(items), 400):
+        batch = items[i:i + 400]
+        where = " OR ".join("(source=? AND source_id=?)" for _ in batch)
+        for src, sid, by, new_src, new_sid, v in db.execute(
+                f"SELECT source, source_id, marked_by, new_source, new_source_id, v FROM supersedes WHERE {where}",
+                [v for pair in batch for v in pair]):
+            rank = (v is None, v or 0, by)
+            if (src, sid) not in marks or rank > marks[(src, sid)][0]:
+                marks[(src, sid)] = (rank, (new_src, new_sid))
+    return {item: new for item, (_, new) in marks.items()}
 
 
 def store_item(db, source, source_id, ts, title, content, meta):
@@ -184,7 +223,8 @@ def record_ok(db, unit):
 
 def record_failure(db, unit, exc):
     db.rollback()
-    set_watermark(db, STATE, f"fail:{unit}", f"{now_iso()} {str(exc).splitlines()[0][:200] if str(exc) else type(exc).__name__}")
+    line = mask(str(exc).splitlines()[0])[:200] if str(exc) else type(exc).__name__
+    set_watermark(db, STATE, f"fail:{unit}", f"{now_iso()} {line}")
     db.commit()
 
 

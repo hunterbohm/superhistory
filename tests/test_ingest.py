@@ -9,10 +9,11 @@ import os
 import sys
 import tempfile
 import time
+import types
 import unittest
 from unittest import mock
 
-from kb import ai, cli, config, ingest, search, store
+from kb import ai, cli, config, ids, ingest, search, store
 from kb.paths import Paths
 from kb.sources import Gone, Item, Progress, SourceType
 
@@ -84,7 +85,7 @@ class IngestCase(unittest.TestCase):
         self.addCleanup(self.db.close)
 
     def run_unit(self, script, host="m1"):
-        ingest.run_unit(self.db, script.source, host, ingest.LocalReader(), LOG)
+        ingest.run_unit(self.db, script.source, host, ingest.LocalReader(), LOG, f"{host}:")
 
     def run_all(self, *scripts, **kwargs):
         plugin = kwargs.pop("ai_plugin", False)
@@ -161,17 +162,17 @@ class RunUnitTest(IngestCase):
         self.assertEqual(self.db.execute("SELECT id FROM docs WHERE source_id='m1:a'").fetchone()[0], ids["m1:a"])
 
     def test_apply_reports_whether_rows_changed(self):
-        self.assertTrue(ingest.apply(self.db, "fake", "m1", item("a", "one")))
-        self.assertFalse(ingest.apply(self.db, "fake", "m1", item("a", "one")))
-        self.assertTrue(ingest.apply(self.db, "fake", "m1", item("a", "two")))
-        self.assertFalse(ingest.apply(self.db, "fake", "m1", Progress(5.0)))
-        self.assertTrue(ingest.apply(self.db, "fake", "m1", Gone("a", 6.0)))
+        self.assertTrue(ingest.apply(self.db, "fake", "m1:", item("a", "one"), "m1"))
+        self.assertFalse(ingest.apply(self.db, "fake", "m1:", item("a", "one"), "m1"))
+        self.assertTrue(ingest.apply(self.db, "fake", "m1:", item("a", "two"), "m1"))
+        self.assertFalse(ingest.apply(self.db, "fake", "m1:", Progress(5.0), "m1"))
+        self.assertTrue(ingest.apply(self.db, "fake", "m1:", Gone("a", 6.0), "m1"))
         self.assertEqual(self.rows(), [])
 
     def test_applying_gone_twice_changes_nothing_the_second_time(self):
-        ingest.apply(self.db, "fake", "m1", item("a", "one"))
-        self.assertTrue(ingest.apply(self.db, "fake", "m1", Gone("a", 6.0)))
-        self.assertFalse(ingest.apply(self.db, "fake", "m1", Gone("a", 6.0)))
+        ingest.apply(self.db, "fake", "m1:", item("a", "one"), "m1")
+        self.assertTrue(ingest.apply(self.db, "fake", "m1:", Gone("a", 6.0), "m1"))
+        self.assertFalse(ingest.apply(self.db, "fake", "m1:", Gone("a", 6.0), "m1"))
 
     def test_gone_removes_every_row_of_the_item_and_moves_the_watermark(self):
         script = Script(events=[item("a", "x" * 9000 + "\n" + "y" * 9000), item("b", "keep")])
@@ -452,10 +453,10 @@ class CliTest(unittest.TestCase):
 
         self.addCleanup(restore)
 
-    def configure(self, notes_path):
+    def configure(self, notes_path, extra=""):
         os.makedirs(self.home, exist_ok=True)
         with open(self.paths.config_file, "w") as fh:
-            fh.write(f'machine = "m1"\n[sources.notes]\npath = {json.dumps(notes_path)}\n')
+            fh.write(f'machine = "m1"\n[sources.notes]\npath = {json.dumps(notes_path)}\n{extra}')
 
     def make_notes(self):
         notes = os.path.join(self.tmp.name, "Notes")
@@ -465,11 +466,22 @@ class CliTest(unittest.TestCase):
         return notes
 
     def ingest(self):
+        return self.run_cli("ingest")[0]
+
+    def run_cli(self, *argv):
+        out = io.StringIO()
         try:
-            with contextlib.redirect_stderr(io.StringIO()):
-                return cli.main(["ingest"])
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+                return cli.main(list(argv)), out.getvalue()
         finally:
             gc.collect()
+
+    def health(self):
+        db = store.connect(self.paths.db)
+        try:
+            return store.failing(db), [unit for unit, _ in store.succeeded(db)]
+        finally:
+            db.close()
 
     def stored(self):
         db = store.connect(self.paths.db)
@@ -481,7 +493,7 @@ class CliTest(unittest.TestCase):
     def test_ingest_reads_the_configured_sources(self):
         self.configure(self.make_notes())
         self.assertEqual(self.ingest(), 0)
-        self.assertEqual(self.stored(), ["m1:Area/plan.md"])
+        self.assertEqual(self.stored(), [f"{ids.install_id(self.paths)}:Area/plan.md"])
 
     def test_a_second_ingest_exits_cleanly_while_the_lock_is_held(self):
         self.configure(self.make_notes())
@@ -491,7 +503,7 @@ class CliTest(unittest.TestCase):
             self.assertEqual(self.ingest(), 0)
         self.assertFalse(os.path.exists(self.paths.db))
         self.assertEqual(self.ingest(), 0)
-        self.assertEqual(self.stored(), ["m1:Area/plan.md"])
+        self.assertEqual(self.stored(), [f"{ids.install_id(self.paths)}:Area/plan.md"])
 
     def test_ingest_exits_1_when_a_source_fails(self):
         self.configure(os.path.join(self.tmp.name, "missing folder"))
@@ -499,6 +511,82 @@ class CliTest(unittest.TestCase):
         db = store.connect(self.paths.db)
         self.addCleanup(db.close)
         self.assertEqual([unit for unit, _ in store.failing(db)], ["notes@m1"])
+
+    def test_sync_runs_after_ingest_only_when_the_config_turns_it_on(self):
+        notes = self.make_notes()
+        calls = []
+        client = types.ModuleType("kb.sync")
+        client.after_ingest = lambda paths, cfg, db, log: calls.append(cfg.install)
+        with mock.patch.dict(sys.modules, {"kb.sync": client}):
+            self.configure(notes)
+            self.assertEqual(self.ingest(), 0)
+            self.assertEqual(calls, [])
+            self.configure(notes, '[sync]\nrelay = "https://relay.example"\n')
+            self.assertEqual(self.ingest(), 0)
+        self.assertEqual(calls, [ids.install_id(self.paths)])
+        self.assertIn("sync", self.health()[1])
+
+    def test_a_sync_failure_fails_the_run_and_its_recorded_error_is_masked(self):
+        client = types.ModuleType("kb.sync")
+
+        def refuse(*args):
+            raise RuntimeError("relay refused sk-ant-api03-" + "x" * 40)
+
+        client.after_ingest = refuse
+        self.configure(self.make_notes(), "[sync]\n")
+        with mock.patch.dict(sys.modules, {"kb.sync": client}):
+            self.assertEqual(self.ingest(), 1)
+        [(unit, line)] = self.health()[0]
+        self.assertEqual(unit, "sync")
+        self.assertIn("relay refused [masked]", line)
+        self.assertEqual(self.stored(), [f"{ids.install_id(self.paths)}:Area/plan.md"], "the items still landed")
+
+    def test_sync_turned_on_without_its_client_is_reported_not_skipped(self):
+        self.configure(self.make_notes(), "[sync]\n")
+        with mock.patch.dict(sys.modules, {"kb.sync": None}):
+            self.assertEqual(self.ingest(), 1)
+        self.assertEqual([unit for unit, _ in self.health()[0]], ["sync"])
+
+    def test_forget_deletes_this_computers_items_of_one_source_and_its_watermarks(self):
+        self.configure(self.make_notes())
+        self.assertEqual(self.ingest(), 0)
+        mine = ids.install_id(self.paths)
+        db = store.connect(self.paths.db)
+        store.store_item(db, "notes", "c-bbbbbbbbbbbbb:Area/plan.md", "2026-10-01T00:00:00Z", "theirs", "walrus", {})
+        store.store_item(db, "other", f"{mine}:x", "2026-10-01T00:00:00Z", "kept", "walrus", {})
+        store.mark_superseded(db, "notes", f"{mine}:Area/plan.md", ("other", f"{mine}:x"), mine)
+        db.commit()
+        db.close()
+        code, out = self.run_cli("forget", "notes", "--yes")
+        self.assertEqual(code, 0)
+        self.assertIn("is still in", out)
+        self.assertIn("Deleted 1 item of notes", out)
+        self.assertEqual(self.stored(), sorted(["c-bbbbbbbbbbbbb:Area/plan.md", f"{mine}:x"]))
+        db = store.connect(self.paths.db)
+        self.addCleanup(db.close)
+        self.assertEqual(db.execute("SELECT count(*) FROM ingest_state WHERE source='notes' OR key LIKE '%notes@%'")
+                         .fetchone()[0], 0)
+        self.assertEqual(db.execute("SELECT count(*) FROM supersedes").fetchone()[0], 0)
+
+    def test_the_summarize_estimate_counts_this_computers_items(self):
+        notes = self.make_notes()
+        with open(os.path.join(notes, "Area", "long.md"), "w") as fh:
+            fh.write("walrus pricing line\n" * 600)
+        os.utime(os.path.join(notes, "Area", "long.md"), (time.time() - 86400,) * 2)
+        self.configure(notes)
+        with open(self.paths.config_file, "a") as fh:
+            fh.write("summarize = true\n")
+        self.assertEqual(self.run_cli("ingest", "--no-summaries")[0], 0)
+        code, out = self.run_cli("summarize", "--estimate")
+        self.assertEqual(code, 0)
+        self.assertRegex(out, r"notes\s+1\s")
+
+    def test_forget_without_a_terminal_asks_for_yes(self):
+        self.configure(self.make_notes())
+        self.assertEqual(self.ingest(), 0)
+        with mock.patch.object(sys.stdin, "isatty", lambda: False):
+            self.assertEqual(self.run_cli("forget", "notes")[0], 1)
+        self.assertEqual(len(self.stored()), 1)
 
 
 class SearchAfterIngestTest(IngestCase):
