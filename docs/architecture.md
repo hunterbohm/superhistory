@@ -29,6 +29,21 @@ The Sync client goes in `kb/sync/`. It meets the engine at two points.
 - `ingest.apply(db, source, host, event)` is the one write path for read data. It stores rows under
   `<host>:<source_id>`, so two computers never write the same row, and applying an event twice changes nothing.
 
+## Where secrets are masked
+
+`mask()` in `kb/mask.py` replaces secret-looking text. kb applies it at every boundary text crosses:
+
+- Into the store: an item's title, text and metadata (only the secret-looking parts, so links and paths still
+  work), and the source's id for the item. Summary rows are masked too.
+- Out of kb: the kb command's stdout and stderr, every log line (through `masked_log`, whatever logger the caller
+  passes, plus a filter on kb's own handlers), `check.log`, the remote reader's output, recorded failures, and the
+  text of every error kb raises from outside text: AI answers, secrets, ssh, gh and git output, IMAP and Google
+  answers.
+
+Records that other code sends through its own loggers to its own handlers are that code's to mask.
+`tests/test_canary.py` plants a different secret in every kind of input, runs every command and every library entry
+point, and checks that none reaches an output. A path it misses is a new case there.
+
 ## Config keys come from dataclasses
 
 A source type's `Options` dataclass is the schema for its `[sources.NAME]` table, and an AI plug-in's `Options` is the

@@ -8,7 +8,7 @@ from typing import NamedTuple, Optional
 
 from kb import ai, store
 from kb.ai import BadAnswer, Prompt, Refused
-from kb.mask import mask
+from kb.mask import mask, masked_log
 
 MAX_INPUT_CHARS = 150_000
 SLICES = 8
@@ -217,6 +217,7 @@ def rows(item, span, segments, atoms):
 def summarize(db, items, scope, model, log, timeout=300.0):
     """Model calls run on a thread pool; every database read and write stays on this thread. A NotReady error, or a
     Busy one after its retries, stops the run and leaves the remaining items pending."""
+    log = masked_log(log)
     done = failed = 0
     now = datetime.now(timezone.utc)
     limit = min(MAX_INPUT_CHARS, model.traits.max_prompt_chars)
@@ -276,6 +277,7 @@ def summarize(db, items, scope, model, log, timeout=300.0):
 
 def run(db, config, model, log, limit=None, only=None):
     """Summarize up to `limit` pending items (the config's per_run by default), newest first."""
+    log = masked_log(log)
     rules = scope(config, only)
     backlog = pending(db, rules)
     items = backlog[:config.summarize.per_run if limit is None else limit]

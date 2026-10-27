@@ -1,4 +1,7 @@
+import logging
 import re
+import sys
+import traceback
 
 _NB = r"(?<![A-Za-z0-9])"
 SECRET_PATTERNS = [
@@ -36,7 +39,10 @@ ENV_KEY_SECRET = re.compile(r"(?<![A-Za-z0-9_])([A-Z][A-Z0-9_]*_KEY)(?![A-Za-z0-
 PASSWORD_NAME = re.compile(r"(?i)passw(?:or)?d|passcode|bw_session|[_-](?:pass|pwd|pw)$")
 PLACEHOLDERS = {"string", "str", "none", "null", "nil", "true", "false", "undefined", "required", "optional",
                 "xxx", "xxxx", "****", "...", "redacted", "<redacted>", "secret", "password", "token"}
-REFERENCE = re.compile(r"^(?:[$%{<(\[*/~]|\.\.?/|os\.|process\.|env\.|getenv|secrets\.|vars\.|self\.|this\.|[a-z]+://)|"
+# A pointer to a secret, not a secret: a variable, a path, a call, or one of kb's own env:, file: and cmd: references
+# (a token written inside a cmd: is still caught by SECRET_PATTERNS).
+REFERENCE = re.compile(r"^(?:[$%{<(\[*/~]|\.\.?/|os\.|process\.|env\.|getenv|secrets\.|vars\.|self\.|this\.|[a-z]+://|"
+                       r"(?:env|file|cmd):)|"
                        r"^[A-Za-z_]+(?:\.[A-Za-z_]+)+$|^[A-Z][A-Z_]{2,}$|^[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+$|\(")
 
 
@@ -59,6 +65,71 @@ def mask(text):
     for pattern in PREFIXED_SECRETS:
         text = pattern.sub(lambda m: m.group(1) + "[masked]", text)
     return ENV_KEY_SECRET.sub(_mask_keyed, KEYED_SECRET.sub(_mask_keyed, text))
+
+
+def mask_all(value):
+    """mask() over every string in a value of dicts, lists and strings, such as an item's metadata. Only the
+    secret-looking parts change, so a link or a path still points where it did."""
+    if isinstance(value, str):
+        return mask(value)
+    if isinstance(value, dict):
+        return {k: mask_all(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [mask_all(v) for v in value]
+    return value
+
+
+def _exc_text(exc_info):
+    if exc_info is True:
+        exc_info = sys.exc_info()
+    elif isinstance(exc_info, BaseException):
+        exc_info = (type(exc_info), exc_info, exc_info.__traceback__)
+    return "".join(traceback.format_exception(*exc_info)).rstrip() if exc_info and exc_info[0] else ""
+
+
+class MaskedLog(logging.LoggerAdapter):
+    """Logs through any logger, the caller's own included, with the message and any traceback masked first, so a
+    token in an error never reaches a handler."""
+
+    def __init__(self, logger):
+        super().__init__(logger, {})
+
+    def log(self, level, msg, *args, exc_info=None, stack_info=False, **kwargs):
+        if not self.isEnabledFor(level):
+            return
+        text = str(msg) % args if args else str(msg)
+        trace = _exc_text(exc_info)
+        self.logger.log(level, mask(text + ("\n" + trace if trace else "")), **kwargs)
+
+
+def masked_log(log):
+    return log if isinstance(log, MaskedLog) else MaskedLog(log)
+
+
+class MaskFilter(logging.Filter):
+    """Masks a record before a handler writes it: on kb's own handlers it also catches records from other code."""
+
+    def filter(self, record):
+        text = record.getMessage()
+        if record.exc_info:
+            text += "\n" + _exc_text(record.exc_info)
+        if record.stack_info:
+            text += "\n" + record.stack_info
+        record.msg, record.args, record.exc_info, record.exc_text, record.stack_info = mask(text), None, None, None, None
+        return True
+
+
+class MaskedStream:
+    """A text stream that masks each write, for the kb command's stdout and stderr."""
+
+    def __init__(self, stream):
+        self._stream = stream
+
+    def write(self, text):
+        return self._stream.write(mask(text))
+
+    def __getattr__(self, name):
+        return getattr(self._stream, name)
 
 
 def clean(text):

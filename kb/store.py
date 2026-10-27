@@ -12,7 +12,7 @@ import pathlib
 import sqlite3
 from datetime import datetime, timezone
 
-from .mask import clean, mask
+from .mask import clean, mask, mask_all
 
 CHUNK = 4000
 ITEM_KINDS = ("doc", "raw")
@@ -124,7 +124,7 @@ def store_item(db, source, source_id, ts, title, content, meta):
     under new metadata, such as a moved file, keeps its rows and summaries and takes the new metadata."""
     title, content = mask(clean(title or ""))[:300], mask(clean(content or ""))
     digest = hashlib.sha1(f"{title}\0{content}".encode()).hexdigest()[:16]
-    meta = {**meta, "hash": digest}
+    meta = {**mask_all(meta), "hash": digest}
     old = db.execute("SELECT metadata FROM docs WHERE source=? AND source_id=? AND kind IN ('doc','raw') LIMIT 1",
                      (source, source_id)).fetchone()
     if old:
@@ -184,7 +184,8 @@ def record_ok(db, unit):
 
 def record_failure(db, unit, exc):
     db.rollback()
-    set_watermark(db, STATE, f"fail:{unit}", f"{now_iso()} {str(exc).splitlines()[0][:200] if str(exc) else type(exc).__name__}")
+    line = mask(str(exc).splitlines()[0])[:200] if str(exc) else type(exc).__name__
+    set_watermark(db, STATE, f"fail:{unit}", f"{now_iso()} {line}")
     db.commit()
 
 
@@ -221,19 +222,20 @@ def last_ingest(db):
 
 
 def remask(db):
-    """Reapply mask() to every stored row, then rebuild the file so the old values leave no bytes behind."""
+    """Reapply mask() to every stored row's title, text and metadata, then rebuild the file so the old values leave no bytes behind."""
     db.execute("PRAGMA secure_delete=ON")
     changed, last = 0, 0
     while True:
-        batch = db.execute("SELECT id, title, content FROM docs WHERE id > ? ORDER BY id LIMIT 2000", (last,)).fetchall()
+        batch = db.execute("SELECT id, title, content, metadata FROM docs WHERE id > ? ORDER BY id LIMIT 2000",
+                           (last,)).fetchall()
         if not batch:
             break
         updates = []
-        for rid, title, content in batch:
-            new_title, new_content = mask(title), mask(content)
-            if (new_title, new_content) != (title, content):
-                updates.append((new_title, new_content, rid))
-        db.executemany("UPDATE docs SET title=?, content=? WHERE id=?", updates)
+        for rid, title, content, meta in batch:
+            new_title, new_content, new_meta = mask(title), mask(content), json.dumps(mask_all(json.loads(meta)))
+            if (new_title, new_content, json.loads(new_meta)) != (title, content, json.loads(meta)):
+                updates.append((new_title, new_content, new_meta, rid))
+        db.executemany("UPDATE docs SET title=?, content=?, metadata=? WHERE id=?", updates)
         db.commit()
         changed += len(updates)
         last = batch[-1][0]

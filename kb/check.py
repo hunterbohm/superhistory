@@ -16,6 +16,7 @@ from typing import NamedTuple, Optional
 
 from kb import ai, search, store
 from kb.ai import BadAnswer, Prompt
+from kb.mask import mask_all
 
 QUERY_SYSTEM = """The user types a message to one of their AI agents. You see the message and the conversation turns \
 just before it. Their knowledge base holds their past email, texts, notes, meeting notes, commits, GitHub threads \
@@ -193,7 +194,7 @@ class Seen:
 
 def write_log(path, entry):
     """One JSON line per call. It never holds the message text."""
-    line = json.dumps({"ts": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"), **entry})
+    line = json.dumps({"ts": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"), **mask_all(entry)})
     try:
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, "a", encoding="utf-8") as fh:

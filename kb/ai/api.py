@@ -160,8 +160,11 @@ class Google(_Http):
 
 def post(url, body, headers, timeout):
     """One JSON POST. HTTP and network failures become NotReady, Busy or Refused."""
-    request = urllib.request.Request(url, data=json.dumps(body).encode(), headers={**headers, "user-agent": USER_AGENT},
-                                     method="POST")
+    try:
+        request = urllib.request.Request(url, data=json.dumps(body).encode(),
+                                         headers={**headers, "user-agent": USER_AGENT}, method="POST")
+    except ValueError as e:
+        raise NotReady(f"{url} is not a usable address: {e}") from None
     try:
         with urllib.request.urlopen(request, timeout=timeout) as resp:
             return json.load(resp)

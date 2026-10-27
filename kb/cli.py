@@ -5,10 +5,12 @@ import os
 import sqlite3
 import sys
 import time
+import traceback
 from datetime import datetime, timezone
 
 from kb import NAME, __version__, ai, check, config as config_mod, ingest, search, store, summarize
 from kb.ai import AIError
+from kb.mask import MaskFilter, MaskedStream, masked_log
 from kb.paths import Paths
 
 PAGE = 20000
@@ -141,12 +143,14 @@ def _logger(paths):
     os.makedirs(paths.log_dir, exist_ok=True)
     log = logging.getLogger("kb")
     log.setLevel(logging.INFO)
+    log.propagate = False
     if not log.handlers:
         fmt = logging.Formatter("%(asctime)s %(levelname)s %(message)s")
         for handler in (logging.FileHandler(paths.log("ingest")), logging.StreamHandler()):
             handler.setFormatter(fmt)
+            handler.addFilter(MaskFilter())
             log.addHandler(handler)
-    return log
+    return masked_log(log)
 
 
 def cmd_ingest(paths, config, args):
@@ -292,6 +296,19 @@ def parser():
 
 
 def main(argv=None):
+    """Everything the command prints goes through mask(), on top of the masking where text enters kb."""
+    out, err = sys.stdout, sys.stderr
+    sys.stdout, sys.stderr = MaskedStream(out), MaskedStream(err)
+    try:
+        return _main(argv)
+    except Exception:
+        sys.stderr.write(traceback.format_exc())
+        return 1
+    finally:
+        sys.stdout, sys.stderr = out, err
+
+
+def _main(argv=None):
     args = parser().parse_args(argv)
     paths = Paths.for_user()
     try:

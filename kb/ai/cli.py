@@ -82,9 +82,12 @@ def run(call, workdir, timeout, program):
     env = {k: v for k, v in os.environ.items() if not SCRUB.search(k)}
     env.update(call.env)
     env[NESTED_ENV] = "1"
-    proc = subprocess.Popen(call.argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                            cwd=workdir, env=env, start_new_session=True, text=True, encoding="utf-8",
-                            errors="replace")
+    try:
+        proc = subprocess.Popen(call.argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                cwd=workdir, env=env, start_new_session=True, text=True, encoding="utf-8",
+                                errors="replace")
+    except OSError as e:
+        raise NotReady(f"{program} did not start: {e}") from None
     _running.add(proc)
     try:
         out, err = proc.communicate(call.stdin, timeout=max(timeout, 0.1))

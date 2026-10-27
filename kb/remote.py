@@ -11,6 +11,7 @@ import sys
 import tempfile
 
 import kb
+from kb.mask import mask, mask_all
 from kb.sources import Gone, Item, Progress
 
 # What ssh prints when the computer is off the network, as when a laptop sleeps. A refused login is a fault.
@@ -65,7 +66,8 @@ def script(request):
 
 def encode(event):
     if isinstance(event, Item):
-        return json.dumps(event._asdict())
+        return json.dumps({**event._asdict(), "title": mask(event.title), "content": mask(event.content),
+                           "meta": mask_all(event.meta)})
     if isinstance(event, Gone):
         return json.dumps({"source_id": event.source_id, "delete": True, "mark": event.mark})
     return json.dumps({"mark": event.mark})
@@ -75,7 +77,7 @@ def decode(line):
     """An event from one line a remote run printed. Raises ValueError on anything else."""
     data = json.loads(line)
     if not isinstance(data, dict) or "mark" not in data:
-        raise ValueError(f"not an event: {line[:200]!r}")
+        raise ValueError(mask(f"not an event: {line[:200]!r}"))
     if set(data) == {"mark"}:
         return Progress(data["mark"])
     if data.get("delete") is True and isinstance(data.get("source_id"), str):
@@ -83,7 +85,7 @@ def decode(line):
     try:
         return Item(**data)
     except TypeError:
-        raise ValueError(f"not an event: {line[:200]!r}") from None
+        raise ValueError(mask(f"not an event: {line[:200]!r}")) from None
 
 
 def serve(request):
@@ -95,12 +97,12 @@ def serve(request):
     from kb.sources import Excludes, Run
     kind = importlib.import_module(f"kb.sources.{request['type']}").TYPE
     if sys.platform not in kind.platforms:
-        sys.stderr.write(f"the {request['type']} source runs only on {', '.join(sorted(kind.platforms))}\n")
+        sys.stderr.write(mask(f"the {request['type']} source runs only on {', '.join(sorted(kind.platforms))}\n"))
         return 3
     problems = []
     options = config.options_from(kind.Options, request["options"], "options", problems)
     if problems:
-        sys.stderr.write("\n".join(problems) + "\n")
+        sys.stderr.write(mask("\n".join(problems)) + "\n")
         return 3
     run = Run(options, Excludes(request["exclude"]), request["since"])
     if request["verb"] == "live_ids":
@@ -148,4 +150,5 @@ class SshReader:
                 err.seek(0)
                 stderr = err.read().decode(errors="replace")[-STDERR_TAIL:]
                 away = proc.returncode == 255 and OFF_NETWORK.search(stderr)
-                raise (HostAway if away else RuntimeError)(f"ssh {self.host.name} exited {proc.returncode}: {stderr}")
+                failed = mask(f"ssh {self.host.name} exited {proc.returncode}: {stderr}")
+                raise (HostAway if away else RuntimeError)(failed)

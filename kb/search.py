@@ -3,6 +3,7 @@ import math
 import re
 from datetime import datetime, timezone
 
+from kb.mask import mask
 from kb.store import SUMMARY_KINDS
 
 STOPWORDS = set("""a an and are as at be been but by can could did do does doing for from had has have
@@ -121,4 +122,4 @@ def pointer(meta, machine=None):
     host = meta.get("host")
     if host and host != machine and meta.get("path") and where == meta.get("path"):
         where = f"{host}:{where}"
-    return where
+    return mask(where)

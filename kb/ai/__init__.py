@@ -11,6 +11,8 @@ import threading
 import time
 from typing import Any, Callable, NamedTuple, Optional
 
+from kb.mask import mask
+
 
 class Prompt(NamedTuple):
     system: str
@@ -26,7 +28,10 @@ class Traits(NamedTuple):
 
 
 class AIError(Exception):
-    pass
+    """Its message is masked, because it can quote a provider's answer or a CLI's error output."""
+
+    def __init__(self, message="", *args):
+        super().__init__(mask(str(message)), *args)
 
 
 class NotReady(AIError):

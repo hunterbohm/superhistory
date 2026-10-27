@@ -8,6 +8,7 @@ import sys
 import time
 
 from kb import ai, store, summarize
+from kb.mask import mask, masked_log
 from kb.remote import HostAway, SshReader
 from kb.sources import Excludes, Gone, Item, Progress, Run
 
@@ -44,11 +45,11 @@ class LocalReader:
 
 
 def apply(db, source, host, event):
-    """Stores the event under the id "<host>:<source_id>". Applying an event twice changes nothing the second time.
-    Returns True when rows changed."""
+    """Stores the event under the id "<host>:<source_id>", masked like the text: an id such as a file name can hold a
+    token. Applying an event twice changes nothing the second time. Returns True when rows changed."""
     if isinstance(event, Progress):
         return False
-    sid = f"{host}:{event.source_id}"
+    sid = f"{host}:{mask(event.source_id)}"
     if isinstance(event, Gone):
         return store.delete_item(db, source, sid) > 0
     return store.store_item(db, source, sid, event.ts, event.title, event.content, {**event.meta, "host": host})
@@ -89,7 +90,7 @@ def run_unit(db, source, host, reader, log):
             continue
         try:
             if not isinstance(event, (Item, Gone)):
-                raise TypeError(f"not an event: {event!r}")
+                raise TypeError(mask(f"not an event: {event!r}"))
             changed += apply(db, source.name, host, event)
         except Exception as exc:
             log.warning("%s@%s: skipped %s: %s", source.name, host, getattr(event, "source_id", "?"), exc)
@@ -101,7 +102,7 @@ def run_unit(db, source, host, reader, log):
     pruned = 0
     if source.type.live_ids:
         db.commit()
-        live = {f"{host}:{sid}" for sid in reader.live_ids(source)}
+        live = {f"{host}:{mask(sid)}" for sid in reader.live_ids(source)}
         stored = [] if not live else [r[0] for r in db.execute(
             "SELECT DISTINCT source_id FROM docs WHERE source=? AND substr(source_id, 1, ?) = ?",
             (source.name, len(host) + 1, f"{host}:"))]
@@ -119,6 +120,7 @@ def run_unit(db, source, host, reader, log):
 def run(db, config, log, only=(), with_summaries=True, model_factory=None):
     """Every configured source, or those named in `only`, then summaries for new long items. Returns the number of
     failures. The caller holds the database lock."""
+    log = masked_log(log)
     model_factory = model_factory or (lambda: ai.load(config.ai))
     local = LocalReader(model_factory)
     remote = {h.name: SshReader(h) for h in config.hosts}
