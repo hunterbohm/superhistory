@@ -4,7 +4,6 @@ Each store is a folder laid out as `Paths.under(folder)`, so kb's own `search` a
 printed output is caught per thread. The check's model is the package's Anthropic-compatible plug-in, pointed at the
 benchmark's endpoint.
 """
-import argparse
 import hashlib
 import json
 import logging
@@ -196,15 +195,16 @@ class Store:
     def call(self, name, args):
         """Run `kb search` or `kb get` against this store. Returns the printed text and the source_ids shown."""
         if name == "kb_search":
-            command, ns = cli.cmd_search, argparse.Namespace(query=str(args.get("query", "")), after=None,
-                                                              source=None, limit=10)
+            argv = ["search", "--", str(args.get("query", ""))]
         elif name == "kb_get":
-            command, ns = cli.cmd_get, argparse.Namespace(id=int(args.get("id", 0)), offset=int(args.get("offset") or 0))
+            offset = args.get("offset")
+            argv = ["get", str(int(args.get("id", 0)))] + ([] if offset is None else ["--offset", str(int(offset))])
         else:
             raise KeyError(name)
+        ns = cli.parser().parse_args(argv)
         _local.out = _Buffer()
         try:
-            command(self.paths, CONFIG, ns)
+            ns.fn(self.paths, CONFIG, ns)
         except cli.Fail as exc:
             print(f"kb: {exc}")
         finally:

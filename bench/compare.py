@@ -62,7 +62,7 @@ def main(argv=None):
     p.add_argument("--split", choices=("dev", "test"), default="dev")
     p.add_argument("--slice", action="store_true")
     args = p.parse_args(argv)
-    noise = args.noise.split(",") if args.split == "dev" else []
+    noise = [n for n in args.noise.split(",") if n] if args.split == "dev" else []
     lines = ["| Run | " + " | ".join(TESTS) + " |", "|---" * (len(TESTS) + 1) + "|"]
     band = {}
     for test, where in TESTS.items():
