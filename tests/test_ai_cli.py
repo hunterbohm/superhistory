@@ -15,7 +15,6 @@ from kb.paths import Paths
 
 WATCHED = ("ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL", "CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT", "OPENAI_API_KEY",
            "CODEX_HOME", "COPILOT_HOME", "XAI_API_KEY", "KB_NESTED", "HOME")
-# Stands in for an agent CLI: records how it was called, then answers as FAKE_MODE says.
 FAKE_CLI = """#!{python}
 import json, os, subprocess, sys, time
 args = sys.argv[1:]

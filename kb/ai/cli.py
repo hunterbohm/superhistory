@@ -1,10 +1,3 @@
-"""Plug-ins that run an agent CLI the user has installed and signed in to, one process per call. The CLI uses its own
-sign-in; nothing here reads, relays or stores it.
-
-Each call runs in a new temp folder, with the variables that would send the CLI to a paid API key, another server or the
-agent session that started kb removed, and with KB_NESTED set, so the user's own prompt hook does not run the check
-again inside the call. The CLIs' options that keep no session or transcript are on.
-"""
 import atexit
 import os
 import re
@@ -19,38 +12,35 @@ from urllib.parse import quote
 from kb.ai import Busy, NotReady, PluginSpec, Traits
 
 NESTED_ENV = "KB_NESTED"
-# Session sources leave out sessions whose working folder starts with this, in case a CLI keeps one anyway.
 WORKDIR_PREFIX = "kb-ai-"
-# A CLI starts in seconds, so the check waits longer and sends no duplicate call.
 TRAITS = Traits(check_budget=20.0, hedge_after=None, parallel=2, max_prompt_chars=150_000)
 SCRUB = re.compile(r"^(ANTHROPIC_|OPENAI_|CLAUDE_CODE_|CLAUDECODE$|XAI_|GROK_SESSION|CODEX_(?!HOME$))")
 SIGNED_OUT = re.compile(r"(?i)not (logged|signed) in|(log|sign) ?in again|please (log|sign) ?in|authenticat|unauthori[sz]ed|"
                         r"session expired|token (has )?expired")
 _running = set()
-# Cleanups of calls still in flight, run at exit too: a check that gives up at its deadline exits while a call runs.
 _in_flight = {}
 
 
 @dataclass(frozen=True)
 class CliOptions:
-    binary: str = ""    # default: the program found on PATH
-    model: str = ""     # default: the CLI's own small model, or its default
+    binary: str = ""
+    model: str = ""
 
 
 class Call(NamedTuple):
     argv: list
     stdin: str
     env: dict
-    answer_file: Optional[str] = None   # where the CLI writes its answer, when stdout holds other output
+    answer_file: Optional[str] = None
 
 
 class CliSpec(NamedTuple):
     name: str
     label: str
     program: str
-    build: Callable[[str, CliOptions, object, str], Call]   # binary, options, prompt, workdir
+    build: Callable[[str, CliOptions, object, str], Call]
     default_model: str = "default"
-    cleanup: Optional[Callable[[str], None]] = None          # removes what the CLI left for this workdir
+    cleanup: Optional[Callable[[str], None]] = None
     max_prompt_chars: int = 150_000
     check_budget: float = TRAITS.check_budget
     hidden: bool = False
@@ -108,7 +98,6 @@ def run(call, workdir, timeout, program):
 
 
 def _kill(proc, reap=True):
-    """Stops the CLI and everything it started, so a call that ran out of time leaves nothing running."""
     try:
         os.killpg(proc.pid, signal.SIGKILL)
     except OSError:
@@ -189,7 +178,6 @@ SPECS = (
             cleanup=_grok_cleanup, check_budget=25.0),
     # The prompt goes on the command line, which Linux caps at 128 KiB for one argument.
     CliSpec("copilot", "GitHub Copilot (copilot -p, your login)", "copilot", _copilot, max_prompt_chars=100_000),
-    # Off until Cursor confirms its rules allow this use; `allow_unconfirmed = true` under [ai] turns it on.
     CliSpec("cursor", "Cursor (cursor-agent -p, your login)", "cursor-agent", _cursor, max_prompt_chars=100_000,
             hidden=True),
 )

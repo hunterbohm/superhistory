@@ -15,6 +15,7 @@ import time
 from dataclasses import dataclass
 from typing import Tuple
 
+from kb.ai.cli import WORKDIR_PREFIX
 from kb.sources import Gone, Item, Progress, SourceType, home_key
 
 
@@ -250,5 +251,4 @@ def extract(run):
     yield Progress(started)
 
 
-# Sessions the AI plug-ins start run in folders named kb-ai-*; they are kb's own calls, not the user's work.
-TYPE = SourceType(Options, extract, exclude=("kb-ai-*",))
+TYPE = SourceType(Options, extract, exclude=(WORKDIR_PREFIX + "*",))
