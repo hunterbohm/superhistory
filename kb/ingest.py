@@ -1,8 +1,12 @@
+"""Reads every configured source on every host it names and stores what changed. A failing source is recorded and
+skipped. A reader reads one source on one host: LocalReader on this computer, SshReader on another, and the Sync
+client's reader for a computer whose rows arrive through Sync."""
 import json
 import sys
 import time
 
 from kb import ai, store, summarize
+from kb.remote import HostAway, SshReader
 from kb.sources import Excludes, Gone, Item, Progress, Run
 
 COMMIT_EVERY = 200
@@ -89,17 +93,29 @@ def run(db, config, log, only=(), with_summaries=True, model_factory=None):
     """Every configured source, or those named in `only`, then summaries for new long items. Returns the number of
     failures. The caller holds the database lock."""
     model_factory = model_factory or (lambda: ai.load(config.ai))
-    reader = LocalReader(model_factory)
+    local = LocalReader(model_factory)
+    remote = {h.name: SshReader(h) for h in config.hosts}
+    away = set()
     failures = 0
     for source in config.sources:
         if only and source.name not in only:
             continue
-        try:
-            run_unit(db, source, config.machine, reader, log)
-        except Exception as exc:
-            log.exception("%s@%s failed", source.name, config.machine)
-            store.record_failure(db, f"{source.name}@{config.machine}", exc)
-            failures += 1
+        for host in source.hosts:
+            if host in away:
+                continue
+            unit = f"{source.name}@{host}"
+            try:
+                run_unit(db, source, host, local if host == config.machine else remote[host], log)
+            except HostAway:
+                db.rollback()
+                away.add(host)
+                store.record_away(db, host)
+                db.commit()
+                log.info("%s is unreachable, probably asleep; its sources wait until it is back", host)
+            except Exception as exc:
+                log.exception("%s failed", unit)
+                store.record_failure(db, unit, exc)
+                failures += 1
     store.set_watermark(db, store.STATE, "last_ingest", store.now_iso())
     db.commit()
     if with_summaries and config.summarize.enabled and config.ai:

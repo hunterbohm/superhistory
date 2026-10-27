@@ -14,6 +14,9 @@
     path = "~/Notes"
     exclude = ["Journal"]         # added to the type's default excludes
     summarize = ["Meetings/**"]   # true, false, or the globs whose items get summaries
+    hosts = ["laptop"]            # where to read it; default: this computer
+    [hosts.laptop]                # another computer, read over SSH
+    ssh = "sam@laptop.local"
 
 A source type's Options dataclass, and a plug-in's, is the only schema for its keys: options_from() reads its fields.
 """
@@ -26,7 +29,7 @@ from dataclasses import dataclass
 from typing import Any, Optional, Tuple
 
 NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,39}$")
-SOURCE_KEYS = {"type", "enabled", "exclude", "exclude_defaults", "summarize"}
+SOURCE_KEYS = {"type", "enabled", "exclude", "exclude_defaults", "summarize", "hosts"}
 MAX_CHECK_BUDGET = 25.0
 
 
@@ -89,6 +92,14 @@ class Summarize:
 
 
 @dataclass(frozen=True)
+class Host:
+    """Another computer, reached with `ssh <ssh> <python> -`. It needs Python 3.9 or newer and nothing installed."""
+    name: str
+    ssh: str
+    python: str = "python3"
+
+
+@dataclass(frozen=True)
 class Source:
     name: str
     type_name: str
@@ -96,6 +107,7 @@ class Source:
     options: Any
     exclude: Tuple[str, ...]
     summarize: Summarize
+    hosts: Tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -129,13 +141,17 @@ class Config:
     summarize: SummarizeSettings = SummarizeSettings()
     schedule: Schedule = Schedule()
     sources: Tuple[Source, ...] = ()
+    hosts: Tuple[Host, ...] = ()
 
     def source(self, name):
         return next((s for s in self.sources if s.name == name), None)
 
+    def host(self, name):
+        return next((h for h in self.hosts if h.name == name), None)
+
     def units(self):
         """Every health unit this config owns."""
-        return tuple(f"{s.name}@{self.machine}" for s in self.sources) + ("summarize",)
+        return tuple(f"{s.name}@{h}" for s in self.sources for h in s.hosts) + ("summarize",)
 
 
 def read_toml(text):
@@ -166,7 +182,7 @@ def parse(text):
     if not isinstance(machine, str) or not NAME_RE.match(machine):
         problems.append("machine: use lowercase letters, digits, - and _, up to 40 characters")
         machine = "local"
-    tables = {key: raw.pop(key, {}) for key in ("ai", "check", "summarize", "schedule", "sources")}
+    tables = {key: raw.pop(key, {}) for key in ("ai", "check", "summarize", "schedule", "hosts", "sources")}
     problems += [f"{key}: unknown key" for key in raw]
     for key, value in tables.items():
         if not isinstance(value, dict):
@@ -178,14 +194,25 @@ def parse(text):
     summarize = options_from(SummarizeSettings, tables["summarize"], "summarize", problems)
     schedule = options_from(Schedule, tables["schedule"], "schedule", problems)
     ai = _ai(tables["ai"], problems)
+    hosts = []
+    for name, table in tables["hosts"].items():
+        if name == machine or not NAME_RE.match(name):
+            problems.append(f"hosts.{name}: a host name differs from machine and uses lowercase letters, digits, - and _")
+        elif not isinstance(table, dict):
+            problems.append(f"hosts.{name}: expected a table")
+        else:
+            fields = options_from(_HostFields, table, f"hosts.{name}", problems)
+            if fields:
+                hosts.append(Host(name, fields.ssh, fields.python))
+    known = {machine} | {h.name for h in hosts}
     sources = []
     for name, table in tables["sources"].items():
-        source = _source(name, table, problems)
+        source = _source(name, table, machine, known, problems)
         if source:
             sources.append(source)
     if problems:
         raise ConfigError(problems)
-    return Config(machine, ai, check, summarize, schedule, tuple(sources))
+    return Config(machine, ai, check, summarize, schedule, tuple(sources), tuple(hosts))
 
 
 def _ai(table, problems):
@@ -201,7 +228,7 @@ def _ai(table, problems):
     return AISettings(plugin, options) if options is not None else None
 
 
-def _source(name, table, problems):
+def _source(name, table, machine, known_hosts, problems):
     from kb import sources
     where = f"sources.{name}"
     if not NAME_RE.match(name):
@@ -228,7 +255,20 @@ def _source(name, table, problems):
     else:
         summarize = Summarize(False, common.summarize)
     exclude = (kind.exclude if common.exclude_defaults else ()) + common.exclude
-    return Source(name, type_name, kind, options, exclude, summarize)
+    hosts = common.hosts or (machine,)
+    for host in hosts:
+        if host not in known_hosts:
+            problems.append(f"{where}.hosts: {host} is neither machine nor a [hosts.{host}] table")
+        elif host != machine and not remote_ok(kind):
+            problems.append(f"{where}.hosts: a {type_name} source runs only on this computer, because it holds a "
+                            "secret or calls the AI")
+    return Source(name, type_name, kind, options, exclude, summarize, hosts)
+
+
+def remote_ok(kind):
+    """A type may run on another computer when it needs no AI and its options hold no secret, so no key leaves here."""
+    hints = typing.get_type_hints(kind.Options)
+    return not kind.needs_model and not any(Secret in (hint, *typing.get_args(hint)) for hint in hints.values())
 
 
 @dataclass(frozen=True)
@@ -237,6 +277,13 @@ class _Common:
     exclude: Tuple[str, ...] = ()
     exclude_defaults: bool = True
     summarize: typing.Union[bool, Tuple[str, ...], None] = None
+    hosts: Tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class _HostFields:
+    ssh: str
+    python: str = "python3"
 
 
 def options_from(cls, raw, where, problems):
