@@ -8,7 +8,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from kb import ai, config, setup
+from kb import agents, ai, config, setup
 from kb.ai import cli as ai_cli
 from kb.paths import Paths
 
@@ -357,7 +357,8 @@ class HooksTest(SetupCase):
     def test_no_agent_found_means_no_question_and_no_hook(self):
         for folder in (".claude/projects", ".claude"):
             (self.home / folder).rmdir()
-        result, output, asked = self.run_setup(["sam", "yes", "", "", "", "yes", "no"])
+        with mock.patch.object(agents, "names", lambda: ()):
+            result, output, asked = self.run_setup(["sam", "yes", "", "", "", "yes", "no"])
         self.assertEqual(self.asked_about(asked, "hook"), [])
         self.assertFalse(result.hooks)
         self.assertTrue(result.schedule)
