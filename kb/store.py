@@ -17,6 +17,9 @@ from .mask import clean, mask
 CHUNK = 4000
 ITEM_KINDS = ("doc", "raw")
 SUMMARY_KINDS = ("segment", "atom")
+CHUNK_KEYS = ("chunk", "chunks")
+# The metadata a summary row copies from its item, so a search hit on a summary points at the original.
+POINTER_KEYS = ("url", "path", "host")
 STATE = "_kb"
 
 SCHEMA = """
@@ -117,15 +120,20 @@ def delete_item(db, source, source_id):
 
 
 def store_item(db, source, source_id, ts, title, content, meta):
-    """Store one item as a `doc` row, or as `raw` chunks when long. Returns False when nothing changed."""
+    """Store one item as a `doc` row, or as `raw` chunks when long. Returns False when nothing changed. The same text
+    under new metadata, such as a moved file, keeps its rows and summaries and takes the new metadata."""
     title, content = mask(clean(title or ""))[:300], mask(clean(content or ""))
     digest = hashlib.sha1(f"{title}\0{content}".encode()).hexdigest()[:16]
-    old = db.execute(
-        "SELECT json_extract(metadata, '$.hash') FROM docs WHERE source=? AND source_id=? AND kind IN ('doc','raw') LIMIT 1",
-        (source, source_id)).fetchone()
-    if old and old[0] == digest:
-        return False
     meta = {**meta, "hash": digest}
+    old = db.execute("SELECT metadata FROM docs WHERE source=? AND source_id=? AND kind IN ('doc','raw') LIMIT 1",
+                     (source, source_id)).fetchone()
+    if old:
+        stored = {k: v for k, v in json.loads(old[0]).items() if k not in CHUNK_KEYS}
+        if stored == meta:
+            return False
+        if stored.get("hash") == digest:
+            _repoint(db, source, source_id, meta)
+            return True
     parts = chunk(content)
     if len(parts) == 1:
         rows = [{"kind": "doc", "ts": ts, "title": title, "content": content, "metadata": meta}]
@@ -136,6 +144,19 @@ def store_item(db, source, source_id, ts, title, content, meta):
         kinds = ITEM_KINDS
     replace_rows(db, source, source_id, rows, kinds)
     return True
+
+
+def _repoint(db, source, source_id, meta):
+    """Give an item's rows new metadata without touching their text, so its summaries stay current."""
+    for rid, kind, old in db.execute("SELECT id, kind, metadata FROM docs WHERE source=? AND source_id=?",
+                                     (source, source_id)).fetchall():
+        old = json.loads(old)
+        if kind in ITEM_KINDS:
+            new = {**meta, **{k: old[k] for k in CHUNK_KEYS if k in old}}
+        else:
+            new = {k: v for k, v in old.items() if k not in POINTER_KEYS}
+            new.update((k, meta[k]) for k in POINTER_KEYS if k in meta)
+        db.execute("UPDATE docs SET metadata=? WHERE id=?", (json.dumps(new), rid))
 
 
 def item_rows(db, rid):

@@ -85,24 +85,27 @@ def _prefix(text, end):
 
 
 def waits(chars, previous, now):
-    """Whether a changed item of `chars` chars waits: it grew by under MIN_NEW_CHARS since its latest pass, which
-    recorded `prefix` and is under RESUMMARY_HOURS old."""
+    """Whether a changed item of `chars` chars may wait: it grew by under MIN_NEW_CHARS since its latest pass, which
+    recorded `prefix` and is under RESUMMARY_HOURS old. It waits only if its earlier text is unchanged (extends())."""
     if previous is None or "prefix" not in previous:
         return False
     age = now - datetime.fromisoformat(previous["at"].replace("Z", "+00:00"))
     return 0 < chars - previous["of_chars"] < MIN_NEW_CHARS and age < timedelta(hours=RESUMMARY_HOURS)
 
 
+def extends(text, previous):
+    """Whether `text` is the latest pass's text, unchanged, with more after it."""
+    end = previous["of_chars"]
+    return len(text) > end and _prefix(text, end) == previous["prefix"]
+
+
 def plan(text, previous, now):
     """Where the next pass over a changed item starts: None to wait, 0 for a full pass, or the latest pass's
     `of_chars` for an append pass. `previous` is that pass's row metadata, or None. Only text that extends the
-    latest pass's text unchanged gets an append pass."""
-    if waits(len(text), previous, now):
-        return None
-    if previous is None or "prefix" not in previous:
+    latest pass's text unchanged gets an append pass, or waits."""
+    if previous is None or "prefix" not in previous or not extends(text, previous):
         return 0
-    end = previous["of_chars"]
-    return end if len(text) > end and _prefix(text, end) == previous["prefix"] else 0
+    return None if waits(len(text), previous, now) else previous["of_chars"]
 
 
 def pending(db, scope, limit=None):
@@ -129,7 +132,8 @@ def pending(db, scope, limit=None):
     items = (Item(src, sid, ts, title, h, json.loads(meta), chars, json.loads(previous) if previous else None)
              for src, sid, ts, title, h, meta, chars, previous in db.execute(sql, names))
     return list(itertools.islice((i for i in items if scope.covers(i.source, i.source_id)
-                                  and not waits(i.chars, i.previous, now)), limit))
+                                  and not (waits(i.chars, i.previous, now) and extends(item_text(db, i), i.previous))),
+                                 limit))
 
 
 def item_text(db, item):
@@ -195,7 +199,7 @@ def parse(text, allowed=ATOM_TYPES):
 
 
 def rows(item, span, segments, atoms):
-    meta = {k: item.meta[k] for k in ("url", "path", "host") if k in item.meta}
+    meta = {k: item.meta[k] for k in store.POINTER_KEYS if k in item.meta}
     meta["of_hash"] = item.of_hash
     meta.update(span)
     meta["at"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")

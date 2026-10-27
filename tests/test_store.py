@@ -1,3 +1,4 @@
+import json
 import os
 import random
 import sqlite3
@@ -254,6 +255,35 @@ class StoreItemTest(TempDB):
         store.set_watermark(self.db, "t", "k", "3")
         self.assertEqual([store.get_watermark(self.db, *sk) for sk in (("s", "k"), ("s", "other"), ("t", "k"))],
                          ["1", "2", "3"])
+
+
+class MovedItemTest(TempDB):
+    def metas(self, kind):
+        return [json.loads(r[5]) for r in self.rows(kind=kind)]
+
+    def test_a_moved_file_points_to_its_new_path(self):
+        self.add("a", "same words", meta={"path": "/old/Notes/a.md"})
+        self.assertTrue(self.add("a", "same words", meta={"path": "/new/Notes/a.md"}))
+        self.assertEqual([m["path"] for m in self.metas("doc")], ["/new/Notes/a.md"])
+        self.assertFalse(self.add("a", "same words", meta={"path": "/new/Notes/a.md"}))
+
+    def test_a_moved_long_item_keeps_its_summaries_and_points_them_to_the_new_path(self):
+        body = long_body("pelican")
+        self.add("a", body, meta={"path": "/old/a.md", "url": "obsidian://old"})
+        store.replace_rows(self.db, "s", "a", [
+            {"kind": "segment", "ts": iso(), "title": "seg", "content": "pelican summary",
+             "metadata": {"path": "/old/a.md", "url": "obsidian://old", "of_hash": "h1"}}], ())
+        self.db.commit()
+        self.assertTrue(self.add("a", body, meta={"path": "/new/a.md"}))
+        raw = self.metas("raw")
+        self.assertEqual({m["path"] for m in raw}, {"/new/a.md"})
+        self.assertEqual(sorted(m["chunk"] for m in raw), list(range(len(raw))))
+        self.assertFalse(any("url" in m for m in raw))
+        segment, = self.metas("segment")
+        self.assertEqual((segment["path"], segment["of_hash"]), ("/new/a.md", "h1"))
+        self.assertNotIn("url", segment)
+        self.assert_fts_consistent()
+        self.assertEqual(len(self.fts_ids("pelican")), 2)
 
 
 class HealthTest(TempDB):

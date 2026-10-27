@@ -219,6 +219,14 @@ class SummarizeTest(unittest.TestCase):
                 self.assertEqual([(r[0], r[2]) for r in self.summary_rows()], [("segment", f"Redone {n}")])
                 self.assertEqual((meta["from_chars"], meta["of_chars"]), (0, len(text)))
 
+    def test_edited_earlier_text_with_small_growth_gets_a_full_pass_without_waiting(self):
+        self.run_once(FakeModel(summary_text()))
+        text = self.grow(long_text("alpha").replace("alpha line 0:", "edited line 0:") + "x" * 25)
+        self.assertEqual(self.pending_ids(), ["test:s1"])
+        sent, meta = self.run_titled("Redone")
+        self.assertIn(text, sent)
+        self.assertEqual((meta["from_chars"], meta["of_chars"]), (0, len(text)))
+
     def test_rows_without_prefix_get_a_full_pass_on_the_next_change(self):
         self.run_once(FakeModel(summary_text()))
         text = long_text("alpha")

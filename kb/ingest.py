@@ -73,7 +73,8 @@ def run_unit(db, source, host, reader, log):
         db.commit()
         live = {f"{host}:{sid}" for sid in reader.live_ids(source)}
         stored = [] if not live else [r[0] for r in db.execute(
-            "SELECT DISTINCT source_id FROM docs WHERE source=? AND source_id LIKE ?", (source.name, f"{host}:%"))]
+            "SELECT DISTINCT source_id FROM docs WHERE source=? AND substr(source_id, 1, ?) = ?",
+            (source.name, len(host) + 1, f"{host}:"))]
         for sid in stored:
             if sid not in live:
                 store.delete_item(db, source.name, sid)

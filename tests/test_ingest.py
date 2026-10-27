@@ -241,6 +241,13 @@ class PruneTest(IngestCase):
         self.assertEqual(self.ids("fake"), ["m2:z"])
         self.assertEqual(self.ids("other"), ["m1:a"])
 
+    def test_pruning_one_host_leaves_a_host_whose_name_differs_by_a_wildcard_character(self):
+        store.store_item(self.db, "fake", "acb:z", TS, "other host", "other host body", {})
+        store.store_item(self.db, "fake", "a%b:z", TS, "other host", "other host body", {})
+        self.db.commit()
+        self.run_unit(Script(events=[item("a")], live=["a"]), host="a_b")
+        self.assertEqual(self.ids("fake"), ["a%b:z", "a_b:a", "acb:z"])
+
     def test_an_empty_listing_prunes_nothing(self):
         script = Script(events=[item("a"), item("b")], live=["a", "b"])
         self.run_unit(script)
