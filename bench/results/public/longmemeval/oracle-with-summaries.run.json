@@ -1,0 +1,58 @@
+{
+ "runs": [
+  {
+   "test": "longmemeval",
+   "set": "oracle",
+   "data_revision": "98d7416c24c778c2fee6e6f3006e7a073259d48f",
+   "data_sha256": "821a2034d219ab45846873dd14c14f12cfe7776e73527a483f9dac095d38620c",
+   "judge_model": "gpt-6.1-sol",
+   "questions": 500,
+   "planned": {
+    "questions": 500,
+    "stores": 500,
+    "summary calls (one per long item)": 925,
+    "check calls (at most 2 per question it searches for)": 978,
+    "questions the check skips as too short": 11,
+    "answer calls (1 to 5 per question)": "500 to 2500",
+    "judge calls": 500
+   },
+   "started": "2026-10-27T08:15:41Z",
+   "seconds": 862,
+   "summaries": true,
+   "answer_model": "claude-sonnet-5-5",
+   "check_code": "32456fbb48ad1e7d",
+   "check_prompts": "the product's wording, kb/check.py on repo/package at 18a4335",
+   "workers": 10,
+   "ran": 500,
+   "failed": 0,
+   "failures": []
+  },
+  {
+   "test": "longmemeval",
+   "set": "oracle",
+   "data_revision": "98d7416c24c778c2fee6e6f3006e7a073259d48f",
+   "data_sha256": "821a2034d219ab45846873dd14c14f12cfe7776e73527a483f9dac095d38620c",
+   "judge_model": "gpt-6.1-sol",
+   "questions": 500,
+   "planned": {
+    "questions": 500,
+    "stores": 500,
+    "summary calls (one per long item)": 925,
+    "check calls (at most 2 per question it searches for)": 978,
+    "questions the check skips as too short": 11,
+    "answer calls (1 to 5 per question)": "500 to 2500",
+    "judge calls": 500
+   },
+   "started": "2026-10-27T08:32:17Z",
+   "seconds": 36,
+   "summaries": true,
+   "answer_model": "claude-sonnet-5-5",
+   "check_code": "32456fbb48ad1e7d",
+   "check_prompts": "the product's wording, kb/check.py on repo/package at 18a4335",
+   "workers": 4,
+   "ran": 1,
+   "failed": 0,
+   "failures": []
+  }
+ ]
+}
