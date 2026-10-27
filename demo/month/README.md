@@ -59,3 +59,11 @@ python3 bench/month/build.py --check   # rebuild in memory, validate, and fail i
 The build fails when an evidence item lacks a phrase its answer depends on, when a `none` question's subject shows
 up anywhere in the month, when two items share an id, or when a denied word appears. To also check against a list
 of real names kept outside the repository, pass `--deny FILE`.
+
+## Changes
+
+- 2026-10-27, agreed with the coordinator. Two auditors who saw only the questions, gold answers and cited items
+  checked all 171 questions. The first found nothing contradicted or ambiguous. The second looked for gold answers
+  that leave out a qualification their own evidence states, and two gained one: har-01 (a reminder that would land on
+  a Sunday goes out Saturday at 10:00) and cop-22 (Bluestem also needs `vertical_strategy: lines`). Every saved
+  run's answers to them were graded again; `bench/results/regrades.tsv` holds before and after.

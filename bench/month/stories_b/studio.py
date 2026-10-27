@@ -398,7 +398,8 @@ A: Done. I'll remind you Monday October 5 at 9:00 to reply to Priya about a Janu
     s.ask(
         Q("b5-01", "single", "Why were replayed Stripe events failing in hookbox?",
           "Replay forwarded only Content-Type and User-Agent, so the Stripe-Signature header was dropped. It now "
-          "forwards every recorded header except Host and Content-Length (fixed in 0.8.1).",
+          "forwards every recorded header except Host, Content-Length and the hop-by-hop headers Connection, "
+          "Transfer-Encoding and Keep-Alive (fixed in 0.8.1).",
           ("b5-gh-41", "b5-claude-replay", "b5-commit-replay"), evidence_has=("Stripe-Signature", "User-Agent")),
         Q("b5-02", "single", "How do I replay an old Stripe event without it failing the timestamp check?",
           "Pass the endpoint secret: `hookbox replay <id> --to ... --stripe-secret whsec_...` re-signs the event with "
@@ -454,7 +455,7 @@ A: Done. I'll remind you Monday October 5 at 9:00 to reply to Priya about a Janu
           ("b5-workshop-plan", "b5-hermes-debrief"), evidence_has=("fixtures/workshop.jsonl", "fixtures file")),
         Q("b5-19", "multi", "Which hookbox fixes or features this month came from outside issues, and in which release?",
           "Forwarding recorded headers on replay plus --stripe-secret (#41) shipped in 0.8.1; --keep-days pruning "
-          "(#43) shipped in 0.9.0. The Windows crash (#46) is still open.",
+          "and `hookbox pin` (#43) shipped in 0.9.0. The Windows crash (#46) is still open.",
           ("b5-gh-41", "b5-gh-43", "b5-commit-090", "b5-gh-46"), evidence_has=("0.8.1", "0.9.0", "help wanted")),
         Q("b5-20", "temporal", "How many days was the Stripe signature bug in hookbox open?",
           "5 days: opened September 4 and closed September 9.", ("b5-gh-41",),

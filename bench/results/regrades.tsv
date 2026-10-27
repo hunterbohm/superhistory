@@ -1,3 +1,19 @@
 date	why	run	tool	questions	flipped	handled right before	handled right after	accuracy before	accuracy after
 2026-10-27T19:17:05Z	month B gold audit 2026-10-27: answers or wording fixed where the evidence left them ambiguous	results/hillclimb/month/b-baseline	check	b2-06,b2-10,b2-11,b5-14,b6-13	b2-06,b2-10,b2-11	92.4%	94.2%	93.6%	95.3%
 2026-10-27T19:19:25Z	month B gold audit 2026-10-27: b7-11's subject was in the month, so the question was replaced and its row run again with the same code, not graded again	results/hillclimb/month/b-baseline	check	b7-11		94.2%	94.2%	95.3%	95.3%
+2026-10-27T19:33:51Z	month A second gold audit 2026-10-27: gold answers that left out a qualification their evidence states	results/month	check-cards	cop-22,har-01	har-01	56.1%	55.6%	57.9%	57.3%
+2026-10-27T19:33:55Z	month A second gold audit 2026-10-27: gold answers that left out a qualification their evidence states	results/month	check	cop-22,har-01		93.0%	93.0%	94.7%	94.7%
+2026-10-27T19:33:59Z	month A second gold audit 2026-10-27: gold answers that left out a qualification their evidence states	results/month	claude-mem-semantic	cop-22,har-01		11.1%	11.1%	34.5%	34.5%
+2026-10-27T19:34:02Z	month A second gold audit 2026-10-27: gold answers that left out a qualification their evidence states	results/month	claude-mem	cop-22,har-01		11.1%	11.1%	34.5%	34.5%
+2026-10-27T19:34:05Z	month A second gold audit 2026-10-27: gold answers that left out a qualification their evidence states	results/month	mem0	cop-22,har-01		60.2%	60.2%	83.6%	83.6%
+2026-10-27T19:34:08Z	month A second gold audit 2026-10-27: gold answers that left out a qualification their evidence states	results/month	none	cop-22,har-01		24.0%	24.0%	24.0%	24.0%
+2026-10-27T19:34:14Z	month A second gold audit 2026-10-27: gold answers that left out a qualification their evidence states	results/month	oracle	cop-22,har-01	cop-22	98.8%	98.2%	98.8%	98.2%
+2026-10-27T19:34:17Z	month A second gold audit 2026-10-27: gold answers that left out a qualification their evidence states	results/month	supermemory	cop-22,har-01		71.3%	71.3%	94.2%	94.2%
+2026-10-27T19:34:52Z	month A second gold audit 2026-10-27: gold answers that left out a qualification their evidence states	results/hillclimb/month/a-noise1	check	cop-22,har-01		93.6%	93.6%	94.7%	94.7%
+2026-10-27T19:34:58Z	month A second gold audit 2026-10-27: gold answers that left out a qualification their evidence states	results/hillclimb/month/a-noise2	check	cop-22,har-01		93.0%	93.0%	94.7%	94.7%
+2026-10-27T19:35:02Z	month A second gold audit 2026-10-27: gold answers that left out a qualification their evidence states	results/hillclimb/month/a-noise3	check	cop-22,har-01		94.2%	94.2%	95.3%	95.3%
+2026-10-27T19:35:06Z	month A second gold audit 2026-10-27: gold answers that left out a qualification their evidence states	results/hillclimb/month/a-c1	check	cop-22,har-01		93.6%	93.6%	95.9%	95.9%
+2026-10-27T19:35:13Z	month A second gold audit 2026-10-27: gold answers that left out a qualification their evidence states	results/hillclimb/month/a-k2	check	cop-22,har-01	cop-22	94.2%	93.6%	95.3%	94.7%
+2026-10-27T19:35:15Z	month A second gold audit 2026-10-27: gold answers that left out a qualification their evidence states	results/hillclimb/month/a-k3	check	cop-22,har-01	cop-22	93.0%	92.4%	94.2%	93.6%
+2026-10-27T19:35:18Z	month A second gold audit 2026-10-27: gold answers that left out a qualification their evidence states	results/hillclimb/month/a-k4	check	cop-22,har-01		94.7%	94.7%	95.3%	95.3%
+2026-10-27T19:35:32Z	month B second gold audit 2026-10-27: gold answers that left out a qualification their evidence states	results/hillclimb/month/b-baseline	check	b2-01,b2-03,b2-04,b2-09,b3-04,b3-13,b5-01,b5-19	b3-13,b5-01	94.2%	94.2%	95.3%	95.3%

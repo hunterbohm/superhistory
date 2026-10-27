@@ -235,8 +235,9 @@ Jules"""),
 
     s.ask(
         Q("har-01", "update", "How far ahead of the appointment should Harbor Lane's reminder texts go out?",
-          "48 hours before the appointment (not 24 hours, as the first build did).",
-          ("har-hermes-call", "har-claude-fix", "har-commit-48h"), evidence_has=("48 hours",)),
+          "48 hours before the appointment (not 24 hours, as the first build did), except that a send time "
+          "landing on a Sunday moves to Saturday at 10:00.",
+          ("har-hermes-call", "har-claude-fix", "har-commit-48h"), evidence_has=("48 hours", "Saturday at 10")),
         Q("har-02", "single", "What happens when a Harbor Lane reminder would go out on a Sunday?",
           "Nothing is sent on Sundays; the reminder goes out Saturday at 10:00 instead.",
           ("har-hermes-call", "har-claude-fix", "har-commit-48h"), evidence_has=("Sunday", "Saturday at 10")),

@@ -397,7 +397,8 @@ Open: the dashboard's Unmatched count doesn't refresh without a reload. Fix befo
           "On September 19 at 1:40am unit 3B reported a dishwasher leak to NightDesk, which called the on-call tech "
           "Dario, got voicemail and didn't call anyone else; the tenant reached Manny at 2:35 and the water had gone "
           "through the ceiling of 2B. Afterward Callie cut the page escalation from 15 to 10 minutes, then Manny, "
-          "then Gideon after another 10, and voicemail doesn't count as answered.",
+          "then Gideon after another 10, and it keeps calling until someone presses 1 to answer; voicemail doesn't "
+          "count as answered.",
           ("b3-manny-leak", "b3-escalation"), evidence_has=("1:40am", "2B", "10 minutes")),
         Q("b3-05", "multi", "How does a repair email become a work order, and what if we don't know who sent it?",
           "Callie forwards repairs@alderfinchpm.com to the Postmark inbound webhook, which matches the sender's email "
@@ -427,7 +428,8 @@ Open: the dashboard's Unmatched count doesn't refresh without a reload. Fix befo
           "lockout fee directly.", ("b3-discovery", "b3-claude-rules", "b3-test-run"), evidence_has=("$95",)),
         Q("b3-13", "single", "What happens to a non-urgent request that comes in after the office closes?",
           "The tenant gets an auto-reply that the office is closed, and the work order is queued and sent to the "
-          "vendor at 8:00 on the next business day.", ("b3-claude-rules",),
+          "vendor at 8:00 on the next business day. A lockout is the exception: the tenant gets Lockhart Lock & "
+          "Key's after-hours number and the $95 fee instead.", ("b3-claude-rules",),
           evidence_has=("next business day", "8:00")),
         Q("b3-14", "single", "What's the number tenants text for maintenance?",
           "+1 720-555-0177, a Twilio number on the Marlow Works account (subaccount alder-finch).",
