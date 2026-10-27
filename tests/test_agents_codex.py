@@ -380,6 +380,16 @@ class ShiftedTrustTest(Home):
         self.assertIn("/hooks in Codex", changes[1].note)
         self.assertIn(moved_from, self.text(self.config), "the old trust stays when the new one could not be written")
 
+    def test_a_home_with_an_emoji_or_a_delete_character_is_trusted_and_untrusted(self):
+        for name in ("team-🙂", "odd\x7fname"):
+            home = os.path.join(self.home, name)
+            config = os.path.join(home, ".codex", "config.toml")
+            os.makedirs(os.path.join(home, ".codex"))
+            self.assertEqual([c.action for c in AGENT.install(home, COMMAND)], ["added", "added"], name)
+            self.assertTrue(AGENT.installed(home), name)
+            AGENT.uninstall(home)
+            self.assertEqual(codex.read_toml(self.text(config)), {}, name)
+
     def test_an_untrusted_user_hook_that_moves_up_gains_no_trust(self):
         user = {"type": "command", "command": "/usr/local/bin/notify-prompt", "timeout": 5}
         self.put(self.hooks_json, {"hooks": {"UserPromptSubmit": [{"hooks": [self.handler()]}, {"hooks": [user]}]}})

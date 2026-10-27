@@ -53,7 +53,9 @@ def _key(hooks_json, group, handler):
 
 
 def _header(key):
-    return f"[hooks.state.{json.dumps(key)}]"
+    # A TOML basic string: JSON's escapes are TOML's, except that an emoji must stay literal (TOML has no surrogate
+    # pairs) and DEL must be escaped.
+    return "[hooks.state." + json.dumps(key, ensure_ascii=False).replace("\x7f", "\\u007f") + "]"
 
 
 def _is_header(line, key):
