@@ -235,13 +235,14 @@ Jules"""),
 
     s.ask(
         Q("har-01", "update", "How far ahead of the appointment should Harbor Lane's reminder texts go out?",
-          "48 hours before the appointment (not 24 hours, as the first build did).",
-          ("har-hermes-call", "har-claude-fix", "har-commit-48h"), evidence_has=("48 hours",)),
+          "48 hours before the appointment (not 24 hours, as the first build did), except that a send time "
+          "landing on a Sunday moves to Saturday at 10:00.",
+          ("har-hermes-call", "har-claude-fix", "har-commit-48h"), evidence_has=("48 hours", "Saturday at 10")),
         Q("har-02", "single", "What happens when a Harbor Lane reminder would go out on a Sunday?",
           "Nothing is sent on Sundays; the reminder goes out Saturday at 10:00 instead.",
           ("har-hermes-call", "har-claude-fix", "har-commit-48h"), evidence_has=("Sunday", "Saturday at 10")),
         Q("har-03", "single", "When does Harbor Lane's no-show follow-up text go out, and what does it include?",
-          "2 hours after a missed appointment, with the link to rebook.", ("har-hermes-call", "har-test-run"),
+          "2 hours after a missed appointment, with the link to rebook; nothing is sent on Sundays.", ("har-hermes-call", "har-test-run"),
           evidence_has=("2 hours after a missed appointment",)),
         Q("har-04", "single", "What's Harbor Lane Dental's no-show rate?",
           "Around 11%.", ("har-intro",), evidence_has=("11%",)),
