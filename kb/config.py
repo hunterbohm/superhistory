@@ -71,8 +71,10 @@ class Secret:
             if proc.returncode:
                 raise SecretError(f"`{rest}` exited {proc.returncode}")
             value = proc.stdout
-        value = value.strip()
-        if not value:
+        # An environment value is used as it is; a file or a command's output loses only its trailing line breaks.
+        if kind != "env":
+            value = value.rstrip("\r\n")
+        if not value.strip(" \t\r\n"):
             raise SecretError(f"{self.ref.split(':', 1)[0]}:{rest} is empty")
         return value
 

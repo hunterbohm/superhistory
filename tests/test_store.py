@@ -130,9 +130,10 @@ class StoreItemTest(TempDB):
 
     def test_a_secret_with_a_line_separator_inside_is_masked_whole(self):
         for separator in ("\u2028", "\u2029", "\x85"):
-            self.add("sep", f"export password=abc{separator}def12345")
-            stored = self.db.execute("SELECT content FROM docs WHERE source_id='sep'").fetchone()[0]
-            self.assertEqual(stored, "export password=[masked]", repr(separator))
+            for text in (f"export password=abc{separator}def12345", f"export password={separator}password"):
+                self.add("sep", text)
+                stored = self.db.execute("SELECT content FROM docs WHERE source_id='sep'").fetchone()[0]
+                self.assertEqual(stored, "export password=[masked]", repr(text))
 
     def test_a_long_items_text_comes_back_whole_from_its_chunks(self):
         for tail in ("\u2028", "\n   \n", "\u2029\x85"):

@@ -1,7 +1,8 @@
 import re
 
 _NB = r"(?<![A-Za-z0-9])"
-# A secret's value ends at ASCII whitespace only: \s would also end it at U+2028, U+2029 or U+0085 and leave the rest.
+# A secret's value ends at ASCII whitespace, and the space around its "=" is spaces and tabs: \s would also take
+# U+2028, U+2029 or U+0085, which end a value early or make "password=\u2028password" look like a placeholder.
 SECRET_PATTERNS = [
     re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----[A-Za-z0-9+/=\s]*(?:-----END [A-Z ]*PRIVATE KEY-----)?"),
     re.compile(_NB + r"sk-(?:ant-|proj-|or-v1-)?[A-Za-z0-9_-]{20,}"),
@@ -31,8 +32,8 @@ KEYED_SECRET = re.compile(
     r"session[_-]?(?:token|key|secret|cookie)|bw_session)[A-Za-z0-9_-]*?"
     r"|[A-Za-z0-9]+(?:[_-][A-Za-z0-9]+)*[_-](?:pass|pwd|pw)"
     r")(?![A-Za-z0-9_.-])"
-    r"((?:[\"'])?\s*(?:[:=]|=>|\bis\b)\s*[\"']?)([^ \t\n\r\f\v\"'`,;<>)\]}]+)")
-ENV_KEY_SECRET = re.compile(r"(?<![A-Za-z0-9_])([A-Z][A-Z0-9_]*_KEY)(?![A-Za-z0-9_])((?:[\"'])?\s*[:=]\s*[\"']?)"
+    r"((?:[\"'])?[ \t]*(?:[:=]|=>|\bis\b)[ \t]*[\"']?)([^ \t\n\r\f\v\"'`,;<>)\]}]+)")
+ENV_KEY_SECRET = re.compile(r"(?<![A-Za-z0-9_])([A-Z][A-Z0-9_]*_KEY)(?![A-Za-z0-9_])((?:[\"'])?[ \t]*[:=][ \t]*[\"']?)"
                             r"([^ \t\n\r\f\v\"'`,;<>)\]}]+)")
 PASSWORD_NAME = re.compile(r"(?i)passw(?:or)?d|passcode|bw_session|[_-](?:pass|pwd|pw)$")
 PLACEHOLDERS = {"string", "str", "none", "null", "nil", "true", "false", "undefined", "required", "optional",

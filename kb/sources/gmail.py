@@ -496,7 +496,8 @@ def _clean_body(body):
     """The mail's own text, without quoted replies, forwarded originals and signatures. Every marker is found within
     one line and trimmed of SPACE only: str.strip() would also take a U+2028 and turn "--\u2028" into "--"."""
     if HTMLISH.search(body):
-        body = re.sub(r"(?is)<(script|style).*?</\1>", " ", body)
+        # A tag name ends where HTML ends one, at ASCII whitespace, "/" or ">"; "<script\u2028>" is another tag.
+        body = re.sub(r"(?is)<(script|style)(?=[ \t\r\n\f/>]).*?</\1[ \t\r\n\f]*>", " ", body)
         body = re.sub(r"(?i)<br[ \t\r\n\f]*/?>|</p>|</div>", "\n", body)  # HTML's own whitespace, not \s
         body = TAG.sub(" ", body)
     if ENTITY.search(body):
