@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from typing import Callable, NamedTuple, Optional
 from urllib.parse import quote
 
-from kb.ai import Busy, NotReady, PluginSpec, Traits
+from kb.ai import Busy, NotReady, PluginSpec, Refused, Traits
 
 NESTED_ENV = "KB_NESTED"
 WORKDIR_PREFIX = "kb-ai-"
@@ -18,6 +18,9 @@ SCRUB = re.compile(r"^(ANTHROPIC_|OPENAI_|CLAUDE_CODE_|CLAUDECODE$|XAI_|GROK_SES
 SIGNED_OUT = re.compile(r"(?i)not (logged|signed) in|(log|sign) ?in again|please (log|sign) ?in|authenticat|unauthori[sz]ed|"
                         r"session expired|token (has )?expired")
 _running = set()
+# Linux caps one command-line argument at 128 KiB. A character takes up to 4 bytes, and the system prompt needs room.
+ARG_BYTES = 128 * 1024 - 1024
+ARG_CHARS = 30_000
 _in_flight = {}
 
 
@@ -150,21 +153,28 @@ GROK_TOOLS = "read_file,list_dir,grep,web_search,web_fetch,todo_write,run_termin
 
 def _grok_cleanup(workdir):
     """Grok keeps every session in a folder named after its working folder; this one is the call's own."""
-    shutil.rmtree(os.path.join(os.path.expanduser("~/.grok/sessions"), quote(os.path.realpath(workdir), safe="")),
-                  ignore_errors=True)
+    home = os.environ.get("GROK_HOME") or os.path.expanduser("~/.grok")
+    shutil.rmtree(os.path.join(home, "sessions", quote(os.path.realpath(workdir), safe="")), ignore_errors=True)
+
+
+def _one_argument(text, program):
+    """A prompt passed on the command line, which Linux caps at 128 KiB for one argument."""
+    if len(text.encode("utf-8")) > ARG_BYTES:
+        raise Refused(f"the prompt is too long for {program}'s command line")
+    return text
 
 
 def _copilot(binary, o, prompt, workdir):
     home = os.path.join(workdir, "copilot-home")
     os.makedirs(home)
-    argv = [binary, "-p", f"{prompt.system}\n\n{prompt.user}", "-s", "--no-ask-user"]
+    argv = [binary, "-p", _one_argument(f"{prompt.system}\n\n{prompt.user}", "copilot"), "-s", "--no-ask-user"]
     if o.model:
         argv += ["--model", o.model]
     return Call(argv, "", {"COPILOT_HOME": home})
 
 
 def _cursor(binary, o, prompt, workdir):
-    argv = [binary, "-p", f"{prompt.system}\n\n{prompt.user}", "--output-format", "text"]
+    argv = [binary, "-p", _one_argument(f"{prompt.system}\n\n{prompt.user}", "cursor-agent"), "--output-format", "text"]
     if o.model:
         argv += ["--model", o.model]
     return Call(argv, "", {})
@@ -177,8 +187,8 @@ SPECS = (
     CliSpec("grok", "Grok (grok -p, your login)", "grok", _grok, default_model="grok-4.7-build-fast",
             cleanup=_grok_cleanup, check_budget=25.0),
     # The prompt goes on the command line, which Linux caps at 128 KiB for one argument.
-    CliSpec("copilot", "GitHub Copilot (copilot -p, your login)", "copilot", _copilot, max_prompt_chars=100_000),
-    CliSpec("cursor", "Cursor (cursor-agent -p, your login)", "cursor-agent", _cursor, max_prompt_chars=100_000,
+    CliSpec("copilot", "GitHub Copilot (copilot -p, your login)", "copilot", _copilot, max_prompt_chars=ARG_CHARS),
+    CliSpec("cursor", "Cursor (cursor-agent -p, your login)", "cursor-agent", _cursor, max_prompt_chars=ARG_CHARS,
             hidden=True),
 )
 PLUGINS = tuple(PluginSpec(spec.name, spec.label, CliOptions, lambda o, spec=spec: CliModel(spec, o), spec.hidden)
