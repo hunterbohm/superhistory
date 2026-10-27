@@ -9,6 +9,7 @@ import sys
 import time
 
 from kb import ai, ids, store, summarize
+from kb.mask import mask
 from kb.remote import HostAway, SshReader
 from kb.sources import Excludes, Gone, Item, Progress, Run
 
@@ -90,7 +91,7 @@ def run_unit(db, source, host, reader, log, prefix):
             continue
         try:
             if not isinstance(event, (Item, Gone)):
-                raise TypeError(f"not an event: {event!r}")
+                raise TypeError(mask(f"not an event: {event!r}"))
             changed += apply(db, source.name, prefix, event, host)
         except Exception as exc:
             log.warning("%s@%s: skipped %s: %s", source.name, host, getattr(event, "source_id", "?"), exc)

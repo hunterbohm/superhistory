@@ -28,6 +28,8 @@ import typing
 from dataclasses import dataclass
 from typing import Any, Mapping, Optional, Tuple
 
+from kb.mask import mask
+
 NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,39}$")
 SOURCE_KEYS = {"type", "enabled", "exclude", "exclude_defaults", "summarize", "hosts"}
 MAX_CHECK_BUDGET = 25.0
@@ -39,12 +41,15 @@ class ConfigError(ValueError):
     """Every problem in the file, each with its key path, such as `sources.notes.pth: unknown key`."""
 
     def __init__(self, problems):
-        self.problems = tuple(problems)
+        self.problems = tuple(mask(p) for p in problems)
         super().__init__("\n".join(self.problems))
 
 
 class SecretError(RuntimeError):
-    pass
+    """Its message is masked, because a `cmd:` reference can hold a token in the command itself."""
+
+    def __init__(self, message):
+        super().__init__(mask(message))
 
 
 @dataclass(frozen=True)

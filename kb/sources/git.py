@@ -20,6 +20,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import NamedTuple, Tuple
 
+from kb.mask import mask
 from kb.sources import Item, Progress, SourceType, home_key
 
 # A commit made on another computer reaches a clone here when it next fetches, with its older committer date.
@@ -59,7 +60,8 @@ def run_git(args, cwd):
     proc = subprocess.run(["git", *GIT_FLAGS, *args], cwd=cwd, capture_output=True, text=True, encoding="utf-8",
                           errors="replace", env={**os.environ, "GIT_OPTIONAL_LOCKS": "0"}, timeout=GIT_TIMEOUT)
     if proc.returncode:
-        raise RuntimeError(f"git {' '.join(args[:2])} in {cwd} exited {proc.returncode}: {proc.stderr.strip()[-300:]}")
+        raise RuntimeError(mask(f"git {' '.join(args[:2])} in {cwd} exited {proc.returncode}: "
+                                f"{proc.stderr.strip()[-300:]}"))
     return proc.stdout
 
 

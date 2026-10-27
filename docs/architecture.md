@@ -37,7 +37,9 @@ The Sync client goes in `kb/sync/`, imported as `kb.sync`.
   `kb.sync.after_ingest(paths, config, db, log)`, which runs `kb sync` and `kb push`. `config.extra` holds those
   tables as parsed TOML, and `config.install` holds this install's id. It runs even when no source is configured, so
   a forgotten reader's deletions still go out. A failure, a missing client included, is the `sync` health unit and
-  makes `kb ingest` exit 1. Everything kb logs is masked, tracebacks included.
+  makes `kb ingest` exit 1. Everything kb logs is masked, tracebacks included, and kb's records stay out of the
+  root logger. So is every error kb raises with text it did not write: a provider's answer, a CLI's, ssh's, gh's
+  or git's error output, a `cmd:` secret, a remote line, Gmail's and Google's answers.
 - `store.mark_superseded`, `clear_superseded` and `superseded_by` keep one mark per marking install in the
   `supersedes` table, keyed by item, not row, so a mark survives a refresh. A clear keeps the row with no target, and
   deleting an item keeps the marks on it, so the result does not depend on the order records arrive in.
