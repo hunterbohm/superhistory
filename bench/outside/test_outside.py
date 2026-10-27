@@ -1,5 +1,7 @@
 import os
 import sys
+import threading
+import time
 import unittest
 
 import numpy as np
@@ -16,6 +18,39 @@ def row(user, kind, score=None, answer="a", subtype=""):
 class SetupTest(unittest.TestCase):
     def test_replies_come_from_the_benchmarks_answer_model(self):
         self.assertEqual(outside.run.ANSWER_MODEL, "claude-sonnet-5-5")
+
+
+class LimitsTest(unittest.TestCase):
+    def test_no_more_than_two_calls_run_at_once(self):
+        limits, lock, now, most = outside.Limits(), threading.Lock(), [0], [0]
+
+        def call():
+            with lock:
+                now[0] += 1
+                most[0] = max(most[0], now[0])
+            time.sleep(0.05)
+            with lock:
+                now[0] -= 1
+
+        threads = [threading.Thread(target=limits.send, args=("m", call)) for _ in range(6)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        self.assertEqual(most[0], 2)
+
+    def test_a_limited_model_gets_no_calls_until_its_pause_ends_and_a_second_limit_stops_the_run(self):
+        limits = outside.Limits()
+        limits.PAUSE_SECONDS = 0.2
+        limits.limited("m")
+        with self.assertRaises(outside.RateLimited):
+            limits.send("m", lambda: self.fail("sent during the pause"))
+        self.assertEqual(limits.send("other", lambda: "ok"), "ok")
+        time.sleep(0.25)
+        self.assertEqual(limits.send("m", lambda: "ok"), "ok")
+        limits.limited("m")
+        with self.assertRaises(outside.Stopped):
+            limits.wait()
 
 
 class ParseTest(unittest.TestCase):

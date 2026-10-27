@@ -29,6 +29,8 @@ import sys
 import tempfile
 import threading
 import time
+import urllib.error
+import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from typing import NamedTuple
@@ -171,6 +173,119 @@ def op_prompt(case, tool, context):
     return p["ANSWER_SYSTEM_PROMPT"], p["ANSWER_USER_PROMPT_WITHOUT_MEMORY"].format(question=case.message)
 
 
+class RateLimited(RuntimeError):
+    pass
+
+
+class Stopped(RuntimeError):
+    pass
+
+
+class Limits:
+    """The shared model plans' rules for a benchmark run: at most two model calls at once, and after HTTP 429 or
+    "cooling down" from a model, no new call to it for 30 minutes, then one more try. A second limit on the same model
+    stops the run, so nothing retries in a loop. A message that meets a limit gets no row; the next run picks it up."""
+
+    PARALLEL = 2
+    PAUSE_SECONDS = 1800
+
+    def __init__(self):
+        self.slots = threading.BoundedSemaphore(self.PARALLEL)
+        self.lock = threading.Lock()
+        self.resume_at, self.seen, self.stopped = {}, {}, None
+
+    def limited(self, model):
+        now = time.monotonic()
+        with self.lock:
+            if now < self.resume_at.get(model, 0):
+                return
+            self.seen[model] = self.seen.get(model, 0) + 1
+            if self.seen[model] > 1:
+                self.stopped = f"{model} was rate-limited again after its 30-minute pause"
+            else:
+                self.resume_at[model] = now + self.PAUSE_SECONDS
+            print(f"{model} rate-limited: {self.stopped or 'no new calls for 30 minutes'}", file=sys.stderr)
+
+    def wait(self):
+        """Before a message or a store build starts: wait out any model's pause, since every message uses the answer
+        model and the judge."""
+        while True:
+            if self.stopped:
+                raise Stopped(self.stopped)
+            with self.lock:
+                ready = max(self.resume_at.values(), default=0)
+            if time.monotonic() >= ready:
+                return
+            time.sleep(min(30.0, ready - time.monotonic()))
+
+    def send(self, model, call, timeout=None):
+        """One model call in one of the two slots. Raises RateLimited, without sending, while the model is paused."""
+        with self.lock:
+            if self.stopped or time.monotonic() < self.resume_at.get(model, 0):
+                raise RateLimited(model)
+        if not self.slots.acquire(timeout=timeout):
+            raise TimeoutError("no free model slot in time")
+        try:
+            return call()
+        except urllib.error.HTTPError as exc:
+            body = exc.read()[:300].decode(errors="replace")
+            if exc.code == 429 or "cooling down" in body:
+                self.limited(model)
+                raise RateLimited(model) from None
+            raise RuntimeError(f"HTTP {exc.code}: {body}") from None
+        finally:
+            self.slots.release()
+
+
+LIMITS = Limits()
+
+
+def post(path, body, timeout=300):
+    """gateway.post without its retries on 429; other failures are tried 3 times."""
+    headers = {"content-type": "application/json", "anthropic-version": "2023-06-01",
+               "authorization": "Bearer " + gateway._key()}
+
+    def call():
+        req = urllib.request.Request(gateway.BASE_URL + path, data=json.dumps(body).encode(), headers=headers,
+                                     method="POST")
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return json.load(resp)
+
+    for attempt in range(3):
+        try:
+            return LIMITS.send(body["model"], call)
+        except (RateLimited, Stopped):
+            raise
+        except (RuntimeError, urllib.error.URLError, TimeoutError, ConnectionError):
+            if attempt == 2:
+                raise
+            time.sleep(2 ** attempt + 1)
+
+
+def install_limits():
+    """Route every model call this run makes through LIMITS: the answer loop and judges (gateway.post), the check's
+    query writer and picker (kb's ask_model, with its 3-second hedge sent only when a slot is free), and kb's
+    summaries while a store is built (2 workers)."""
+    gateway.post = post
+    _, context, summarize = check.modules()
+    ask = context.ask_model
+    context.ask_model = lambda body, timeout: LIMITS.send(body["model"], lambda: ask(body, timeout), timeout)
+    summarize.WORKERS, summarize.ATTEMPTS = Limits.PARALLEL, 1
+    call_api, run_summaries = summarize.call_api, summarize.run
+
+    def send_summary(body):
+        try:
+            return LIMITS.send(body["model"], lambda: call_api(body))
+        except summarize.HttpError as exc:
+            if "429" in str(exc) or "cooling down" in str(exc):
+                LIMITS.limited(body["model"])
+                raise RateLimited(body["model"]) from None
+            raise
+
+    summarize.run = lambda db, log, limit=summarize.RUN_CAP, source=None: run_summaries(db, log, limit, source,
+                                                                                         send_summary)
+
+
 def judge(prompt, parse):
     for _ in range(3):
         reply = gateway.text(gateway.post("/v1/messages", {"model": JUDGE_MODEL, "max_tokens": 1000, "temperature": 0,
@@ -253,7 +368,10 @@ def answer(tool, system, text):
 
 
 def run_case(name, tool, case):
+    LIMITS.wait()
     found = tool.retrieve({"question": case.message, "evidence": list(case.evidence)})
+    if found.error in ("RateLimited", "Stopped"):
+        raise RateLimited(f"the lookup met a model limit: {found.error}")
     system, text = TESTS[case.test].prompt(case, name, found.context)
     reply, calls, shown, chars, empty = answer(tool, system, text)
     return {"id": case.id, "group": case.group, "kind": case.kind, "subtype": case.subtype, "user": case.user,
@@ -272,8 +390,11 @@ def load(name, sample, items, workdir):
     tool = LocomoMem0(sample) if name == "mem0" else tools.make(name)
     folder = os.path.join(STORES if name == "mem0" else workdir, name, group)
     os.makedirs(folder, exist_ok=True)
+    LIMITS.wait()
     started = time.monotonic()
     stats = tool.load(items, folder)
+    if stats.get("summary_failures"):
+        raise RuntimeError(f"{stats['summary_failures']} summaries failed; the store would be missing them")
     return tool, {**stats, "items": len(items), "load_seconds": round(time.monotonic() - started)}
 
 
@@ -291,6 +412,8 @@ def run_tests(tests, names, groups, workers, limit=None):
         for group in groups:
             cases += [c for c in every if c.group == group][:limit]
     common.summarized_sources()
+    install_limits()
+    workers = min(workers, Limits.PARALLEL)
     done = {(t, n): {r["id"] for r in common.read_rows(rows_path(t, n))} for t in tests for n in names}
     started, failures, stores, lock = time.monotonic(), [], {}, threading.Lock()
     handles = {}
@@ -298,6 +421,9 @@ def run_tests(tests, names, groups, workers, limit=None):
         os.makedirs(os.path.join(OUT, t), exist_ok=True)
     try:
         for group in groups:
+            if LIMITS.stopped:
+                failures.append(f"stopped before {group}: {LIMITS.stopped}")
+                break
             todo = {n: [c for c in cases if c.group == group and n in TESTS[c.test].tools
                         and c.id not in done[c.test, n]] for n in names}
             todo = {n: cs for n, cs in todo.items() if cs}
@@ -335,7 +461,8 @@ def run_tests(tests, names, groups, workers, limit=None):
     record = {"started": datetime.fromtimestamp(time.time() - (time.monotonic() - started), timezone.utc)
               .strftime("%Y-%m-%dT%H:%M:%SZ"), "seconds": round(time.monotonic() - started), "tests": tests,
               "tools": names, "groups": groups, "answer_model": run.ANSWER_MODEL, "judge_model": JUDGE_MODEL,
-              "tool_turns": common.TOOL_TURNS, "check_code": check.code_id(),
+              "tool_turns": common.TOOL_TURNS, "check_code": check.code_id(), "workers": workers,
+              "parallel_model_calls": Limits.PARALLEL, "rate_limits": dict(LIMITS.seen), "stopped": LIMITS.stopped,
               "data": {k: {"url": u, "sha256": h} for k, (u, h) in FILES.items()},
               "conversations": {"revision": locomo.REVISION, "sha256": locomo.SHA256}, "stores": stores,
               "failed": len(failures), "failures": failures[:50]}
@@ -449,7 +576,7 @@ def main(argv=None):
     p.add_argument("--tests", default=",".join(TESTS))
     p.add_argument("--tools", default=",".join(TOOLS))
     p.add_argument("--groups", help="LoCoMo sample ids to run, such as conv-26; default all ten")
-    p.add_argument("--workers", type=int, default=8)
+    p.add_argument("--workers", type=int, default=Limits.PARALLEL, help="at most 2: the plans' limit per run")
     p.add_argument("--limit", type=int, help="run only the first N messages of each test in each conversation")
     p.add_argument("--table", action="store_true", help="print the tables from the rows already written")
     p.add_argument("--load-only", action="store_true", help="build the kept stores (Mem0's) and stop")
