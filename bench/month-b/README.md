@@ -14,7 +14,6 @@ Month B keeps month A's persona and background items (`bench/month/noise/`). Its
 
 `items.jsonl` holds 480 items and `questions.jsonl` 171 questions, in the shapes `demo/month/README.md` describes. `SHA256SUMS` fixes both files. Month B is frozen: any change to it needs the coordinator's agreement, with the reason logged.
 
-
 ```bash
 python3 bench/month/build.py --month b           # write bench/month-b/*.jsonl
 python3 bench/month/build.py --month b --check   # rebuild in memory, validate, and fail if the files differ
