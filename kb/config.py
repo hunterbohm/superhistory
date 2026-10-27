@@ -249,7 +249,18 @@ def _ai(table, problems):
         return None
     rest = {k: v for k, v in table.items() if k not in ("plugin", "allow_unconfirmed")}
     options = options_from(spec.Options, rest, "ai", problems)
-    return AISettings(plugin, options) if options is not None else None
+    if options is None:
+        return None
+    for name in secret_looking(options):
+        problems.append(f"ai.{name}: this looks like a secret; give a key as key = \"env:...\", file: or cmd:")
+    return AISettings(plugin, options)
+
+
+def secret_looking(options):
+    """The names of plain text settings that look like secrets. They go to the plug-in's provider as they are (a
+    model name in the request), so only `key`, a Secret reference, may hold one."""
+    return [f.name for f in dataclasses.fields(options)
+            if isinstance(getattr(options, f.name), str) and holds_secret(getattr(options, f.name))]
 
 
 def _source(name, table, machine, known_hosts, problems):

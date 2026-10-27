@@ -42,7 +42,7 @@ KEYED = ("metapw", "metanested", "ghtail", "aitail", "turntail")
 CANARY.update({kind: f"canary{kind}Zz12345678" for kind in KEYED})
 NAMES = ("machinename", "hostname", "sourcename", "timestamp", "mark", "ghargs", "hookprompt", "hooksession",
          "transcript", "hooksettings", "schedout", "sortsubject", "sortsender", "contextmessage", "trialid",
-         "trialsource", "setupkey", "setupexclude")
+         "trialsource", "setupkey", "setupexclude", "imaplong", "aimodel", "oauthsecret", "oauthtoken")
 # A number its field name marks as secret, and a private key's body, whose line breaks repr() would escape.
 NUMBER = 928374615001
 PEM_BODY = "Q2FuYXJ5UHJpdmF0ZUtleUJvZHkxMjM0NTY3OA"
@@ -137,6 +137,9 @@ class Gmail(FakeGmail):
                  "Rotate it today.", subject=f"Rotated {CANARY['sortsubject']}")
 
     def login(self, user, password):
+        if user == "long@example.com":
+            # Longer than the 200 characters an error keeps, with the token at its end.
+            raise imaplib.IMAP4.error(("." * 177 + " " + CANARY["imaplong"]).encode())
         if user == "refused@example.com":
             raise imaplib.IMAP4.error(f"[AUTHENTICATIONFAILED] bad password {password} {CANARY['imaperr']}".encode())
 
@@ -196,7 +199,8 @@ class CanaryTest(unittest.TestCase):
         with open(self.paths.config_file, "w") as fh:
             fh.write(self._config())
         env = {"HOME": self.home, "KB_HOME": os.path.dirname(self.paths.config_file), "KB_CANARY_KEY": CANARY["env"],
-               "PATH": self.bin + os.pathsep + os.environ["PATH"], "GIT_CONFIG_NOSYSTEM": "1"}
+               "PATH": self.bin + os.pathsep + os.environ["PATH"], "GIT_CONFIG_NOSYSTEM": "1",
+               "KB_CANARY_OAUTH": CANARY["oauthsecret"]}
         # create=True lets this file run on code from before the masking work, where it must find the leaks.
         for patch in (mock.patch.dict(os.environ, env), mock.patch.object(config, "SECRET_TIMEOUT", 0.5, create=True),
                       mock.patch.object(gmail, "connect", self._connect), mock.patch.object(github, "SPAN_DAYS", 30)):
@@ -279,6 +283,14 @@ sort = true
 window_days = 30
 address = "sorted@example.com"
 password = "cmd:printf ok"
+[sources.mail_long]
+{mail}address = "long@example.com"
+password = "cmd:printf ok"
+[sources.mail_oauth]
+{mail}address = "{ME}"
+auth = "oauth"
+client_id = "client-1"
+client_secret = "env:KB_CANARY_OAUTH"
 [sources.mail_refused]
 {mail}address = "refused@example.com"
 password = "cmd:printf %s {CANARY['cmd']}"
@@ -362,6 +374,9 @@ password = "cmd:echo {CANARY['cmdfail']} >&2; exit 3"
         for name, text in channels.items():
             for kind, canary in planted.items():
                 self.assertNotIn(canary, text, f"the {kind} canary reached {name}")
+                # A cut before masking can leave a piece too short to mask, so pieces count too.
+                piece = next((canary[i:i + 12] for i in range(len(canary) - 11) if canary[i:i + 12] in text), None)
+                self.assertIsNone(piece, f"part of the {kind} canary reached {name}")
         return channels
 
     def _check_log_lines(self):
@@ -468,8 +483,18 @@ password = "cmd:echo {CANARY['cmdfail']} >&2; exit 3"
         self.kb("config")
         self.kb("supersede", str(rows[0]), str(rows[-1]))
         self.kb("remask")
-        with mock.patch.object(gmail, "oauth_login", side_effect=RuntimeError(f"denied {CANARY['http']}")):
-            self.kb("login", "mail")
+        login = mock.Mock(side_effect=[RuntimeError(f"denied {CANARY['http']}"), CANARY["oauthtoken"]])
+        with mock.patch.object(gmail, "oauth_login", login):
+            self.kb("login", "mail_oauth")
+            self.kb("login", "mail_oauth")
+        self.assertEqual(login.call_count, 2, "both sign-ins reached Google's step")
+        self.assertEqual(login.call_args[0][1], CANARY["oauthsecret"], "the client secret was read")
+        kept = open(self.paths.config_file).read()
+        with open(self.paths.config_file, "w") as fh:
+            fh.write(kept.replace('model = "fake"', f'model = "{CANARY["aimodel"]}"'))
+        self.kb("ai", "test")
+        with open(self.paths.config_file, "w") as fh:
+            fh.write(kept)
         self.drive_hooks()
         self.kb("try")
         self.kb("try", "--question", "q1")
@@ -490,6 +515,7 @@ password = "cmd:echo {CANARY['cmdfail']} >&2; exit 3"
         self.assertTrue(any("Rotated" in body for body in Model.sent), "the sorter sent its thread lines")
         self.assertTrue(any("staging token" in body for body in Model.sent), "the check sent the user's message")
         for unit in ("notes@noisy", "notes@garbage", "issues_down@desk", "mail_refused@desk", "mail_odd@desk",
+                     "mail_long@desk",
                      "mail_slow@desk", "mail_failing@desk"):
             self.assertIn(unit, failing, f"{unit} was driven into its failure path")
 
@@ -527,6 +553,8 @@ password = "cmd:echo {CANARY['cmdfail']} >&2; exit 3"
             self.call(check.lookup, db, "What did Dana decide about the pelican launch?", [], "", set(), model, 10)
             self.call(summarize.run, db, cfg, model, self.cloud, 1)
         Model.mode = "ok"
+        self.call(ai.load, dataclasses.replace(cfg.ai, options=dataclasses.replace(cfg.ai.options,
+                                                                                 model=CANARY["aimodel"])))
         self.call(api.post, f"bad-url-{CANARY['http']}", {}, {}, 1)
         self.call(ai_cli.run, ai_cli.Call([os.path.join(self.tmp, CANARY["aipath"], "model")], "", {}, None),
                   self.tmp, 5, "model")

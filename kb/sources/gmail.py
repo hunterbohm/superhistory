@@ -205,7 +205,8 @@ def _sign_in(options):
 
 def _reason(exc):
     text = exc.args[0] if exc.args else ""
-    return (text.decode(errors="replace") if isinstance(text, bytes) else str(text))[:200]
+    # Masked whole before it is cut, so a cut cannot leave the start of a token too short to mask.
+    return mask.mask(text.decode(errors="replace") if isinstance(text, bytes) else str(text))[:200]
 
 
 def _token_request(form):
