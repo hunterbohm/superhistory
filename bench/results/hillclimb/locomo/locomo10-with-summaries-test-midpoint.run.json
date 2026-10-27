@@ -1,0 +1,36 @@
+{
+ "runs": [
+  {
+   "test": "locomo",
+   "data_revision": "3eb6f2c585f5e1699204e3c3bdf7adc5c28cb376",
+   "data_sha256": "79fa87e90f04081343b8c8debecb80a9a6842b76a7aa537dc9fdf651ea698ff4",
+   "judge_model": "gpt-6.1-sol",
+   "questions": 778,
+   "categories": [
+    "single-hop",
+    "multi-hop",
+    "temporal",
+    "open-domain"
+   ],
+   "planned": {
+    "questions": 778,
+    "stores": 5,
+    "summary calls (one per long item)": 26,
+    "check calls (at most 2 per question it searches for)": 1530,
+    "questions the check skips as too short": 13,
+    "answer calls (1 to 5 per question)": "778 to 3890",
+    "judge calls": 778
+   },
+   "started": "2026-10-27T21:27:03Z",
+   "seconds": 4481,
+   "summaries": true,
+   "answer_model": "claude-sonnet-5-5",
+   "check_code": "6e91b2e5de5aac0c",
+   "check_commit": "d57ec3111b1aaa308a7a468a827db4c0adc037a3",
+   "workers": 2,
+   "ran": 778,
+   "failed": 0,
+   "failures": []
+  }
+ ]
+}
