@@ -94,6 +94,14 @@ class GitSourceTest(GitCase):
         self.assertAlmostEqual(done.mark, time.time(), delta=5)
         self.assertEqual(item.mark, done.mark)
 
+    def test_a_name_in_git_config_that_ends_with_a_line_separator_still_counts_as_the_users(self):
+        name = "Sam Rivera\u2028"
+        self.sh(self.home, "config", "--global", "user.name", name)
+        self.sh(self.home, "config", "--global", "user.email", "other@example.org")
+        path = self.repo("code/tools/notes-cli")
+        self.commit(path, "Index the notes", who=(name, "elsewhere@example.org"))
+        self.assertEqual(self.titles(), {"~/code/tools/notes-cli: Index the notes"})
+
     def test_a_line_separator_in_an_authors_name_or_a_file_name_is_kept_whole(self):
         path = self.repo("code/tools/notes-cli")
         self.commit(path, "Draft the intro", who=("Ana\u2028Lee", "ana@example.org"))

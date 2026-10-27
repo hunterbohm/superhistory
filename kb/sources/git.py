@@ -71,7 +71,7 @@ def _identity(options):
     known = {value.casefold() for value in options.identities}
     for key in ("user.name", "user.email"):
         try:
-            value = run_git(["config", "--global", "--get", key], os.path.expanduser("~")).strip()
+            value = run_git(["config", "--global", "--get", key], os.path.expanduser("~")).rstrip("\n")
         except RuntimeError:
             continue
         if value:
@@ -101,11 +101,12 @@ def _repos(options, excluded):
             continue
         for path in _walk(root, home, excluded, options.max_depth):
             try:
-                common = run_git(["rev-parse", "--path-format=absolute", "--git-common-dir"], path).strip()
+                # git ends a value with a line feed; strip() would also take a U+2028 the value itself ends with.
+                common = run_git(["rev-parse", "--path-format=absolute", "--git-common-dir"], path).rstrip("\n")
             except RuntimeError:
                 continue  # a linked worktree whose repository is gone
             try:
-                remote = run_git(["config", "--get", "remote.origin.url"], path).strip()
+                remote = run_git(["config", "--get", "remote.origin.url"], path).rstrip("\n")
             except RuntimeError:
                 remote = ""
             main = os.path.dirname(common) if os.path.basename(common) == ".git" else path
