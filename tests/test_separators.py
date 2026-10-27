@@ -5,6 +5,7 @@ marker kb reads (quotes, signatures, forwarded originals, front-matter keys, Cod
 every reader, the masking, secret references and the config. Nothing may be lost, split, re-dated, read as a quote or
 a marker, or left unmasked. A reader or an input this file lacks is a missing case: add it here.
 """
+import base64
 import json
 import os
 import subprocess
@@ -20,13 +21,14 @@ from kb.sources import Excludes, Item, Run, claude_code, codex, git, github, gma
 from tests.test_codex import conversation
 from tests.test_github import FakeGh, GitHubCase
 from tests.test_gmail import ME, PRICING, ago
-from tests.test_hermes import HermesCase, chat, make_store
+from tests.test_hermes import HermesCase, chat, make_store, tool_call
 from tests.test_imessage import Case as IMessageCase, add_message, apple_ns
 from tests.test_notes import NotesCase, write
 
-SEPARATORS = {"LS": " ", "PS": " ", "NEL": "\x85", "VT": "\x0b", "FF": "\x0c", "FS": "\x1c", "GS": "\x1d",
-              "RS": "\x1e"}
-# git writes a control character in a name or a message its own way, so git's cases use the three that are text.
+SEPARATORS = {"LS": "\u2028", "PS": "\u2029", "NEL": "\x85", "VT": "\x0b", "FF": "\x0c", "FS": "\x1c", "GS": "\x1d",
+              "RS": "\x1e", "US": "\x1f"}
+# git writes a control character in a name or a path its own way, so those cases use the three that are text; a
+# commit message keeps every separator.
 TEXT_SEPARATORS = {k: SEPARATORS[k] for k in ("LS", "PS", "NEL")}
 
 
@@ -68,6 +70,12 @@ class MaskTest(SeparatorCase):
                     stored = self.stored(text)
                     self.assertNotIn(secret, stored.replace(sep, ""), repr(text))
 
+    def test_a_value_on_the_next_line_is_still_masked(self):
+        for text in ('{"password":\n"turtle9secret"}', '{"password":\r\n"turtle9secret"}', "password:\n  turtle9secret",
+                     'api_key =\n  "turtle9secret"'):
+            with self.subTest(text=text):
+                self.assertNotIn("turtle9secret", self.stored(text))
+
     def test_long_text_comes_back_whole_from_its_chunks(self):
         for name, sep in SEPARATORS.items():
             with self.subTest(separator=name):
@@ -75,6 +83,67 @@ class MaskTest(SeparatorCase):
                 store.store_item(self.db, "s", "long", "2026-10-01T00:00:00Z", "t", text, {})
                 rid = self.db.execute("SELECT id FROM docs WHERE source_id='long' LIMIT 1").fetchone()[0]
                 self.assertEqual("".join(r[4] for r in store.item_rows(self.db, rid)), text)
+
+
+def secret_split_by(sep):
+    """A secret its field name gives away, with a separator inside: masked whole, nothing of it may be stored."""
+    return f"password=abcd{sep}tail9secret"
+
+
+class ReaderToStoreTest(SeparatorCase):
+    """A reader's output goes through the store's masking: a reader that turns a separator into a space first would
+    break the secret in two and leave its second half."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.tmp = tmp.name
+        self.db = store.connect(os.path.join(tmp.name, "kb.sqlite"))
+        self.addCleanup(self.db.close)
+
+    def assert_stored_masked(self, item):
+        store.store_item(self.db, "s", "x", item.ts, item.title, item.content, item.meta)
+        title, content, meta = self.db.execute("SELECT title, content, metadata FROM docs WHERE source_id='x'").fetchone()
+        self.assertNotIn("tail9secret", title + content + meta)
+
+    def test_hermes_tool_calls_and_results(self):
+        for n, (name, sep) in enumerate(SEPARATORS.items()):
+            with self.subTest(separator=name):
+                root = os.path.join(self.tmp, f"h{n}")
+                make_store(os.path.join(root, "state.db"), [("s", "cli", None, 1000.0, [
+                    ("user", "run it", {}),
+                    ("assistant", "", {"calls": tool_call("terminal", command=f"export {secret_split_by(sep)}")}),
+                    ("tool", json.dumps({"output": secret_split_by(sep)}), {"tool": "terminal"}),
+                    ("assistant", "done", {})])])
+                run = Run(hermes.Options(root), Excludes(("tool",)), None)
+                [item] = [e for e in hermes.extract(run) if isinstance(e, Item)]
+                self.assert_stored_masked(item)
+
+    def test_gmail_subjects_and_senders(self):
+        for name, sep in SEPARATORS.items():
+            with self.subTest(separator=name):
+                # A header carries such a character in an encoded word, as a mail server delivers it.
+                def word(text):
+                    return "=?utf-8?b?" + base64.b64encode(text.encode()).decode() + "?="
+
+                raw = (f"From: {word('Ops ' + secret_split_by(sep))} <ops@example.org>\r\n"
+                       f"Subject: {word('Keys ' + secret_split_by(sep))}\r\n"
+                       "Content-Type: text/plain; charset=utf-8\r\n\r\nSee subject.\r\n").encode()
+                thread = gmail.Thread(PRICING, 0, (gmail.Message(1, ago(days=1).timestamp(), ("\\Inbox",),
+                                                                 "Ops <ops@example.org>", "Keys"),))
+                self.assert_stored_masked(gmail._render(ME, thread, {1: raw}))
+
+
+class IMessageToStoreTest(IMessageCase, SeparatorCase):
+    def test_a_message_with_a_split_secret(self):
+        for n, (name, sep) in enumerate(SEPARATORS.items()):
+            self.add(950 + n, 1, f"{secret_split_by(sep)} {n}", None, 1, 0, apple_ns(2026, 10, 21, 9, n))
+        item = self.items()["iMessage;-;+15550100123:2026-10-21"]
+        with tempfile.TemporaryDirectory() as tmp:
+            db = store.connect(os.path.join(tmp, "kb.sqlite"))
+            store.store_item(db, "imessage", "x", item.ts, item.title, item.content, item.meta)
+            self.assertNotIn("tail9secret", db.execute("SELECT content FROM docs").fetchone()[0])
+            db.close()
 
 
 class SecretAndConfigTest(SeparatorCase):
@@ -177,6 +246,21 @@ class GitTest(SeparatorCase):
                 item = next(i for i in items if f"repo{n}" in i.title)
                 self.assertIn(f"Rotate{sep}the key", item.content)
                 self.assertIn(f"notes{sep}draft.md", item.content)
+
+
+class GitMessageTest(GitTest):
+    def test_every_separator_inside_a_commit_body(self):
+        body = "Update setting\n\n" + "".join(f"Decision{sep}approved {name}\n" for name, sep in SEPARATORS.items())
+        repo = os.path.join(self.home, "code", "msgs")
+        os.makedirs(repo)
+        self.git(self.home, "config", "--global", "user.name", "Sam")
+        self.git(self.home, "config", "--global", "user.email", "sam@example.org")
+        self.git(repo, "init", "-q")
+        self.git(repo, "commit", "-q", "--allow-empty", "--cleanup=verbatim", "-m", body)
+        run = Run(git.Options(roots=(os.path.join(self.home, "code"),), window_days=30), Excludes(()), None)
+        [item] = [e for e in git.TYPE.extract(run) if isinstance(e, Item)]
+        for name, sep in SEPARATORS.items():
+            self.assertIn(f"Decision{sep}approved {name}", item.content)
 
 
 class SessionTest(SeparatorCase):

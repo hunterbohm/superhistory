@@ -19,7 +19,7 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
-from kb.mask import is_auth_noise
+from kb.mask import is_auth_noise, mask
 from kb.sources import Item, Progress, SourceType
 
 TOOL_CHARS = 300
@@ -54,7 +54,7 @@ class Options:
 
 
 def _clip(text, n):
-    text = " ".join(text.split())
+    text = " ".join(mask(text).split())  # masked first: joining would break a secret around a U+2028 in two
     return text if len(text) <= n else text[:n] + " …"
 
 

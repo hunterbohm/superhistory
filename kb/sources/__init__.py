@@ -21,8 +21,9 @@ from typing import Any, Callable, FrozenSet, Iterable, Iterator, NamedTuple, Opt
 
 Mark = Union[int, float, str]
 
-# Whitespace inside one line: \s also matches U+2028, U+2029, U+0085 and other characters that break lines.
-SPACE = r"[^\S\n\r\x0b\x0c\x1c-\x1e\x85\u2028\u2029]"
+# Whitespace inside one line: \s also matches U+2028, U+2029, U+0085, the control characters that break lines, and
+# \x1f, none of which is a space in mail or YAML.
+SPACE = r"[^\S\n\r\x0b\x0c\x1c-\x1f\x85\u2028\u2029]"
 
 
 class Item(NamedTuple):

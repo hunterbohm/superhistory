@@ -402,7 +402,7 @@ def _epoch(head):
 
 
 def _one_line(text):
-    return " ".join(str(text or "").split())
+    return " ".join(mask.mask(str(text or "")).split())  # masked first: joining would break a secret in two
 
 
 def _header(msg, name):

@@ -118,21 +118,21 @@ def _repos(options, excluded):
 
 
 def _own_shas(repo, after, identity):
+    # Fields end with NUL, which no name, address or message can hold; any other separator can be inside one.
     out = run_git(["log", "--branches", "--remotes", "--tags", "--no-merges", f"--since={_iso(after)}",
-                   "--format=%H%x1f%an%x1f%ae"], repo.path)
-    # git ends each line with a line feed; splitlines() would also split at U+2028 or U+0085 in an author's name.
-    return [sha for sha, name, email in (line.split("\x1f") for line in out.split("\n") if line)
+                   "--format=%H%x00%an%x00%ae%x00"], repo.path)
+    fields = out.split("\x00")
+    return [sha.strip("\n") for sha, name, email in zip(fields[0::3], fields[1::3], fields[2::3])
             if name.casefold() in identity or email.casefold() in identity]
 
 
 def _commits(repo, shas):
     commits = []
     for i in range(0, len(shas), SHOW_BATCH):
-        out = run_git(["show", "--no-color", "--name-status", "--format=%x1e%H%x1f%ct%x1f%B%x1f",
+        out = run_git(["show", "--no-color", "--name-status", "--format=%x00%H%x00%ct%x00%B%x00",
                        *shas[i:i + SHOW_BATCH]], repo.path)
-        for record in out.split("\x1e")[1:]:
-            sha, epoch, rest = record.split("\x1f", 2)
-            message, files = rest.rsplit("\x1f", 1)
+        fields = out.split("\x00")[1:]
+        for sha, epoch, message, files in zip(fields[0::4], fields[1::4], fields[2::4], fields[3::4]):
             commits.append(Commit(repo, sha, int(epoch), message.strip(),
                                   tuple(line for line in files.split("\n") if line.strip())))
     return commits
