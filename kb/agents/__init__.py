@@ -14,7 +14,9 @@ An agent is a module here that defines AGENT, an Agent:
 The module's name, with "-" for "_", is the agent's name in `kb hook` and `kb hooks`.
 """
 import importlib
+import copy
 import json
+import math
 import os
 import pkgutil
 import re
@@ -120,7 +122,8 @@ def write(path, text):
 
 
 def _dump(data, old_text):
-    return json.dumps(data, indent=2, ensure_ascii=False) + ("\n" if old_text.endswith("\n") or not old_text else "")
+    return (json.dumps(data, indent=2, ensure_ascii=False, allow_nan=False)
+            + ("\n" if old_text.endswith("\n") or not old_text else ""))
 
 
 class Unreadable(ValueError):
@@ -132,21 +135,85 @@ def _load(path):
     return text, _parse(text, path)
 
 
+def _finite(number):
+    value = float(number)
+    if not math.isfinite(value):
+        raise ValueError(f"{number} does not fit in a JSON number written back")
+    return value
+
+
+def _not_json(name):
+    raise ValueError(f"{name} is not JSON")
+
+
 def _parse(text, path):
+    """The JSON object in `text`, read strictly: a number such as 1e400, or NaN, would not write back as it came."""
     try:
-        data = json.loads(text) if text.strip() else {}
+        data = json.loads(text, parse_float=_finite, parse_constant=_not_json) if text.strip() else {}
     except ValueError:
-        raise Unreadable(f"{path} is not valid JSON; fix it, then run this again") from None
+        raise Unreadable(f"{path} is not valid JSON kb can write back; fix it, then run this again") from None
     if not isinstance(data, dict):
         raise Unreadable(f"{path} does not hold a JSON object")
     return data
 
 
+def without_kb(data, event, is_kb, grouped=True):
+    """The parsed file as the agent sees it apart from kb: kb's entries out, a group they alone filled out too, and
+    an empty event list or hooks table counted as absent."""
+    data = copy.deepcopy(data)
+    hooks = data.get("hooks")
+    if not isinstance(hooks, dict) or not isinstance(hooks.get(event), list):
+        return data
+    entries = []
+    for entry in hooks[event]:
+        if not grouped:
+            if not is_kb(entry):
+                entries.append(entry)
+            continue
+        handlers = entry.get("hooks") if isinstance(entry, dict) else None
+        if not isinstance(handlers, list):
+            entries.append(entry)
+            continue
+        others = [h for h in handlers if not is_kb(h)]
+        if others or not handlers:
+            entries.append({**entry, "hooks": others})
+    hooks[event] = entries
+    if not entries:
+        del hooks[event]
+    if not hooks:
+        del data["hooks"]
+    return data
+
+
+def checked_write(path, old, new, event, is_kb, kb_after, grouped=True):
+    """Writes `new` over `old` only if it parses and means what `old` did apart from kb's entries, which must come out
+    as `kb_after`. Returns None when written or unchanged, else why it was not."""
+    if new == old:
+        return None
+    try:
+        before, after = _parse(old, path), _parse(new, path)
+    except Unreadable as exc:
+        return str(exc)
+    if without_kb(after, event, is_kb, grouped) != without_kb(before, event, is_kb, grouped):
+        return "the edit would change more than kb's own entries"
+    entries = (after.get("hooks") or {}).get(event) or []
+    found = [h for e in entries for h in ((e.get("hooks") or []) if grouped else [e]) if is_kb(h)]
+    if found != kb_after:
+        return "kb's entry did not come out as intended"
+    write(path, new)
+    return None
+
+
+def _is_kb_handler(name):
+    return lambda handler: isinstance(handler, dict) and is_kb_command(handler.get("command", ""), name)
+
+
 def add_json_hook(path, event, name, kb_command):
     text = read(path)
     new, gi, hi, handler, action = json_hook_added(text, path, event, name, kb_command)
-    if new != text:
-        write(path, new)
+    problem = checked_write(path, text, new, event, _is_kb_handler(name), [handler])
+    if problem:
+        raise Unreadable(f"{problem}; wrote nothing")
     return gi, hi, handler, Change(path, action)
 
 
@@ -180,8 +247,9 @@ def has_json_hook(path, event, name):
 def remove_json_hook(path, event, name):
     text = read(path)
     new, action = json_hook_removed(text, path, event, name)
-    if new != text:
-        write(path, new)
+    problem = checked_write(path, text, new, event, _is_kb_handler(name), [])
+    if problem:
+        raise Unreadable(f"{problem}; wrote nothing")
     return Change(path, action)
 
 
@@ -195,7 +263,10 @@ def json_hook_removed(text, path, event, name):
     removed = False
     for group in groups:
         handlers = [h for h in group.get("hooks") or [] if not is_kb_command(h.get("command", ""), name)]
-        removed = removed or len(handlers) != len(group.get("hooks") or [])
+        if len(handlers) == len(group.get("hooks") or []):
+            kept.append(group)
+            continue
+        removed = True
         if handlers:
             kept.append({**group, "hooks": handlers})
     if not removed:

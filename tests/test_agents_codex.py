@@ -402,6 +402,18 @@ class ShiftedTrustTest(Home):
         self.assertEqual(codex.read_toml(config)["hooks"]["state"], {self.key: {"trusted_hash": user_digest}})
         self.assertIn("# approved in /hooks", config, "the table moves whole, comment and all")
 
+    def test_a_moved_trust_table_keeps_the_comment_on_its_header(self):
+        user = {"type": "command", "command": "/usr/local/bin/notify-prompt", "timeout": 5}
+        self.put(self.hooks_json, {"hooks": {"UserPromptSubmit": [{"hooks": [self.handler()]}, {"hooks": [user]}]}})
+        user_digest = codex.codex_hook_hash("user_prompt_submit", user)
+        moved_from = f"{self.hooks_json}:user_prompt_submit:1:0"
+        self.put(self.config, self.trust_table() + f'\n[hooks.state."{moved_from}"]  # approved by user, keep this\n'
+                                                   f'trusted_hash = "{user_digest}"\n')
+        AGENT.uninstall(self.home)
+        config = self.text(self.config)
+        self.assertIn(f'[hooks.state."{self.key}"]  # approved by user, keep this\n', config)
+        self.assertEqual(codex.read_toml(config)["hooks"]["state"], {self.key: {"trusted_hash": user_digest}})
+
     def test_trust_headers_with_a_trailing_comment_are_recognized(self):
         user = {"type": "command", "command": "/usr/local/bin/notify-prompt", "timeout": 5}
         self.put(self.hooks_json, {"hooks": {"UserPromptSubmit": [{"hooks": [self.handler()]}, {"hooks": [user]}]}})

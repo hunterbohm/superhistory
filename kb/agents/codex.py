@@ -147,7 +147,11 @@ def _moved(text, old_key, new_key):
     section = _section(lines, old_key)
     if section is None:
         return text, False
-    lines[section[0]] = _header(new_key) + "\n"
+    line = lines[section[0]]
+    # Keep what follows the header on its line, such as a comment: the shortest prefix ending in "]" that is the
+    # header alone is the header, whatever its key holds.
+    end = next(i + 1 for i, ch in enumerate(line) if ch == "]" and _is_header(line[:i + 1], old_key))
+    lines[section[0]] = line[:len(line) - len(line.lstrip())] + _header(new_key) + line[end:]
     return "".join(lines), True
 
 
