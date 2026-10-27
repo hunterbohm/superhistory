@@ -161,6 +161,45 @@ class InstallTest(Home):
         self.assertEqual([c.action for c in changes], ["added", "updated"])
         self.assertEqual(self.text(self.config), stale.replace("0" * 64, self.digest()[len("sha256:"):]))
 
+    def test_a_quoted_hash_key_is_updated_in_place(self):
+        for quoted in ('"trusted_hash"', "'trusted_hash'", '"trusted\\u005fhash"'):
+            AGENT.install(self.home, "/old/kb hook codex")
+            self.put(self.config, self.text(self.config).replace("trusted_hash =", f"{quoted} ="))
+            AGENT.install(self.home, COMMAND)
+            self.assertEqual(codex.read_toml(self.text(self.config))["hooks"]["state"][self.key],
+                             {"trusted_hash": self.digest()}, quoted)
+            self.assertTrue(AGENT.installed(self.home), quoted)
+            os.remove(self.config)
+            os.remove(self.hooks_json)
+
+    def test_a_multi_line_array_in_the_table_does_not_end_it(self):
+        AGENT.install(self.home, "/old/kb hook codex")
+        self.put(self.config, self.text(self.config).replace(
+            "trusted_hash =", 'notes = [\n  ["approved", "in /hooks"],\n]\ntrusted_hash ='))
+        AGENT.install(self.home, COMMAND)
+        state = codex.read_toml(self.text(self.config))["hooks"]["state"][self.key]
+        self.assertEqual(state, {"notes": [["approved", "in /hooks"]], "trusted_hash": self.digest()})
+        AGENT.uninstall(self.home)
+        self.assertEqual(codex.read_toml(self.text(self.config)), {})
+
+    def test_a_multi_line_string_in_the_table_does_not_end_it(self):
+        AGENT.install(self.home, "/old/kb hook codex")
+        self.put(self.config, self.text(self.config).replace(
+            "trusted_hash =", 'note = """\n[not a table]\n"""\ntrusted_hash ='))
+        AGENT.install(self.home, COMMAND)
+        state = codex.read_toml(self.text(self.config))["hooks"]["state"][self.key]
+        self.assertEqual(state, {"note": "[not a table]\n", "trusted_hash": self.digest()})
+        AGENT.uninstall(self.home)
+        self.assertEqual(codex.read_toml(self.text(self.config)), {})
+
+    def test_uninstall_never_writes_a_config_that_does_not_parse(self):
+        AGENT.install(self.home, COMMAND)
+        broken = self.text(self.config) + "oops = = 1\n"
+        self.put(self.config, broken)
+        changes = AGENT.uninstall(self.home)
+        self.assertEqual([c.action for c in changes], ["removed", "skipped"])
+        self.assertEqual(self.text(self.config), broken)
+
     def test_a_trust_table_without_a_hash_gets_one(self):
         self.put(self.config, f'[hooks.state."{self.key}"]\nenabled = true\n')
         AGENT.install(self.home, COMMAND)
