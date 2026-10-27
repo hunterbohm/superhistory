@@ -1,6 +1,6 @@
 {
- "date": "2026-10-27T11:12:15Z",
- "month": "68cb44cf236ec0483fa4d5327be11a4eeabc76ba",
+ "date": "2026-10-27T12:22:06Z",
+ "month": "953cba6ddd9330e3323843e29ba286eeecaa9686",
  "answer_model": "claude-sonnet-5-5",
  "judge_model": "gpt-6.1-sol",
  "base_url": "http://127.0.0.1:8317",
@@ -87,7 +87,7 @@
     "observations": 504,
     "summaries": 54
    },
-   "ran": 89,
+   "ran": 171,
    "failed": 0
   },
   {
@@ -97,7 +97,7 @@
     "observations": 504,
     "summaries": 54
    },
-   "ran": 86,
+   "ran": 171,
    "failed": 0
   }
  ]
