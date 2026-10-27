@@ -1,11 +1,16 @@
 """Model calls for the benchmarks, through any endpoint that speaks Anthropic's Messages API.
 
 BENCH_BASE_URL defaults to a local CLIProxyAPI gateway; BENCH_API_KEY, or the gateway's key file, authenticates.
+
+The benchmarks share their model plans with other work, so a rate limit is never retried: the first HTTP 429, or a
+reply that says the model is cooling down, raises RateLimited and sets LIMITED, and the runners start no new question
+after that. Run the same command again once the limit has passed; it runs only the questions with no row.
 """
 import json
 import os
 import random
 import re
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -13,6 +18,30 @@ import urllib.request
 BASE_URL = os.environ.get("BENCH_BASE_URL", "http://127.0.0.1:8317").rstrip("/")
 KEY_FILE = os.path.expanduser("~/.config/cli-gateway/client.key")
 ATTEMPTS = 6
+LIMITED = threading.Event()
+WAIT_MINUTES = 30
+
+
+class RateLimited(RuntimeError):
+    """A model plan said no more for now. Nothing retries it."""
+
+
+def limited(detail):
+    """Record a rate limit and raise RateLimited."""
+    LIMITED.set()
+    raise RateLimited(f"rate limited ({detail.strip()[:200]}); start nothing new for {WAIT_MINUTES} minutes, then run "
+                      "the same command once to fill in the questions with no row")
+
+
+def check_limited():
+    """Raises RateLimited when this process has seen a rate limit, so a runner starts no new question."""
+    if LIMITED.is_set():
+        raise RateLimited(f"not started: this run hit a rate limit; run the same command again in {WAIT_MINUTES} "
+                          "minutes")
+
+
+def is_rate_limit(code, detail):
+    return code == 429 or "cooling down" in detail.lower()
 
 
 def _key():
@@ -33,8 +62,11 @@ def post(path, body, timeout=300):
             with urllib.request.urlopen(req, timeout=timeout) as resp:
                 return json.load(resp)
         except urllib.error.HTTPError as e:
-            if (e.code < 500 and e.code != 429) or last:
-                raise RuntimeError(f"HTTP {e.code} from {BASE_URL}{path}: {e.read()[:300].decode(errors='replace')}")
+            detail = e.read()[:300].decode(errors="replace")
+            if is_rate_limit(e.code, detail):
+                limited(f"HTTP {e.code} from {BASE_URL}{path}: {detail}")
+            if e.code < 500 or last:
+                raise RuntimeError(f"HTTP {e.code} from {BASE_URL}{path}: {detail}")
         except (urllib.error.URLError, TimeoutError, ConnectionError) as e:
             if last:
                 raise RuntimeError(f"cannot reach {BASE_URL}: {e}") from None

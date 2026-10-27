@@ -55,6 +55,7 @@ TESTS = {"month": month_cases, "longmemeval": longmemeval_cases, "locomo": locom
 
 
 def one(stores, case, phrases):
+    gateway.check_limited()
     store, _ = stores.get(case.group)
     try:
         found = store.lookup(case.question)

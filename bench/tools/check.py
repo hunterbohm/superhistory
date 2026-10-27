@@ -71,7 +71,13 @@ _post = api.post
 
 def _counted_post(url, body, headers, timeout):
     """The gateway caches every prompt, and its `input_tokens` leaves the cached part out, so all three count."""
-    response = _post(url, body, headers, timeout)
+    try:
+        response = _post(url, body, headers, timeout)
+    except ai.AIError as exc:
+        # kb's own plug-in retries a busy server; a rate limit here stops the run instead (gateway.RateLimited).
+        if gateway.is_rate_limit(429 if "HTTP 429" in str(exc) else 0, str(exc)):
+            gateway.limited(str(exc))
+        raise
     sink = getattr(_local, "sink", None)
     if sink is not None:
         usage = response.get("usage") or {}

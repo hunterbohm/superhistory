@@ -131,6 +131,7 @@ def answer(tool, question, context, system):
 
 
 def run_one(tool, q, setup):
+    gateway.check_limited()
     found = tool.retrieve(q)
     text, calls, shown, printed = answer(tool, q["question"], found.context, setup.system)
     verdict = grade(setup, q, text)
@@ -240,6 +241,7 @@ def latency(args):
         for n in range(args.rounds):
             for q in questions:
                 for name, tool in loaded.items():
+                    gateway.check_limited()
                     found = tool.retrieve(q)
                     rows.append({"tool": name, "round": n + 1, "id": q["id"], "seconds": round(found.seconds, 3),
                                  "error": found.error, "added": bool(found.context)})
