@@ -157,7 +157,8 @@ class CliPluginTest(CliCase):
         call, = self.calls()
         self.assert_clean_call(call)
         self.assertTrue(call["copilot_home_exists"])
-        self.assertTrue(call["env"]["COPILOT_HOME"].startswith(call["cwd"]))
+        # On a Mac the temp folder is a link (/var to /private/var), so compare real paths.
+        self.assertTrue(os.path.realpath(call["env"]["COPILOT_HOME"]).startswith(os.path.realpath(call["cwd"])))
         self.assertEqual(call["argv"][:2], ["-p", "Answer with one word.\n\nSay ok."])
         self.assertIn("--no-ask-user", call["argv"])
 
