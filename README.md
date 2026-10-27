@@ -163,6 +163,11 @@ Everything stays in one file on your computer. The only thing that leaves it is 
 gets your message, the two turns before it, and the start of a few candidate records, and the summarizer sends long
 items to it. With no plug-in, kb still searches but adds nothing to your prompts and writes no summaries.
 
+Known limits:
+
+- A secret typed into a file name in a form like "password: X" or "password is X" stays in the item's id. The file's
+  text is still masked.
+
 ## Why there are no embeddings
 
 On a set of real messages from the author's own use, adding embeddings to the search (a local embedding model over a
