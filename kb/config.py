@@ -224,7 +224,11 @@ def _ai(table, problems):
     if spec is None:
         problems.append(f"ai.plugin: expected one of {', '.join(sorted(ai.visible_plugins()))}")
         return None
-    options = options_from(spec.Options, {k: v for k, v in table.items() if k != "plugin"}, "ai", problems)
+    if spec.hidden and table.get("allow_unconfirmed") is not True:
+        problems.append(f"ai.plugin: {plugin} is off until its maker confirms this use is allowed")
+        return None
+    rest = {k: v for k, v in table.items() if k not in ("plugin", "allow_unconfirmed")}
+    options = options_from(spec.Options, rest, "ai", problems)
     return AISettings(plugin, options) if options is not None else None
 
 

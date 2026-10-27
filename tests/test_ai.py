@@ -68,6 +68,7 @@ class AnthropicPluginTest(unittest.TestCase):
         self.assertEqual(sent["body"]["max_tokens"], 123)
         self.assertEqual(sent["body"]["model"], "claude-haiku-5-5")
         self.assertEqual(sent["body"]["output_config"], {"effort": "low"})
+        self.assertTrue(sent["headers"]["user-agent"].startswith("kb/"))
 
     def test_bearer_auth_and_no_effort_for_a_compatible_server(self):
         self.server.reply(payload=text_reply("ok"))
@@ -88,7 +89,7 @@ class AnthropicPluginTest(unittest.TestCase):
         self.assertFalse({"authorization", "x-api-key"} & headers)
 
     def test_status_codes_map_to_what_the_caller_should_do(self):
-        cases = [(401, NotReady), (403, NotReady), (404, NotReady), (400, Refused), (429, Busy), (500, Busy),
+        cases = [(401, NotReady), (402, NotReady), (403, NotReady), (404, NotReady), (400, Refused), (429, Busy), (500, Busy),
                  (529, Busy)]
         for status, error in cases:
             with self.subTest(status):
@@ -131,6 +132,81 @@ class AnthropicPluginTest(unittest.TestCase):
     def test_no_ai_table_is_not_ready(self):
         with self.assertRaises(NotReady):
             ai.load(None)
+
+
+class OtherApiPluginTest(unittest.TestCase):
+    def setUp(self):
+        self.server = FakeAnthropic(self)
+        os.environ["KB_TEST_API_KEY"] = "test-key-123"
+        self.addCleanup(os.environ.pop, "KB_TEST_API_KEY", None)
+
+    def model(self, plugin, extra=""):
+        text = f'[ai]\nplugin = "{plugin}"\nbase_url = "{self.server.url}/v9"\nkey = "env:KB_TEST_API_KEY"\n{extra}'
+        return ai.load(config.parse(text).ai)
+
+    def test_openai_sends_chat_completions_with_a_bearer_key(self):
+        self.server.reply(payload={"choices": [{"message": {"content": '{"query": "a b"}'}, "finish_reason": "stop"}]})
+        self.assertEqual(self.model("openai").ask(Prompt("sys", "usr", 77), 5), '{"query": "a b"}')
+        sent = self.server.requests[0]
+        self.assertEqual(sent["path"], "/v9/chat/completions")
+        self.assertEqual(sent["headers"]["authorization"], "Bearer test-key-123")
+        self.assertEqual(sent["body"]["messages"], [{"role": "system", "content": "sys"}, {"role": "user", "content": "usr"}])
+        self.assertEqual((sent["body"]["model"], sent["body"]["max_completion_tokens"]), ("gpt-5.4-mini", 77))
+        self.assertEqual(sent["body"]["reasoning_effort"], "low")
+
+    def test_openrouter_and_compatible_servers_take_max_tokens_and_no_effort(self):
+        for plugin, model in (("openrouter", "anthropic/claude-haiku-5.5"), ("openai-compatible", "local-small")):
+            with self.subTest(plugin):
+                self.server.reply(payload={"choices": [{"message": {"content": "ok"}}]})
+                extra = 'model = "local-small"\n' if plugin == "openai-compatible" else ""
+                self.assertEqual(self.model(plugin, extra).ask(Prompt("s", "u", 50), 5), "ok")
+                body = self.server.requests[-1]["body"]
+                self.assertEqual((body["model"], body["max_tokens"]), (model, 50))
+                self.assertNotIn("reasoning_effort", body)
+
+    def test_an_openai_compatible_server_needs_a_model(self):
+        with self.assertRaises(NotReady):
+            self.model("openai-compatible")
+
+    def test_a_filtered_answer_is_refused(self):
+        self.server.reply(payload={"choices": [{"message": {"content": ""}, "finish_reason": "content_filter"}]})
+        with self.assertRaises(Refused):
+            self.model("openai").ask(Prompt("s", "u"), 5)
+
+    def test_opencode_go_speaks_anthropic_with_haiku(self):
+        self.server.reply(payload=text_reply("ok"))
+        model = self.model("opencode-go")
+        self.assertEqual(model.ask(Prompt("s", "u"), 5), "ok")
+        sent = self.server.requests[0]
+        self.assertEqual((sent["path"], sent["headers"]["x-api-key"]), ("/v9/v1/messages", "test-key-123"))
+        self.assertEqual(sent["body"]["model"], "claude-haiku-5-5")
+        self.assertRegex(sent["headers"]["x-opencode-session"], r"^[0-9a-f-]{36}$")
+        self.server.reply(payload=text_reply("ok"))
+        model.ask(Prompt("s", "u"), 5)
+        self.assertNotEqual(self.server.requests[1]["headers"]["x-opencode-session"], sent["headers"]["x-opencode-session"])
+        self.assertEqual(config.parse('[ai]\nplugin = "opencode-go"\n').ai.options.base_url,
+                         "https://opencode.ai/inference/go/anthropic")
+
+    def test_google_sends_generate_content_and_skips_thoughts(self):
+        self.server.reply(payload={"candidates": [{"content": {"parts": [{"text": "thinking", "thought": True},
+                                                                          {"text": "ok"}]}, "finishReason": "STOP"}]})
+        self.assertEqual(self.model("google").ask(Prompt("sys", "usr", 60), 5), "ok")
+        sent = self.server.requests[0]
+        self.assertEqual(sent["path"], "/v9/models/gemini-3.8-flash:generateContent")
+        self.assertEqual(sent["headers"]["x-goog-api-key"], "test-key-123")
+        self.assertEqual(sent["body"]["systemInstruction"], {"parts": [{"text": "sys"}]})
+        self.assertEqual(sent["body"]["generationConfig"], {"maxOutputTokens": 60})
+
+    def test_google_blocked_prompt_is_refused(self):
+        self.server.reply(payload={"promptFeedback": {"blockReason": "SAFETY"}})
+        with self.assertRaises(Refused):
+            self.model("google").ask(Prompt("s", "u"), 5)
+
+    def test_hosted_plugins_need_a_key(self):
+        for plugin in ("openai", "openrouter", "google", "opencode-go"):
+            with self.subTest(plugin), self.assertRaises(NotReady):
+                ai.load(config.parse(f'[ai]\nplugin = "{plugin}"\n').ai).ask(Prompt("s", "u"), 5)
+        self.assertEqual(self.server.requests, [])
 
 
 class FindJsonTest(unittest.TestCase):

@@ -250,4 +250,5 @@ def extract(run):
     yield Progress(started)
 
 
-TYPE = SourceType(Options, extract)
+# Sessions the AI plug-ins start run in folders named kb-ai-*; they are kb's own calls, not the user's work.
+TYPE = SourceType(Options, extract, exclude=("kb-ai-*",))

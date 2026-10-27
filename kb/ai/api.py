@@ -1,15 +1,20 @@
 import json
 import urllib.error
 import urllib.request
+import uuid
 from dataclasses import dataclass
 from typing import Literal, Optional
 
+from kb import __version__
 from kb.ai import Busy, NotReady, PluginSpec, Refused, Traits
 from kb.config import Secret, SecretError
 
 TRAITS = Traits(check_budget=10.0, hedge_after=3.0, parallel=4, max_prompt_chars=600_000)
 AUTH_CODES = (401, 403)
-SETUP_CODES = AUTH_CODES + (404,)
+# 402 is an account out of credit; like a bad key or model, it will not fix itself between attempts.
+SETUP_CODES = AUTH_CODES + (402, 404)
+# Some API hosts sit behind Cloudflare, which refuses Python's default user agent.
+USER_AGENT = f"kb/{__version__}"
 
 
 @dataclass(frozen=True)
@@ -22,48 +27,153 @@ class AnthropicOptions:
 
 
 @dataclass(frozen=True)
-class CompatibleOptions(AnthropicOptions):
+class AnthropicCompatibleOptions(AnthropicOptions):
     base_url: str = ""
     auth: Literal["x-api-key", "bearer"] = "bearer"
 
 
-class Anthropic:
+@dataclass(frozen=True)
+class OpenCodeGoOptions(AnthropicOptions):
+    base_url: str = "https://opencode.ai/inference/go/anthropic"
+
+
+@dataclass(frozen=True)
+class OpenAIOptions:
+    key: Optional[Secret] = None
+    model: str = "gpt-5.4-mini"
+    base_url: str = "https://api.openai.com/v1"
+    effort: Literal["minimal", "low", "medium", "high", "none"] = "low"
+
+
+@dataclass(frozen=True)
+class OpenRouterOptions(OpenAIOptions):
+    model: str = "anthropic/claude-haiku-5.5"
+    base_url: str = "https://openrouter.ai/api/v1"
+    effort: Literal["minimal", "low", "medium", "high", "none"] = "none"
+
+
+@dataclass(frozen=True)
+class OpenAICompatibleOptions(OpenAIOptions):
+    model: str = ""
+    base_url: str = ""
+    effort: Literal["minimal", "low", "medium", "high", "none"] = "none"
+
+
+@dataclass(frozen=True)
+class GoogleOptions:
+    key: Optional[Secret] = None
+    model: str = "gemini-3.8-flash"
+    base_url: str = "https://generativelanguage.googleapis.com/v1beta"
+
+
+class _Http:
+    """A model behind an HTTP API, with its key read from the place the config names at each call."""
     traits = TRAITS
 
-    def __init__(self, name, options):
+    def __init__(self, name, options, key_required=True):
         if not options.base_url:
             raise NotReady(f"set base_url under [ai] for {name}")
-        self.name, self.options, self.model = name, options, options.model
+        if not options.model:
+            raise NotReady(f"set model under [ai] for {name}")
+        self.name, self.options, self.model, self.key_required = name, options, options.model, key_required
+
+    def _key(self):
+        if self.options.key is None:
+            if self.key_required:
+                raise NotReady(f'set key under [ai] for {self.name}, such as key = "env:NAME_OF_THE_VARIABLE"')
+            return None
+        try:
+            return self.options.key.reveal()
+        except SecretError as exc:
+            raise NotReady(f"[ai] key: {exc}") from None
+
+    def _url(self, path):
+        return self.options.base_url.rstrip("/") + path
+
+
+class Anthropic(_Http):
+    """Anthropic's Messages API."""
+
+    def _headers(self):
+        return {"content-type": "application/json", "anthropic-version": "2023-06-01"}
 
     def ask(self, prompt, timeout):
         o = self.options
-        headers = {"content-type": "application/json", "anthropic-version": "2023-06-01"}
-        if o.key:
-            try:
-                key = o.key.reveal()
-            except SecretError as exc:
-                raise NotReady(f"[ai] key: {exc}") from None
+        headers = self._headers()
+        key = self._key()
+        if key:
             headers.update({"authorization": "Bearer " + key} if o.auth == "bearer" else {"x-api-key": key})
-        elif self.name == "anthropic":
-            raise NotReady('set key under [ai], such as key = "env:ANTHROPIC_API_KEY"')
         body = {"model": o.model, "max_tokens": prompt.max_tokens, "system": prompt.system,
                 "messages": [{"role": "user", "content": prompt.user}]}
         if o.effort != "none":
             body["output_config"] = {"effort": o.effort}
-        response = post(o.base_url.rstrip("/") + "/v1/messages", body, headers, timeout)
+        response = post(self._url("/v1/messages"), body, headers, timeout)
         if response.get("stop_reason") == "refusal":
             raise Refused("the model refused")
         return "".join(b.get("text", "") for b in response.get("content") or [] if b.get("type") == "text")
 
 
+class OpenCodeGo(Anthropic):
+    """OpenCode Go routes by a session id; each call here is a conversation of its own."""
+
+    def _headers(self):
+        return {**super()._headers(), "x-opencode-session": str(uuid.uuid4())}
+
+
+class OpenAI(_Http):
+    """The OpenAI chat completions API, which OpenRouter and many local servers also speak."""
+
+    def __init__(self, name, options, key_required=True, token_field="max_completion_tokens"):
+        super().__init__(name, options, key_required)
+        self.token_field = token_field
+
+    def ask(self, prompt, timeout):
+        o = self.options
+        headers = {"content-type": "application/json"}
+        key = self._key()
+        if key:
+            headers["authorization"] = "Bearer " + key
+        body = {"model": o.model, self.token_field: prompt.max_tokens,
+                "messages": [{"role": "system", "content": prompt.system}, {"role": "user", "content": prompt.user}]}
+        if o.effort != "none":
+            body["reasoning_effort"] = o.effort
+        choice = (post(self._url("/chat/completions"), body, headers, timeout).get("choices") or [{}])[0]
+        if choice.get("finish_reason") == "content_filter":
+            raise Refused("the model refused")
+        content = (choice.get("message") or {}).get("content") or ""
+        if isinstance(content, list):
+            content = "".join(part.get("text", "") for part in content if isinstance(part, dict))
+        return content
+
+
+class Google(_Http):
+    """Google's Gemini API, with an API key."""
+
+    def ask(self, prompt, timeout):
+        o = self.options
+        headers = {"content-type": "application/json", "x-goog-api-key": self._key()}
+        body = {"systemInstruction": {"parts": [{"text": prompt.system}]},
+                "contents": [{"role": "user", "parts": [{"text": prompt.user}]}],
+                "generationConfig": {"maxOutputTokens": prompt.max_tokens}}
+        response = post(self._url(f"/models/{o.model}:generateContent"), body, headers, timeout)
+        if (response.get("promptFeedback") or {}).get("blockReason"):
+            raise Refused("the model refused")
+        candidate = (response.get("candidates") or [{}])[0]
+        if candidate.get("finishReason") in ("SAFETY", "PROHIBITED_CONTENT", "BLOCKLIST"):
+            raise Refused("the model refused")
+        return "".join(p.get("text", "") for p in (candidate.get("content") or {}).get("parts") or []
+                       if not p.get("thought"))
+
+
 def post(url, body, headers, timeout):
     """One JSON POST. HTTP and network failures become NotReady, Busy or Refused."""
-    request = urllib.request.Request(url, data=json.dumps(body).encode(), headers=headers, method="POST")
+    request = urllib.request.Request(url, data=json.dumps(body).encode(), headers={**headers, "user-agent": USER_AGENT},
+                                     method="POST")
     try:
         with urllib.request.urlopen(request, timeout=timeout) as resp:
             return json.load(resp)
     except urllib.error.HTTPError as e:
-        detail = e.read()[:300].decode(errors="replace")
+        detail = " ".join(e.read()[:600].decode(errors="replace").split())[:300]
         message = f"HTTP {e.code} from {url}: {detail}"
         if e.code in SETUP_CODES:
             raise NotReady(message) from None
@@ -82,6 +192,14 @@ def post(url, body, headers, timeout):
 
 PLUGINS = (
     PluginSpec("anthropic", "An Anthropic API key", AnthropicOptions, lambda o: Anthropic("anthropic", o)),
+    PluginSpec("openai", "An OpenAI API key", OpenAIOptions, lambda o: OpenAI("openai", o)),
+    PluginSpec("openrouter", "An OpenRouter API key", OpenRouterOptions,
+               lambda o: OpenAI("openrouter", o, token_field="max_tokens")),
+    PluginSpec("opencode-go", "An OpenCode Go API key", OpenCodeGoOptions, lambda o: OpenCodeGo("opencode-go", o)),
+    PluginSpec("google", "A Google AI Studio (Gemini) API key", GoogleOptions, lambda o: Google("google", o)),
     PluginSpec("anthropic-compatible", "Any server that speaks Anthropic's API, at a base URL you give",
-               CompatibleOptions, lambda o: Anthropic("anthropic-compatible", o)),
+               AnthropicCompatibleOptions, lambda o: Anthropic("anthropic-compatible", o, key_required=False)),
+    PluginSpec("openai-compatible", "Any server that speaks OpenAI's chat API, at a base URL you give",
+               OpenAICompatibleOptions,
+               lambda o: OpenAI("openai-compatible", o, key_required=False, token_field="max_tokens")),
 )
