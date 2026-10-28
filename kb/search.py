@@ -123,25 +123,38 @@ def search(db, query, after=None, sources=(), limit=10, before=None, keep=None):
     hits = sorted((h for h in allowed if keep is None or keep(h)), key=lambda h: -h["score"])[:limit]
     for hit in hits:
         if hit["id"] in fresh:
+            own = hit["content"]
             snip, marked = db.execute(f"SELECT {SNIPPETS.format(table='docs_fts', column=1)} FROM docs_fts "
                                       "WHERE docs_fts MATCH ? AND rowid = ?", (match, hit["id"])).fetchone()
         else:
-            # Older rows are masked whole before any cut, and the same passages are cut from the masked text, so their
-            # cards read as a current row's would.
-            hit["title"], hit["content"], hit["meta"] = mask(hit["title"]), _masked_item(db, hit), mask_all(hit["meta"])
-            snip, marked = _snippets(hit["content"], match)
-        hit["snippet"] = re.sub(r"\s+", " ", snip if "[" in snip else hit["content"][:SNIPPET_CHARS]).strip()
-        hit["excerpt"] = excerpt(marked if MARK in marked else hit["content"])
+            # Older rows are masked whole before any cut, and the same passages are cut from the hit's own stretch of
+            # the masked text, so their cards read as a current row's would.
+            hit["title"], hit["meta"] = mask(hit["title"]), mask_all(hit["meta"])
+            hit["content"], own = _masked_item(db, hit)
+            snip, marked = _snippets(own, match)
+        hit["snippet"] = re.sub(r"\s+", " ", snip if "[" in snip else own[:SNIPPET_CHARS]).strip()
+        hit["excerpt"] = excerpt(marked if MARK in marked else own)
     return hits
 
 
 def _masked_item(db, hit):
-    """The hit's text masked whole: a doc or summary row by itself, a chunk as its item's chunks joined in order."""
+    """The hit's item masked whole, and the hit's own stretch of it. A doc or summary row is its own item. A chunk's
+    item is its chunks joined in order, masked together so a secret across two chunks is still found; its own stretch
+    is what lies between the masked text before and after it, or the whole item when a secret crosses its edge."""
     if hit["kind"] != "raw":
-        return mask(hit["content"])
-    return mask("".join(r[0] for r in db.execute(
-        "SELECT content FROM docs WHERE source=? AND source_id=? AND kind='raw' "
-        "ORDER BY json_extract(metadata, '$.chunk')", (hit["source"], hit["source_id"]))))
+        whole = mask(hit["content"])
+        return whole, whole
+    rows = db.execute("SELECT content, json_extract(metadata, '$.chunk') FROM docs WHERE source=? AND source_id=? "
+                      "AND kind='raw' ORDER BY 2", (hit["source"], hit["source_id"])).fetchall()
+    parts = [content for content, _ in rows]
+    whole = mask("".join(parts))
+    at = [i for i, (_, chunk) in enumerate(rows) if chunk == hit["meta"].get("chunk")]
+    if len(at) != 1:
+        return whole, whole
+    before, after = mask("".join(parts[:at[0]])), mask("".join(parts[at[0] + 1:]))
+    if whole.startswith(before) and whole.endswith(after) and len(before) + len(after) <= len(whole):
+        return whole, whole[len(before):len(whole) - len(after)]
+    return whole, whole
 
 
 def _snippets(text, match):

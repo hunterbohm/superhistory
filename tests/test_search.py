@@ -81,6 +81,19 @@ class OldRowTest(TempDB):
         self.assertNotIn("Z" * 12, old["excerpt"])
         self.assertLess(len(old["excerpt"]), search.EXCERPT_CHARS)
 
+    def test_an_old_chunk_gets_the_card_its_current_chunk_gets(self):
+        text = "prefix padding " * 180 + "\nwalrus deployment approved.\n" + "suffix padding " * 180
+        self.add("now.md", text)
+        parts = store.chunk(text)
+        self.assertGreater(len(parts), 1)
+        for i, part in enumerate(parts):
+            self.old("then.md", part, kind="raw", meta=f'{{"chunk": {i}, "chunks": {len(parts)}}}')
+        hits = {h["source_id"]: h for h in search.search(self.db, "walrus deployment")}
+        old, current = hits["then.md"], hits["now.md"]
+        self.assertEqual(old["meta"]["chunk"], current["meta"]["chunk"])
+        self.assertEqual((old["snippet"], old["excerpt"]), (current["snippet"], current["excerpt"]))
+        self.assertNotIn("suffix", old["excerpt"])
+
     def test_current_rows_keep_the_index_snippet(self):
         self.add("d.md", "ordinary filler " * 100 + "walrus deployment was approved by Dana.")
         hit = search.search(self.db, "walrus deployment")[0]
