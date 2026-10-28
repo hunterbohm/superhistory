@@ -22,7 +22,7 @@ import unittest
 from unittest import mock
 
 from kb import ai, check, cli, ingest, search, store, summarize
-from kb.mask import mask, mask_all
+from kb.mask import INVISIBLE, mask, mask_all
 from kb.sources import Item
 from tests import legacy_store
 
@@ -32,6 +32,8 @@ ONLY = os.environ.get("KB_FUZZ_ONLY")
 CHUNK = 120  # small chunks, so a few hundred characters make a long item and canaries cross chunk boundaries
 IDS = ("a.md", "b.md", "c.md")
 TS = "2026-10-01T10:00:00Z"
+INVISIBLE_CHARS = ("\u200b", "\u200c", "\u200d", "\u2060", "\u00ad", "\ufeff")
+CROCKFORD = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
 FILLER = ("walrus", "ledger", "deploy", "notes", "harbor", "the", "plan", "moved", "today", "approved")
 
 
@@ -52,11 +54,32 @@ class Planted:
         self.pieces.update((value, value[:12], value[-12:]))
         return value
 
+    def _hide(self, text):
+        """`text`, sometimes with characters an agent does not see put inside it."""
+        if self.r.random() < 0.7:
+            return text
+        for _ in range(self.r.randint(1, 3)):
+            i = self.r.randint(1, len(text) - 1)
+            text = text[:i] + self.r.choice(INVISIBLE_CHARS) + text[i:]
+        return text
+
     def token(self):
-        return self._value("sk-ant-api03-fz{}" + "Q" * 20)
+        return self._hide(self._value("sk-ant-api03-fz{}" + "Q" * 20))
 
     def keyed(self):
-        return self.r.choice(("password=", "api_key: ", "secret_token=", "PASSWORD = ")) + self._value("fz{}Kq12345678")
+        name = self.r.choice(("password=", "api_key: ", "secret_token=", "PASSWORD = "))
+        return self._hide(name + self._value("fz{}Kq12345678"))
+
+    def code(self):
+        """The sync client's recovery or pairing code, as written or typed."""
+        self.n += 1
+        body = "".join(CROCKFORD[(self.seq * 7919 + self.n * 104729 + k * 31) % 32] for k in range(32))
+        head, chars = self.r.choice((("VRC1", body), ("VP1", body[:26])))
+        groups = [chars[i:i + 4] for i in range(0, len(chars), 4)]
+        typed = self.r.choice(("-".join([head] + groups), " ".join([head] + groups), head + chars,
+                               ("-".join([head] + groups)).lower()))
+        self.pieces.update((typed, typed[:12], typed[-12:]))
+        return self._hide(typed)
 
     def pem(self, whole=False):
         """A private key: whole, long enough that a middle chunk holds only body lines, cut off before its footer, or
@@ -81,7 +104,7 @@ class Planted:
             if pick < 0.4:
                 parts.append(" ".join(self.r.choice(FILLER) for _ in range(self.r.randint(3, 30))))
             else:
-                parts.append((self.token, self.keyed, self.pem)[int(pick * 10) % 3]())
+                parts.append((self.token, self.keyed, self.pem, self.code)[int(pick * 10) % 4]())
         if self.r.random() < 0.15:  # a key cut off by a size limit, anywhere in a line, ends the text
             parts.append(self.pem(whole=True)[:self.r.randint(40, 600)])
         return "walrus ledger " + self.r.choice((" ", "\n", " \n")).join(parts)
@@ -270,7 +293,7 @@ def run_sequence(seq, root, ops=None):
                 done[-1] += " (stopped)"
                 db.rollback()
         problems = not_masked_whole(db)
-        text = "\n".join(shown(db, path))
+        text = INVISIBLE.sub("", "\n".join(shown(db, path)))  # as an agent reads it
         problems += [f"a reader shows {piece!r}" for piece in sorted(planted.pieces) if piece in text]
     finally:
         db.close()

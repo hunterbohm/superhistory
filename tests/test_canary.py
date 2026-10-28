@@ -30,6 +30,7 @@ import dataclasses
 from kb import ai, check, cli, config, ingest, remote, search, store, summarize
 from kb.ai import api
 from kb.ai import cli as ai_cli
+from kb.mask import INVISIBLE
 from kb.paths import Paths
 from kb.sources import Excludes, Item, Progress, Run, SourceType, git, github, gmail, notes
 from tests.test_gmail import FakeGmail
@@ -64,6 +65,11 @@ PEM = f"-----BEGIN PRIVATE KEY-----\n{PEM_BODY}\n{PEM_BODY[::-1]}\n-----END PRIV
 LONG_PEM_LINE = ("T2xkUGVtQm9keUxpbmU" * 4)[:64]
 LONG_PEM = "-----BEGIN PRIVATE KEY-----\n" + f"{LONG_PEM_LINE}\n" * 90 + "-----END PRIVATE KEY-----"
 CANARY.update({kind: f"sk-ant-api03-canary-{kind}-" + "z" * 24 for kind in NAMES})
+# The sync client's recovery and pairing codes, and a token split by characters an agent does not see.
+CANARY["recoverycode"] = "VRC1-CANA-RYRE-C0VE-RY12-3456-7890-ABCD-EFGH"
+CANARY["pairingcode"] = "VP1-CANA-RYPA-1R12-3456-7890-AB"
+INVISIBLE_TOKEN = "sk-ant-api03-\u200bcanary-\u2060invisible-\u00ad" + "q" * 24
+CANARY["invisible"] = INVISIBLE_TOKEN.replace("\u200b", "").replace("\u2060", "").replace("\u00ad", "")
 NOW = datetime.now(timezone.utc).replace(microsecond=0)
 ME = "pat@example.com"
 
@@ -233,7 +239,9 @@ class CanaryTest(unittest.TestCase):
                  f"key-{CANARY['notepath']}.md": "the first file named after a token",
                  f"key-{CANARY['notepath2']}.md": "the second file named after a token",
                  f"token={CANARY['idassign']}.md": "a file whose name assigns a token by its key's name",
-                 f"password=>{CANARY['idarrow']}.md": "a file whose name assigns a password with =>"}
+                 f"password=>{CANARY['idarrow']}.md": "a file whose name assigns a password with =>",
+                 "codes.md": f"Recovery: {CANARY['recoverycode']}\nPairing {CANARY['pairingcode'].lower()}\n"
+                             f"Token {INVISIBLE_TOKEN}\n"}
         for name, text in texts.items():
             with open(os.path.join(self.notes, "Area", name), "w") as fh:
                 fh.write(text)
@@ -459,6 +467,8 @@ password = "cmd:echo {CANARY['cmdfail']} >&2; exit 3"
     def assert_no_canary(self):
         channels = {"output and exceptions": "\n".join(self.seen), "log records": "\n".join(self.records),
                     "files": "\n".join(self.written()), "AI requests": "\n".join(Model.sent)}
+        # Read as an agent reads them, through characters it does not see.
+        channels = {name: INVISIBLE.sub("", text) for name, text in channels.items()}
         planted = {**CANARY, "number": str(NUMBER), "pem": PEM_BODY, "pem reversed": PEM_BODY[::-1],
                    "long pem": LONG_PEM_LINE}
         for name, text in channels.items():
@@ -594,7 +604,8 @@ password = "cmd:echo {CANARY['cmdfail']} >&2; exit 3"
         with open(transcript, "w") as fh:
             for role, text in (("user", f"the deploy key is {CANARY['transcript']}"), ("assistant", self.cut_turn())):
                 fh.write(json.dumps({"type": role, "message": {"content": text}}) + "\n")
-        prompt = f"What is the pelican staging token? Mine is {CANARY['hookprompt']}"
+        prompt = (f"What is the pelican staging token? Mine is {CANARY['hookprompt']}, my recovery code is "
+                  f"{CANARY['recoverycode'].replace('-', ' ')} and the old one {INVISIBLE_TOKEN}")
         events = {
             "claude-code": {"prompt": prompt, "session_id": CANARY["hooksession"], "transcript_path": transcript},
             "codex": {"prompt": prompt, "session_id": CANARY["hooksession"], "transcript_path": transcript},

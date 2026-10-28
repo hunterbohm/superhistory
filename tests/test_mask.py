@@ -1,6 +1,7 @@
 import unittest
 
 from kb.mask import is_auth_code, is_auth_noise, mask, secret_in_id
+from kb.store import secret_id
 
 
 class MaskTest(unittest.TestCase):
@@ -191,6 +192,64 @@ class HeadlessKeyTest(unittest.TestCase):
         started = time.monotonic()
         mask(("A" * 40 + "\n") * 5000)
         self.assertLess(time.monotonic() - started, 2)
+
+
+class InvisibleTest(unittest.TestCase):
+    """A secret split by a character an agent does not see still reads whole, so it is masked; the text around it
+    keeps its invisible characters."""
+    CHARS = {"ZWSP": "\u200b", "ZWNJ": "\u200c", "ZWJ": "\u200d", "WJ": "\u2060", "SHY": "\u00ad", "BOM": "\ufeff",
+             "LRM": "\u200e", "invisible times": "\u2062"}
+    TOKEN = "sk-ant-api03-" + "A1b2" * 6
+    LINE = "MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7"
+
+    def test_a_split_secret_is_masked(self):
+        for name, ch in self.CHARS.items():
+            with self.subTest(char=name):
+                for text, gone in ((f"use {self.TOKEN[:9]}{ch}{self.TOKEN[9:]} today", self.TOKEN[-12:]),
+                                   (f"pass{ch}word=walrus2secret9 ok", "walrus2secret9"),
+                                   (f"api_key: walrus{ch}2secret9 ok", "2secret9"),
+                                   (f"-----BEGIN PRIVATE{ch} KEY-----\n{self.LINE}\n-----END PRIVATE KEY-----", self.LINE),
+                                   (f"VRC1-ABCD-EF{ch}GH-JKMN-PQRS-TVWX-YZ01-2345-6789", "6789")):
+                    masked = mask(text)
+                    self.assertNotIn(gone, masked)
+                    self.assertNotIn(gone, masked.replace(ch, ""))
+
+    def test_the_rest_keeps_its_invisible_characters(self):
+        family = "\U0001F468\u200d\U0001F469\u200d\U0001F467"
+        for text in (f"{family} and a soft\u00adhyphen", f"\ufeffnotes", "plain"):
+            self.assertEqual(mask(text), text)
+        self.assertEqual(mask(f"{family} {self.TOKEN[:5]}\u200b{self.TOKEN[5:]} soft\u00adhyphen"),
+                         f"{family} [masked] soft\u00adhyphen")
+
+    def test_an_id_split_by_one_is_refused(self):
+        self.assertTrue(secret_in_id(f"key-{self.TOKEN[:8]}\u2060{self.TOKEN[8:]}.md"))
+        self.assertTrue(secret_id("notes", f"desk:pass\u200bword=walrus2secret9.md"))
+        self.assertFalse(secret_id("notes", "desk:Areas/notes\u200b 2026.md"))
+
+    def test_long_text_with_invisible_characters_costs_about_what_plain_text_does(self):
+        import time
+        started = time.monotonic()
+        mask("walrus \u200b ledger " * 50000)
+        self.assertLess(time.monotonic() - started, 5)
+
+
+class SyncCodeTest(unittest.TestCase):
+    """The sync client's recovery and pairing codes, as it writes them and as its parser takes them typed."""
+    RECOVERY = "VRC1-ABCD-EFGH-JKMN-PQRS-TVWX-YZ01-2345-6789"
+    PAIRING = "VP1-ABCD-EFGH-JKMN-PQRS-TVWX-YZ01-23"
+
+    def test_codes_written_or_typed_are_masked(self):
+        for code in (self.RECOVERY, self.PAIRING, self.RECOVERY.lower(), self.PAIRING.replace("-", " "),
+                     self.RECOVERY.replace("-", ""), "V-R-C-1-" + "-".join(self.RECOVERY[5:].replace("-", "")),
+                     "VP1-" + self.PAIRING[4:].replace("1", "I").replace("0", "O"),
+                     "VRC1 - ABCD - EFGH - JKMN - PQRS - TVWX - YZ01 - 2345 - 6789"):
+            with self.subTest(code=code):
+                self.assertEqual(mask(f"the code is {code} ok"), "the code is [masked] ok")
+
+    def test_prose_after_the_heads_stays(self):
+        for text in ("VP1 sales meeting at three pm with katie", "VRC1 is the first version of the code",
+                     "notes about vp1 and vrc1 formats"):
+            self.assertEqual(mask(text), text)
 
 
 class SecretInIdTest(unittest.TestCase):

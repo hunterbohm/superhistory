@@ -52,6 +52,12 @@ The Sync client goes in `kb/sync/`. It meets the engine at two points.
   sorter's lines are masked, so the plug-in, which can be another provider than the user's agent, never sees a
   secret's value. kb's own instructions in those prompts contain nothing mask() changes.
 
+`mask()` also knows the sync client's own recovery and pairing codes, written or typed the ways its parser takes
+them. It reads text as an agent does, through characters it does not see (zero-width spaces and joiners, the word
+joiner, the soft hyphen, the byte order mark, direction marks), so a token split by one is still masked; the rest of
+the text keeps them as written. Its stages each report the spans they replace, so the same stages run on the text
+or, when it has such characters, on a view without them whose spans are mapped back.
+
 Text is masked before it is cut, never after: a cut can keep part of a secret too short for mask() to know. A row of
 today's version, and for a chunk every chunk of its item, was masked whole, so `kb search` cuts it as stored
 (`store.current`). Any other row, from before versions or from an older `mask()`, is masked whole when read: search
