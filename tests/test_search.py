@@ -69,6 +69,18 @@ class OldRowTest(TempDB):
         self.old("desk:key-sk-ant-api03-old-" + "Z" * 24 + ".md", "walrus deployment")
         self.assertEqual(search.search(self.db, "walrus deployment"), [])
 
+    def test_an_old_row_gets_the_card_a_current_row_gets_for_the_same_text(self):
+        key = "sk-ant-api03-old-" + "Z" * 24
+        text = "ordinary filler " * 60 + f"the walrus deployment key is {key} for now " + "more filler " * 60
+        self.add("now.md", text)
+        self.old("then.md", text)
+        hits = {h["source_id"]: h for h in search.search(self.db, "walrus deployment")}
+        old, current = hits["then.md"], hits["now.md"]
+        self.assertEqual((old["snippet"], old["excerpt"]), (current["snippet"], current["excerpt"]))
+        self.assertIn("walrus deployment key", old["excerpt"])
+        self.assertNotIn("Z" * 12, old["excerpt"])
+        self.assertLess(len(old["excerpt"]), search.EXCERPT_CHARS)
+
     def test_current_rows_keep_the_index_snippet(self):
         self.add("d.md", "ordinary filler " * 100 + "walrus deployment was approved by Dana.")
         hit = search.search(self.db, "walrus deployment")[0]

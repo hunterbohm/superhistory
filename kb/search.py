@@ -16,6 +16,9 @@ RAW_WEIGHT = 0.5
 CANDIDATES = 60
 # The longest passage FTS5's snippet() gives: the stretch of a record where its matching words cluster.
 EXCERPT_TOKENS = 64
+# The short snippet with its matches in brackets, then the excerpt with them marked for excerpt() to cut around.
+SNIPPETS = ("snippet({table}, {column}, '[', ']', ' … ', 24), "
+            "snippet({table}, {column}, char(2), char(3), ' … ', " + str(EXCERPT_TOKENS) + ")")
 EXCERPT_CHARS = 500
 SNIPPET_CHARS = 220
 MARK, END = "\x02", "\x03"
@@ -120,17 +123,15 @@ def search(db, query, after=None, sources=(), limit=10, before=None, keep=None):
     hits = sorted((h for h in allowed if keep is None or keep(h)), key=lambda h: -h["score"])[:limit]
     for hit in hits:
         if hit["id"] in fresh:
-            snip, marked = db.execute(
-                f"SELECT snippet(docs_fts, 1, '[', ']', ' … ', 24), snippet(docs_fts, 1, char(2), char(3), ' … ', "
-                f"{EXCERPT_TOKENS}) FROM docs_fts WHERE docs_fts MATCH ? AND rowid = ?", (match, hit["id"])).fetchone()
-            hit["snippet"] = re.sub(r"\s+", " ", snip if "[" in snip else hit["content"][:SNIPPET_CHARS]).strip()
-            hit["excerpt"] = excerpt(marked if MARK in marked else hit["content"])
+            snip, marked = db.execute(f"SELECT {SNIPPETS.format(table='docs_fts', column=1)} FROM docs_fts "
+                                      "WHERE docs_fts MATCH ? AND rowid = ?", (match, hit["id"])).fetchone()
         else:
-            # Older rows are masked whole before any cut, and the match is found again in the masked text.
+            # Older rows are masked whole before any cut, and the same passages are cut from the masked text, so their
+            # cards read as a current row's would.
             hit["title"], hit["content"], hit["meta"] = mask(hit["title"]), _masked_item(db, hit), mask_all(hit["meta"])
-            marked = _marked(hit["content"], match)
-            hit["snippet"] = excerpt(marked.replace(MARK, MARK + "[").replace(END, "]" + END), SNIPPET_CHARS)
-            hit["excerpt"] = excerpt(marked)
+            snip, marked = _snippets(hit["content"], match)
+        hit["snippet"] = re.sub(r"\s+", " ", snip if "[" in snip else hit["content"][:SNIPPET_CHARS]).strip()
+        hit["excerpt"] = excerpt(marked if MARK in marked else hit["content"])
     return hits
 
 
@@ -143,15 +144,15 @@ def _masked_item(db, hit):
         "ORDER BY json_extract(metadata, '$.chunk')", (hit["source"], hit["source_id"]))))
 
 
-def _marked(text, match):
-    """`text` with the words the FTS query `match` finds marked as snippet() marks them, found by FTS5 itself in an
-    index of just this text, so stemming matches as it does in the store."""
+def _snippets(text, match):
+    """The two passages search() cuts from a current row, cut by FTS5 itself from an index of just this text, so
+    stemming matches and the matching words cluster as they do in the store."""
     index = sqlite3.connect(":memory:")
     try:
         index.execute(f"CREATE VIRTUAL TABLE t USING fts5(content, tokenize='{TOKENIZE}')")
         index.execute("INSERT INTO t(rowid, content) VALUES (1, ?)", (text,))
-        row = index.execute("SELECT highlight(t, 0, char(2), char(3)) FROM t WHERE t MATCH ?", (match,)).fetchone()
-        return row[0] if row else text
+        row = index.execute(f"SELECT {SNIPPETS.format(table='t', column=0)} FROM t WHERE t MATCH ?", (match,)).fetchone()
+        return row if row else ("", text)
     finally:
         index.close()
 
