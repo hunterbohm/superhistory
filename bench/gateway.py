@@ -52,17 +52,35 @@ def is_rate_limit(code, detail):
 
 def limited_reply(response):
     """Whether a reply that came back as JSON says the plan is rate limited, as some gateways do with status 200.
-    Only a reply that is neither a message nor a token count is read, so a model's own words never count."""
-    if isinstance(response, dict) and (isinstance(response.get("content"), list)
-                                       or isinstance(response.get("input_tokens"), int)):
+    A message, a completion or a token count with no error in it is never read for it, so a model's own words never
+    count."""
+    if (isinstance(response, dict) and "error" not in response and response.get("type") != "error"
+            and (response.get("content") and isinstance(response["content"], list)
+                 or response.get("choices") and isinstance(response["choices"], list)
+                 or isinstance(response.get("input_tokens"), int))):
         return False
     text = json.dumps(response).lower()
     return "rate_limit" in text or "rate limit" in text or "cooling down" in text
 
 
-def _read(reply, limit):
+def _said_so(text):
+    """Whether a successful reply, as far as it has arrived, says the plan is rate limited. A model's reply is a JSON
+    object, so text that cannot start one is read by its words; an object counts once it parses."""
+    begun = text.lstrip()
+    if not begun:
+        return False
+    if not begun.startswith("{"):
+        return is_rate_limit(0, text)
+    try:
+        return limited_reply(json.loads(text))
+    except ValueError:
+        return False
+
+
+def _read(reply, limit, watch):
     """Up to `limit` bytes of a reply, and the error that cut it short, if any: what arrived before a read failed is
-    kept."""
+    kept. `watch` sees the text after each piece arrives, so a limit stops the run before the rest comes, or a hedge
+    copy goes out."""
     raw, read = b"", getattr(reply, "read1", reply.read)
     while len(raw) < limit:
         try:
@@ -72,30 +90,55 @@ def _read(reply, limit):
         if not chunk:
             break
         raw += chunk
+        watch(raw.decode(errors="replace"))
     return raw, None
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """The gateway never redirects, so a redirect is raised as the HTTP error it is, its reply read like any other,
+    rather than followed with a second request."""
+
+    def redirect_request(self, *args, **kwargs):
+        return None
+
+
+_OPENER = urllib.request.build_opener(_NoRedirect)
+
+
+def _open(request, timeout):
+    return _OPENER.open(request, timeout=timeout)
 
 
 def urlopen(request, timeout):
     """urllib's urlopen, except that every reply is read for a rate limit before anything parses it or cuts it short
-    for a message. A reply that names no limit is handed on as urllib gave it, still readable; a failed read is raised
-    as it was."""
+    for a message, and no redirect is followed. A reply that names no limit is handed on as urllib gave it, still
+    readable; a failed read is raised as it was."""
     try:
-        reply = urllib.request.urlopen(request, timeout=timeout)
+        reply = _open(request, timeout)
     except urllib.error.HTTPError as e:
         # A 429 is a limit before its reply is read, since a reply that stalls would make it look like a network error.
         if e.code == 429:
             limited(f"HTTP 429 from {request.full_url}")
-        raw, _ = _read(e, ERROR_BYTES)
-        detail = raw.decode(errors="replace")
-        if is_rate_limit(e.code, detail):
-            limited(f"HTTP {e.code} from {request.full_url}: {' '.join(detail.split())}")
+
+        def watch(text):
+            if is_rate_limit(e.code, text):
+                limited(f"HTTP {e.code} from {request.full_url}: {' '.join(text.split())}")
+        raw, _ = _read(e, ERROR_BYTES, watch)
         raise urllib.error.HTTPError(e.url, e.code, e.msg, e.hdrs, io.BytesIO(raw)) from None
+
+    def watch(text):
+        if _said_so(text):
+            limited(f"from {request.full_url}: {' '.join(text.split())}")
     with reply:
-        raw, failed = _read(reply, REPLY_BYTES)
+        raw, failed = _read(reply, REPLY_BYTES, watch)
     text = raw.decode(errors="replace")
-    # A JSON reply can quote a model, so limited_reply judges it whole once parsed; plain text is never a model's.
-    if not text.lstrip().startswith(("{", "[")) and is_rate_limit(0, text):
-        limited(f"from {request.full_url}: {' '.join(text.split())}")
+    # An object that never parsed, because it was cut short, is read by its words at the end: a model's reply cut
+    # short that names a limit stops the run too, the safer way to be wrong.
+    if text.lstrip().startswith("{") and is_rate_limit(0, text):
+        try:
+            json.loads(text)
+        except ValueError:
+            limited(f"from {request.full_url}: {' '.join(text.split())}")
     if failed:
         raise failed
     return urllib.response.addinfourl(io.BytesIO(raw), reply.headers, reply.url, reply.status)
@@ -118,10 +161,7 @@ def post(path, body, timeout=300):
         try:
             req = urllib.request.Request(BASE_URL + path, data=data, headers=headers, method="POST")
             with urlopen(req, timeout=timeout) as resp:
-                reply = json.load(resp)
-            if limited_reply(reply):
-                limited(f"from {BASE_URL}{path}: {json.dumps(reply)[:300]}")
-            return reply
+                return json.load(resp)
         except urllib.error.HTTPError as e:
             detail = e.read()[:300].decode(errors="replace")
             if e.code < 500 or last:

@@ -82,8 +82,6 @@ def _counted_post(url, body, headers, timeout):
     # Nothing is sent once a rate limit is seen, not even the copy kb's hedge starts after a failed call.
     gateway.check_limited()
     response = _post(url, body, headers, timeout)
-    if gateway.limited_reply(response):
-        gateway.limited(f"from {url}: {json.dumps(response)[:300]}")
     sink = getattr(_local, "sink", None)
     if sink is not None:
         usage = response.get("usage") or {}
@@ -258,6 +256,8 @@ class Store:
         except gateway.RateLimited:
             raise
         except Exception as exc:
+            # A lookup that failed once a limit was seen, say a hedge whose other copy met it, gets no row.
+            gateway.check_limited()
             # The hook prints nothing when the check fails, so the agent sees nothing.
             seconds = time.monotonic() - started
             return Retrieved("", [], seconds, type(exc).__name__, counted.settle(counted.traits.check_budget))
