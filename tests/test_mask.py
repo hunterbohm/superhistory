@@ -284,6 +284,38 @@ class KeyShapeTest(unittest.TestCase):
                 self.assertEqual(leaked, [], f"seq {seq}: {block[-60:]!r}{after!r}")
                 self.assertNotIn("walrus2secret9", masked)
 
+    def test_nothing_from_a_header_to_its_footer_or_paragraph_end_survives(self):
+        """The text masks as if everything from the header through the footer, or with no footer through the end of
+        the paragraph (an encrypted key's past the blank line after its DEK-Info field), were one placeholder: no
+        character of that span can survive. A paragraph after it stays."""
+        import os
+        import random
+        import re
+        from tests.test_write_fuzz import Planted
+        blank = re.compile(r"\r?\n[ \t]*\r?\n|\\(?:r\\)?n[ \t]*\\(?:r\\)?n")
+        footer = re.compile(r"-----END [A-Z ]*PRIVATE KEY-----")
+        for seq in range(int(os.environ.get("KB_KEY_CASES", "3000"))):
+            block = Planted(random.Random(seq), seq).key()
+            for after in (" after", "\nafter", "", "\nclientSecretToken: walrus2secret9", " …", " word, api_key = x",
+                          "\n\nthe next paragraph", "\\n\\nthe next paragraph", "\r\n\r\nthe next paragraph"):
+                text = f"note {block}{after}"
+                start = text.index("-----BEGIN ")
+                end = footer.search(text, start)
+                if end:
+                    end = end.end()
+                else:
+                    end = start
+                    fields = re.compile(r"DEK-Info:[^\r\n\\]*").search(text, start)
+                    if fields and blank.match(text, fields.end()):
+                        end = blank.match(text, fields.end()).end()
+                    stop = blank.search(text, end)
+                    end = stop.start() if stop else len(text)
+                masked = mask(text)
+                self.assertTrue(masked.startswith("note [masked]"), f"seq {seq}: {text!r}")
+                self.assertEqual(masked, mask(text[:start] + "[masked]" + text[end:]), f"seq {seq}: {text!r}")
+                if after.endswith("the next paragraph") and text[end:] in (after, after[1:]):
+                    self.assertEqual(masked, "note [masked]" + text[end:], f"seq {seq}: {text!r}")
+
     def test_paragraphs_after_a_broken_key_stay(self):
         for key in ("-----BEGIN PRIVATE KEY-----\nMIIEvQIBADAN", "-----BEGIN RSA PRIVATE KEY-----\nProc-Type: 4,ENCRYPTED\n"
                     "DEK-Info: AES-256-CBC,0A1B\n\nMIIEvQIBADAN", "abc\n-----END PRIVATE KEY-----"):
