@@ -24,6 +24,45 @@ SEARCH_TOOL = {
 }
 
 
+# Request headers the transport leaves to urllib, which sets its own; it asks for no compression, which urllib leaves
+# undone.
+OWN_HEADERS = {"host", "content-length", "accept-encoding", "connection", "transfer-encoding"}
+
+
+def gateway_client():
+    """An OpenAI client whose calls go through gateway.urlopen, which reads each reply for a rate limit before the
+    client sees it: the client retried a 429 twice by itself, and a body that stalled before it consulted any hook.
+    A limit raises gateway.RateLimited, which the client does not retry; a busy server or a dropped connection is
+    still retried as the client always did."""
+    import http.client
+    import urllib.error
+    import urllib.request
+
+    import httpx2
+    import openai
+
+    class Transport(httpx2.BaseTransport):
+        def handle_request(self, request):
+            gateway.check_limited()
+            timeout = (request.extensions.get("timeout") or {}).get("read") or 600
+            headers = {k: v for k, v in request.headers.items() if k.lower() not in OWN_HEADERS}
+            sent = urllib.request.Request(str(request.url), data=request.read() or None, headers=headers,
+                                          method=request.method)
+            try:
+                with gateway.urlopen(sent, timeout) as reply:
+                    status, got, body = reply.status, reply.headers, reply.read()
+            except urllib.error.HTTPError as e:
+                status, got, body = e.code, e.headers, e.read()
+            except (TimeoutError, OSError, http.client.HTTPException) as e:
+                error = httpx2.ReadTimeout if isinstance(e, TimeoutError) else httpx2.ConnectError
+                raise error(str(e), request=request) from e
+            kept = [(k, v) for k, v in (got or {}).items() if k.lower() not in OWN_HEADERS | {"content-encoding"}]
+            return httpx2.Response(status, headers=kept, content=body, request=request)
+
+    return openai.OpenAI(api_key=gateway._key(), base_url=gateway.BASE_URL + "/v1",
+                         http_client=httpx2.Client(transport=Transport()))
+
+
 def memories_text(results):
     if not results:
         return ""
@@ -47,13 +86,17 @@ class Mem0(Tool):
                 "embedding_model_dims": 768, "on_disk": True}},
             "history_db_path": os.path.join(workdir, "mem0-history.db"),
         })
+        self.memory.llm.client = gateway_client()
         started, failed = time.monotonic(), 0
         for item in sorted(items, key=lambda i: i["ts"]):
+            gateway.check_limited()
             text = f"[{item['ts'][:10]} {item['source']}] {item['title']}\n{item['content']}"
             try:
                 self.memory.add([{"role": "user", "content": text}], user_id=USER,
                                 metadata={"source": item["source"], "source_id": item["source_id"]})
             except Exception:
+                # A rate limit inside Mem0's model call reaches here wrapped in Mem0's own error; it stops the load.
+                gateway.check_limited()
                 failed += 1
         stored = self.memory.get_all(filters={"user_id": USER}, top_k=100_000)["results"]
         return {"version": importlib.metadata.version("mem0ai"), "llm": LLM, "embedder": EMBEDDER,
