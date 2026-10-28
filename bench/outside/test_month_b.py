@@ -2,9 +2,10 @@ import io
 import os
 import sys
 import tempfile
+import time
 import unittest
 import urllib.error
-import urllib.request
+import urllib.response
 from types import SimpleNamespace
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -12,6 +13,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import month_b
 import outside  # puts bench/ on the path for gateway
 import gateway
+import limits
 from tools import Retrieved, claude_mem
 
 try:
@@ -39,36 +41,70 @@ class Installed(unittest.TestCase):
             openai.OpenAI.__init__, Completions.create = self.saved[2:]
 
 
+class Stalls(io.BytesIO):
+    def read(self, *args):
+        raise TimeoutError("the reply stalled")
+
+
 class GatewayTest(Installed):
-    def test_a_429_from_the_gateway_is_sent_once_then_pauses_the_model_and_a_second_stops_the_run(self):
-        sent, urlopen = [], urllib.request.urlopen
+    """gateway.post's own guard reads each reply for a limit; these fake its transport, so nothing leaves the process."""
 
-        def limited(req, timeout=None):
-            sent.append(req.full_url)
-            raise urllib.error.HTTPError(req.full_url, 429, "Too Many Requests", {}, io.BytesIO(b"cooling down"))
+    def send(self, *replies):
+        sent, key = [], os.environ.get("BENCH_API_KEY")
 
-        urllib.request.urlopen, key = limited, os.environ.get("BENCH_API_KEY")
+        def opened(request, timeout):
+            sent.append(request.full_url)
+            reply = replies[min(len(sent), len(replies)) - 1]
+            if isinstance(reply, Exception):
+                raise reply
+            return urllib.response.addinfourl(io.BytesIO(reply.encode()), {}, request.full_url, 200)
+
         os.environ["BENCH_API_KEY"] = "test"
+        saved, gateway._open = gateway._open, opened
+        self.addCleanup(setattr, gateway, "_open", saved)
+        self.addCleanup(os.environ.pop if key is None else os.environ.__setitem__, "BENCH_API_KEY",
+                        *(() if key is None else (key,)))
+        return sent
+
+    def http_error(self, code, body=b"", fp=None):
+        return urllib.error.HTTPError("http://gateway/v1/messages", code, "error", {}, fp or io.BytesIO(body))
+
+    def test_a_429_from_the_gateway_is_sent_once_then_pauses_the_model_and_a_second_stops_the_run(self):
+        sent = self.send(self.http_error(429, b"cooling down"))
         outside.LIMITS.PAUSE_SECONDS = 0.1
-        try:
-            with self.assertRaises(outside.RateLimited):
-                gateway.post("/v1/messages", {"model": "m", "messages": []})
-            self.assertEqual(len(sent), 1)
-            with self.assertRaises(outside.RateLimited):
-                gateway.count_tokens("m", "text")
-            self.assertEqual(len(sent), 1)
+        with self.assertRaises(outside.RateLimited):
+            gateway.post("/v1/messages", {"model": "m", "messages": []})
+        self.assertEqual(len(sent), 1)
+        with self.assertRaises(outside.RateLimited):
+            gateway.count_tokens("m", "text")
+        self.assertEqual(len(sent), 1)
+        outside.LIMITS.wait()
+        with self.assertRaises(outside.RateLimited):
+            gateway.post("/v1/messages", {"model": "m", "messages": []})
+        self.assertEqual(len(sent), 2)
+        with self.assertRaises(limits.Stopped):
             outside.LIMITS.wait()
-            with self.assertRaises(outside.RateLimited):
-                gateway.post("/v1/messages", {"model": "m", "messages": []})
-            self.assertEqual(len(sent), 2)
-            with self.assertRaises(outside.Stopped):
-                outside.LIMITS.wait()
-        finally:
-            urllib.request.urlopen = urlopen
-            if key is None:
-                del os.environ["BENCH_API_KEY"]
-            else:
-                os.environ["BENCH_API_KEY"] = key
+
+    def test_a_429_whose_reply_stalls_is_one_limit_sent_once(self):
+        sent = self.send(self.http_error(429, fp=Stalls()))
+        with self.assertRaises(outside.RateLimited):
+            gateway.post("/v1/messages", {"model": "m", "messages": []})
+        self.assertEqual((len(sent), outside.LIMITS.limits), (1, 1))
+
+    def test_a_200_that_says_cooling_down_is_a_limit_and_is_not_asked_again(self):
+        sent = self.send('{"message": "All credentials for model m are cooling down"}')
+        with self.assertRaises(outside.RateLimited):
+            gateway.post("/v1/messages", {"model": "m", "messages": []})
+        self.assertEqual((len(sent), outside.LIMITS.limits), (1, 1))
+
+    def test_the_first_call_after_the_pause_finds_the_flag_clear(self):
+        sent = self.send(self.http_error(429), '{"content": [{"type": "text", "text": "hi"}]}')
+        outside.LIMITS.PAUSE_SECONDS = 0.1
+        with self.assertRaises(outside.RateLimited):
+            gateway.post("/v1/messages", {"model": "m", "messages": []})
+        time.sleep(0.15)
+        self.assertEqual(gateway.post("/v1/messages", {"model": "m", "messages": []})["content"][0]["text"], "hi")
+        self.assertEqual((len(sent), outside.LIMITS.limits, gateway.LIMITED.is_set()), (2, 1, False))
 
 
 @unittest.skipUnless(openai, "needs the OpenAI SDK, as Mem0 does")

@@ -46,11 +46,15 @@ class Limits:
                 self.resume_at = now + self.PAUSE_SECONDS
             print(f"{model} rate-limited: {self.stopped or 'no new calls for 30 minutes'}", file=sys.stderr)
 
-    def _noticed(self):
-        """A limit gateway.py's guard met on its own, with no pause here yet, starts one."""
+    def _check(self):
+        """Work resumes once the pause is over, so gateway.LIMITED clears then, before any call can trip over it. A
+        limit gateway.py's guard met on its own, outside a pause, starts one here too."""
         with self.lock:
-            unseen = gateway.LIMITED.is_set() and time.monotonic() >= self.resume_at and (
-                self.resumed or not self.limits)
+            now = time.monotonic()
+            if self.limits and not self.resumed and now >= self.resume_at:
+                self.resumed = True
+                gateway.LIMITED.clear()
+            unseen = gateway.LIMITED.is_set() and now >= self.resume_at
         if unseen:
             self.limited(GATEWAY)
 
@@ -58,16 +62,13 @@ class Limits:
         """Before a message or a store build starts: wait out the pause, since every message uses the answer model
         and the judge."""
         while True:
-            self._noticed()
+            self._check()
             with self.lock:
                 if self.stopped:
                     raise Stopped(self.stopped)
                 left = self.resume_at - time.monotonic()
-                if left <= 0:
-                    if self.limits and not self.resumed:
-                        self.resumed = True
-                        gateway.LIMITED.clear()
-                    return
+            if left <= 0:
+                return
             time.sleep(min(30.0, left))
 
     def send(self, model, call, timeout=None):
@@ -96,7 +97,7 @@ class Limits:
             self.slots.release()
 
     def _may_start(self, model):
-        self._noticed()
+        self._check()
         with self.lock:
             if self.stopped:
                 raise Stopped(self.stopped)

@@ -14,6 +14,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import outside  # puts bench/ on the path for the next three
 import gateway
+from limits import Stopped
 import mem0_locomo
 from tools import Retrieved
 
@@ -66,7 +67,7 @@ class LimitsTest(Fresh):
         limits.wait()
         self.assertEqual(limits.send("m", lambda: "ok"), "ok")
         limits.limited("other")
-        with self.assertRaises(outside.Stopped):
+        with self.assertRaises(Stopped):
             limits.wait()
 
     def test_a_limit_seen_by_the_gateways_own_guard_pauses_the_run_and_clears_once_it_is_over(self):
@@ -81,7 +82,7 @@ class LimitsTest(Fresh):
         self.assertEqual(limits.send("m", lambda: "ok"), "ok")
         with self.assertRaises(gateway.RateLimited):
             gateway.limited("HTTP 429 again")
-        with self.assertRaises(outside.Stopped):
+        with self.assertRaises(Stopped):
             limits.wait()
 
     def test_the_bench_has_one_rate_limit_error(self):

@@ -17,7 +17,7 @@ python3 bench/outside/outside.py --groups conv-26 --limit 5 --tools none,check
 The tables need only the packages pinned in `outside.py`'s header, which `uv run` installs. The tests need the same packages, and the OpenAI SDK for the one test of Mem0's client, which skips without it:
 
 ```bash
-uv run --no-project --with openai==3.39.0 --with numpy==2.1.3 --with nltk==3.9.1 --with regex==2024.11.6 \
+uv run --no-project --python 3.12 --with openai==3.39.0 --with numpy==2.1.3 --with nltk==3.9.1 --with regex==2024.11.6 \
   python -m unittest discover -s bench/outside -p "test_*.py"
 ```
 
