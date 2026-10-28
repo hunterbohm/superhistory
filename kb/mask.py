@@ -89,13 +89,20 @@ REFERENCE = re.compile(r"^(?:[$%{<(\[*/~]|\.\.?/|os\.|process\.|env\.|getenv|sec
                        r"(?:env|file|cmd):)|"
                        r"^[A-Za-z_]+(?:\.[A-Za-z_]+)+$|^[A-Z][A-Z_]{2,}$|^[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+$|\(")
 
+# Characters a reader does not see, Unicode's default ignorable code points: zero-width spaces and joiners, direction
+# marks and isolates, the soft hyphen, the byte order mark, variation selectors, fillers and tag characters. A secret
+# split by them reads whole, so each pass matches the text without them.
+INVISIBLE = re.compile(r"[\u00ad\u034f\u061c\u115f\u1160\u17b4\u17b5\u180b-\u180f\u200b-\u200f\u202a-\u202e"
+                       r"\u2060-\u206f\u3164\ufe00-\ufe0f\ufeff\uffa0\ufff0-\ufff8\U0001bca0-\U0001bca3"
+                       r"\U0001d173-\U0001d17a\U000e0000-\U000e0fff]")
+
 # Which mask() a stored row was masked with. A row of another version, or of none, is masked again when read and by
 # the next ingest. The patterns change it by themselves; bump REVISION when the code that applies them changes what
 # it masks.
-REVISION = 2
+REVISION = 3
 VERSION = hashlib.sha256(repr((REVISION, [p.pattern for p in SECRET_PATTERNS + PREFIXED_SECRETS], KEYED_SECRET.pattern,
                                 ENV_KEY_SECRET.pattern, PASSWORD_NAME.pattern, sorted(PLACEHOLDERS),
-                                REFERENCE.pattern)).encode()).hexdigest()[:16]
+                                REFERENCE.pattern, INVISIBLE.pattern)).encode()).hexdigest()[:16]
 
 
 def _mask_keyed(m):
@@ -154,13 +161,39 @@ def _replace(text, spans, replacement):
     return "".join(out + [text[last:]])
 
 
-def _mask_once(text):
+# The patterns that read a value by its name: in text, and in an item id, where only the assignment form counts.
+TEXT_NAMES, ID_NAMES = (KEYED_SECRET, ENV_KEY_SECRET), (KEYED_ID, ENV_KEY_ID)
+
+
+def _pass(text, names):
     for pattern in SECRET_PATTERNS:
         text = pattern.sub("[masked]", text)
     text = _GLUED_RUN.sub("[masked]", _headless_keys(_key_rest(text)))
     for pattern in PREFIXED_SECRETS:
         text = pattern.sub(lambda m: m.group(1) + "[masked]", text)
-    return ENV_KEY_SECRET.sub(_mask_keyed, KEYED_SECRET.sub(_mask_keyed, text))
+    for pattern in names:
+        text = pattern.sub(_mask_keyed, text)
+    return text
+
+
+def _mask_once(text, names=TEXT_NAMES):
+    """One pass of every pattern. In a text with characters a reader does not see, the pass matches the text without
+    them, and the stretch it changed there, from its first change to its last, replaces the same stretch of the text
+    as written: the rest keeps them, so an emoji or a script that joins with them reads as it did."""
+    if not INVISIBLE.search(text):
+        return _pass(text, names)
+    view = INVISIBLE.sub("", text)
+    masked = _pass(view, names)
+    if masked == view:
+        return text
+    head = len(os.path.commonprefix([view, masked]))
+    tail = len(os.path.commonprefix([view[head:][::-1], masked[head:][::-1]]))
+    # The view's i-th character sits after every invisible character whose place in the view is i or before.
+    places = [m.start() - n for n, m in enumerate(INVISIBLE.finditer(text))]
+    start = head + bisect.bisect_right(places, head) if head < len(view) else len(text)
+    end = len(view) - tail
+    end = end + bisect.bisect_right(places, end) if end < len(view) else len(text)
+    return text[:start] + masked[head:len(masked) - tail] + text[end:]
 
 
 # How many passes mask() makes at most, and how often, in this process, a text still changed at the last one.
@@ -204,13 +237,7 @@ def secret_in_id(text):
     An id is a name someone chose, so it is read more narrowly than text: a provider's token shape or a credential in
     a link still counts, but a value its key names counts only in assignment form. A title such as "Tokens: 2026Q4
     plan" or "the password is changed" is a name, which mask() would mask in text."""
-    masked = text
-    for pattern in SECRET_PATTERNS:
-        masked = pattern.sub("[masked]", masked)
-    masked = _GLUED_RUN.sub("[masked]", _headless_keys(_key_rest(masked)))
-    for pattern in PREFIXED_SECRETS:
-        masked = pattern.sub(lambda m: m.group(1) + "[masked]", masked)
-    return ENV_KEY_ID.sub(_mask_keyed, KEYED_ID.sub(_mask_keyed, masked)) != text
+    return _mask_once(text, ID_NAMES) != text
 
 
 def mask_all(value, key=None):

@@ -216,6 +216,35 @@ class HeadlessKeyTest(unittest.TestCase):
         self.assertLess(time.monotonic() - started, 2)
 
 
+class InvisibleTest(unittest.TestCase):
+    """A secret split by characters a reader does not see reads whole, so it is masked; the rest of the text keeps them."""
+    INVISIBLE = ("\u200b", "\u200c", "\u200d", "\u2060", "\u00ad", "\ufeff", "\u200e", "\u202e", "\u2066",
+                 "\ufe0f", "\u034f", "\U000e0041")
+
+    def test_a_secret_split_by_an_invisible_character_is_masked(self):
+        for mark in self.INVISIBLE:
+            for secret in ("sk-ant-api03-" + "Z" * 12 + mark + "Z" * 12, "gh" + mark + "p_" + "A1" * 12,
+                           "pass" + mark + "word=walrus2secret9", "AKIA" + "B" * 8 + mark + mark + "B" * 8,
+                           "-----BEGIN PRIVATE" + mark + " KEY-----\nMIIEvQIBADAN\nMIIEvQIBADAN"):
+                with self.subTest(mark=mark, secret=secret):
+                    masked = mask(f"note {secret} end")
+                    self.assertIn("[masked]", masked)
+                    for piece in ("ZZZZ", "A1A1", "walrus", "BBBB", "MIIE"):
+                        self.assertNotIn(piece, masked)
+                    self.assertEqual(mask(masked), masked)
+
+    def test_the_rest_of_the_text_keeps_its_invisible_characters(self):
+        family, soft = "\U0001f468\u200d\U0001f469", "co\u00adoperate"
+        text = f"{family} {soft} then ghp_" + "A1" * 6 + "\u2060" + "A1" * 6 + f" then {family}"
+        self.assertEqual(mask(text), f"{family} {soft} then [masked] then {family}")
+        self.assertEqual(mask(f"{family} {soft} plain"), f"{family} {soft} plain")
+
+    def test_an_id_with_a_split_secret_counts_and_one_without_does_not(self):
+        self.assertTrue(secret_in_id("key-sk-ant-\u200bapi03-" + "Q" * 24 + ".md"))
+        self.assertTrue(secret_in_id("pass\u200bword=walrus2secret9.md"))
+        self.assertFalse(secret_in_id("notes\u200b\u200d.md"))
+
+
 class EscapeTest(unittest.TestCase):
     """JSON text, such as a tool's input stored as JSON, escapes a line break as "\\n": a secret right after one, or on
     the next line after another's value, is masked as at the start of a line."""
@@ -320,7 +349,8 @@ class LinearTimeTest(unittest.TestCase):
     """A long run of one shape costs time in proportion to its length: sixteen times the text, about sixteen times the
     time, where a pattern that reads on from every character would take some two hundred and fifty."""
     RUNS = ("0123456789abcdef", "token", "abcdefghij", "ABCDEFGHIJ", "QUJDRGVm+/9z", "a:", "password=", "a_pw ",
-            "set-cookie", "a.", "token.", "x-", "token ", "_KEY_", "curl -u a:", "-----BEGIN ", "[masked]A")
+            "set-cookie", "a.", "token.", "x-", "token ", "_KEY_", "curl -u a:", "-----BEGIN ", "[masked]A",
+            "a\u200b", "ghp_\u200b" + "A1" * 12 + " ")
     SIZES = (1 << 16, 1 << 20)
 
     def test_every_shape_is_linear_up_to_a_megabyte(self):

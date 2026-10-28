@@ -525,7 +525,7 @@ class CliTest(unittest.TestCase):
         self.configure(self.make_notes())
         real = mask_module._mask_once
         with mock.patch.object(mask_module, "_mask_once",  # a pass that never settles on the note's text
-                               lambda text: text + "!" if "walrus pricing" in text else real(text)):
+                               lambda text, *names: text + "!" if "walrus pricing" in text else real(text, *names)):
             self.assertEqual(self.ingest(), 0)
         out = io.StringIO()
         with contextlib.redirect_stdout(out):

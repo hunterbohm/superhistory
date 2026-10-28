@@ -65,6 +65,9 @@ row-by-row remask left after its placeholder (base64 glued to it, or an escaped 
 its footer or the end of its paragraph. Text after a broken key in its paragraph is masked with it; that is the cost.
 In JSON text, such as a tool's input stored as JSON, a secret right after an escape such as "\n" is masked as at the
 start of a line, and a value ends where an escape starts the next "name=" or "name:", so that name keeps its own.
+A secret split by characters a reader does not see (Unicode's default ignorable code points, such as zero-width spaces
+and joiners, the soft hyphen and direction marks) is matched in the text without them; the stretch a pass changes
+replaces the same stretch of the text as written, and the rest keeps them, so an emoji joined by them reads as it did.
 `mask()` repeats until a pass changes nothing, so masked text masks to itself and plain text costs one pass. No
 pattern matches a placeholder alone, so it stops; at its limit of eight passes it masks the part still changing whole,
 and ingest counts such texts for `kb stats`. Each ingest masks older rows again for up to a minute

@@ -25,7 +25,7 @@ import unittest
 from unittest import mock
 
 from kb import ai, check, cli, ingest, search, store, summarize
-from kb.mask import mask, mask_all
+from kb.mask import INVISIBLE, mask, mask_all
 from kb.sources import Item
 from tests import legacy_store
 
@@ -59,7 +59,11 @@ class Planted:
         return value
 
     def token(self):
-        return self._value("sk-ant-api03-fz{}" + "Q" * 20)
+        token = self._value("sk-ant-api03-fz{}" + "Q" * 20)
+        if self.r.random() < 0.2:  # split by a character a reader does not see
+            cut = self.r.randint(1, len(token) - 1)
+            token = token[:cut] + self.r.choice(("\u200b", "\u200d", "\u2060", "\u00ad", "\ufeff")) + token[cut:]
+        return token
 
     def keyed(self):
         return self.r.choice(("password=", "api_key: ", "secret_token=", "PASSWORD = ")) + self._value("fz{}Kq12345678")
@@ -305,7 +309,7 @@ def run_sequence(seq, root, ops=None):
                 done[-1] += " (stopped)"
                 db.rollback()
         problems = not_masked_whole(db)
-        text = "\n".join(shown(db, path))
+        text = INVISIBLE.sub("", "\n".join(shown(db, path)))  # as a reader sees it
         problems += [f"a reader shows {piece!r}" for piece in sorted(planted.pieces) if piece in text]
         squeezed = re.sub(r"\s+|\\[nr]", "", text)  # a key's body read through its line breaks
         problems += [f"a reader shows {body[i:i + 12]!r} of a key" for body in planted.bodies
