@@ -101,13 +101,17 @@ class ParseTest(unittest.TestCase):
 
 
 class KeyWordHostTest(unittest.TestCase):
-    def test_a_machine_or_host_named_as_a_secrets_key_word_is_refused(self):
+    def test_a_machine_or_host_named_as_a_secrets_key_word_is_refused_with_how_to_fix_it(self):
         for name in ("password", "token", "cookie", "api_key", "passcode"):
             with self.subTest(name=name):
-                with self.assertRaises(config.ConfigError):
+                with self.assertRaises(config.ConfigError) as caught:
                     config.parse(f'machine = "{name}"\n')
-                with self.assertRaises(config.ConfigError):
+                self.assertIn(f'machine: "{name}" is a word for a secret', str(caught.exception))
+                self.assertIn("run `kb setup` and give this computer another name", str(caught.exception))
+                with self.assertRaises(config.ConfigError) as caught:
                     config.parse(f'[hosts.{name}]\nssh = "x"\n')
+                self.assertIn(f"rename the [hosts.{name}] table and that host in each source's hosts list",
+                              str(caught.exception))
         for name in ("tokenbox", "secret-lab", "studio-pw", "passwordless", "desk"):
             self.assertEqual(config.parse(f'machine = "{name}"\n').machine, name)
 

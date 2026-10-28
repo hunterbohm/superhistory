@@ -10,11 +10,17 @@ _NB = r"(?<![A-Za-z0-9])"
 # JSON or YAML value can sit on the next line): \s would also take U+2028, U+2029, U+0085, a vertical tab or a form
 # feed, which end a value early or make "password=\u2028password" look like a placeholder.
 SECRET_PATTERNS = [
-    # The body may come with its line breaks escaped, as in a service account's JSON key or a repr(). It is taken a
-    # base64 line at a time, so a key cut off before its footer does not run on into the words after it, such as the
-    # name of the next secret; only its last line, next to the footer or at the end of the text, may be short.
-    re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----(?:(?:\s|\\[nr])*[A-Za-z0-9+/=]{16,})*"
-               r"(?:(?:\s|\\[nr])*[A-Za-z0-9+/=]{1,15}(?=(?:\s|\\[nr])*(?:-----END|\Z)))?"
+    # A whole key, header to footer, whatever its lines' lengths, with the header fields an encrypted key has. A dash
+    # may not start "-----", so a header without a footer stops at the next such line instead of scanning on.
+    re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----(?:[A-Za-z0-9+/=\s:,]|-(?!----)|\\[nr])*?"
+               r"-----END [A-Z ]*PRIVATE KEY-----"),
+    # A key cut off before its footer, its line breaks plain or escaped as in a service account's JSON key or a
+    # repr(): the header and each whole line of base64 after it, any length, up to a line that is not one. A line may
+    # end in a cut's "…" or "...", and one of a key line's length may run on into words, but not into an assignment:
+    # so the name of the next secret, as in "clientSecretToken: X" or "... = X", stays for that secret's own rule.
+    re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----(?:(?:\s|\\[nr])*[A-Za-z0-9+/=]+"
+               r"(?=[ \t]*(?:[\r\n\"'…]|\\[nr]|\.\.\.|\Z|-----)"
+               r"|(?<=[A-Za-z0-9+/=]{16})[ \t]+(?![ \t]*(?:[:=]|=>|is\b))))*"
                r"(?:(?:\s|\\[nr])*-----END [A-Z ]*PRIVATE KEY-----)?"),
     re.compile(_NB + r"sk-(?:ant-|proj-|or-v1-)?[A-Za-z0-9_-]{20,}"),
     re.compile(_NB + r"(?:sk|rk|pk)_(?:live|test)_[A-Za-z0-9]{16,}"),
@@ -54,7 +60,8 @@ ENV_KEY_ID = re.compile(_ENV_KEY_NAME + r"((?:[\"'])?(?:=>|[:=])[\"']?)" + _VALU
 # A name that is a secret's key word by itself, such as "password" or "cookie". No host may be named so, which lets an
 # id's first colon be read as kb's own "<host>:" only when what comes before it could be a host.
 KEY_WORD = re.compile(r"(?i)(?:api[_-]?key|access[_-]?key|private[_-]?key|secret|token|credentials?|passw(?:or)?d|"
-                      r"passcode|pass|pwd|pw|session[_-]?(?:token|key|secret|cookie)|bw_session|(?:set-)?cookie|\w+_key)")
+                      r"passcode|pass|pwd|pw|session[_-]?(?:token|key|secret|cookie)|bw_session|(?:set-)?cookie|"
+                      r"\w+_key)")
 PASSWORD_NAME = re.compile(r"(?i)passw(?:or)?d|passcode|bw_session|[_-](?:pass|pwd|pw)$")
 PLACEHOLDERS = {"string", "str", "none", "null", "nil", "true", "false", "undefined", "required", "optional",
                 "xxx", "xxxx", "****", "...", "redacted", "<redacted>", "secret", "password", "token"}
@@ -94,7 +101,8 @@ _PLACEHOLDER = re.compile(r"\[masked\]")
 # Characters glued to a placeholder are the rest of a secret an older kb masked a chunk at a time, or what its key
 # pattern left of the next secret's name, as in "[masked]_key: value": today's patterns take every such character, so
 # they never leave one glued. Such a name keeps its value masked with it.
-_GLUED_RUN = re.compile(r"\[masked\](?:[A-Za-z0-9_.-]+[ \t]*(?:[:=]|=>)[ \t]*[\"']?" + _VALUE[1:-1] + r"|[A-Za-z0-9_+/=-]+)")
+_GLUED_RUN = re.compile(r"\[masked\](?:[A-Za-z0-9_.-]+[ \t]*(?:[:=]|=>)[ \t]*[\"']?" + _VALUE[1:-1]
+                        + r"|[A-Za-z0-9_+/=-]+)")
 # A key's body lines are 64 characters; only its last line, next to the footer or at the end, is shorter.
 FULL_LINE = 16
 
@@ -144,7 +152,8 @@ def _headless_keys(text):
     """A private key's body lines up to its footer when its header is gone, cut off or masked apart by an older
     kb's row-by-row remask. Found from each footer back, a line at a time, so text without a footer costs one search.
     The line next to the footer may be short; a word alone before a footer stays."""
-    for footer in reversed(list(KEY_FOOTER.finditer(text))):
+    spans = []
+    for footer in KEY_FOOTER.finditer(text):
         line = _key_line_before(text, footer.start())
         if not line:
             continue
@@ -153,8 +162,8 @@ def _headless_keys(text):
         while line and line[1] - line[0] >= FULL_LINE:
             start, full, line = line[0], True, _key_line_before(text, line[0])
         if full:
-            text = text[:start] + "[masked]" + text[footer.end():]
-    return text
+            spans.append((start, footer.end()))
+    return _replace(text, spans, "[masked]")
 
 
 def _key_rest(text):
@@ -182,9 +191,16 @@ def _key_rest(text):
         if (lines if first else full >= 2) or (first >= FULL_LINE and (_line_ends(text, end) or text[end] in " \t")):
             footer = KEY_FOOTER.match(text, _after_break(text, end))
             spans.append((glued.end(), footer.end() if footer else end))
-    for start, end in reversed(spans):
-        text = text[:start] + text[end:]
-    return text
+    return _replace(text, spans, "")
+
+
+def _replace(text, spans, replacement):
+    """`text` with each of the ordered spans replaced, built once: one copy per span would be quadratic."""
+    out, last = [], 0
+    for start, end in spans:
+        out += [text[last:start], replacement]
+        last = end
+    return "".join(out + [text[last:]])
 
 
 def mask(text):

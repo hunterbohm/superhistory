@@ -10,6 +10,7 @@ from typing import Any, Dict, List, NamedTuple, Tuple
 from kb import NAME, agents, ai, config, sources
 from kb.agents import write as write_file
 from kb.ai import cli as ai_cli
+from kb.mask import KEY_WORD, holds_secret
 
 YES = ("y", "yes")
 NO = ("n", "no")
@@ -224,9 +225,13 @@ def run(paths, ask, secret, home=None, platform=None, which=shutil.which):
 
     while True:
         machine = (ask("This computer's name in stored records", default_machine()) or default_machine()).strip().lower()
-        if config.NAME_RE.match(machine):
+        if not config.NAME_RE.match(machine):
+            print(f"  {NAME_RULE}")
+        elif KEY_WORD.fullmatch(machine) or holds_secret(machine):
+            print("  That name reads like a word for a secret, such as a password or token, which kb would take its"
+                  " records' ids for. Pick another.")
+        else:
             break
-        print(f"  {NAME_RULE}")
     print(f"  Computer name: {machine}.")
     plan = Plan(machine)
 

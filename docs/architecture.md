@@ -38,8 +38,8 @@ The Sync client goes in `kb/sync/`. It meets the engine at two points.
   enter, masks again, so rows another store sent are masked as well, and masks a long item's chunks as one text: a
   store that cut an item before masking it can split a secret in two that neither chunk shows, and so it writes
   an item's chunks all at once or not at all. It refuses a source or item id that holds a secret, as ingest does
-  (`store.secret_id`: the host and the reader's id apart, and an id read more narrowly than text, so a note titled
-  "Tokens: 2026 plan" is kept), and records on each row the version of `mask()` it used (`mask.VERSION`, which
+  (`store.secret_id`: the host the rows' metadata names and the reader's id apart, any other id whole, and an id read
+  more narrowly than text, so a note titled "Tokens: 2026 plan" is kept), and records on each row the version of `mask()` it used (`mask.VERSION`, which
   follows the patterns). A database trigger clears that version when anything else changes a row's time, title,
   text or metadata, as an older kb would.
 - Out of kb: the kb command's stdout and stderr, every log line (through `masked_log`, whatever logger the caller

@@ -186,6 +186,20 @@ class HeadlessKeyTest(unittest.TestCase):
         for text in ("ordinary words here\n-----END PRIVATE KEY-----", "short\nlines\n-----END PRIVATE KEY-----"):
             self.assertEqual(mask(text), text)
 
+    def test_many_placeholders_with_key_lines_cost_one_pass(self):
+        import time
+        took = {}
+        for n in (2000, 32000):
+            text = ("[masked]" + "A" * 64 + "\n") * n
+            started = time.process_time()
+            self.assertEqual(mask(text), "[masked]\n" * n)
+            took[n] = time.process_time() - started
+        # Sixteen times the input: about sixteen times the time when linear, some eighty when each span copies the text.
+        self.assertLess(took[32000], 40 * max(took[2000], 0.005), took)
+        started = time.monotonic()
+        mask(("A" * 40 + "\n-----END PRIVATE KEY-----\n") * 5000)
+        self.assertLess(time.monotonic() - started, 3, "many footers")
+
     def test_a_long_run_without_a_footer_costs_one_pass(self):
         import time
         started = time.monotonic()
