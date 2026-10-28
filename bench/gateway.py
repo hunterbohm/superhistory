@@ -6,6 +6,7 @@ The benchmarks share their model plans with other work, so a rate limit is never
 reply that says the model is cooling down, raises RateLimited and sets LIMITED, and the runners start no new question
 after that. Run the same command again once the limit has passed; it runs only the questions with no row.
 """
+import codecs
 import http.client
 import io
 import json
@@ -26,6 +27,9 @@ ERROR_BYTES = 1 << 16
 REPLY_BYTES = 1 << 24
 LIMITED = threading.Event()
 WAIT_MINUTES = 30
+# Standing order 22: at most two model calls at once in a run, kb's hedged copies and the summarizer's included. A
+# call waits here for a slot, so a run with more than one worker mostly waits, and a hedge copy can start late.
+SLOTS = threading.BoundedSemaphore(2)
 
 
 class RateLimited(RuntimeError):
@@ -46,8 +50,17 @@ def check_limited():
                           "minutes")
 
 
+# What a reply that is not a model's says when the plan is limited, in an error's type or its message.
+LIMIT_WORDS = ("rate_limit", "rate limit", "cooling down")
+
+
+def names_limit(text):
+    text = text.lower()
+    return any(word in text for word in LIMIT_WORDS)
+
+
 def is_rate_limit(code, detail):
-    return code == 429 or "cooling down" in detail.lower()
+    return code == 429 or names_limit(detail)
 
 
 def limited_reply(response):
@@ -59,28 +72,38 @@ def limited_reply(response):
                  or response.get("choices") and isinstance(response["choices"], list)
                  or isinstance(response.get("input_tokens"), int))):
         return False
-    text = json.dumps(response).lower()
-    return "rate_limit" in text or "rate limit" in text or "cooling down" in text
+    return names_limit(json.dumps(response))
 
 
-def _said_so(text):
-    """Whether a successful reply, as far as it has arrived, says the plan is rate limited. A model's reply is a JSON
-    object, so text that cannot start one is read by its words; an object counts once it parses."""
-    begun = text.lstrip()
-    if not begun:
-        return False
-    if not begun.startswith("{"):
-        return is_rate_limit(0, text)
-    try:
-        return limited_reply(json.loads(text))
-    except ValueError:
-        return False
+# The longest phrase that names a limit, less one: how much of the text before a new piece is searched with it.
+OVERLAP = max(map(len, LIMIT_WORDS)) - 1
+
+
+class _Arriving:
+    """A reply's text as it arrives, each piece decoded and searched once."""
+
+    def __init__(self):
+        self.decode = codecs.getincrementaldecoder("utf-8")(errors="replace").decode
+        self.parts, self.recent, self.first = [], "", None
+
+    def add(self, chunk):
+        """The newest piece, with the end of the text before it so a phrase across the two is found."""
+        new = self.decode(chunk)
+        self.parts.append(new)
+        if self.first is None and new.strip():
+            self.first = new.lstrip()[0]
+        window = self.recent + new
+        self.recent = window[-OVERLAP:]
+        return window
+
+    def text(self):
+        return "".join(self.parts)
 
 
 def _read(reply, limit, watch):
     """Up to `limit` bytes of a reply, and the error that cut it short, if any: what arrived before a read failed is
-    kept. `watch` sees the text after each piece arrives, so a limit stops the run before the rest comes, or a hedge
-    copy goes out."""
+    kept. `watch` sees each piece as it arrives, so a limit stops the run before the rest comes, or a hedge copy goes
+    out."""
     raw, read = b"", getattr(reply, "read1", reply.read)
     while len(raw) < limit:
         try:
@@ -90,7 +113,7 @@ def _read(reply, limit, watch):
         if not chunk:
             break
         raw += chunk
-        watch(raw.decode(errors="replace"))
+        watch(chunk)
     return raw, None
 
 
@@ -110,9 +133,16 @@ def _open(request, timeout):
 
 
 def urlopen(request, timeout):
-    """urllib's urlopen, except that every reply is read for a rate limit before anything parses it or cuts it short
-    for a message, and no redirect is followed. A reply that names no limit is handed on as urllib gave it, still
-    readable; a failed read is raised as it was."""
+    """urllib's urlopen, except that it holds one of the run's two SLOTS until the reply is read, that every reply is
+    read for a rate limit before anything parses it or cuts it short for a message, and that no redirect is followed.
+    A reply that names no limit is handed on as urllib gave it, still readable; a failed read is raised as it was."""
+    with SLOTS:
+        # A limit seen while this call waited for its slot stops it before it sends.
+        check_limited()
+        return _urlopen(request, timeout)
+
+
+def _urlopen(request, timeout):
     try:
         reply = _open(request, timeout)
     except urllib.error.HTTPError as e:
@@ -120,15 +150,33 @@ def urlopen(request, timeout):
         if e.code == 429:
             limited(f"HTTP 429 from {request.full_url}")
 
-        def watch(text):
-            if is_rate_limit(e.code, text):
-                limited(f"HTTP {e.code} from {request.full_url}: {' '.join(text.split())}")
+        error = _Arriving()
+
+        def watch(chunk):
+            if is_rate_limit(e.code, error.add(chunk)):
+                limited(f"HTTP {e.code} from {request.full_url}: {' '.join(error.text().split())}")
         raw, _ = _read(e, ERROR_BYTES, watch)
         raise urllib.error.HTTPError(e.url, e.code, e.msg, e.hdrs, io.BytesIO(raw)) from None
 
-    def watch(text):
-        if _said_so(text):
-            limited(f"from {request.full_url}: {' '.join(text.split())}")
+    arriving = _Arriving()
+
+    def watch(chunk):
+        """A model's reply is a JSON object, so text that cannot start one is read by its words as it comes; an object
+        counts once it parses, tried only where it could end."""
+        window = arriving.add(chunk)
+        if arriving.first is None:
+            return
+        if arriving.first != "{":
+            said = is_rate_limit(0, window)
+        elif window.rstrip().endswith("}"):
+            try:
+                said = limited_reply(json.loads(arriving.text()))
+            except ValueError:
+                said = False
+        else:
+            said = False
+        if said:
+            limited(f"from {request.full_url}: {' '.join(arriving.text().split())}")
     with reply:
         raw, failed = _read(reply, REPLY_BYTES, watch)
     text = raw.decode(errors="replace")

@@ -138,7 +138,7 @@ def run_one(tool, q, setup):
     return {"id": q["id"], "kind": q["kind"], "question": q["question"], "gold": q["answer"],
             "evidence": q["evidence"], "context": found.context, "context_items": found.items, "query": found.query,
             "lookup_seconds": round(found.seconds, 3), "lookup_error": found.error,
-            "lookup_model_tokens": found.model_tokens,
+            "lookup_model_tokens": found.model_tokens, "lookup_model_detail": found.model_detail,
             "context_tokens": gateway.count_tokens(ANSWER_MODEL, found.context),
             "tool_calls": calls, "read_items": shown,
             "tool_tokens": sum(c["tokens"] for c in calls),
@@ -350,7 +350,7 @@ def main(argv=None):
     m = sub.add_parser("month")
     m.add_argument("--tools", default=",".join(DEFAULT_TOOLS))
     m.add_argument("--limit", type=int, help="run only the first N questions")
-    m.add_argument("--workers", type=int, default=4)
+    m.add_argument("--workers", type=int, default=1)
     m.add_argument("--out", default=RESULTS)
     m.add_argument("--fresh", action="store_true", help="drop earlier rows and rerun every question")
     m.add_argument("--month", choices=sorted(MONTHS), default="a", help="a is the dev month, b the held-out one")
