@@ -165,6 +165,13 @@ def secret_id(source, source_id, host=None):
     return holds_secret(source) or secret_in_id(source_id)
 
 
+def item_host(db, source, source_id):
+    """The host every stored row of the item names in its metadata, or None when they differ or one names none."""
+    hosts = {h for (h,) in db.execute(
+        "SELECT json_extract(metadata, '$.host') FROM docs WHERE source=? AND source_id=?", (source, source_id))}
+    return hosts.pop() if len(hosts) == 1 else None
+
+
 def _host(rows):
     """The host the rows' metadata names, if they all name the same one."""
     hosts = {r["metadata"].get("host") if isinstance(r["metadata"], dict) else None for r in rows}
@@ -308,9 +315,7 @@ def remask(db, seconds=None, log=None):
     started, changed = time.monotonic(), 0
     items = db.execute("SELECT DISTINCT source, source_id FROM docs WHERE masked IS NOT ?", (VERSION,)).fetchall()
     for n, (source, source_id) in enumerate(items, 1):
-        host = db.execute("SELECT json_extract(metadata, '$.host') FROM docs WHERE source=? AND source_id=? LIMIT 1",
-                          (source, source_id)).fetchone()[0]
-        if secret_id(source, source_id, host):
+        if secret_id(source, source_id, item_host(db, source, source_id)):
             changed += delete_item(db, source, source_id)
             if log:
                 log.warning("remask: deleted %s %s, whose name looks like it holds a secret; rename it to index it",

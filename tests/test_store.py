@@ -466,6 +466,39 @@ class MaskVersionTest(TempDB):
         store.remask(self.db)
         self.assertNotIn("CAkKCwwN", json.dumps(self.rows()))
 
+    def test_a_cut_off_key_neither_eats_the_next_name_nor_leaves_short_lines(self):
+        line = "MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7"
+        short = ["MC4CAQAw", "BQYDK2Vw", "BCIEIAAB", "AgMEBQYH"]
+        for brk in ("\n", "\r\n", "\\n"):
+            with self.subTest(brk=brk):
+                named = brk.join(["-----BEGIN PRIVATE KEY-----", line, "clientSecretToken: walrus2secret9"])
+                spaced = brk.join(["-----BEGIN PRIVATE KEY-----", line, "clientSecretToken = walrus2secret9"])
+                ran_on = brk.join(["-----BEGIN PRIVATE KEY-----", line, line + " ledger approved"])
+                cut = brk.join(["-----BEGIN PRIVATE KEY-----", *short])
+                for text in (named, spaced, ran_on, cut, cut + brk + "notes after", f'{{"key": "{cut}"}}'):
+                    masked = store.mask(text)
+                    for gone in ("walrus2secret9", *short, line[:12]):
+                        self.assertNotIn(gone, masked, text[-30:])
+                self.assertIn("clientSecretToken: [masked]", store.mask(named))
+                self.assertIn("clientSecretToken = [masked]", store.mask(spaced))
+                self.assertTrue(store.mask(ran_on).endswith("[masked] ledger approved"))
+                self.assertTrue(store.mask(cut + brk + "notes after").endswith("notes after"))
+                self.add(f"cut{len(brk)}", f"walrus {named}{brk}{cut}")
+        self.assertNotIn("walrus2secret9", json.dumps(self.rows()))
+        self.assertNotIn("CAkKCwwN", json.dumps(self.rows()))
+
+    def test_remask_reads_an_items_host_only_when_all_its_rows_agree(self):
+        sid = "token2:walrus2secret9"
+        for hosts in (("token2", None), (None, "token2"), ("token2", "desk")):
+            with self.subTest(hosts=hosts):
+                for n, host in enumerate(hosts):
+                    self.old(sid, "unrelated text" if n == 0 else "walrus ledger", kind="raw",
+                             meta={"chunk": n, "chunks": 2, **({"host": host} if host else {})})
+                self.assertEqual(search.search(self.db, "walrus"), [])
+                store.remask(self.db)
+                self.assertEqual(self.ids(sid), [], "remask deletes it")
+                self.assertEqual(search.search(self.db, "walrus"), [])
+
     def test_an_encrypted_key_is_masked_with_its_header_fields(self):
         key = ("-----BEGIN RSA PRIVATE KEY-----\nProc-Type: 4,ENCRYPTED\nDEK-Info: AES-256-CBC,0A1B2C3D4E5F60718293A4B5C6D7E8F9"
                "\n\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7\nAgMEBQYH\n-----END RSA PRIVATE KEY-----")
