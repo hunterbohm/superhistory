@@ -167,6 +167,9 @@ Known limits:
 
 - A secret typed into a file name in a form like "password: X" or "password is X" stays in the item's id. The file's
   text is still masked.
+- A private key is masked by its structure: from its header through its footer, or, if the footer is missing, through
+  the end of its paragraph. So whatever follows a key cut off before its footer, up to the next blank line, is masked
+  with it, and so is the paragraph before a footer with no header.
 
 ## Why there are no embeddings
 

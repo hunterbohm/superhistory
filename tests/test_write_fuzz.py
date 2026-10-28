@@ -49,7 +49,7 @@ class Planted:
     characters, since a cut before masking keeps a start or an end too short to mask."""
 
     def __init__(self, r, seq):
-        self.r, self.seq, self.n, self.pieces, self.items, self.bodies = r, seq, 0, set(), {}, []
+        self.r, self.seq, self.n, self.pieces, self.items, self.bodies, self.narrowest = r, seq, 0, set(), {}, [], 1
 
     def _value(self, shape):
         self.n += 1
@@ -80,8 +80,9 @@ class Planted:
 
     def key(self):
         """A key block as keys come: any header kind, an encrypted key's header fields, lines of 1 to 100 characters,
-        LF, CRLF or escaped line breaks, whole or cut at a random point. Its body is checked through any line breaks."""
-        kind, brk, width = self.r.choice(KEY_KINDS), self.r.choice(("\n", "\r\n", "\\n")), self.r.randint(1, 100)
+        LF, CRLF or escaped line breaks, whole or cut at a random point, and sometimes a secret's name and value right
+        after it. Its body is checked through any line breaks."""
+        kind, brk, width = self.r.choice(KEY_KINDS), self.r.choice(("\n", "\r\n", "\\n")), self.r.randint(self.narrowest, 100)
         body = "".join(self.r.choice(BASE64) for _ in range(self.r.randint(24, 400))) + "=" * self.r.randint(0, 2)
         head = [f"-----BEGIN {kind}-----"]
         if kind in KEY_KINDS[1:4] and self.r.random() < 0.4:
@@ -91,6 +92,9 @@ class Planted:
         if self.r.random() < 0.4:
             block = block[:self.r.randint(len(head[0]) + 1, len(block))]
         self.bodies.append(body)
+        if self.r.random() < 0.4:
+            name = self.r.choice(("clientSecretToken: ", "password=", "api_key = ", "secret_token: "))
+            block += self.r.choice((brk, " ")) + name + self._value("fz{}Kq12345678")
         return block
 
     def text(self):
@@ -282,9 +286,11 @@ def run_sequence(seq, root, ops=None):
     db = store.connect(path)
     db.execute("PRAGMA synchronous=OFF")  # a scratch file: no write here needs to survive a power cut
     planted, done = Planted(r, seq), []
+    names = [r.choice(ops or sorted(OPERATIONS)) for _ in range(r.randint(3, 9))]
+    # An older kb only ever stored real keys, wrapped at 64 to 76 characters; narrower ones come from kb's own writes.
+    planted.narrowest = 16 if {"old_kb", "old_remask"} & set(names) else 1
     try:
-        for _ in range(r.randint(3, 9)):
-            name = r.choice(ops or sorted(OPERATIONS))
+        for name in names:
             done.append(name)
             try:
                 OPERATIONS[name](db, r, planted)

@@ -466,7 +466,7 @@ class MaskVersionTest(TempDB):
         store.remask(self.db)
         self.assertNotIn("CAkKCwwN", json.dumps(self.rows()))
 
-    def test_a_cut_off_key_neither_eats_the_next_name_nor_leaves_short_lines(self):
+    def test_a_cut_off_key_is_masked_through_the_end_of_its_paragraph(self):
         line = "MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7"
         short = ["MC4CAQAw", "BQYDK2Vw", "BCIEIAAB", "AgMEBQYH"]
         for brk in ("\n", "\r\n", "\\n"):
@@ -479,10 +479,9 @@ class MaskVersionTest(TempDB):
                     masked = store.mask(text)
                     for gone in ("walrus2secret9", *short, line[:12]):
                         self.assertNotIn(gone, masked, text[-30:])
-                self.assertIn("clientSecretToken: [masked]", store.mask(named))
-                self.assertIn("clientSecretToken = [masked]", store.mask(spaced))
-                self.assertTrue(store.mask(ran_on).endswith("[masked] ledger approved"))
-                self.assertTrue(store.mask(cut + brk + "notes after").endswith("notes after"))
+                    self.assertEqual(masked, "[masked]" if text.startswith("-") else '{"key": "[masked]', text[-30:])
+                # The next paragraph is not the key's.
+                self.assertEqual(store.mask(cut + brk + brk + "notes after"), "[masked]" + brk + brk + "notes after")
                 self.add(f"cut{len(brk)}", f"walrus {named}{brk}{cut}")
         self.assertNotIn("walrus2secret9", json.dumps(self.rows()))
         self.assertNotIn("CAkKCwwN", json.dumps(self.rows()))

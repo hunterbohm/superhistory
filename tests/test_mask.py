@@ -163,7 +163,9 @@ class HeadlessKeyTest(unittest.TestCase):
             with self.subTest(brk=brk):
                 text = f"[masked]{self.LINE}{brk}{self.LINE}{brk}-----END PRIVATE KEY-----{brk}after"
                 self.assertEqual(mask(text), f"[masked]{brk}after")
-                self.assertEqual(mask(text.replace("[masked]", "notes\n")), f"notes\n[masked]{brk}after")
+                # A footer with no header masks its paragraph up to it; a blank line ends that paragraph.
+                self.assertEqual(mask(text.replace("[masked]", "notes\n")), f"[masked]{brk}after")
+                self.assertEqual(mask(text.replace("[masked]", "notes\n\n")), f"notes\n\n[masked]{brk}after")
 
     def test_a_short_last_line_and_a_placeholder_glued_body_are_masked(self):
         for text in (f"[masked]{self.LINE}\n{self.LINE}\nAg==\n-----END PRIVATE KEY-----",
@@ -173,7 +175,7 @@ class HeadlessKeyTest(unittest.TestCase):
                 self.assertNotIn(self.LINE[:12], mask(text))
                 self.assertNotIn("Ag==", mask(text))
         for text in ("x [masked] and Ag==\nwords", "token=[masked]\n3f2a9c" + "0" * 34 + "\nnext"):
-            self.assertEqual(mask(text), text, "a word or one hash line after a placeholder stays")
+            self.assertEqual(mask(text), text, "a word, or a hash on the next line, after a placeholder stays")
 
     def test_the_rest_of_a_token_masked_a_chunk_at_a_time_is_masked(self):
         # An older kb masked "sk-ant-..." in one chunk; the token's last characters began the next.
@@ -181,24 +183,30 @@ class HeadlessKeyTest(unittest.TestCase):
         # Its key pattern ran on into the next line and took the start of a secret's name.
         self.assertEqual(mask("[masked]_key: walrus2secret9 next"), "[masked] next")
 
-    def test_text_before_the_body_and_a_footer_alone_stay(self):
-        self.assertEqual(mask(f"notes before\n{self.LINE}\n-----END PRIVATE KEY-----"), "notes before\n[masked]")
-        for text in ("ordinary words here\n-----END PRIVATE KEY-----", "short\nlines\n-----END PRIVATE KEY-----"):
-            self.assertEqual(mask(text), text)
+    def test_a_footer_alone_masks_its_paragraph_and_only_that(self):
+        for text in (f"notes before\n{self.LINE}\n-----END PRIVATE KEY-----", "ordinary words here\n-----END PRIVATE KEY-----"):
+            self.assertEqual(mask(f"first paragraph\n\n{text}\n\nlast paragraph"),
+                             "first paragraph\n\n[masked]\n\nlast paragraph")
 
     def test_many_placeholders_with_key_lines_cost_one_pass(self):
         import time
         took = {}
         for n in (2000, 32000):
-            text = ("[masked]" + "A" * 64 + "\n") * n
+            text = ("[masked]" + "A" * 64 + "\n\n") * n
             started = time.process_time()
-            self.assertEqual(mask(text), "[masked]\n" * n)
+            self.assertEqual(mask(text), "[masked]\n\n" * n)
             took[n] = time.process_time() - started
         # Sixteen times the input: about sixteen times the time when linear, some eighty when each span copies the text.
         self.assertLess(took[32000], 40 * max(took[2000], 0.005), took)
-        started = time.monotonic()
-        mask(("A" * 40 + "\n-----END PRIVATE KEY-----\n") * 5000)
-        self.assertLess(time.monotonic() - started, 3, "many footers")
+        header = "-----BEGIN PRIVATE KEY-----"
+        for name, text in (("many footers", ("A" * 40 + "\n-----END PRIVATE KEY-----\n") * 5000),
+                           ("many headers in one paragraph", (header + "\nAAAA\n") * 20000),
+                           ("many headers, a paragraph each", (header + "\nAAAA\n\n") * 20000),
+                           ("one header, a long paragraph", header + "\n" + "AAAA word " * 100000),
+                           ("many fields", ("DEK-Info: AES-256-CBC,0A\n") * 20000)):
+            started = time.monotonic()
+            mask(text)
+            self.assertLess(time.monotonic() - started, 3, name)
 
     def test_a_long_run_without_a_footer_costs_one_pass(self):
         import time
@@ -226,10 +234,11 @@ class KeyShapeTest(unittest.TestCase):
                 self.assertEqual(leaked, [], f"seq {seq}: {block[-60:]!r}{after!r}")
                 self.assertNotIn("walrus2secret9", masked)
 
-    def test_words_around_a_lone_footer_stay(self):
-        for text in ("ordinary words here\n-----END PRIVATE KEY-----", "abc\ndef\n-----END PRIVATE KEY-----",
-                     "notes\n-----END PRIVATE KEY-----"):
-            self.assertEqual(mask(text), text)
+    def test_paragraphs_after_a_broken_key_stay(self):
+        for key in ("-----BEGIN PRIVATE KEY-----\nMIIEvQIBADAN", "-----BEGIN RSA PRIVATE KEY-----\nProc-Type: 4,ENCRYPTED\n"
+                    "DEK-Info: AES-256-CBC,0A1B\n\nMIIEvQIBADAN", "abc\n-----END PRIVATE KEY-----"):
+            for brk in ("\n\n", "\r\n\r\n", "\\n\\n"):
+                self.assertEqual(mask(f"{key}{brk}the next paragraph"), f"[masked]{brk}the next paragraph")
 
 
 class SecretInIdTest(unittest.TestCase):

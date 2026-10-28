@@ -5,7 +5,7 @@ import hashlib
 import json
 import re
 
-from kb.mask import SECRET_PATTERNS, clean
+from kb.mask import clean
 
 ITEM_KINDS = ("doc", "raw")
 SUMMARY_KINDS = ("segment", "atom")
@@ -96,14 +96,32 @@ def remask(db, mask):
         last = batch[-1][0]
 
 
-# main's private key pattern, which takes any run of base64 characters and whitespace after the header, so in one
-# chunk it masks to the chunk's end and leaves the rest of the body, glued to its placeholder, in the next.
-MAIN_KEY = re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----[A-Za-z0-9+/=\s]*(?:-----END [A-Z ]*PRIVATE KEY-----)?")
+# main's own secret patterns, copied as they were. Its key pattern takes any run of base64 characters and whitespace
+# after the header, so in one chunk it masks to the chunk's end and leaves the rest of the body, glued to its
+# placeholder, in the next.
+_NB = r"(?<![A-Za-z0-9])"
+MAIN_PATTERNS = [
+    re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----[A-Za-z0-9+/=\s]*(?:-----END [A-Z ]*PRIVATE KEY-----)?"),
+    re.compile(_NB + r"sk-(?:ant-|proj-|or-v1-)?[A-Za-z0-9_-]{20,}"),
+    re.compile(_NB + r"(?:sk|rk|pk)_(?:live|test)_[A-Za-z0-9]{16,}"),
+    re.compile(_NB + r"(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})"),
+    re.compile(_NB + r"xox[abprs]-[A-Za-z0-9-]{10,}"),
+    re.compile(_NB + r"(?:AKIA|ASIA)[0-9A-Z]{16}(?![A-Za-z0-9])"),
+    re.compile(_NB + r"(?:AIza[0-9A-Za-z_-]{35}|ya29\.[0-9A-Za-z_-]{20,}|GOCSPX-[A-Za-z0-9_-]{20,})"),
+    re.compile(_NB + r"(?:(?:hf|gsk|npm|ntn|sbp)_[A-Za-z0-9]{30,}|lin_api_[A-Za-z0-9]{30,}|xai-[A-Za-z0-9]{40,}|"
+               r"tskey-[a-z]+-[A-Za-z0-9-]{10,}|glpat-[A-Za-z0-9_-]{20,}|whsec_[A-Za-z0-9+/=]{20,}|fc-[a-f0-9]{32}|"
+               r"st\.[A-Za-z0-9-]{20,}\.[A-Za-z0-9]{20,}\.[A-Za-z0-9]{20,})"),
+    re.compile(r"(?<![\d])\d{8,10}:[A-Za-z0-9_-]{35}(?![A-Za-z0-9_-])"),
+    re.compile(r"https://(?:[\w-]+\.)?discord(?:app)?\.com/api/webhooks/\d+/[\w-]+"),
+    re.compile(r"https://hooks\.slack\.com/(?:services|workflows|triggers)/[\w/-]+"),
+    re.compile(_NB + r"eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}"),
+    re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._~+/-]{16,}=*"),
+    re.compile(r"(?i)\bbasic\s+(?=[A-Za-z0-9+/]*[0-9+/=])[A-Za-z0-9+/]{12,}={0,2}"),
+]
 
 
 def token_mask(text):
-    """A mask that knows only token shapes, with main's key pattern for keys."""
-    text = MAIN_KEY.sub("[masked]", text)
-    for pattern in SECRET_PATTERNS[1:]:
+    """main's secret patterns alone, a row at a time, as its remask ran them."""
+    for pattern in MAIN_PATTERNS:
         text = pattern.sub("[masked]", text)
     return text

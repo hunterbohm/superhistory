@@ -56,8 +56,14 @@ Text is masked before it is cut, never after: a cut can keep part of a secret to
 today's version, and for a chunk every chunk of its item, was masked whole, so `kb search` cuts it as stored
 (`store.current`). Any other row, from before versions or from an older `mask()`, is masked whole when read: search
 masks the hit's whole item, its title and its metadata, finds the match again in the masked text with FTS5's own
-matching, and leaves out an item whose id holds a secret. `mask()` also masks a private key's body lines that run
-into its footer with no header, as an older kb's row-by-row remask leaves the chunk after the header's. `kb get` and the summarizer always mask the whole item. Each ingest masks older rows again for up to a minute
+matching, and leaves out an item whose id holds a secret. `kb get` and the summarizer always mask the whole item.
+
+`mask()` masks a private key by its structure, never line by line: from its header through its footer, or, with no
+footer, through the end of its paragraph (the next blank line, plain or escaped), an encrypted key's past the blank
+line after its DEK-Info field. A footer with no header masks its paragraph up to it, and what an older kb's
+row-by-row remask left after its placeholder (base64 glued to it, or an escaped break and a key line) masks through
+its footer or the end of its paragraph. Text after a broken key in its paragraph is masked with it; that is the cost.
+`mask()` repeats until a pass changes nothing, so masked text masks to itself. Each ingest masks older rows again for up to a minute
 (`store.remask`), deletes items whose id holds a secret and logs each with its id masked, and records today's version,
 so an interrupted run leaves the rest old. The file is rebuilt once none are left, and a rebuild cut short runs again
 on the next ingest. The header counts the rows left, and `kb remask` does them all at once. An HTTP error body longer
