@@ -133,6 +133,12 @@ class DefaultsTest(SetupCase):
         with mock.patch("kb.setup.socket.gethostname", return_value="..."):
             self.assertEqual(setup.default_machine(), "local")
 
+    def test_a_name_that_is_a_secrets_word_is_asked_again(self):
+        _, output, asked = self.run_setup(["password", "sam-2", "no", "no", "", "", "", "no"])
+        self.assertEqual(self.load().machine, "sam-2")
+        self.assertEqual(len(self.asked_about(asked, "name")), 2)
+        self.assertIn("reads like a word for a secret", output)
+
     def test_a_name_that_breaks_the_rule_is_asked_again(self):
         _, output, asked = self.run_setup(["Bad Name!", "sam-2", "no", "no", "", "", "", "no"])
         self.assertEqual(self.load().machine, "sam-2")
