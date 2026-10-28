@@ -15,14 +15,16 @@ import json
 import os
 import pathlib
 import random
+import re
 import shutil
+import string
 import tempfile
 import types
 import unittest
 from unittest import mock
 
 from kb import ai, check, cli, ingest, search, store, summarize
-from kb.mask import INVISIBLE, mask, mask_all
+from kb.mask import mask, mask_all
 from kb.sources import Item
 from tests import legacy_store
 
@@ -32,8 +34,9 @@ ONLY = os.environ.get("KB_FUZZ_ONLY")
 CHUNK = 120  # small chunks, so a few hundred characters make a long item and canaries cross chunk boundaries
 IDS = ("a.md", "b.md", "c.md")
 TS = "2026-10-01T10:00:00Z"
-INVISIBLE_CHARS = ("\u200b", "\u200c", "\u200d", "\u2060", "\u00ad", "\ufeff")
-CROCKFORD = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
+KEY_KINDS = ("PRIVATE KEY", "RSA PRIVATE KEY", "EC PRIVATE KEY", "DSA PRIVATE KEY", "OPENSSH PRIVATE KEY",
+             "ENCRYPTED PRIVATE KEY")
+BASE64 = string.ascii_letters + string.digits + "+/"
 FILLER = ("walrus", "ledger", "deploy", "notes", "harbor", "the", "plan", "moved", "today", "approved")
 
 
@@ -46,7 +49,7 @@ class Planted:
     characters, since a cut before masking keeps a start or an end too short to mask."""
 
     def __init__(self, r, seq):
-        self.r, self.seq, self.n, self.pieces, self.items = r, seq, 0, set(), {}
+        self.r, self.seq, self.n, self.pieces, self.items, self.bodies, self.narrowest = r, seq, 0, set(), {}, [], 1
 
     def _value(self, shape):
         self.n += 1
@@ -54,32 +57,11 @@ class Planted:
         self.pieces.update((value, value[:12], value[-12:]))
         return value
 
-    def _hide(self, text):
-        """`text`, sometimes with characters an agent does not see put inside it."""
-        if self.r.random() < 0.7:
-            return text
-        for _ in range(self.r.randint(1, 3)):
-            i = self.r.randint(1, len(text) - 1)
-            text = text[:i] + self.r.choice(INVISIBLE_CHARS) + text[i:]
-        return text
-
     def token(self):
-        return self._hide(self._value("sk-ant-api03-fz{}" + "Q" * 20))
+        return self._value("sk-ant-api03-fz{}" + "Q" * 20)
 
     def keyed(self):
-        name = self.r.choice(("password=", "api_key: ", "secret_token=", "PASSWORD = "))
-        return self._hide(name + self._value("fz{}Kq12345678"))
-
-    def code(self):
-        """The sync client's recovery or pairing code, as written or typed."""
-        self.n += 1
-        body = "".join(CROCKFORD[(self.seq * 7919 + self.n * 104729 + k * 31) % 32] for k in range(32))
-        head, chars = self.r.choice((("VRC1", body), ("VP1", body[:26])))
-        groups = [chars[i:i + 4] for i in range(0, len(chars), 4)]
-        typed = self.r.choice(("-".join([head] + groups), " ".join([head] + groups), head + chars,
-                               ("-".join([head] + groups)).lower()))
-        self.pieces.update((typed, typed[:12], typed[-12:]))
-        return self._hide(typed)
+        return self.r.choice(("password=", "api_key: ", "secret_token=", "PASSWORD = ")) + self._value("fz{}Kq12345678")
 
     def pem(self, whole=False):
         """A private key: whole, long enough that a middle chunk holds only body lines, cut off before its footer, or
@@ -92,8 +74,28 @@ class Planted:
             return "-----BEGIN PRIVATE KEY-----\n" + body
         if shape < 0.4:
             # main's key pattern takes the line break too, so what follows its placeholder starts glued to it
-            return "[masked]" + body[self.r.randint(0, 70):].lstrip("\n") + self.r.choice(("\n-----END PRIVATE KEY-----", ""))
+            rest = body[self.r.randint(0, 70):].lstrip("\n")
+            return "[masked]" + rest + self.r.choice(("\n-----END PRIVATE KEY-----", ""))
         return "-----BEGIN PRIVATE KEY-----\n" + body + "\n-----END PRIVATE KEY-----"
+
+    def key(self):
+        """A key block as keys come: any header kind, an encrypted key's header fields, lines of 1 to 100 characters,
+        LF, CRLF or escaped line breaks, whole or cut at a random point, and sometimes a secret's name and value right
+        after it. Its body is checked through any line breaks."""
+        kind, brk, width = self.r.choice(KEY_KINDS), self.r.choice(("\n", "\r\n", "\\n")), self.r.randint(self.narrowest, 100)
+        body = "".join(self.r.choice(BASE64) for _ in range(self.r.randint(24, 400))) + "=" * self.r.randint(0, 2)
+        head = [f"-----BEGIN {kind}-----"]
+        if kind in KEY_KINDS[1:4] and self.r.random() < 0.4:
+            iv = "".join(self.r.choice("0123456789ABCDEF") for _ in range(32))
+            head += ["Proc-Type: 4,ENCRYPTED", f"DEK-Info: AES-256-CBC,{iv}", ""]
+        block = brk.join(head + [body[i:i + width] for i in range(0, len(body), width)] + [f"-----END {kind}-----"])
+        if self.r.random() < 0.4:
+            block = block[:self.r.randint(len(head[0]) + 1, len(block))]
+        self.bodies.append(body)
+        if self.r.random() < 0.4:
+            name = self.r.choice(("clientSecretToken: ", "password=", "api_key = ", "secret_token: "))
+            block += self.r.choice((brk, " ")) + name + self._value("fz{}Kq12345678")
+        return block
 
     def text(self):
         if self.r.random() < 0.25:
@@ -104,7 +106,7 @@ class Planted:
             if pick < 0.4:
                 parts.append(" ".join(self.r.choice(FILLER) for _ in range(self.r.randint(3, 30))))
             else:
-                parts.append((self.token, self.keyed, self.pem, self.code)[int(pick * 10) % 4]())
+                parts.append((self.token, self.keyed, self.pem, self.key)[int(pick * 10) % 4]())
         if self.r.random() < 0.15:  # a key cut off by a size limit, anywhere in a line, ends the text
             parts.append(self.pem(whole=True)[:self.r.randint(40, 600)])
         return "walrus ledger " + self.r.choice((" ", "\n", " \n")).join(parts)
@@ -153,7 +155,8 @@ def op_sync_chunks(db, r, p):
 
 
 def op_sync_summary(db, r, p):
-    """Summary rows, whole or appended, whose question ends where a secret's name is and whose summary starts with it."""
+    """Summary rows, whole or appended, whose question ends where a secret's name is and whose summary starts with
+    it."""
     keyed = p.keyed()
     cut = keyed.index("=") + 1 if "=" in keyed else keyed.index(":") + 1
     row = {"kind": "segment", "ts": TS, "title": "t", "content": f"Which? {keyed[:cut]}\n{keyed[cut:]} walrus ledger",
@@ -255,7 +258,8 @@ def shown(db, path):
     for query in ("walrus ledger", "deploy notes", "harbor plan"):
         hits = search.search(db, query, limit=10)
         for hit in hits:
-            out += [hit["title"], hit["snippet"], hit["excerpt"], hit["content"], hit["source_id"], json.dumps(hit["meta"])]
+            out += [hit["title"], hit["snippet"], hit["excerpt"], hit["content"], hit["source_id"],
+                    json.dumps(hit["meta"])]
         out.append(check.render(hits, "desk"))
         if hits:
             model = Recorder()
@@ -282,9 +286,11 @@ def run_sequence(seq, root, ops=None):
     db = store.connect(path)
     db.execute("PRAGMA synchronous=OFF")  # a scratch file: no write here needs to survive a power cut
     planted, done = Planted(r, seq), []
+    names = [r.choice(ops or sorted(OPERATIONS)) for _ in range(r.randint(3, 9))]
+    # An older kb only ever stored real keys, wrapped at 64 to 76 characters; narrower ones come from kb's own writes.
+    planted.narrowest = 16 if {"old_kb", "old_remask"} & set(names) else 1
     try:
-        for _ in range(r.randint(3, 9)):
-            name = r.choice(ops or sorted(OPERATIONS))
+        for name in names:
             done.append(name)
             try:
                 OPERATIONS[name](db, r, planted)
@@ -293,8 +299,11 @@ def run_sequence(seq, root, ops=None):
                 done[-1] += " (stopped)"
                 db.rollback()
         problems = not_masked_whole(db)
-        text = INVISIBLE.sub("", "\n".join(shown(db, path)))  # as an agent reads it
+        text = "\n".join(shown(db, path))
         problems += [f"a reader shows {piece!r}" for piece in sorted(planted.pieces) if piece in text]
+        squeezed = re.sub(r"\s+|\\[nr]", "", text)  # a key's body read through its line breaks
+        problems += [f"a reader shows {body[i:i + 12]!r} of a key" for body in planted.bodies
+                     for i in range(0, len(body) - 11, 4) if body[i:i + 12] in squeezed][:3]
     finally:
         db.close()
         for suffix in ("", "-wal", "-shm"):

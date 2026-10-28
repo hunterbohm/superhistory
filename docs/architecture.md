@@ -38,8 +38,8 @@ The Sync client goes in `kb/sync/`. It meets the engine at two points.
   enter, masks again, so rows another store sent are masked as well, and masks a long item's chunks as one text: a
   store that cut an item before masking it can split a secret in two that neither chunk shows, and so it writes
   an item's chunks all at once or not at all. It refuses a source or item id that holds a secret, as ingest does
-  (`store.secret_id`: the host and the reader's id apart, and an id read more narrowly than text, so a note titled
-  "Tokens: 2026 plan" is kept), and records on each row the version of `mask()` it used (`mask.VERSION`, which
+  (`store.secret_id`: the host the rows' metadata names and the reader's id apart, any other id whole, and an id read
+  more narrowly than text, so a note titled "Tokens: 2026 plan" is kept), and records on each row the version of `mask()` it used (`mask.VERSION`, which
   follows the patterns). A database trigger clears that version when anything else changes a row's time, title,
   text or metadata, as an older kb would.
 - Out of kb: the kb command's stdout and stderr, every log line (through `masked_log`, whatever logger the caller
@@ -52,24 +52,27 @@ The Sync client goes in `kb/sync/`. It meets the engine at two points.
   sorter's lines are masked, so the plug-in, which can be another provider than the user's agent, never sees a
   secret's value. kb's own instructions in those prompts contain nothing mask() changes.
 
-`mask()` also knows the sync client's own recovery and pairing codes, written or typed the ways its parser takes
-them. It reads text as an agent does, through characters it does not see (zero-width spaces and joiners, the word
-joiner, the soft hyphen, the byte order mark, direction marks), so a token split by one is still masked; the rest of
-the text keeps them as written. Its stages each report the spans they replace, so the same stages run on the text
-or, when it has such characters, on a view without them whose spans are mapped back.
-
 Text is masked before it is cut, never after: a cut can keep part of a secret too short for mask() to know. A row of
 today's version, and for a chunk every chunk of its item, was masked whole, so `kb search` cuts it as stored
 (`store.current`). Any other row, from before versions or from an older `mask()`, is masked whole when read: search
 masks the hit's whole item, its title and its metadata, finds the match again in the masked text with FTS5's own
-matching, and leaves out an item whose id holds a secret. `mask()` also masks a private key's body lines that run
-into its footer with no header, as an older kb's row-by-row remask leaves the chunk after the header's. `kb get` and the summarizer always mask the whole item. Each ingest masks older rows again for up to a minute
+matching, and leaves out an item whose id holds a secret. `kb get` and the summarizer always mask the whole item.
+
+`mask()` masks a private key by its structure, never line by line: from its header through its footer, or, with no
+footer, through the end of its paragraph (the next blank line, plain or escaped), an encrypted key's past the blank
+line after its DEK-Info field. A footer with no header masks its paragraph up to it, and what an older kb's
+row-by-row remask left after its placeholder (base64 glued to it, or an escaped break and a key line) masks through
+its footer or the end of its paragraph. Text after a broken key in its paragraph is masked with it; that is the cost.
+`mask()` repeats until a pass changes nothing, so masked text masks to itself and plain text costs one pass. No
+pattern matches a placeholder alone, so it stops; at its limit of eight passes it masks the part still changing whole,
+and ingest counts such texts for `kb stats`. Each ingest masks older rows again for up to a minute
 (`store.remask`), deletes items whose id holds a secret and logs each with its id masked, and records today's version,
 so an interrupted run leaves the rest old. The file is rebuilt once none are left, and a rebuild cut short runs again
 on the next ingest. The header counts the rows left, and `kb remask` does them all at once. An HTTP error body longer
 than kb reads is left out of the error.
 
-`tests/test_write_fuzz.py` runs a few thousand seeded sequences of the store's writes: ingest, Sync-shaped full and
+`tests/test_write_fuzz.py` generates key blocks of every header kind, line width, line break and cut, and runs a few
+thousand seeded sequences of the store's writes: ingest, Sync-shaped full and
 piecemeal writes, summary rows, an older kb's store_item and remask (`tests/legacy_store.py`), remask cut off at a
 random item or in its rebuild, deletes and supersede marks. Canaries cross chunk and call boundaries. After each
 sequence no reader may show a piece of a canary, and no row may read as current unless its whole item masks clean.

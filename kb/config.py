@@ -32,6 +32,9 @@ from kb.mask import KEY_WORD, holds_secret, mask
 
 # Names go into every stored id and into the logs, so one that looks like a key is refused; the message is masked.
 SECRET_NAME = "{where}: this name looks like a secret; use a plain name"
+# A name that is a secret's word can be printed: it is the word itself, not a secret.
+KEY_WORD_NAME = ('{where}: "{name}" is a word for a secret, such as "password" or "token", so kb could not tell an id '
+                 'made from it from a secret. To fix it, {fix}.')
 NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,39}$")
 SOURCE_KEYS = {"type", "enabled", "exclude", "exclude_defaults", "summarize", "hosts"}
 MAX_CHECK_BUDGET = 25.0
@@ -199,7 +202,11 @@ def parse(text):
     if not isinstance(machine, str) or not NAME_RE.match(machine):
         problems.append("machine: use lowercase letters, digits, - and _, up to 40 characters")
         machine = "local"
-    elif holds_secret(machine) or KEY_WORD.fullmatch(machine):
+    elif KEY_WORD.fullmatch(machine):
+        problems.append(KEY_WORD_NAME.format(where="machine", name=machine, fix="run `kb setup` and give this "
+                                             "computer another name, or change the machine line in this file"))
+        machine = "local"
+    elif holds_secret(machine):
         problems.append(SECRET_NAME.format(where="machine"))
         machine = "local"
     tables = {key: raw.pop(key, {}) for key in ("ai", "check", "summarize", "schedule", "hosts", "sources")}
@@ -218,7 +225,10 @@ def parse(text):
     for name, table in tables["hosts"].items():
         if name == machine or not NAME_RE.match(name):
             problems.append(f"hosts.{name}: a host name differs from machine and uses lowercase letters, digits, - and _")
-        elif holds_secret(name) or KEY_WORD.fullmatch(name):
+        elif KEY_WORD.fullmatch(name):
+            problems.append(KEY_WORD_NAME.format(where=f"hosts.{name}", name=name, fix=f"rename the [hosts.{name}] "
+                                                 "table and that host in each source's hosts list"))
+        elif holds_secret(name):
             problems.append(SECRET_NAME.format(where=f"hosts.{name}"))
         elif not isinstance(table, dict):
             problems.append(f"hosts.{name}: expected a table")

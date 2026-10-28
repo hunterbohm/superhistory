@@ -1,7 +1,7 @@
 import unittest
+from unittest import mock
 
 from kb.mask import is_auth_code, is_auth_noise, mask, secret_in_id
-from kb.store import secret_id
 
 
 class MaskTest(unittest.TestCase):
@@ -164,7 +164,9 @@ class HeadlessKeyTest(unittest.TestCase):
             with self.subTest(brk=brk):
                 text = f"[masked]{self.LINE}{brk}{self.LINE}{brk}-----END PRIVATE KEY-----{brk}after"
                 self.assertEqual(mask(text), f"[masked]{brk}after")
-                self.assertEqual(mask(text.replace("[masked]", "notes\n")), f"notes\n[masked]{brk}after")
+                # A footer with no header masks its paragraph up to it; a blank line ends that paragraph.
+                self.assertEqual(mask(text.replace("[masked]", "notes\n")), f"[masked]{brk}after")
+                self.assertEqual(mask(text.replace("[masked]", "notes\n\n")), f"notes\n\n[masked]{brk}after")
 
     def test_a_short_last_line_and_a_placeholder_glued_body_are_masked(self):
         for text in (f"[masked]{self.LINE}\n{self.LINE}\nAg==\n-----END PRIVATE KEY-----",
@@ -174,7 +176,7 @@ class HeadlessKeyTest(unittest.TestCase):
                 self.assertNotIn(self.LINE[:12], mask(text))
                 self.assertNotIn("Ag==", mask(text))
         for text in ("x [masked] and Ag==\nwords", "token=[masked]\n3f2a9c" + "0" * 34 + "\nnext"):
-            self.assertEqual(mask(text), text, "a word or one hash line after a placeholder stays")
+            self.assertEqual(mask(text), text, "a word, or a hash on the next line, after a placeholder stays")
 
     def test_the_rest_of_a_token_masked_a_chunk_at_a_time_is_masked(self):
         # An older kb masked "sk-ant-..." in one chunk; the token's last characters began the next.
@@ -182,10 +184,30 @@ class HeadlessKeyTest(unittest.TestCase):
         # Its key pattern ran on into the next line and took the start of a secret's name.
         self.assertEqual(mask("[masked]_key: walrus2secret9 next"), "[masked] next")
 
-    def test_text_before_the_body_and_a_footer_alone_stay(self):
-        self.assertEqual(mask(f"notes before\n{self.LINE}\n-----END PRIVATE KEY-----"), "notes before\n[masked]")
-        for text in ("ordinary words here\n-----END PRIVATE KEY-----", "short\nlines\n-----END PRIVATE KEY-----"):
-            self.assertEqual(mask(text), text)
+    def test_a_footer_alone_masks_its_paragraph_and_only_that(self):
+        for text in (f"notes before\n{self.LINE}\n-----END PRIVATE KEY-----", "ordinary words here\n-----END PRIVATE KEY-----"):
+            self.assertEqual(mask(f"first paragraph\n\n{text}\n\nlast paragraph"),
+                             "first paragraph\n\n[masked]\n\nlast paragraph")
+
+    def test_many_placeholders_with_key_lines_cost_one_pass(self):
+        import time
+        took = {}
+        for n in (2000, 32000):
+            text = ("[masked]" + "A" * 64 + "\n\n") * n
+            started = time.process_time()
+            self.assertEqual(mask(text), "[masked]\n\n" * n)
+            took[n] = time.process_time() - started
+        # Sixteen times the input: about sixteen times the time when linear, some eighty when each span copies the text.
+        self.assertLess(took[32000], 40 * max(took[2000], 0.005), took)
+        header = "-----BEGIN PRIVATE KEY-----"
+        for name, text in (("many footers", ("A" * 40 + "\n-----END PRIVATE KEY-----\n") * 5000),
+                           ("many headers in one paragraph", (header + "\nAAAA\n") * 20000),
+                           ("many headers, a paragraph each", (header + "\nAAAA\n\n") * 20000),
+                           ("one header, a long paragraph", header + "\n" + "AAAA word " * 100000),
+                           ("many fields", ("DEK-Info: AES-256-CBC,0A\n") * 20000)):
+            started = time.monotonic()
+            mask(text)
+            self.assertLess(time.monotonic() - started, 3, name)
 
     def test_a_long_run_without_a_footer_costs_one_pass(self):
         import time
@@ -194,62 +216,111 @@ class HeadlessKeyTest(unittest.TestCase):
         self.assertLess(time.monotonic() - started, 2)
 
 
-class InvisibleTest(unittest.TestCase):
-    """A secret split by a character an agent does not see still reads whole, so it is masked; the text around it
-    keeps its invisible characters."""
-    CHARS = {"ZWSP": "\u200b", "ZWNJ": "\u200c", "ZWJ": "\u200d", "WJ": "\u2060", "SHY": "\u00ad", "BOM": "\ufeff",
-             "LRM": "\u200e", "invisible times": "\u2062"}
-    TOKEN = "sk-ant-api03-" + "A1b2" * 6
-    LINE = "MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7"
+class RepeatTest(unittest.TestCase):
+    """mask() repeats until a pass changes nothing, so masked text masks to itself, and stops: no pattern matches a
+    placeholder alone, and a text still changing at the pass limit has its changing part masked whole."""
 
-    def test_a_split_secret_is_masked(self):
-        for name, ch in self.CHARS.items():
-            with self.subTest(char=name):
-                for text, gone in ((f"use {self.TOKEN[:9]}{ch}{self.TOKEN[9:]} today", self.TOKEN[-12:]),
-                                   (f"pass{ch}word=walrus2secret9 ok", "walrus2secret9"),
-                                   (f"api_key: walrus{ch}2secret9 ok", "2secret9"),
-                                   (f"-----BEGIN PRIVATE{ch} KEY-----\n{self.LINE}\n-----END PRIVATE KEY-----", self.LINE),
-                                   (f"VRC1-ABCD-EF{ch}GH-JKMN-PQRS-TVWX-YZ01-2345-6789", "6789")):
-                    masked = mask(text)
-                    self.assertNotIn(gone, masked)
-                    self.assertNotIn(gone, masked.replace(ch, ""))
+    def test_no_pattern_matches_a_placeholder_alone(self):
+        from kb import mask as mask_module
+        patterns = (mask_module.SECRET_PATTERNS + mask_module.PREFIXED_SECRETS
+                    + [mask_module.KEYED_SECRET, mask_module.ENV_KEY_SECRET, mask_module._GLUED_RUN,
+                       mask_module._KEY_REST])
+        for text in ("[masked]", "[masked] [masked]\n[masked]\n\n[masked]", "a [masked], b [masked].", '"[masked]"'):
+            with self.subTest(text=text):
+                for pattern in patterns:
+                    self.assertIsNone(pattern.search(text), pattern.pattern[:60])
+                self.assertEqual(mask_module._mask_once(text), text)
 
-    def test_the_rest_keeps_its_invisible_characters(self):
-        family = "\U0001F468\u200d\U0001F469\u200d\U0001F467"
-        for text in (f"{family} and a soft\u00adhyphen", f"\ufeffnotes", "plain"):
-            self.assertEqual(mask(text), text)
-        self.assertEqual(mask(f"{family} {self.TOKEN[:5]}\u200b{self.TOKEN[5:]} soft\u00adhyphen"),
-                         f"{family} [masked] soft\u00adhyphen")
+    def test_masked_text_masks_to_itself(self):
+        import random
+        from tests.test_write_fuzz import Planted
+        for seq in range(2000):
+            text = Planted(random.Random(seq), seq).text()
+            once = mask(text)
+            self.assertEqual(mask(once), once, f"seq {seq}")
+        for text in ("Order ref VP1" + "A" * 26 + "ghp_" + "B" * 30 + " thanks", "x passwd y set-cookie: basic "):
+            self.assertEqual(mask(mask(text)), mask(text))
 
-    def test_an_id_split_by_one_is_refused(self):
-        self.assertTrue(secret_in_id(f"key-{self.TOKEN[:8]}\u2060{self.TOKEN[8:]}.md"))
-        self.assertTrue(secret_id("notes", f"desk:pass\u200bword=walrus2secret9.md"))
-        self.assertFalse(secret_id("notes", "desk:Areas/notes\u200b 2026.md"))
+    def test_text_still_changing_at_the_limit_is_masked_whole_and_counted(self):
+        from kb import mask as mask_module
+        before = mask_module.capped
+        with mock.patch.object(mask_module, "_mask_once", lambda text: text[:6] + "x" + text[6:]):
+            self.assertEqual(mask_module.mask("keep: secret part"), "keep: [masked]secret part")
+        self.assertEqual(mask_module.capped, before + 1)
 
-    def test_long_text_with_invisible_characters_costs_about_what_plain_text_does(self):
+    def test_plain_text_costs_one_pass(self):
         import time
-        started = time.monotonic()
-        mask("walrus \u200b ledger " * 50000)
-        self.assertLess(time.monotonic() - started, 5)
+        from kb import mask as mask_module
+        plain = "walrus ledger notes deploy plan " * 20000
+        with mock.patch.object(mask_module, "_mask_once", wraps=mask_module._mask_once) as once:
+            mask(plain)
+            self.assertEqual(once.call_count, 1)
+            mask(plain + " password=walrus2secret9")
+            self.assertEqual(once.call_count, 3, "a text with a secret: one pass that masks, one that confirms")
+        took = {}
+        for name, fn in (("mask", mask), ("one pass", mask_module._mask_once)):
+            started = time.process_time()
+            fn(plain)
+            took[name] = time.process_time() - started
+        self.assertLess(took["mask"], 1.5 * took["one pass"] + 0.02, took)
 
 
-class SyncCodeTest(unittest.TestCase):
-    """The sync client's recovery and pairing codes, as it writes them and as its parser takes them typed."""
-    RECOVERY = "VRC1-ABCD-EFGH-JKMN-PQRS-TVWX-YZ01-2345-6789"
-    PAIRING = "VP1-ABCD-EFGH-JKMN-PQRS-TVWX-YZ01-23"
+class KeyShapeTest(unittest.TestCase):
+    """Keys as they come: any header kind, an encrypted key's fields, lines of 1 to 100 characters, LF, CRLF or
+    escaped breaks, whole or cut anywhere, with words, a newline, a cut's mark or the next secret after them."""
 
-    def test_codes_written_or_typed_are_masked(self):
-        for code in (self.RECOVERY, self.PAIRING, self.RECOVERY.lower(), self.PAIRING.replace("-", " "),
-                     self.RECOVERY.replace("-", ""), "V-R-C-1-" + "-".join(self.RECOVERY[5:].replace("-", "")),
-                     "VP1-" + self.PAIRING[4:].replace("1", "I").replace("0", "O"),
-                     "VRC1 - ABCD - EFGH - JKMN - PQRS - TVWX - YZ01 - 2345 - 6789"):
-            with self.subTest(code=code):
-                self.assertEqual(mask(f"the code is {code} ok"), "the code is [masked] ok")
+    def test_no_key_shape_leaves_its_body_readable(self):
+        import random
+        import re
+        from tests.test_write_fuzz import Planted
+        for seq in range(3000):
+            planted = Planted(random.Random(seq), seq)
+            block = planted.key()
+            body = planted.bodies[0]
+            for after in (" after", "\nafter", "", "\nclientSecretToken: walrus2secret9", " …"):
+                masked = mask(f"note {block}{after}")
+                readable = re.sub(r"\s+|\\[nr]", "", masked)
+                leaked = [body[i:i + 12] for i in range(0, len(body) - 11, 4) if body[i:i + 12] in readable]
+                self.assertEqual(leaked, [], f"seq {seq}: {block[-60:]!r}{after!r}")
+                self.assertNotIn("walrus2secret9", masked)
 
-    def test_prose_after_the_heads_stays(self):
-        for text in ("VP1 sales meeting at three pm with katie", "VRC1 is the first version of the code",
-                     "notes about vp1 and vrc1 formats"):
-            self.assertEqual(mask(text), text)
+    def test_nothing_from_a_header_to_its_footer_or_paragraph_end_survives(self):
+        """The text masks as if everything from the header through the footer, or with no footer through the end of
+        the paragraph (an encrypted key's past the blank line after its DEK-Info field), were one placeholder: no
+        character of that span can survive. A paragraph after it stays."""
+        import os
+        import random
+        import re
+        from tests.test_write_fuzz import Planted
+        blank = re.compile(r"\r?\n[ \t]*\r?\n|\\(?:r\\)?n[ \t]*\\(?:r\\)?n")
+        footer = re.compile(r"-----END [A-Z ]*PRIVATE KEY-----")
+        for seq in range(int(os.environ.get("KB_KEY_CASES", "3000"))):
+            block = Planted(random.Random(seq), seq).key()
+            for after in (" after", "\nafter", "", "\nclientSecretToken: walrus2secret9", " …", " word, api_key = x",
+                          "\n\nthe next paragraph", "\\n\\nthe next paragraph", "\r\n\r\nthe next paragraph"):
+                text = f"note {block}{after}"
+                start = text.index("-----BEGIN ")
+                end = footer.search(text, start)
+                if end:
+                    end = end.end()
+                else:
+                    end = start
+                    fields = re.compile(r"DEK-Info:[^\r\n\\]*").search(text, start)
+                    if fields and blank.match(text, fields.end()):
+                        end = blank.match(text, fields.end()).end()
+                    stop = blank.search(text, end)
+                    end = stop.start() if stop else len(text)
+                masked = mask(text)
+                self.assertTrue(masked.startswith("note [masked]"), f"seq {seq}: {text!r}")
+                self.assertEqual(masked, mask(text[:start] + "[masked]" + text[end:]), f"seq {seq}: {text!r}")
+                if after.endswith("the next paragraph") and text[end:] in (after, after[1:]):
+                    self.assertEqual(masked, "note [masked]" + text[end:], f"seq {seq}: {text!r}")
+
+    def test_paragraphs_after_a_broken_key_stay(self):
+        for key in ("-----BEGIN PRIVATE KEY-----\nMIIEvQIBADAN", "-----BEGIN RSA PRIVATE KEY-----\nProc-Type: 4,ENCRYPTED\n"
+                    "DEK-Info: AES-256-CBC,0A1B\n\nMIIEvQIBADAN", "abc\n-----END PRIVATE KEY-----"):
+            for brk in ("\n\n", "\r\n\r\n", "\\n\\n"):
+                self.assertEqual(mask(f"{key}{brk}the next paragraph"), f"[masked]{brk}the next paragraph")
 
 
 class SecretInIdTest(unittest.TestCase):

@@ -143,6 +143,9 @@ def cmd_stats(paths, config, args):
     for unit, error in store.failing(db):
         if unit in units:
             print(f"  FAILING {unit}: {error}")
+    capped = store.get_watermark(db, store.STATE, "mask_capped")
+    if capped:
+        print(f"\nMasking reached its pass limit on {int(capped):,} texts and masked the part still changing whole.")
     for host, since in store.away(db):
         print(f"  UNREACHABLE {host} since {since}, probably asleep")
 

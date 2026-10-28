@@ -1,21 +1,34 @@
+import bisect
 import hashlib
 import logging
+import os
 import re
-import string
 import sys
 import traceback
 
 _NB = r"(?<![A-Za-z0-9])"
+# A blank line ends a paragraph: an empty line, with any spaces, its breaks plain or escaped as in JSON.
+_BLANK = r"(?:\r?\n[ \t]*\r?\n|\\(?:r\\)?n[ \t]*\\(?:r\\)?n)"
+_KEY_END = r"-----END [A-Z ]*PRIVATE KEY-----"
+# The rest of a paragraph, from a key's header or an encrypted key's fields on: past the blank line after a
+# DEK-Info field, where an encrypted key's body starts, then to the next blank line, the next key's header, or the
+# end of the text. Stopping at the next header leaves that key its own match.
+_IN_PARAGRAPH = rf"(?:(?!{_BLANK})(?!-----BEGIN )[\s\S])"
+_KEY_PARAGRAPH = rf"(?:{_IN_PARAGRAPH}*?DEK-Info:[^\r\n\\]*{_BLANK})?{_IN_PARAGRAPH}*"
+# A key's footer, looked for in the next 16 KB and before any other header.
+_TO_KEY_END = rf"(?:(?!-----BEGIN )[\s\S]){{0,16384}}?{_KEY_END}"
 # A secret's value ends at a space, tab or line break, and the space around its "=" is spaces, tabs and line breaks (a
 # JSON or YAML value can sit on the next line): \s would also take U+2028, U+2029, U+0085, a vertical tab or a form
 # feed, which end a value early or make "password=\u2028password" look like a placeholder.
 SECRET_PATTERNS = [
-    # The body may come with its line breaks escaped, as in a service account's JSON key or a repr(). It is taken a
-    # base64 line at a time, so a key cut off before its footer does not run on into the words after it, such as the
-    # name of the next secret; only its last line, next to the footer or at the end of the text, may be short.
-    re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----(?:(?:\s|\\[nr])*[A-Za-z0-9+/=]{16,})*"
-               r"(?:(?:\s|\\[nr])*[A-Za-z0-9+/=]{1,15}(?=(?:\s|\\[nr])*(?:-----END|\Z)))?"
-               r"(?:(?:\s|\\[nr])*-----END [A-Z ]*PRIVATE KEY-----)?"),
+    # A private key, by its structure and not read line by line: from its header through its footer, or, with no
+    # footer, through the end of its paragraph. So a key cut off, wrapped at any width or followed at once by other
+    # text is masked whole; what follows a key without a footer in its paragraph is masked with it, which is the cost.
+    re.compile(rf"-----BEGIN [A-Z ]*PRIVATE KEY-----(?:{_TO_KEY_END}|{_KEY_PARAGRAPH})"),
+    # An encrypted key whose header an older kb's row-by-row remask took: from its fields, the same way, or from what
+    # that remask left of them, "[masked],ENCRYPTED".
+    re.compile(rf"(?:Proc-Type: *4,ENCRYPTED|\[masked\],ENCRYPTED|DEK-Info:)"
+               rf"(?:{_TO_KEY_END}|{_KEY_PARAGRAPH}(?:{_BLANK}{_IN_PARAGRAPH}*)?)"),
     re.compile(_NB + r"sk-(?:ant-|proj-|or-v1-)?[A-Za-z0-9_-]{20,}"),
     re.compile(_NB + r"(?:sk|rk|pk)_(?:live|test)_[A-Za-z0-9]{16,}"),
     re.compile(_NB + r"(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})"),
@@ -32,18 +45,6 @@ SECRET_PATTERNS = [
     re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._~+/-]{16,}=*"),
     re.compile(r"(?i)\bbasic\s+(?=[A-Za-z0-9+/]*[0-9+/=])[A-Za-z0-9+/]{12,}={0,2}"),
 ]
-# The sync client's own recovery and pairing codes, as its keys module writes them ("VRC1-" or "VP1-" and groups of
-# four Crockford base32 characters) and as its parser takes them typed: any case, I, L and O for 1 and 0, and dashes or
-# spaces between groups, or dashes anywhere.
-_CODE = r"[0-9A-TV-Z]"
-SYNC_CODES = [
-    re.compile(rf"(?i)(?<![0-9A-Z])V[-\s]?R[-\s]?C[-\s]?1(?:(?:[-\s]{{0,3}}{_CODE}{{4}}){{8}}|(?:-*{_CODE}){{32}})"),
-    re.compile(rf"(?i)(?<![0-9A-Z])V[-\s]?P[-\s]?1(?:(?:[-\s]{{0,3}}{_CODE}{{4}}){{6}}[-\s]{{0,3}}{_CODE}{{2}}"
-               rf"|(?:-*{_CODE}){{26}})"),
-]
-# Characters an agent reading text does not see, so a token split by one reads whole: zero-width spaces and joiners,
-# the word joiner and invisible operators, the soft hyphen, the byte order mark, and direction marks.
-INVISIBLE = re.compile(r"[\u00ad\u180e\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u2069\ufeff]")
 PREFIXED_SECRETS = [
     re.compile(r"(?i)(\b(?:set-)?cookie[\"']?\s*:\s*)[^\"'\n]{8,}"),
     re.compile(r"([a-z][a-z0-9+.-]*://[^/ \t\n\r:@'\"]+:)[^/ \t\n\r@'\"]{3,}(?=@)"),
@@ -66,7 +67,8 @@ ENV_KEY_ID = re.compile(_ENV_KEY_NAME + r"((?:[\"'])?(?:=>|[:=])[\"']?)" + _VALU
 # A name that is a secret's key word by itself, such as "password" or "cookie". No host may be named so, which lets an
 # id's first colon be read as kb's own "<host>:" only when what comes before it could be a host.
 KEY_WORD = re.compile(r"(?i)(?:api[_-]?key|access[_-]?key|private[_-]?key|secret|token|credentials?|passw(?:or)?d|"
-                      r"passcode|pass|pwd|pw|session[_-]?(?:token|key|secret|cookie)|bw_session|(?:set-)?cookie|\w+_key)")
+                      r"passcode|pass|pwd|pw|session[_-]?(?:token|key|secret|cookie)|bw_session|(?:set-)?cookie|"
+                      r"\w+_key)")
 PASSWORD_NAME = re.compile(r"(?i)passw(?:or)?d|passcode|bw_session|[_-](?:pass|pwd|pw)$")
 PLACEHOLDERS = {"string", "str", "none", "null", "nil", "true", "false", "undefined", "required", "optional",
                 "xxx", "xxxx", "****", "...", "redacted", "<redacted>", "secret", "password", "token"}
@@ -79,215 +81,99 @@ REFERENCE = re.compile(r"^(?:[$%{<(\[*/~]|\.\.?/|os\.|process\.|env\.|getenv|sec
 # Which mask() a stored row was masked with. A row of another version, or of none, is masked again when read and by
 # the next ingest. The patterns change it by themselves; bump REVISION when the code that applies them changes what
 # it masks.
-REVISION = 3
-VERSION = hashlib.sha256(repr((REVISION, [p.pattern for p in SECRET_PATTERNS + SYNC_CODES + PREFIXED_SECRETS],
-                                INVISIBLE.pattern, KEYED_SECRET.pattern,
+REVISION = 2
+VERSION = hashlib.sha256(repr((REVISION, [p.pattern for p in SECRET_PATTERNS + PREFIXED_SECRETS], KEYED_SECRET.pattern,
                                 ENV_KEY_SECRET.pattern, PASSWORD_NAME.pattern, sorted(PLACEHOLDERS),
                                 REFERENCE.pattern)).encode()).hexdigest()[:16]
 
 
-def _keyed_secret(m):
-    """Whether a value its key names, matched by KEYED_SECRET or a pattern like it, looks like a secret."""
+def _mask_keyed(m):
     name, sep, value = m.groups()
     if value.lower() in PLACEHOLDERS or REFERENCE.search(value):
-        return False
+        return m.group(0)
     if PASSWORD_NAME.search(name):
         word = value.rstrip(".!?")
-        return bool(len(value) >= 4 and ("is" not in sep.lower() or re.search(r"[^A-Za-z]", word)))
-    mixed = re.search(r"\d", value) and re.search(r"[A-Za-z]", value)
-    return bool((len(value) >= 16 and not value.isdigit()) or (len(value) >= 8 and mixed))
+        looks_secret = len(value) >= 4 and ("is" not in sep.lower() or re.search(r"[^A-Za-z]", word))
+    else:
+        mixed = re.search(r"\d", value) and re.search(r"[A-Za-z]", value)
+        looks_secret = (len(value) >= 16 and not value.isdigit()) or (len(value) >= 8 and mixed)
+    return f"{name}{sep}[masked]" if looks_secret else m.group(0)
 
 
-KEY_FOOTER = re.compile(r"-----END [A-Z ]*PRIVATE KEY-----")
-_KEY_BODY = frozenset(string.ascii_letters + string.digits + "+/=")
-_KEY_RUN = re.compile(r"[A-Za-z0-9+/=]+")
-_KEY_BREAK = re.compile(r"\r?\n|\\(?:r\\)?n")
-_PLACEHOLDER = re.compile(r"\[masked\]")
+KEY_FOOTER = re.compile(_KEY_END)
+_BLANK_LINE = re.compile(_BLANK)
 # Characters glued to a placeholder are the rest of a secret an older kb masked a chunk at a time, or what its key
 # pattern left of the next secret's name, as in "[masked]_key: value": today's patterns take every such character, so
 # they never leave one glued. Such a name keeps its value masked with it.
-_GLUED_RUN = re.compile(r"\[masked\](?:[A-Za-z0-9_.-]+[ \t]*(?:[:=]|=>)[ \t]*[\"']?" + _VALUE[1:-1] + r"|[A-Za-z0-9_+/=-]+)")
-# A key's body lines are 64 characters; only its last line, next to the footer or at the end, is shorter.
-FULL_LINE = 16
-
-
-def _spaces_end(text, pos):
-    while pos < len(text) and text[pos] in " \t":
-        pos += 1
-    return pos
-
-
-def _after_break(text, pos):
-    """Past any spaces and one line break, plain or escaped, from `pos`."""
-    pos = _spaces_end(text, pos)
-    brk = _KEY_BREAK.match(text, pos)
-    return brk.end() if brk else pos
-
-
-def _line_ends(text, pos):
-    """Whether a key's line can end at `pos`: at a line break or the end, after any spaces, or at its footer."""
-    pos = _spaces_end(text, pos)
-    return pos == len(text) or bool(_KEY_BREAK.match(text, pos)) or text.startswith("-----END", pos)
-
-
-def _last_line(text, end):
-    """Whether a short base64 line ending at `end` can be a key's last: padded, or followed by its footer, the end of
-    the text, or a line that is not base64."""
-    pos = _after_break(text, end)
-    return (text[end - 1] == "=" or pos == len(text) or text.startswith("-----END", pos)
-            or text[pos] not in _KEY_BODY)
-
-
-def _key_line_before(text, end):
-    """(start, stop) of the base64 line whose line break, plain or escaped, ends at `end`, or None."""
-    for brk in ("\r\n", "\n", "\\r\\n", "\\n"):
-        if text.endswith(brk, 0, end):
-            stop = end - len(brk)
-            break
-    else:
-        return None
-    start = stop
-    while start > 0 and text[start - 1] in _KEY_BODY and not text.endswith("\\n", 0, start):
-        start -= 1
-    return (start, stop) if start < stop else None
+_GLUED_RUN = re.compile(r"\[masked\](?:[A-Za-z0-9_.-]+[ \t]*(?:[:=]|=>)[ \t]*[\"']?" + _VALUE[1:-1]
+                        + r"|[A-Za-z0-9_+/=-]+)")
+# The rest of a key after an older kb's placeholder: base64 glued to it and running to a line break, or, where main's
+# key pattern stopped at a backslash, an escaped line break right after it and a key line, 16 characters of base64 or
+# more as real keys' are. Masked through its footer, or through the end of its paragraph.
+_KEY_REST = re.compile(rf"\[masked\]((?:[A-Za-z0-9+/=]+[ \t\r]*(?=\n|\\(?:r\\)?n)"
+                       rf"|(?=\\(?:r\\)?n[A-Za-z0-9+/=]{{16}}))"
+                       rf"(?:(?!{_KEY_END}){_IN_PARAGRAPH})*(?:{_KEY_END})?)")
 
 
 def _headless_keys(text):
-    """A private key's body lines up to its footer when its header is gone, cut off or masked apart by an older
-    kb's row-by-row remask. Found from each footer back, a line at a time, so text without a footer costs one search.
-    The line next to the footer may be short; a word alone before a footer stays."""
-    spans = []
+    """A private key's footer with no header before it, as an older kb's row-by-row remask or a body pasted alone
+    leaves one: masked from the start of its paragraph through it. Whatever else that paragraph holds before the
+    footer is masked too, which is the cost, as after a key without a footer."""
+    if "-----END" not in text:
+        return text
+    starts, spans = [m.end() for m in _BLANK_LINE.finditer(text)], []
     for footer in KEY_FOOTER.finditer(text):
-        line = _key_line_before(text, footer.start())
-        if not line:
-            continue
-        start, full = line[0], line[1] - line[0] >= FULL_LINE
-        line = _key_line_before(text, start)
-        while line and line[1] - line[0] >= FULL_LINE:
-            start, full, line = line[0], True, _key_line_before(text, line[0])
-        if full:
-            spans.append((start, footer.end(), "[masked]"))
-    return spans
+        i = bisect.bisect_right(starts, footer.start()) - 1
+        start = max(starts[i] if i >= 0 else 0, spans[-1][1] if spans else 0)
+        spans.append((start, footer.end()))
+    return _replace(text, spans, "[masked]")
 
 
 def _key_rest(text):
-    """The rest of a key's body after a placeholder, as an older kb's row-by-row remask leaves the chunk after the
-    header's: the line glued to it, the base64 lines after it, and the footer if there is one. A word glued to a
-    placeholder, with no line of a key's shape, stays, and so does one line of a key's shape on the line after it,
-    such as a hash. The last line may run on into words, which stay."""
-    spans = []
-    for glued in _PLACEHOLDER.finditer(text):
-        run = _KEY_RUN.match(text, glued.end())
-        end = run.end() if run else glued.end()
-        first, lines, full = end - glued.end(), 0, 0
-        while _line_ends(text, end):
-            run = _KEY_RUN.match(text, _after_break(text, end))
-            if not run or run.start() == end:
-                break
-            length = run.end() - run.start()
-            if not _line_ends(text, run.end()):
-                if length >= FULL_LINE and text[run.end()] in " \t":
-                    end, lines, full = run.end(), lines + 1, full + 1
-                break
-            if length < FULL_LINE and not _last_line(text, run.end()):
-                break
-            end, lines, full = run.end(), lines + 1, full + (length >= FULL_LINE)
-        if (lines if first else full >= 2) or (first >= FULL_LINE and (_line_ends(text, end) or text[end] in " \t")):
-            footer = KEY_FOOTER.match(text, _after_break(text, end))
-            spans.append((glued.end(), footer.end() if footer else end, ""))
-    return spans
+    """The rest of a key after an older kb's placeholder, as _KEY_REST finds it, removed after the placeholder."""
+    return _replace(text, [(m.start(1), m.end()) for m in _KEY_REST.finditer(text)], "")
 
 
-def _found(pattern):
-    return lambda text: [(m.start(), m.end(), "[masked]") for m in pattern.finditer(text)]
-
-
-def _after_prefix(pattern):
-    return lambda text: [(m.end(1), m.end(), "[masked]") for m in pattern.finditer(text)]
-
-
-def _keyed(pattern):
-    return lambda text: [(m.start(3), m.end(3), "[masked]") for m in pattern.finditer(text) if _keyed_secret(m)]
-
-
-# Each stage finds (start, end, replacement) spans in the text the stage before it left.
-_SHAPES = [*map(_found, SECRET_PATTERNS + SYNC_CODES), _key_rest, _headless_keys, _found(_GLUED_RUN),
-           *map(_after_prefix, PREFIXED_SECRETS)]
-TEXT_STAGES = _SHAPES + [_keyed(KEYED_SECRET), _keyed(ENV_KEY_SECRET)]
-ID_STAGES = _SHAPES + [_keyed(KEYED_ID), _keyed(ENV_KEY_ID)]
-
-
-def _apply(text, spans):
+def _replace(text, spans, replacement):
+    """`text` with each of the ordered spans replaced, built once: one copy per span would be quadratic."""
     out, last = [], 0
-    for start, end, replacement in spans:
+    for start, end in spans:
         out += [text[last:start], replacement]
         last = end
-    out.append(text[last:])
-    return "".join(out)
+    return "".join(out + [text[last:]])
 
 
-def _run(stages, text):
-    """`text` with every stage's spans replaced. Text with invisible characters is matched as it reads, without
-    them, and only the spans that changed are replaced in the text as written, the invisible characters inside them
-    with them; the rest keeps its invisible characters."""
-    if not INVISIBLE.search(text):
-        for stage in stages:
-            spans = stage(text)
-            if spans:
-                text = _apply(text, spans)
-        return text
-    where = [i for i, ch in enumerate(text) if not INVISIBLE.match(ch)]
-    view = "".join(text[i] for i in where)
-    pieces, current = [(0, len(view), None)], view  # (start, end, None) for view[start:end], or (0, 0, new text)
-    for stage in stages:
-        spans = stage(current)
-        if spans:
-            pieces = _splice(pieces, spans)
-            current = "".join(view[a:b] if new is None else new for a, b, new in pieces)
-    if pieces == [(0, len(view), None)]:
-        return text
-    out = []
-    for a, b, new in pieces:
-        if new is not None:
-            out.append(new)
-        else:  # with the invisible characters before it, and after it at the end
-            out.append(text[where[a - 1] + 1 if a else 0:where[b - 1] + 1 if b < len(view) else len(text)])
-    return "".join(out)
+def _mask_once(text):
+    for pattern in SECRET_PATTERNS:
+        text = pattern.sub("[masked]", text)
+    text = _GLUED_RUN.sub("[masked]", _headless_keys(_key_rest(text)))
+    for pattern in PREFIXED_SECRETS:
+        text = pattern.sub(lambda m: m.group(1) + "[masked]", text)
+    return ENV_KEY_SECRET.sub(_mask_keyed, KEYED_SECRET.sub(_mask_keyed, text))
 
 
-def _size(piece):
-    a, b, new = piece
-    return b - a if new is None else len(new)
-
-
-def _cut(piece, k):
-    a, b, new = piece
-    return ((a, a + k, None), (a + k, b, None)) if new is None else ((0, 0, new[:k]), (0, 0, new[k:]))
-
-
-def _splice(pieces, spans):
-    """`pieces` with each span, given in the text they make, replaced."""
-    out, pieces, pos, i = [], list(pieces), 0, 0
-    for start, end, replacement in spans:
-        while i < len(pieces) and pos + _size(pieces[i]) <= start:
-            out.append(pieces[i])
-            pos, i = pos + _size(pieces[i]), i + 1
-        if i < len(pieces) and pos < start:
-            head, pieces[i] = _cut(pieces[i], start - pos)
-            out.append(head)
-            pos = start
-        while i < len(pieces) and pos + _size(pieces[i]) <= end:
-            pos, i = pos + _size(pieces[i]), i + 1
-        if i < len(pieces) and pos < end:
-            pieces[i] = _cut(pieces[i], end - pos)[1]
-            pos = end
-        if replacement:
-            out.append((0, 0, replacement))
-    return out + [p for p in pieces[i:] if _size(p)]
+# How many passes mask() makes at most, and how often, in this process, a text still changed at the last one.
+MAX_PASSES = 8
+capped = 0
 
 
 def mask(text):
-    return _run(TEXT_STAGES, text)
+    """The text with every secret replaced by "[masked]". A placeholder can make the text next to it read as a secret
+    or as a key's leftovers, so masking repeats until a pass changes nothing: masked text masks to itself, and text
+    with no secret costs one pass. No pattern matches a placeholder alone, so it stops; should a text still change at
+    the last pass, the region still changing is masked whole, and counted in `capped`."""
+    global capped
+    original = text
+    for _ in range(MAX_PASSES):
+        masked = _mask_once(text)
+        if masked == text:
+            return text
+        text = masked
+    # Still changing: everything between what the original and the last pass share at both ends becomes one mask.
+    head = len(os.path.commonprefix([original, text]))
+    tail = len(os.path.commonprefix([original[head:][::-1], text[head:][::-1]]))
+    capped += 1
+    return text[:head] + "[masked]" + text[len(text) - tail:]
 
 
 def clip(text, limit, more=" …"):
@@ -307,7 +193,13 @@ def secret_in_id(text):
     An id is a name someone chose, so it is read more narrowly than text: a provider's token shape or a credential in
     a link still counts, but a value its key names counts only in assignment form. A title such as "Tokens: 2026Q4
     plan" or "the password is changed" is a name, which mask() would mask in text."""
-    return _run(ID_STAGES, text) != text
+    masked = text
+    for pattern in SECRET_PATTERNS:
+        masked = pattern.sub("[masked]", masked)
+    masked = _GLUED_RUN.sub("[masked]", _headless_keys(_key_rest(masked)))
+    for pattern in PREFIXED_SECRETS:
+        masked = pattern.sub(lambda m: m.group(1) + "[masked]", masked)
+    return ENV_KEY_ID.sub(_mask_keyed, KEYED_ID.sub(_mask_keyed, masked)) != text
 
 
 def mask_all(value, key=None):
