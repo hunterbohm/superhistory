@@ -11,7 +11,7 @@
 - **Recency.** The check's search scores recent items higher, measured from today's date rather than the question's. Every item in both datasets is over two years old, which makes the boost under 1% and the same for every item. In effect it is off.
 - **Short questions.** As shipped, the check makes no search for a message with fewer than 3 search words. That skips 11 LongMemEval questions and 38 LoCoMo questions. The answer model can still search with its tools.
 - **One pass.** Each question runs once, with no seeds or repeats, so the results give no run-to-run spread. The Mem0 paper reports the mean of 10 runs.
-- **Load.** The check's two model calls share a 10-second budget, as shipped. Runs used 8 to 10 workers per set, with up to three sets running at once on one gateway. Each table counts lookup errors.
+- **Load.** The check's two model calls share a 10-second budget, as shipped. Runs used 8 to 10 workers per set, with up to three sets running at once on one gateway. Each table counts lookup errors. Since then every run holds its model calls to two at once, kb's hedged copies included (`bench/gateway.py`), and runs one question at a time by default, so each question's calls and its hedge copy get the two slots; the paired final pass runs that way.
 
 ## LongMemEval
 

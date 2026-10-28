@@ -350,7 +350,7 @@ def main(argv=None):
     m = sub.add_parser("month")
     m.add_argument("--tools", default=",".join(DEFAULT_TOOLS))
     m.add_argument("--limit", type=int, help="run only the first N questions")
-    m.add_argument("--workers", type=int, default=4)
+    m.add_argument("--workers", type=int, default=1)
     m.add_argument("--out", default=RESULTS)
     m.add_argument("--fresh", action="store_true", help="drop earlier rows and rerun every question")
     m.add_argument("--month", choices=sorted(MONTHS), default="a", help="a is the dev month, b the held-out one")

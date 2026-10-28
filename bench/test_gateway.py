@@ -374,6 +374,35 @@ class RateLimitTest(unittest.TestCase):
         self.assertEqual(loads.call_count, 1)
         gateway.check_limited()
 
+    def test_two_hedged_lookups_at_once_send_at_most_two_calls_at_a_time(self):
+        reply = json.dumps({"type": "message", "content": [{"type": "text", "text": "ok"}],
+                            "usage": {"input_tokens": 1, "output_tokens": 1}}).encode()
+        lock, now, most, sent = threading.Lock(), [0], [0], []
+
+        def opened(request, timeout):
+            with lock:
+                now[0] += 1
+                most[0] = max(most[0], now[0])
+                sent.append(request)
+            time.sleep(0.3)
+            with lock:
+                now[0] -= 1
+            return Answer(reply)
+
+        def lookup():
+            model = check.Counted(check.model())
+            with check.counting(model):
+                ai.hedged(model, ai.Prompt("system", "user"), timeout=3, hedge_after=0.05)
+                model.settle(3)
+        with mock.patch.object(gateway, "_open", opened):
+            workers = [threading.Thread(target=lookup) for _ in range(2)]
+            for worker in workers:
+                worker.start()
+            for worker in workers:
+                worker.join(10)
+        self.assertEqual(len(sent), 4)
+        self.assertLessEqual(most[0], 2)
+
     def test_plain_text_that_names_no_limit_fails_as_before(self):
         network, calls = self.answering("<html>upstream hiccup</html>")
         with network, self.assertRaises(ValueError):

@@ -69,8 +69,17 @@ def mcnemar(only_a, only_b):
 
 
 def interval(values):
+    """The middle 95% of `values`, or None when there are none."""
+    if not values:
+        return None
     values = sorted(values)
     return values[int(0.025 * len(values))], values[int(0.975 * len(values)) - 1]
+
+
+def ratio_change(pairs):
+    """The change of the first sum against the second, in percent, or None when the second is 0."""
+    a, b = sum(x for x, _ in pairs), sum(y for _, y in pairs)
+    return 100 * (a / b - 1) if b else None
 
 
 def paired(test, a_rows, b_rows, resamples=RESAMPLES, seed=0):
@@ -81,15 +90,18 @@ def paired(test, a_rows, b_rows, resamples=RESAMPLES, seed=0):
     added = [(a["context_tokens"] + a["tool_tokens"], b["context_tokens"] + b["tool_tokens"]) for a, b in pairs]
     total = [(x + a["lookup_model_tokens"], y + b["lookup_model_tokens"]) for (x, y), (a, b) in zip(added, pairs)]
     n, rng = len(pairs), random.Random(seed)
+    if not n:
+        return {"n": 0}
     draws = {"right": [], "added": [], "total": []}
     for _ in range(resamples):
         pick = [rng.randrange(n) for _ in range(n)]
         draws["right"].append(100 * sum(right[i][0] - right[i][1] for i in pick) / n)
         for key, pairs_ in (("added", added), ("total", total)):
-            draws[key].append(100 * (sum(pairs_[i][0] for i in pick) / sum(pairs_[i][1] for i in pick) - 1))
-
-    def change(pairs_):
-        return 100 * (sum(a for a, _ in pairs_) / sum(b for _, b in pairs_) - 1)
+            # A resample whose second run added no tokens has no ratio; it is left out of that interval.
+            drawn = ratio_change([pairs_[i] for i in pick])
+            if drawn is not None:
+                draws[key].append(drawn)
+    change = ratio_change
     return {"n": n, "right": (100 * sum(a for a, _ in right) / n, 100 * sum(b for _, b in right) / n),
             "right_change": 100 * sum(a - b for a, b in right) / n, "right_interval": interval(draws["right"]),
             "only": (sum(a and not b for a, b in right), sum(b and not a for a, b in right)),
@@ -109,14 +121,20 @@ def paired_table(labels, split, slice_=False):
         if not all(rows):
             continue
         r = paired(test, *rows)
-        lo, hi = r["right_interval"]
+        if not r["n"]:
+            lines.append(f"| {test} | 0 | no question both runs finished yet |  |  |  |  |  |  |")
+            continue
+
+        def change(key, unit="%"):
+            value, bounds = r[f"{key}_change"], r[f"{key}_interval"]
+            if value is None:
+                return "n/a"
+            return f"{value:+.1f}{unit}" + (f" ({bounds[0]:+.1f} to {bounds[1]:+.1f})" if bounds else "")
         lines.append(
-            f"| {test} | {r['n']} | {r['right'][0]:.1f}% vs {r['right'][1]:.1f}% | {r['right_change']:+.1f} points "
-            f"({lo:+.1f} to {hi:+.1f}) | {r['only'][0]} vs {r['only'][1]}, p {mcnemar(*r['only']):.2f} | "
-            f"{r['added'][0]:,.0f} vs {r['added'][1]:,.0f} | {r['added_change']:+.1f}% "
-            f"({r['added_interval'][0]:+.1f} to {r['added_interval'][1]:+.1f}) | "
-            f"{r['total'][0]:,.0f} vs {r['total'][1]:,.0f} | {r['total_change']:+.1f}% "
-            f"({r['total_interval'][0]:+.1f} to {r['total_interval'][1]:+.1f}) |")
+            f"| {test} | {r['n']} | {r['right'][0]:.1f}% vs {r['right'][1]:.1f}% | {change('right', ' points')} | "
+            f"{r['only'][0]} vs {r['only'][1]}, p {mcnemar(*r['only']):.2f} | "
+            f"{r['added'][0]:,.0f} vs {r['added'][1]:,.0f} | {change('added')} | "
+            f"{r['total'][0]:,.0f} vs {r['total'][1]:,.0f} | {change('total')} |")
     return "\n".join(lines)
 
 

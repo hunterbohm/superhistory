@@ -27,6 +27,9 @@ ERROR_BYTES = 1 << 16
 REPLY_BYTES = 1 << 24
 LIMITED = threading.Event()
 WAIT_MINUTES = 30
+# Standing order 22: at most two model calls at once in a run, kb's hedged copies and the summarizer's included. A
+# call waits here for a slot, so a run with more than one worker mostly waits, and a hedge copy can start late.
+SLOTS = threading.BoundedSemaphore(2)
 
 
 class RateLimited(RuntimeError):
@@ -122,9 +125,16 @@ def _open(request, timeout):
 
 
 def urlopen(request, timeout):
-    """urllib's urlopen, except that every reply is read for a rate limit before anything parses it or cuts it short
-    for a message, and no redirect is followed. A reply that names no limit is handed on as urllib gave it, still
-    readable; a failed read is raised as it was."""
+    """urllib's urlopen, except that it holds one of the run's two SLOTS until the reply is read, that every reply is
+    read for a rate limit before anything parses it or cuts it short for a message, and that no redirect is followed.
+    A reply that names no limit is handed on as urllib gave it, still readable; a failed read is raised as it was."""
+    with SLOTS:
+        # A limit seen while this call waited for its slot stops it before it sends.
+        check_limited()
+        return _urlopen(request, timeout)
+
+
+def _urlopen(request, timeout):
     try:
         reply = _open(request, timeout)
     except urllib.error.HTTPError as e:

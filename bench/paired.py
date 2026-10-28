@@ -43,6 +43,10 @@ TESTS = {
 }
 
 
+# What a run writes in a checkout: anything else that differs from the commit is code, and the pass refuses it.
+RUN_OUTPUT = ("bench/results/", "bench/splits/heldout-runs.tsv", "bench/splits/paired-freeze.json")
+
+
 def git(cwd, *args):
     return subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True, check=True).stdout.strip()
 
@@ -51,6 +55,26 @@ def code_id(cwd):
     """The code id the checkout's own harness logs for its kb/."""
     return subprocess.run([sys.executable, "-c", "import sys; sys.path[:0] = ['bench']; from tools import check; "
                            "print(check.code_id())"], cwd=cwd, capture_output=True, text=True, check=True).stdout.strip()
+
+
+def differences(folder):
+    """(status, path) for every file that differs from the commit, untracked files included."""
+    lines = subprocess.run(["git", "status", "--porcelain", "--untracked-files=all"], cwd=folder, capture_output=True,
+                           text=True, check=True).stdout.splitlines()
+    return [(line[:2], line[3:].split(" -> ")[-1]) for line in lines]
+
+
+def code_changes(folder, kb_from_baseline=False):
+    """Paths that differ from the commit and are not what a run writes. In the baseline's checkout kb/ is the
+    baseline's: its files may differ or be gone, but none may be added."""
+    changed = []
+    for status, path in differences(folder):
+        if path.startswith(RUN_OUTPUT):
+            continue
+        if kb_from_baseline and path.startswith("kb/") and status != "??":
+            continue
+        changed.append(path)
+    return changed
 
 
 def logged_baseline():
@@ -74,9 +98,9 @@ def baseline_checkout(folder, head, base, expected, code=code_id, repo=ROOT):
             git(folder, "rm", "-q", "--", *sorted(extra))
     if git(folder, "rev-parse", "HEAD") != head:
         raise SystemExit(f"{folder} is at another commit; remove it and run again")
-    changed = git(folder, "diff", "--name-only", "HEAD").split()
-    if any(not path.startswith("kb/") for path in changed):
-        raise SystemExit(f"{folder} differs from {head[:7]} outside kb/: {changed}")
+    changed = code_changes(folder, kb_from_baseline=True)
+    if changed:
+        raise SystemExit(f"{folder} differs from {head[:7]} outside the baseline's kb/: {changed}")
     for cache in (os.path.join(dirpath, d) for dirpath, dirs, _ in os.walk(os.path.join(folder, "kb"))
                   for d in dirs if d == "__pycache__"):
         shutil.rmtree(cache, ignore_errors=True)
@@ -84,6 +108,24 @@ def baseline_checkout(folder, head, base, expected, code=code_id, repo=ROOT):
     if found != expected:
         raise SystemExit(f"the baseline checkout's kb/ hashes to {found}, not the {expected} its runs logged")
     return found
+
+
+def earlier_runs(tests, head, folders):
+    """Refuse when a label of the pair already ran from another commit, or left results with no logged run: a pass
+    resumes only its own rows, from its own frozen commit."""
+    with open(splits.LOG, encoding="utf-8") as fh:
+        rows = list(csv.DictReader(fh, delimiter="\t"))
+    for test in tests:
+        for label, folder in zip(LABELS, folders):
+            logged = [r for r in rows if r["test"] == test and r["label"] == label]
+            if any(r["commit"] != head for r in logged):
+                raise SystemExit(f"{test} {label} already ran from commit {logged[0]['commit'][:7]}; a paired pass "
+                                 "runs from one frozen commit")
+            found = [path.format(label=label) for path in TESTS[test][2]
+                     if os.path.exists(os.path.join(folder, "bench", "results", "hillclimb", path.format(label=label)))]
+            if found and not logged:
+                raise SystemExit(f"{test} {label} has results with no logged run ({', '.join(found)}); move them "
+                                 "away first")
 
 
 def freeze(head, final, base, baseline):
@@ -104,18 +146,22 @@ def freeze(head, final, base, baseline):
 def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--tests", default=",".join(TESTS))
-    p.add_argument("--workers", type=int, default=2)
+    # One question at a time: the run's two model-call slots then go to that question's calls and kb's hedge copy,
+    # as they would in use, rather than to another question's.
+    p.add_argument("--workers", type=int, default=1)
     p.add_argument("--dry-run", action="store_true")
     args = p.parse_args(argv)
     tests = args.tests.split(",")
     if set(tests) - set(TESTS):
         raise SystemExit(f"tests are {', '.join(TESTS)}")
-    if git(ROOT, "status", "--porcelain", "--untracked-files=no"):
-        raise SystemExit("commit the final code first: the checkout has changes")
+    changed = code_changes(ROOT)
+    if changed:
+        raise SystemExit(f"commit the final code first: the checkout has changes ({', '.join(changed[:5])})")
     head = git(ROOT, "rev-parse", "HEAD")
     if not git(ROOT, "branch", "-r", "--contains", head):
         raise SystemExit("push the final code first: no remote branch holds this commit")
     expected, base = logged_baseline()
+    earlier_runs(tests, head, (ROOT, CHECKOUT))
     baseline = baseline_checkout(CHECKOUT, head, base, expected)
     final = code_id(ROOT)
     python = os.environ.get("BENCH_PYTHON", sys.executable)

@@ -68,6 +68,52 @@ class PairedTest(unittest.TestCase):
             with self.assertRaises(SystemExit):
                 paired.baseline_checkout(os.path.join(tmp, "other"), head, base, "0" * 16, kb_hash, repo)
 
+    def repo(self, tmp):
+        repo = os.path.join(tmp, "repo")
+        for folder in ("kb", "bench/splits", "bench/results"):
+            os.makedirs(os.path.join(repo, folder))
+        git(tmp, "init", "-q", repo)
+        git(repo, "config", "user.email", "test@example.com")
+        git(repo, "config", "user.name", "test")
+        for path in ("kb/check.py", "bench/run.py", "bench/splits/heldout-runs.tsv", "bench/results/old.jsonl"):
+            open(os.path.join(repo, path), "w").write("v1\n")
+        git(repo, "add", ".")
+        git(repo, "commit", "-qm", "frozen")
+        return repo
+
+    def test_what_a_run_writes_is_not_a_code_change_but_anything_else_is(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = self.repo(tmp)
+            open(os.path.join(repo, "bench/splits/heldout-runs.tsv"), "a").write("a run\n")
+            open(os.path.join(repo, "bench/splits/paired-freeze.json"), "w").write("{}\n")
+            open(os.path.join(repo, "bench/results/old.jsonl"), "a").write("a row\n")
+            open(os.path.join(repo, "bench/results/new.jsonl"), "w").write("a row\n")
+            self.assertEqual(paired.code_changes(repo), [])
+            open(os.path.join(repo, "kb/added.py"), "w").write("NEW = 1\n")
+            open(os.path.join(repo, "bench/helper.py"), "w").write("HELPER = 1\n")
+            open(os.path.join(repo, "bench/run.py"), "a").write("v2\n")
+            self.assertEqual(sorted(paired.code_changes(repo)), ["bench/helper.py", "bench/run.py", "kb/added.py"])
+            self.assertEqual(sorted(paired.code_changes(repo, kb_from_baseline=True)),
+                             ["bench/helper.py", "bench/run.py", "kb/added.py"])
+            os.remove(os.path.join(repo, "kb/added.py"))
+            open(os.path.join(repo, "kb/check.py"), "w").write("baseline\n")
+            self.assertNotIn("kb/check.py", paired.code_changes(repo, kb_from_baseline=True))
+            self.assertIn("kb/check.py", paired.code_changes(repo))
+
+    def test_a_pass_resumes_only_its_own_commits_runs(self):
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(paired.splits, "LOG", os.path.join(tmp, "log")):
+            final, baseline = os.path.join(tmp, "final"), os.path.join(tmp, "baseline")
+            with open(paired.splits.LOG, "w") as fh:
+                fh.write("date\ttest\tlabel\trun\tcode\tcommit\n"
+                         "d\tmonth\tfinal\tb-final:check\tcode\thead\n")
+            paired.earlier_runs(["month"], "head", (final, baseline))
+            with self.assertRaises(SystemExit):
+                paired.earlier_runs(["month"], "other", (final, baseline))
+            os.makedirs(os.path.join(baseline, "bench/results/hillclimb/month/b-baseline-paired"))
+            with self.assertRaises(SystemExit) as stop:
+                paired.earlier_runs(["month"], "head", (final, baseline))
+            self.assertIn("no logged run", str(stop.exception))
+
     def test_a_start_with_other_code_than_the_frozen_code_refuses(self):
         with tempfile.TemporaryDirectory() as tmp, mock.patch.object(paired, "FREEZE", os.path.join(tmp, "f.json")):
             paired.freeze("head", "final", "base", "baseline")
