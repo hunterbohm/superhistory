@@ -281,6 +281,14 @@ class RateLimitTest(unittest.TestCase):
                 self.end_headers()
                 self.wfile.write(body)
 
+            def do_GET(self):
+                # Where a followed redirect would land: an ordinary reply.
+                seen.append(self.path)
+                self.send_response(200)
+                self.send_header("content-length", "2")
+                self.end_headers()
+                self.wfile.write(b"{}")
+
             def log_message(self, *args):
                 pass
         server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Redirect)
