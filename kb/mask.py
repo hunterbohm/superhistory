@@ -47,13 +47,17 @@ SECRET_PATTERNS = [
 ]
 PREFIXED_SECRETS = [
     re.compile(r"(?i)(\b(?:set-)?cookie[\"']?\s*:\s*)[^\"'\n]{8,}"),
-    re.compile(r"([a-z][a-z0-9+.-]*://[^/ \t\n\r:@'\"]+:)[^/ \t\n\r@'\"]{3,}(?=@)"),
+    # A scheme is at most 32 characters: unbounded, each letter of a long run would read on to its end.
+    re.compile(r"([a-z][a-z0-9+.-]{0,31}://[^/ \t\n\r:@'\"]+:)[^/ \t\n\r@'\"]{3,}(?=@)"),
     re.compile(r"(\bcurl\b[^\n|;]*?\s(?:-u|--user)\s+['\"]?[^ \t\n\r:'\"]+:)[^ \t\n\r'\"]+"),
 ]
+# A secret's name is a whole run of name characters whose last dotted part holds a key word, or one ending in "_pw" or
+# the like. Read as that part after the run's last dot, it takes one pass over a long run; read as any characters
+# around a key word, it went back over the run once for every key word in it.
 _KEY_NAME = (
     r"(?i)(?<![A-Za-z0-9_.-])("
-    r"[A-Za-z0-9_.-]*?(?:api[_-]?key|access[_-]?key|private[_-]?key|secret|token|credentials?|passw(?:or)?d|passcode|"
-    r"session[_-]?(?:token|key|secret|cookie)|bw_session)[A-Za-z0-9_-]*?"
+    r"(?:[A-Za-z0-9_.-]*\.)?(?=[A-Za-z0-9_-]*?(?:api[_-]?key|access[_-]?key|private[_-]?key|secret|token|"
+    r"credentials?|passw(?:or)?d|passcode|session[_-]?(?:token|key|secret|cookie)|bw_session))[A-Za-z0-9_-]+"
     r"|[A-Za-z0-9]+(?:[_-][A-Za-z0-9]+)*[_-](?:pass|pwd|pw)"
     r")(?![A-Za-z0-9_.-])")
 _ENV_KEY_NAME = r"(?<![A-Za-z0-9_])([A-Z][A-Z0-9_]*_KEY)(?![A-Za-z0-9_])"

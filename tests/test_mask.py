@@ -265,6 +265,26 @@ class RepeatTest(unittest.TestCase):
         self.assertLess(took["mask"], 1.5 * took["one pass"] + 0.02, took)
 
 
+class LinearTimeTest(unittest.TestCase):
+    """A long run of one shape costs time in proportion to its length: sixteen times the text, about sixteen times the
+    time, where a pattern that reads on from every character would take some two hundred and fifty."""
+    RUNS = ("0123456789abcdef", "token", "abcdefghij", "ABCDEFGHIJ", "QUJDRGVm+/9z", "a:", "password=", "a_pw ",
+            "set-cookie", "a.", "token.", "x-", "token ", "_KEY_", "curl -u a:", "-----BEGIN ", "[masked]A")
+    SIZES = (1 << 16, 1 << 20)
+
+    def test_every_shape_is_linear_up_to_a_megabyte(self):
+        import time
+        for unit in self.RUNS + ("a" * 64 + "://",):
+            with self.subTest(unit=unit):
+                took = {}
+                for size in self.SIZES:
+                    text = unit * (size // len(unit))
+                    started = time.process_time()
+                    mask(text)
+                    took[size] = time.process_time() - started
+                self.assertLess(took[self.SIZES[1]], 40 * max(took[self.SIZES[0]], 0.01), took)
+
+
 class KeyShapeTest(unittest.TestCase):
     """Keys as they come: any header kind, an encrypted key's fields, lines of 1 to 100 characters, LF, CRLF or
     escaped breaks, whole or cut anywhere, with words, a newline, a cut's mark or the next secret after them."""
