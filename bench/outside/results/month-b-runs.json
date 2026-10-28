@@ -1,0 +1,32 @@
+{
+ "runs": [
+  {
+   "tool": "claude-mem",
+   "load": {
+    "reused_store": true,
+    "observations": 519,
+    "summaries": 51,
+    "sessions": 82,
+    "drained": true,
+    "load_seconds": 3
+   },
+   "passes": [
+    {
+     "ran": 116,
+     "failed": 1
+    },
+    {
+     "ran": 1,
+     "failed": 0
+    }
+   ],
+   "started": "2026-10-28T02:39:15Z",
+   "month_commit": "d79bb3ae066d25f3fc9e882feb59afa0bee1413f",
+   "answer_model": "claude-sonnet-5-5",
+   "judge_model": "gpt-6.1-sol",
+   "parallel_model_calls": 2,
+   "rate_limits": {},
+   "stopped": null
+  }
+ ]
+}
