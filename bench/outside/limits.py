@@ -78,21 +78,23 @@ class Limits:
         if not self.slots.acquire(timeout=timeout):
             raise TimeoutError("no free model slot in time")
         try:
+            # Refused for a pause, the call never went out, so the refusal is no new limit.
             self._may_start(model)
-            return call()
-        except RateLimited:
-            self.limited(model)
-            raise
-        except Stopped:
-            raise
-        except Exception as exc:
-            text = exc.read()[:300].decode(errors="replace") if isinstance(exc, urllib.error.HTTPError) else str(exc)
-            if (getattr(exc, "status_code", None) or getattr(exc, "code", None)) == 429 or "cooling down" in text:
+            try:
+                return call()
+            except RateLimited:
                 self.limited(model)
-                raise RateLimited(model) from None
-            if isinstance(exc, urllib.error.HTTPError):
-                raise RuntimeError(f"HTTP {exc.code}: {text[:300]}") from None
-            raise
+                raise
+            except Stopped:
+                raise
+            except Exception as exc:
+                text = exc.read()[:300].decode(errors="replace") if isinstance(exc, urllib.error.HTTPError) else str(exc)
+                if (getattr(exc, "status_code", None) or getattr(exc, "code", None)) == 429 or "cooling down" in text:
+                    self.limited(model)
+                    raise RateLimited(model) from None
+                if isinstance(exc, urllib.error.HTTPError):
+                    raise RuntimeError(f"HTTP {exc.code}: {text[:300]}") from None
+                raise
         finally:
             self.slots.release()
 

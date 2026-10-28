@@ -85,6 +85,20 @@ class LimitsTest(Fresh):
         with self.assertRaises(Stopped):
             limits.wait()
 
+    def test_a_call_refused_for_a_pause_after_getting_its_slot_is_no_new_limit(self):
+        class PausesWhileQueued(outside.Limits):
+            checks = 0
+
+            def _may_start(self, model):
+                self.checks += 1
+                if self.checks == 2:
+                    raise outside.RateLimited(model)
+
+        limits = PausesWhileQueued()
+        with self.assertRaises(outside.RateLimited):
+            limits.send("m", lambda: self.fail("sent while paused"))
+        self.assertEqual(limits.limits, 0)
+
     def test_the_bench_has_one_rate_limit_error(self):
         self.assertIs(outside.RateLimited, gateway.RateLimited)
 
