@@ -9,6 +9,7 @@ from datetime import datetime, timedelta, timezone
 from unittest import mock
 
 from kb import ai, search, store, summarize
+from tests import legacy_store
 from tests.support import (FakeModel, TRAITS, open_db, parse_config, scratch_paths, segment, summary_text)
 
 LOG = logging.getLogger("test_summarize")
@@ -249,6 +250,21 @@ class SummarizeTest(unittest.TestCase):
                 sent, _ = self.run_titled(f"Full {n}")
                 self.assertIn(text, sent)
                 self.assertEqual([r[2] for r in self.summary_rows()], [f"Full {n}"])
+
+    def test_remask_keeps_a_summary_current_under_its_items_new_hash_and_its_next_growth_gets_a_full_pass(self):
+        text = long_text("gamma") + "vpn_pw: walrus2secret9\n"
+        legacy_store.store_item(self.db, "sessions", "test:s2", "2026-10-18T10:00:00Z", "title test:s2", text,
+                                SESSION_META, store.CHUNK)
+        self.db.commit()
+        self.run_once(FakeModel(summary_text()))
+        older = self.item_hash("test:s2")
+        store.remask(self.db)
+        self.assertNotEqual(self.item_hash("test:s2"), older)
+        self.assertEqual(self.pending_ids(), [])
+        self.assertNotIn(older, json.dumps(self.db.execute("SELECT metadata FROM docs").fetchall()))
+        self.grow(text + "one more line\n", sid="test:s2")
+        _, meta = self.run_titled("Grown")
+        self.assertEqual(meta["from_chars"], 0)
 
     def test_item_that_shrank_but_is_still_long_gets_a_full_pass(self):
         self.run_once(FakeModel(summary_text()))

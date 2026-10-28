@@ -71,6 +71,12 @@ so an interrupted run leaves the rest old. The file is rebuilt once none are lef
 on the next ingest. The header counts the rows left, and `kb remask` does them all at once. An HTTP error body longer
 than kb reads is left out of the error.
 
+An item's rows record a hash of its title and text as stored, masked (`store.item_hash`), whatever hash rows another
+store sent came with: Sync and Cloud send it with the masked text, and a hash of the text before a mask changed it
+would let either confirm a guess at the secret. When remask changes an item's text, its rows record the new hash, a
+summary of that text names it, and no hash of the text before stays: an older summary's hash and every summary's
+prefix hash go, so the item's next growth gets a full pass, and a failed summary's mark moves to the new hash.
+
 `tests/test_write_fuzz.py` generates key blocks of every header kind, line width, line break and cut, and runs a few
 thousand seeded sequences of the store's writes: ingest, Sync-shaped full and
 piecemeal writes, summary rows, an older kb's store_item and remask (`tests/legacy_store.py`), remask cut off at a

@@ -9,6 +9,7 @@ from datetime import datetime, timedelta, timezone
 from unittest import mock
 
 from kb import search, store
+from tests import legacy_store
 
 
 def iso(delta=timedelta(0)):
@@ -355,6 +356,80 @@ class RemaskTest(TempDB):
             self.assertNotIn(b"abcdef1234567890abcdef1234567890", fh.read())
 
 
+
+class ItemHashTest(TempDB):
+    """An item's rows record the hash of its title and text as stored, masked, never of text a mask has since changed:
+    with the masked text beside it, such a hash would confirm a guess at the secret."""
+    TEXT = "Office VPN\nuser: walrus\nvpn_pw: walrus2secret9\n"
+
+    def older(self, sid, size=store.CHUNK, times=1):
+        """An item as an older kb stored it, whose mask missed the password, and the hash it recorded."""
+        legacy_store.store_item(self.db, "s", sid, iso(), "Office VPN", self.TEXT * times, {}, size)
+        self.db.commit()
+        return self.hashes(sid).pop()
+
+    def item(self, sid):
+        rows = self.db.execute("SELECT title, content, metadata FROM docs WHERE source_id=? AND kind IN ('doc','raw') "
+                               "ORDER BY json_extract(metadata, '$.chunk')", (sid,)).fetchall()
+        return rows[0][0], "".join(r[1] for r in rows)
+
+    def hashes(self, sid):
+        return {json.loads(m)["hash"] for (m,) in self.db.execute(
+            "SELECT metadata FROM docs WHERE source_id=? AND kind IN ('doc','raw')", (sid,))}
+
+    def failed(self, sid):
+        return store.get_watermark(self.db, store.SUMMARY_FAILED, f"s|{sid}")
+
+    def test_remask_records_the_hash_of_the_masked_item(self):
+        before = {"short": self.older("short"), "long": self.older("long", size=40, times=3)}
+        store.remask(self.db)
+        for sid in before:
+            with self.subTest(sid=sid):
+                title, text = self.item(sid)
+                self.assertNotIn("walrus2secret9", text)
+                self.assertEqual(self.hashes(sid), {store.item_hash(title, text)})
+                self.assertNotEqual(self.hashes(sid), {before[sid]})
+
+    def test_summaries_follow_their_item_to_its_new_hash_and_no_older_hash_stays(self):
+        before = self.older("long", size=40, times=3)
+        self.older("other", size=40, times=3)
+        for of_hash, prefix in ((before, "1f2e3d4c5b6a7980"), ("0a1b2c3d4e5f6a7b", "0f1e2d3c4b5a6978")):
+            self.db.execute("INSERT INTO docs(kind, source, source_id, ts, title, content, metadata) "
+                            "VALUES ('segment', 's', 'long', ?, 'Part', 'summary', ?)",
+                            (iso(), json.dumps({"of_hash": of_hash, "from_chars": 0, "of_chars": 99, "prefix": prefix})))
+        store.set_watermark(self.db, store.SUMMARY_FAILED, "s|long", before)
+        store.set_watermark(self.db, store.SUMMARY_FAILED, "s|other", "0a1b2c3d4e5f6a7b")
+        self.db.commit()
+        store.remask(self.db)
+        after = self.hashes("long").pop()
+        summaries = [json.loads(m) for (m,) in self.db.execute(
+            "SELECT metadata FROM docs WHERE kind='segment' ORDER BY id")]
+        self.assertEqual(summaries, [{"of_hash": after, "from_chars": 0, "of_chars": 99},
+                                     {"from_chars": 0, "of_chars": 99}])
+        self.assertEqual((self.failed("long"), self.failed("other")), (after, None))
+        with open(self.path, "rb") as fh:
+            stored = fh.read()
+        for old in (before, "1f2e3d4c5b6a7980", "0a1b2c3d4e5f6a7b", "0f1e2d3c4b5a6978"):
+            self.assertNotIn(old.encode(), stored)
+
+    def test_rows_another_store_sent_record_the_hash_of_their_masked_text(self):
+        sent = legacy_store.chunk(self.TEXT * 3, 40)
+        rows = [{"kind": "raw", "ts": iso(), "title": "Office VPN", "content": part,
+                 "metadata": {"hash": "0a1b2c3d4e5f6a7b", "chunk": i, "chunks": len(sent)}} for i, part in enumerate(sent)]
+        store.replace_rows(self.db, "s", "sent", rows, ("raw",))
+        title, text = self.item("sent")
+        self.assertNotIn("walrus2secret9", text)
+        self.assertEqual(self.hashes("sent"), {store.item_hash(title, text)})
+
+    def test_a_title_cut_beside_a_token_is_hashed_as_stored_and_stored_once(self):
+        title = "x" * 279 + " AKIA" + "B" * 16 + "C" * 5
+        self.assertTrue(self.add("a", "body", title=title))
+        self.assertFalse(self.add("a", "body", title=title))
+        stored_title, text = self.item("a")
+        self.assertNotIn("AKIA", stored_title)
+        self.assertEqual(self.hashes("a"), {store.item_hash(stored_title, text)})
+
+
 class MaskVersionTest(TempDB):
     """A row records the mask() version it was masked with. Only a row of today's version, and for a chunk only if
     every chunk of its item is, may be cut as it is stored; ingest and remask bring the rest up to date."""
@@ -405,8 +480,8 @@ class MaskVersionTest(TempDB):
         old = sqlite3.connect(path)
         old.executescript(store.SCHEMA.replace("  superseded_by INTEGER,\n  masked TEXT\n", "  superseded_by INTEGER\n"))
         self.assertNotIn("masked", [column[1] for column in old.execute("PRAGMA table_info(docs)")])
-        old.execute("INSERT INTO docs(kind, source, source_id, ts, title, content) VALUES ('doc','s','a',?,'t','x')",
-                    (iso(),))
+        old.execute("INSERT INTO docs(kind, source, source_id, ts, title, content, metadata) "
+                    "VALUES ('doc','s','a',?,'t','x',?)", (iso(), json.dumps({"hash": store.item_hash("t", "x")})))
         old.commit()
         old.close()
         reader = store.connect(path, readonly=True)

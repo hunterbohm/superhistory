@@ -3,7 +3,8 @@ though its item was not masked whole. Each sequence here mixes the writes that i
 older kb make, on a few items whose text holds canaries split across chunk and call boundaries. After every sequence:
 - no reader shows a piece of a canary: search's hits, their render, the lookup's prompt, `kb get`, and the
   summarizer's input, each as kb sends or prints it;
-- no row reads as current unless its whole item masks clean.
+- no row reads as current unless its whole item masks clean, and no current item's row records a hash of other text
+  than its stored title and text.
 
 KB_FUZZ_SEQUENCES and KB_FUZZ_SEED change the run. A failure names its sequence, which reruns on its own with
 KB_FUZZ_ONLY.
@@ -243,12 +244,15 @@ def not_masked_whole(db):
     for rid, kind, source, sid, ts, title, content, meta in rows:
         if rid not in fresh:
             continue
+        item_title = title
         if kind == "raw":
-            content = "".join(c for (c,) in db.execute(
-                "SELECT content FROM docs WHERE source=? AND source_id=? AND kind='raw' "
-                "ORDER BY json_extract(metadata, '$.chunk')", (source, sid)))
+            chunks = db.execute("SELECT title, content FROM docs WHERE source=? AND source_id=? AND kind='raw' "
+                                "ORDER BY json_extract(metadata, '$.chunk')", (source, sid)).fetchall()
+            item_title, content = chunks[0][0], "".join(c for _, c in chunks)
         if (mask(content), mask(title), mask(ts), mask_all(json.loads(meta))) != (content, title, ts, json.loads(meta)):
             problems.append(f"row {rid} ({kind} {sid}) reads as current, but its item does not mask clean")
+        if kind in store.ITEM_KINDS and json.loads(meta).get("hash") != store.item_hash(item_title, content):
+            problems.append(f"row {rid} ({kind} {sid}) reads as current, but records a hash of other text")
     return problems
 
 

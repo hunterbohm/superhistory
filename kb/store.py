@@ -23,6 +23,8 @@ CHUNK_KEYS = ("chunk", "chunks")
 # The metadata a summary row copies from its item, so a search hit on a summary points at the original.
 POINTER_KEYS = ("url", "path", "host")
 STATE = "_kb"
+# A summary that failed, by item, holding the item's hash then; the summarizer tries it again once the hash changes.
+SUMMARY_FAILED = "_summarize_failed"
 TOKENIZE = "porter unicode61"
 
 SCHEMA = """
@@ -153,6 +155,25 @@ def _whole(rows):
         for i, part in enumerate(parts)]
 
 
+def item_hash(title, text):
+    """The hash an item's rows record of its title and text, as stored: masked, so it confirms no guess at a secret."""
+    return hashlib.sha1(f"{title}\0{text}".encode()).hexdigest()[:16]
+
+
+def _as_stored(rows):
+    """`rows` as replace_rows() stores them: masked, a long item's chunks as one text by _whole(), and the item's rows
+    recording the hash of its masked title and text, whatever hash they came with."""
+    rows = [{**r, "ts": mask(str(r["ts"])), "title": mask(r["title"]),
+             "content": r["content"] if r["kind"] == "raw" else mask(r["content"]), "metadata": mask_all(r["metadata"])}
+            for r in _whole(rows)]
+    items = sorted((r for r in rows if r["kind"] in ITEM_KINDS), key=lambda r: r["metadata"].get("chunk", 0))
+    if items:
+        digest = item_hash(items[0]["title"], "".join(r["content"] for r in items))
+        for r in items:
+            r["metadata"]["hash"] = digest
+    return rows
+
+
 def secret_id(source, source_id, host=None):
     """Whether kb refuses an item under this source and stored id. kb stores "<host>:<reader's id>" and records the
     host in the item's metadata. Given that host, with the name config allows a host and the id starting with it, the
@@ -187,15 +208,15 @@ def replace_rows(db, source, source_id, rows, kinds=ITEM_KINDS):
     if "raw" not in kinds and any(r["kind"] == "raw" for r in rows):
         # Chunks added one write at a time would be masked apart, and a secret could run from one into the next.
         raise ValueError("an item's chunks are replaced all at once, with the raw kind")
-    rows = _whole(rows)
+    # Masked here too, since Sync and Cloud write rows another store sent; for rows store_item made it changes nothing.
+    rows = _as_stored(rows)
     marks = ",".join("?" * len(kinds))
     db.execute(f"DELETE FROM docs WHERE source=? AND source_id=? AND kind IN ({marks})",
                (source, source_id, *kinds))
-    # Masked here too, since Sync and Cloud write rows another store sent; for rows store_item made it changes nothing.
     db.executemany(
         "INSERT INTO docs(kind, source, source_id, ts, title, content, metadata, masked) VALUES (?,?,?,?,?,?,?,?)",
-        [(r["kind"], source, source_id, mask(str(r["ts"])), mask(r["title"]), mask(r["content"]),
-          json.dumps(mask_all(r["metadata"])), VERSION) for r in rows])
+        [(r["kind"], source, source_id, r["ts"], r["title"], r["content"], json.dumps(r["metadata"]), VERSION)
+         for r in rows])
 
 
 def delete_item(db, source, source_id):
@@ -206,8 +227,10 @@ def delete_item(db, source, source_id):
 def store_item(db, source, source_id, ts, title, content, meta):
     """Store one item as a `doc` row, or as `raw` chunks when long. Returns False when nothing changed. The same text
     under new metadata, such as a moved file, keeps its rows and summaries and takes the new metadata."""
-    ts, title, content = mask(str(ts)), mask(clean(title or ""))[:300], mask(clean(content or ""))
-    digest = hashlib.sha1(f"{title}\0{content}".encode()).hexdigest()[:16]
+    # The title is cut after masking, so no secret is cut too short to know, then masked again, as the cut can leave
+    # the start of something a mask takes: the hash is then of the title as stored.
+    ts, title, content = mask(str(ts)), mask(mask(clean(title or ""))[:300]), mask(clean(content or ""))
+    digest = item_hash(title, content)
     meta = {**mask_all(meta), "hash": digest}
     old = db.execute("SELECT metadata FROM docs WHERE source=? AND source_id=? AND kind IN ('doc','raw') LIMIT 1",
                      (source, source_id)).fetchone()
@@ -353,30 +376,64 @@ def _rebuild(db):
 
 def _remask_item(db, source, source_id):
     """remask() for one item: its chunks as one text if any is old, and each other old row by itself. Returns the
-    number of rows whose text changed."""
-    changed = 0
-    raw = [{"kind": "raw", "ts": ts, "title": title, "content": content, "metadata": json.loads(meta), "masked": v}
-           for ts, title, content, meta, v in db.execute(
-               "SELECT ts, title, content, metadata, masked FROM docs WHERE source=? AND source_id=? AND kind='raw'",
-               (source, source_id))]
-    if any(r["masked"] != VERSION for r in raw):
-        same = _whole(raw) is raw and all(
-            (mask(str(r["ts"])), mask(r["title"]), mask(r["content"]), mask_all(r["metadata"]))
-            == (r["ts"], r["title"], r["content"], r["metadata"]) for r in raw)
-        if same:
-            db.execute("UPDATE docs SET masked=? WHERE source=? AND source_id=? AND kind='raw'",
-                       (VERSION, source, source_id))
+    number of rows it rewrote. An item whose text changed records the hash of its masked text, its summaries name that
+    hash, and no hash of its text before stays: not their prefix hashes, nor a failed summary's mark."""
+    changed, before = 0, _recorded_hash(db, source, source_id)
+    for kind in ITEM_KINDS:
+        old = [{"id": rid, "kind": kind, "ts": ts, "title": title, "content": content, "metadata": json.loads(meta),
+                "masked": v} for rid, ts, title, content, meta, v in db.execute(
+                    "SELECT id, ts, title, content, metadata, masked FROM docs WHERE source=? AND source_id=? "
+                    "AND kind=?", (source, source_id, kind))]
+        if all(r["masked"] == VERSION for r in old):
+            continue
+        new = _as_stored(old)
+        if new == old:
+            db.execute("UPDATE docs SET masked=? WHERE source=? AND source_id=? AND kind=?",
+                       (VERSION, source, source_id, kind))
+        elif kind == "raw":
+            replace_rows(db, source, source_id, old, ("raw",))
+            changed += len(old)
         else:
-            replace_rows(db, source, source_id, raw, ("raw",))
-            changed += len(raw)
+            for r in new:
+                db.execute("UPDATE docs SET ts=?, title=?, content=?, metadata=? WHERE id=?",
+                           (r["ts"], r["title"], r["content"], json.dumps(r["metadata"]), r["id"]))
+                db.execute("UPDATE docs SET masked=? WHERE id=?", (VERSION, r["id"]))  # after docs_unmask cleared it
+            changed += len(new)
+    after = _recorded_hash(db, source, source_id)
+    if after != before:
+        _rehash_summaries(db, source, source_id, before, after)
     for rid, ts, title, content, meta in db.execute(
-            "SELECT id, ts, title, content, metadata FROM docs WHERE source=? AND source_id=? AND kind != 'raw' "
-            "AND masked IS NOT ?", (source, source_id, VERSION)).fetchall():
+            "SELECT id, ts, title, content, metadata FROM docs WHERE source=? AND source_id=? AND kind NOT IN (?, ?) "
+            "AND masked IS NOT ?", (source, source_id, *ITEM_KINDS, VERSION)).fetchall():
         new = (mask(ts), mask(title), mask(content), json.dumps(mask_all(json.loads(meta))))
         if new[:3] == (ts, title, content) and json.loads(new[3]) == json.loads(meta):
             db.execute("UPDATE docs SET masked=? WHERE id=?", (VERSION, rid))
         else:
             db.execute("UPDATE docs SET ts=?, title=?, content=?, metadata=? WHERE id=?", (*new, rid))
-            db.execute("UPDATE docs SET masked=? WHERE id=?", (VERSION, rid))  # after docs_unmask cleared it
+            db.execute("UPDATE docs SET masked=? WHERE id=?", (VERSION, rid))
             changed += 1
     return changed
+
+
+def _recorded_hash(db, source, source_id):
+    row = db.execute("SELECT json_extract(metadata, '$.hash') FROM docs WHERE source=? AND source_id=? "
+                     "AND kind IN ('doc', 'raw') LIMIT 1", (source, source_id)).fetchone()
+    return row[0] if row else None
+
+
+def _rehash_summaries(db, source, source_id, before, after):
+    """After an item's text changed under a new mask: a summary of that text names its new hash, one of an older text
+    names none, as its hash could be of a prefix of today's text with a secret in it, and none keeps the hash of the
+    text it started from, so the item's next growth gets a full pass. A failed summary's mark moves the same way."""
+    for rid, meta in db.execute("SELECT id, metadata FROM docs WHERE source=? AND source_id=? AND kind IN (?, ?)",
+                                (source, source_id, *SUMMARY_KINDS)).fetchall():
+        meta = json.loads(meta)
+        of_hash = meta.pop("of_hash", None)
+        meta.pop("prefix", None)
+        if of_hash == before:
+            meta["of_hash"] = after
+        db.execute("UPDATE docs SET metadata=? WHERE id=?", (json.dumps(meta), rid))
+    key = f"{source}|{source_id}"
+    db.execute("UPDATE ingest_state SET watermark=? WHERE source=? AND key=? AND watermark=?",
+               (after, SUMMARY_FAILED, key, before))
+    db.execute("DELETE FROM ingest_state WHERE source=? AND key=? AND watermark IS NOT ?", (SUMMARY_FAILED, key, after))

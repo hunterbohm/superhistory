@@ -21,7 +21,7 @@ RESUMMARY_HOURS = 24
 WORKERS = 4
 MAX_SEGMENTS = 8
 MAX_ATOMS = 40
-FAILED = "_summarize_failed"
+FAILED = store.SUMMARY_FAILED
 
 ATOM_TYPES = ("error_fix", "command", "decision", "path")
 OTHERS_ATOMS = ("decision", "path")
