@@ -27,6 +27,32 @@
    "parallel_model_calls": 2,
    "rate_limits": {},
    "stopped": null
+  },
+  {
+   "tool": "mem0",
+   "load": {
+    "version": "2.2.1",
+    "llm": "claude-haiku-5-5",
+    "embedder": "BAAI/bge-base-en-v1.5",
+    "memories": 1218,
+    "add_failures": 0,
+    "seconds": 3018,
+    "extraction_parse_errors": 21,
+    "load_seconds": 3034
+   },
+   "passes": [
+    {
+     "ran": 171,
+     "failed": 0
+    }
+   ],
+   "started": "2026-10-28T02:55:16Z",
+   "month_commit": "d79bb3ae066d25f3fc9e882feb59afa0bee1413f",
+   "answer_model": "claude-sonnet-5-5",
+   "judge_model": "gpt-6.1-sol",
+   "parallel_model_calls": 2,
+   "rate_limits": {},
+   "stopped": null
   }
  ]
 }
