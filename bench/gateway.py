@@ -16,12 +16,14 @@ import threading
 import time
 import urllib.error
 import urllib.request
+import urllib.response
 
 BASE_URL = os.environ.get("BENCH_BASE_URL", "http://127.0.0.1:8317").rstrip("/")
 KEY_FILE = os.path.expanduser("~/.config/cli-gateway/client.key")
 ATTEMPTS = 6
 # How much of a failed call's reply is read for a rate limit; the messages that quote it stay short.
 ERROR_BYTES = 1 << 16
+REPLY_BYTES = 1 << 24
 LIMITED = threading.Event()
 WAIT_MINUTES = 30
 
@@ -58,23 +60,45 @@ def limited_reply(response):
     return "rate_limit" in text or "rate limit" in text or "cooling down" in text
 
 
+def _read(reply, limit):
+    """Up to `limit` bytes of a reply, and the error that cut it short, if any: what arrived before a read failed is
+    kept."""
+    raw, read = b"", getattr(reply, "read1", reply.read)
+    while len(raw) < limit:
+        try:
+            chunk = read(min(1 << 16, limit - len(raw)))
+        except (OSError, http.client.HTTPException) as exc:
+            return raw + getattr(exc, "partial", b""), exc
+        if not chunk:
+            break
+        raw += chunk
+    return raw, None
+
+
 def urlopen(request, timeout):
-    """urllib's urlopen, except that a failed call's reply is read for a rate limit before anything cuts it short for a
-    message. Any other failure is raised as urllib raised it, with its reply still readable."""
+    """urllib's urlopen, except that every reply is read for a rate limit before anything parses it or cuts it short
+    for a message. A reply that names no limit is handed on as urllib gave it, still readable; a failed read is raised
+    as it was."""
     try:
-        return urllib.request.urlopen(request, timeout=timeout)
+        reply = urllib.request.urlopen(request, timeout=timeout)
     except urllib.error.HTTPError as e:
         # A 429 is a limit before its reply is read, since a reply that stalls would make it look like a network error.
         if e.code == 429:
             limited(f"HTTP 429 from {request.full_url}")
-        try:
-            raw = e.read(ERROR_BYTES)
-        except (OSError, http.client.HTTPException):
-            raw = b""
+        raw, _ = _read(e, ERROR_BYTES)
         detail = raw.decode(errors="replace")
         if is_rate_limit(e.code, detail):
             limited(f"HTTP {e.code} from {request.full_url}: {' '.join(detail.split())}")
         raise urllib.error.HTTPError(e.url, e.code, e.msg, e.hdrs, io.BytesIO(raw)) from None
+    with reply:
+        raw, failed = _read(reply, REPLY_BYTES)
+    text = raw.decode(errors="replace")
+    # A JSON reply can quote a model, so limited_reply judges it whole once parsed; plain text is never a model's.
+    if not text.lstrip().startswith(("{", "[")) and is_rate_limit(0, text):
+        limited(f"from {request.full_url}: {' '.join(text.split())}")
+    if failed:
+        raise failed
+    return urllib.response.addinfourl(io.BytesIO(raw), reply.headers, reply.url, reply.status)
 
 
 def _key():

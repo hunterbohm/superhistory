@@ -25,20 +25,29 @@ def http_error(code, body):
 
 
 class Stalled(io.RawIOBase):
-    """A reply whose body never arrives."""
+    """A reply whose body stops arriving after `first`."""
+
+    def __init__(self, first=b""):
+        self.first = first
 
     def readable(self):
         return True
 
     def readinto(self, buffer):
-        raise TimeoutError("timed out")
+        if not self.first:
+            raise TimeoutError("timed out")
+        sent, self.first = self.first, b""
+        buffer[:len(sent)] = sent
+        return len(sent)
 
 
-def stalled_error(code):
-    return urllib.error.HTTPError("http://gateway/v1/messages", code, "error", {}, io.BufferedReader(Stalled()))
+def stalled_error(code, first=b""):
+    return urllib.error.HTTPError("http://gateway/v1/messages", code, "error", {}, io.BufferedReader(Stalled(first)))
 
 
 class Answer(io.BytesIO):
+    headers, url, status = {}, "http://gateway/v1/messages", 200
+
     def __enter__(self):
         return self
 
@@ -149,6 +158,48 @@ class RateLimitTest(unittest.TestCase):
         with network, self.assertRaises(gateway.RateLimited):
             ai.with_retries(lambda: check.model().ask(ai.Prompt("system", "user"), 5), sleep=lambda seconds: None)
         self.assertEqual(len(calls), 1)
+
+    def test_cooling_down_that_arrives_before_a_stall_still_stops_both_paths(self):
+        first = b'{"error": {"message": "All credentials for model x are cooling down"'
+        network, calls = self.failing(stalled_error(503, first))
+        with network, mock.patch("time.sleep"), self.assertRaises(gateway.RateLimited):
+            gateway.post("/v1/messages", {})
+        self.assertEqual(len(calls), 1)
+        gateway.LIMITED.clear()
+        network, calls = self.failing(stalled_error(503, first))
+        with network, self.assertRaises(gateway.RateLimited):
+            ai.with_retries(lambda: check.model().ask(ai.Prompt("system", "user"), 5), sleep=lambda seconds: None)
+        self.assertEqual(len(calls), 1)
+
+    def answering(self, text):
+        """A network whose every call answers status 200 with `text`, and the list of calls it saw."""
+        calls = []
+
+        def urlopen(request, timeout):
+            calls.append(request)
+            return Answer(text.encode())
+        return mock.patch("urllib.request.urlopen", urlopen), calls
+
+    def test_a_plain_text_cooling_down_with_status_200_stops_both_paths(self):
+        network, calls = self.answering("All credentials for model x are cooling down")
+        with network, self.assertRaises(gateway.RateLimited):
+            gateway.ask_json("m", "system", "user")
+        self.assertEqual(len(calls), 1)
+        gateway.LIMITED.clear()
+        network, calls = self.answering("All credentials for model x are cooling down")
+        with network, self.assertRaises(gateway.RateLimited):
+            ai.with_retries(lambda: check.model().ask(ai.Prompt("system", "user"), 5), sleep=lambda seconds: None)
+        self.assertEqual(len(calls), 1)
+
+    def test_plain_text_that_names_no_limit_fails_as_before(self):
+        network, calls = self.answering("<html>upstream hiccup</html>")
+        with network, self.assertRaises(ValueError):
+            gateway.post("/v1/messages", {})
+        network, calls = self.answering("<html>upstream hiccup</html>")
+        with network, self.assertRaises(ai.Busy):
+            ai.with_retries(lambda: check.model().ask(ai.Prompt("system", "user"), 5), sleep=lambda seconds: None)
+        self.assertEqual(len(calls), 6)
+        gateway.check_limited()
 
     def test_a_server_error_whose_reply_stalls_is_still_tried_again(self):
         network, calls = self.failing(stalled_error(503))
