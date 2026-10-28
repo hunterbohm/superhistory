@@ -13,6 +13,9 @@ import sys
 import tempfile
 import threading
 import time
+import types
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 import gateway
@@ -67,19 +70,18 @@ def model():
 
 
 _post = api.post
+# kb's plug-in cuts a failed call's reply to 300 characters before it raises, and retries a busy server. Its calls go
+# through gateway.urlopen, which reads the whole reply first and raises gateway.RateLimited on a limit, so nothing
+# retries it.
+api.urllib = types.SimpleNamespace(
+    request=types.SimpleNamespace(Request=urllib.request.Request, urlopen=gateway.urlopen), error=urllib.error)
 
 
 def _counted_post(url, body, headers, timeout):
     """The gateway caches every prompt, and its `input_tokens` leaves the cached part out, so all three count."""
     # Nothing is sent once a rate limit is seen, not even the copy kb's hedge starts after a failed call.
     gateway.check_limited()
-    try:
-        response = _post(url, body, headers, timeout)
-    except ai.AIError as exc:
-        # kb's own plug-in retries a busy server; a rate limit here stops the run instead (gateway.RateLimited).
-        if gateway.is_rate_limit(429 if "HTTP 429" in str(exc) else 0, str(exc)):
-            gateway.limited(str(exc))
-        raise
+    response = _post(url, body, headers, timeout)
     if gateway.limited_reply(response):
         gateway.limited(f"from {url}: {json.dumps(response)[:300]}")
     sink = getattr(_local, "sink", None)

@@ -102,17 +102,40 @@ class RateLimitTest(unittest.TestCase):
         self.assertFalse(gateway.limited_reply({"input_tokens": 12}))
         gateway.check_limited()
 
-    def test_the_checks_plugin_stops_on_a_429_instead_of_retrying(self):
+    def failing(self, error):
+        """A network whose every call fails with `error`, and the list of calls it saw."""
         calls = []
 
-        def busy(url, body, headers, timeout):
-            calls.append(url)
-            raise ai.Busy("HTTP 429 from http://gateway/v1/messages: rate limited")
-        with mock.patch.object(check, "_post", busy), mock.patch("time.sleep"):
-            with self.assertRaises(gateway.RateLimited):
-                ai.with_retries(lambda: check.model().ask(ai.Prompt("system", "user"), 5))
+        def urlopen(request, timeout):
+            calls.append(request)
+            raise http_error(*error) if isinstance(error, tuple) else error
+        return mock.patch("urllib.request.urlopen", urlopen), calls
+
+    def test_the_checks_plugin_stops_on_a_429_instead_of_retrying(self):
+        network, calls = self.failing((429, '{"error": "rate_limit_error"}'))
+        with network, mock.patch("time.sleep"), self.assertRaises(gateway.RateLimited):
+            ai.with_retries(lambda: check.model().ask(ai.Prompt("system", "user"), 5))
         self.assertEqual(len(calls), 1)
         self.assertTrue(gateway.LIMITED.is_set())
+
+    def test_the_checks_plugin_still_retries_a_busy_server(self):
+        network, calls = self.failing((503, "busy"))
+        with network, self.assertRaises(ai.Busy):
+            ai.with_retries(lambda: check.model().ask(ai.Prompt("system", "user"), 5), sleep=lambda seconds: None)
+        self.assertEqual(len(calls), 6)
+        gateway.check_limited()
+
+    def test_cooling_down_after_a_long_diagnostic_still_stops_both_paths(self):
+        body = json.dumps({"diagnostic": "x" * 1000, "message": "All credentials for model x are cooling down"})
+        network, calls = self.failing((503, body))
+        with network, mock.patch("time.sleep"), self.assertRaises(gateway.RateLimited):
+            gateway.post("/v1/messages", {})
+        self.assertEqual(len(calls), 1)
+        gateway.LIMITED.clear()
+        network, calls = self.failing((503, body))
+        with network, mock.patch("time.sleep"), self.assertRaises(gateway.RateLimited):
+            ai.with_retries(lambda: check.model().ask(ai.Prompt("system", "user"), 5))
+        self.assertEqual(len(calls), 1)
 
     def test_a_rate_limit_in_a_200_reply_stops_too_and_is_not_asked_again(self):
         reply = '{"type": "error", "error": {"type": "rate_limit_error", "message": "credentials are cooling down"}}'
@@ -123,13 +146,9 @@ class RateLimitTest(unittest.TestCase):
         self.assertEqual(calls, [])
 
     def test_the_hedged_copy_after_a_rate_limit_sends_nothing(self):
-        calls = []
-
-        def busy(url, body, headers, timeout):
-            calls.append(url)
-            raise ai.Busy("HTTP 429 from http://gateway/v1/messages: rate limited")
+        network, calls = self.failing((429, '{"error": "rate_limit_error"}'))
         model = check.Counted(check.model())
-        with mock.patch.object(check, "_post", busy), check.counting(model):
+        with network, check.counting(model):
             with self.assertRaises(Exception):
                 ai.hedged(model, ai.Prompt("system", "user"), timeout=2, hedge_after=0.05)
             model.settle(2)

@@ -6,6 +6,7 @@ The benchmarks share their model plans with other work, so a rate limit is never
 reply that says the model is cooling down, raises RateLimited and sets LIMITED, and the runners start no new question
 after that. Run the same command again once the limit has passed; it runs only the questions with no row.
 """
+import io
 import json
 import os
 import random
@@ -18,6 +19,8 @@ import urllib.request
 BASE_URL = os.environ.get("BENCH_BASE_URL", "http://127.0.0.1:8317").rstrip("/")
 KEY_FILE = os.path.expanduser("~/.config/cli-gateway/client.key")
 ATTEMPTS = 6
+# How much of a failed call's reply is read for a rate limit; the messages that quote it stay short.
+ERROR_BYTES = 1 << 16
 LIMITED = threading.Event()
 WAIT_MINUTES = 30
 
@@ -54,6 +57,19 @@ def limited_reply(response):
     return "rate_limit" in text or "rate limit" in text or "cooling down" in text
 
 
+def urlopen(request, timeout):
+    """urllib's urlopen, except that a failed call's reply is read for a rate limit before anything cuts it short for a
+    message. Any other failure is raised as urllib raised it, with its reply still readable."""
+    try:
+        return urllib.request.urlopen(request, timeout=timeout)
+    except urllib.error.HTTPError as e:
+        raw = e.read(ERROR_BYTES)
+        detail = raw.decode(errors="replace")
+        if is_rate_limit(e.code, detail):
+            limited(f"HTTP {e.code} from {request.full_url}: {' '.join(detail.split())}")
+        raise urllib.error.HTTPError(e.url, e.code, e.msg, e.hdrs, io.BytesIO(raw)) from None
+
+
 def _key():
     if os.environ.get("BENCH_API_KEY"):
         return os.environ["BENCH_API_KEY"]
@@ -70,15 +86,13 @@ def post(path, body, timeout=300):
         last = attempt == ATTEMPTS - 1
         try:
             req = urllib.request.Request(BASE_URL + path, data=data, headers=headers, method="POST")
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
+            with urlopen(req, timeout=timeout) as resp:
                 reply = json.load(resp)
             if limited_reply(reply):
                 limited(f"from {BASE_URL}{path}: {json.dumps(reply)[:300]}")
             return reply
         except urllib.error.HTTPError as e:
             detail = e.read()[:300].decode(errors="replace")
-            if is_rate_limit(e.code, detail):
-                limited(f"HTTP {e.code} from {BASE_URL}{path}: {detail}")
             if e.code < 500 or last:
                 raise RuntimeError(f"HTTP {e.code} from {BASE_URL}{path}: {detail}")
         except (urllib.error.URLError, TimeoutError, ConnectionError) as e:
