@@ -53,6 +53,18 @@ class TokenCountTest(unittest.TestCase):
             self.assertEqual(ai.hedged(model, ai.Prompt("system", "user"), timeout=2, hedge_after=0.1), "ok")
             self.assertEqual(model.settle(2), 200)
 
+    def test_a_lookup_keeps_where_its_tokens_went_and_which_model_answered(self):
+        def gateway(url, body, headers, timeout):
+            time.sleep(next(delays))
+            return {"model": "claude-haiku-5-5", "content": [{"type": "text", "text": "ok"}],
+                    "usage": {**USAGE, "output_tokens_details": {"thinking_tokens": 4}}}
+        delays = iter((0.4, 0.05))
+        model = check.Counted(check.model())
+        with mock.patch.object(check, "_post", gateway), check.counting(model):
+            ai.hedged(model, ai.Prompt("system", "user"), timeout=2, hedge_after=0.1)
+            self.assertEqual(model.settle(2), 200)
+        self.assertEqual(model.detail, {"input": 180, "output": 20, "thinking": 8, "models": ["claude-haiku-5-5"]})
+
     def test_the_summarizer_is_held_to_two_calls_at_once(self):
         self.assertLessEqual(check.model().traits.parallel, 2)
 

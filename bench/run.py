@@ -138,7 +138,7 @@ def run_one(tool, q, setup):
     return {"id": q["id"], "kind": q["kind"], "question": q["question"], "gold": q["answer"],
             "evidence": q["evidence"], "context": found.context, "context_items": found.items, "query": found.query,
             "lookup_seconds": round(found.seconds, 3), "lookup_error": found.error,
-            "lookup_model_tokens": found.model_tokens,
+            "lookup_model_tokens": found.model_tokens, "lookup_model_detail": found.model_detail,
             "context_tokens": gateway.count_tokens(ANSWER_MODEL, found.context),
             "tool_calls": calls, "read_items": shown,
             "tool_tokens": sum(c["tokens"] for c in calls),
