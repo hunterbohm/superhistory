@@ -24,6 +24,20 @@ def http_error(code, body):
     return urllib.error.HTTPError("http://gateway/v1/messages", code, "error", {}, io.BytesIO(body.encode()))
 
 
+class Stalled(io.RawIOBase):
+    """A reply whose body never arrives."""
+
+    def readable(self):
+        return True
+
+    def readinto(self, buffer):
+        raise TimeoutError("timed out")
+
+
+def stalled_error(code):
+    return urllib.error.HTTPError("http://gateway/v1/messages", code, "error", {}, io.BufferedReader(Stalled()))
+
+
 class Answer(io.BytesIO):
     def __enter__(self):
         return self
@@ -123,6 +137,25 @@ class RateLimitTest(unittest.TestCase):
         with network, self.assertRaises(ai.Busy):
             ai.with_retries(lambda: check.model().ask(ai.Prompt("system", "user"), 5), sleep=lambda seconds: None)
         self.assertEqual(len(calls), 6)
+        gateway.check_limited()
+
+    def test_a_429_whose_reply_stalls_still_stops_both_paths(self):
+        network, calls = self.failing(stalled_error(429))
+        with network, mock.patch("time.sleep"), self.assertRaises(gateway.RateLimited):
+            gateway.post("/v1/messages", {})
+        self.assertEqual(len(calls), 1)
+        gateway.LIMITED.clear()
+        network, calls = self.failing(stalled_error(429))
+        with network, self.assertRaises(gateway.RateLimited):
+            ai.with_retries(lambda: check.model().ask(ai.Prompt("system", "user"), 5), sleep=lambda seconds: None)
+        self.assertEqual(len(calls), 1)
+
+    def test_a_server_error_whose_reply_stalls_is_still_tried_again(self):
+        network, calls = self.failing(stalled_error(503))
+        with network, mock.patch("time.sleep"), self.assertRaises(RuntimeError) as raised:
+            gateway.post("/v1/messages", {})
+        self.assertNotIsInstance(raised.exception, gateway.RateLimited)
+        self.assertEqual(len(calls), gateway.ATTEMPTS)
         gateway.check_limited()
 
     def test_cooling_down_after_a_long_diagnostic_still_stops_both_paths(self):

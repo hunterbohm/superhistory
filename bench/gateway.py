@@ -6,6 +6,7 @@ The benchmarks share their model plans with other work, so a rate limit is never
 reply that says the model is cooling down, raises RateLimited and sets LIMITED, and the runners start no new question
 after that. Run the same command again once the limit has passed; it runs only the questions with no row.
 """
+import http.client
 import io
 import json
 import os
@@ -63,7 +64,13 @@ def urlopen(request, timeout):
     try:
         return urllib.request.urlopen(request, timeout=timeout)
     except urllib.error.HTTPError as e:
-        raw = e.read(ERROR_BYTES)
+        # A 429 is a limit before its reply is read, since a reply that stalls would make it look like a network error.
+        if e.code == 429:
+            limited(f"HTTP 429 from {request.full_url}")
+        try:
+            raw = e.read(ERROR_BYTES)
+        except (OSError, http.client.HTTPException):
+            raw = b""
         detail = raw.decode(errors="replace")
         if is_rate_limit(e.code, detail):
             limited(f"HTTP {e.code} from {request.full_url}: {' '.join(detail.split())}")
