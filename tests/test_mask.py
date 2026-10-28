@@ -154,6 +154,28 @@ class MaskTest(unittest.TestCase):
         self.assertEqual(out, "key [masked] and more words")
 
 
+class HeadlessKeyTest(unittest.TestCase):
+    """A key's body without its header, as an older kb's row-by-row remask leaves the chunk after the header's."""
+    LINE = "MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7"
+
+    def test_body_lines_up_to_the_footer_are_masked(self):
+        for brk in ("\n", "\r\n", "\\n", "\\r\\n"):
+            with self.subTest(brk=brk):
+                text = f"[masked]{self.LINE}{brk}{self.LINE}{brk}-----END PRIVATE KEY-----{brk}after"
+                self.assertEqual(mask(text), f"[masked][masked]{brk}after")
+
+    def test_text_before_the_body_and_a_footer_alone_stay(self):
+        self.assertEqual(mask(f"notes before\n{self.LINE}\n-----END PRIVATE KEY-----"), "notes before\n[masked]")
+        for text in ("ordinary words here\n-----END PRIVATE KEY-----", "short\nlines\n-----END PRIVATE KEY-----"):
+            self.assertEqual(mask(text), text)
+
+    def test_a_long_run_without_a_footer_costs_one_pass(self):
+        import time
+        started = time.monotonic()
+        mask(("A" * 40 + "\n") * 5000)
+        self.assertLess(time.monotonic() - started, 2)
+
+
 class SecretInIdTest(unittest.TestCase):
     """An item id is a name someone chose, read more narrowly than text so a real item is not dropped."""
 

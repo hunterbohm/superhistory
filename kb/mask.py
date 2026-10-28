@@ -1,6 +1,7 @@
 import hashlib
 import logging
 import re
+import string
 import sys
 import traceback
 
@@ -57,7 +58,7 @@ REFERENCE = re.compile(r"^(?:[$%{<(\[*/~]|\.\.?/|os\.|process\.|env\.|getenv|sec
 # Which mask() a stored row was masked with. A row of another version, or of none, is masked again when read and by
 # the next ingest. The patterns change it by themselves; bump REVISION when the code that applies them changes what
 # it masks.
-REVISION = 1
+REVISION = 2
 VERSION = hashlib.sha256(repr((REVISION, [p.pattern for p in SECRET_PATTERNS + PREFIXED_SECRETS], KEYED_SECRET.pattern,
                                 ENV_KEY_SECRET.pattern, PASSWORD_NAME.pattern, sorted(PLACEHOLDERS),
                                 REFERENCE.pattern)).encode()).hexdigest()[:16]
@@ -76,9 +77,40 @@ def _mask_keyed(m):
     return f"{name}{sep}[masked]" if looks_secret else m.group(0)
 
 
+KEY_FOOTER = re.compile(r"-----END [A-Z ]*PRIVATE KEY-----")
+_KEY_BODY = frozenset(string.ascii_letters + string.digits + "+/=")
+
+
+def _key_line_before(text, end):
+    """Where the base64 line that ends at `end` with its line break, plain or escaped, starts, or None."""
+    for brk in ("\r\n", "\n", "\\r\\n", "\\n"):
+        if text.endswith(brk, 0, end):
+            stop = end - len(brk)
+            break
+    else:
+        return None
+    start = stop
+    while start > 0 and text[start - 1] in _KEY_BODY and not text.endswith("\\n", 0, start):
+        start -= 1
+    return start if stop - start >= 16 else None
+
+
+def _headless_keys(text):
+    """A private key's body lines up to its footer when its header is gone, cut off or masked apart by an older
+    kb's row-by-row remask. Found from each footer back, a line at a time, so text without a footer costs one search."""
+    for footer in reversed(list(KEY_FOOTER.finditer(text))):
+        start = line = footer.start()
+        while line is not None:
+            start, line = line, _key_line_before(text, line)
+        if start < footer.start():
+            text = text[:start] + "[masked]" + text[footer.end():]
+    return text
+
+
 def mask(text):
     for pattern in SECRET_PATTERNS:
         text = pattern.sub("[masked]", text)
+    text = _headless_keys(text)
     for pattern in PREFIXED_SECRETS:
         text = pattern.sub(lambda m: m.group(1) + "[masked]", text)
     return ENV_KEY_SECRET.sub(_mask_keyed, KEYED_SECRET.sub(_mask_keyed, text))
@@ -104,6 +136,7 @@ def secret_in_id(text):
     masked = text
     for pattern in SECRET_PATTERNS:
         masked = pattern.sub("[masked]", masked)
+    masked = _headless_keys(masked)
     for pattern in PREFIXED_SECRETS:
         masked = pattern.sub(lambda m: m.group(1) + "[masked]", masked)
     return ENV_KEY_ID.sub(_mask_keyed, KEYED_ID.sub(_mask_keyed, masked)) != text

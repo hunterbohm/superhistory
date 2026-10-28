@@ -4,7 +4,7 @@ import re
 import sqlite3
 from datetime import datetime, timezone
 
-from kb.mask import mask
+from kb.mask import mask, mask_all
 from kb.store import SUMMARY_KINDS, TOKENIZE, current, secret_id
 
 STOPWORDS = set("""a an and are as at be been but by can could did do does doing for from had has have
@@ -127,7 +127,7 @@ def search(db, query, after=None, sources=(), limit=10, before=None, keep=None):
             hit["excerpt"] = excerpt(marked if MARK in marked else hit["content"])
         else:
             # Older rows are masked whole before any cut, and the match is found again in the masked text.
-            hit["title"], hit["content"] = mask(hit["title"]), _masked_item(db, hit)
+            hit["title"], hit["content"], hit["meta"] = mask(hit["title"]), _masked_item(db, hit), mask_all(hit["meta"])
             marked = _marked(hit["content"], match)
             hit["snippet"] = excerpt(marked.replace(MARK, MARK + "[").replace(END, "]" + END), SNIPPET_CHARS)
             hit["excerpt"] = excerpt(marked)

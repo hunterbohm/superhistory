@@ -55,12 +55,18 @@ The Sync client goes in `kb/sync/`. It meets the engine at two points.
 Text is masked before it is cut, never after: a cut can keep part of a secret too short for mask() to know. A row of
 today's version, and for a chunk every chunk of its item, was masked whole, so `kb search` cuts it as stored
 (`store.current`). Any other row, from before versions or from an older `mask()`, is masked whole when read: search
-masks the hit's whole item and finds the match again in the masked text with FTS5's own matching, and leaves out an
-item whose id holds a secret. `kb get` and the summarizer always mask the whole item. Each ingest masks older rows again for up to a minute
+masks the hit's whole item, its title and its metadata, finds the match again in the masked text with FTS5's own
+matching, and leaves out an item whose id holds a secret. `mask()` also masks a private key's body lines that run
+into its footer with no header, as an older kb's row-by-row remask leaves the chunk after the header's. `kb get` and the summarizer always mask the whole item. Each ingest masks older rows again for up to a minute
 (`store.remask`), deletes items whose id holds a secret and logs each with its id masked, and records today's version,
 so an interrupted run leaves the rest old. The file is rebuilt once none are left, and a rebuild cut short runs again
 on the next ingest. The header counts the rows left, and `kb remask` does them all at once. An HTTP error body longer
 than kb reads is left out of the error.
+
+`tests/test_write_fuzz.py` runs a few thousand seeded sequences of the store's writes: ingest, Sync-shaped full and
+piecemeal writes, summary rows, an older kb's store_item and remask (`tests/legacy_store.py`), remask cut off at a
+random item or in its rebuild, deletes and supersede marks. Canaries cross chunk and call boundaries. After each
+sequence no reader may show a piece of a canary, and no row may read as current unless its whole item masks clean.
 
 Records that other code sends through its own loggers to its own handlers are that code's to mask.
 `tests/test_canary.py` plants a different secret in every kind of input, runs every command and every library entry
