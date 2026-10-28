@@ -1,10 +1,13 @@
 import argparse
+import http.server
 import importlib.util
 import io
 import json
 import os
 import sys
 import tempfile
+import threading
+import time
 import unittest
 import urllib.error
 from unittest import mock
@@ -19,6 +22,8 @@ import tools  # noqa: E402
 from tools import Retrieved, check  # noqa: E402
 
 from kb import ai  # noqa: E402
+from kb.ai import api  # noqa: E402
+from kb.config import Secret  # noqa: E402
 
 
 def http_error(code, body):
@@ -26,24 +31,26 @@ def http_error(code, body):
 
 
 class Stalled(io.RawIOBase):
-    """A reply whose body stops arriving after `first`."""
+    """A reply whose body stops arriving after `first`, its next read failing `wait` seconds later."""
 
-    def __init__(self, first=b""):
-        self.first = first
+    def __init__(self, first=b"", wait=0):
+        self.first, self.wait = first, wait
 
     def readable(self):
         return True
 
     def readinto(self, buffer):
         if not self.first:
+            time.sleep(self.wait)
             raise TimeoutError("timed out")
         sent, self.first = self.first, b""
         buffer[:len(sent)] = sent
         return len(sent)
 
 
-def stalled_error(code, first=b""):
-    return urllib.error.HTTPError("http://gateway/v1/messages", code, "error", {}, io.BufferedReader(Stalled(first)))
+def stalled_error(code, first=b"", wait=0):
+    return urllib.error.HTTPError("http://gateway/v1/messages", code, "error", {},
+                                  io.BufferedReader(Stalled(first, wait)))
 
 
 class Answer(io.BytesIO):
@@ -60,8 +67,8 @@ class StalledAnswer(io.BufferedReader):
     """A status 200 reply whose body stops arriving after `first`."""
     headers, url, status = {}, "http://gateway/v1/messages", 200
 
-    def __init__(self, first):
-        super().__init__(Stalled(first))
+    def __init__(self, first, wait=0):
+        super().__init__(Stalled(first, wait))
 
 
 class RateLimitTest(unittest.TestCase):
@@ -81,7 +88,7 @@ class RateLimitTest(unittest.TestCase):
             if isinstance(reply, Exception):
                 raise reply
             return Answer(reply.encode())
-        with mock.patch("urllib.request.urlopen", urlopen), mock.patch("time.sleep"):
+        with mock.patch.object(gateway, "_open", urlopen), mock.patch("time.sleep"):
             try:
                 return gateway.post("/v1/messages", {}), calls
             except Exception as exc:
@@ -112,7 +119,7 @@ class RateLimitTest(unittest.TestCase):
             def urlopen(request, timeout):
                 calls.append(request)
                 raise http_error(503, "busy")
-            with mock.patch("urllib.request.urlopen", urlopen), self.assertRaises(gateway.RateLimited):
+            with mock.patch.object(gateway, "_open", urlopen), self.assertRaises(gateway.RateLimited):
                 gateway.post("/v1/messages", {})
         self.assertEqual(len(calls), 1)
 
@@ -123,7 +130,7 @@ class RateLimitTest(unittest.TestCase):
         def urlopen(request, timeout):
             calls.append(request)
             return Answer(reply.encode())
-        with mock.patch("urllib.request.urlopen", urlopen), self.assertRaises(gateway.RateLimited):
+        with mock.patch.object(gateway, "_open", urlopen), self.assertRaises(gateway.RateLimited):
             gateway.ask_json("m", "system", "user")
         self.assertEqual(len(calls), 1)
 
@@ -141,7 +148,7 @@ class RateLimitTest(unittest.TestCase):
         def urlopen(request, timeout):
             calls.append(request)
             raise http_error(*error) if isinstance(error, tuple) else error
-        return mock.patch("urllib.request.urlopen", urlopen), calls
+        return mock.patch.object(gateway, "_open", urlopen), calls
 
     def test_the_checks_plugin_stops_on_a_429_instead_of_retrying(self):
         network, calls = self.failing((429, '{"error": "rate_limit_error"}'))
@@ -187,7 +194,7 @@ class RateLimitTest(unittest.TestCase):
         def urlopen(request, timeout):
             calls.append(request)
             return Answer(text.encode())
-        return mock.patch("urllib.request.urlopen", urlopen), calls
+        return mock.patch.object(gateway, "_open", urlopen), calls
 
     def test_a_plain_text_cooling_down_with_status_200_stops_both_paths(self):
         network, calls = self.answering("All credentials for model x are cooling down")
@@ -207,7 +214,7 @@ class RateLimitTest(unittest.TestCase):
         def urlopen(request, timeout):
             calls.append(request)
             return make()
-        return mock.patch("urllib.request.urlopen", urlopen), calls
+        return mock.patch.object(gateway, "_open", urlopen), calls
 
     def assert_both_paths_stop(self, make):
         network, calls = self.replying(make)
@@ -230,6 +237,86 @@ class RateLimitTest(unittest.TestCase):
     def test_a_completion_is_never_read_for_limit_words(self):
         self.assertFalse(gateway.limited_reply({"choices": [{"message": {"content": "a rate limit cooling down"}}]}))
         self.assertTrue(gateway.limited_reply({"choices": None, "message": "model x is cooling down"}))
+
+    def test_a_limit_is_seen_as_it_arrives_so_the_hedge_sends_nothing(self):
+        error = b'{"type": "error", "error": {"message": "All credentials for model x are cooling down"}}'
+        for make in (lambda: stalled_error(503, error, 0.5), lambda: StalledAnswer(error, 0.5)):
+            gateway.LIMITED.clear()
+            calls = []
+
+            def opened(request, timeout, make=make):
+                calls.append(request)
+                reply = make()
+                if isinstance(reply, Exception):
+                    raise reply
+                return reply
+            model = check.Counted(check.model())
+            with mock.patch.object(gateway, "_open", opened), check.counting(model), self.assertRaises(Exception):
+                ai.hedged(model, ai.Prompt("system", "user"), timeout=2, hedge_after=0.1)
+            model.settle(2)
+            self.assertEqual(len(calls), 1)
+            self.assertTrue(gateway.LIMITED.is_set())
+
+    def test_an_error_beside_a_content_or_choices_list_is_still_read(self):
+        self.assertTrue(gateway.limited_reply(
+            {"type": "error", "content": [], "error": {"message": "model x is cooling down"}}))
+        self.assertTrue(gateway.limited_reply({"choices": [], "message": "model x is cooling down"}))
+        self.assertTrue(gateway.limited_reply({"content": [{"text": "x"}], "error": "model x is cooling down"}))
+        network, calls = self.answering('{"type": "error", "content": [], "error": {"message": "cooling down"}}')
+        with network, self.assertRaises(gateway.RateLimited):
+            gateway.ask_json("m", "system", "user")
+        self.assertEqual(len(calls), 1)
+
+    def test_a_redirect_is_not_followed_and_its_reply_is_read(self):
+        seen = []
+
+        class Redirect(http.server.BaseHTTPRequestHandler):
+            def do_POST(self):
+                self.rfile.read(int(self.headers["content-length"]))
+                seen.append(self.path)
+                body = Redirect.body
+                self.send_response(302)
+                self.send_header("location", "/v1/elsewhere")
+                self.send_header("content-length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *args):
+                pass
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Redirect)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.shutdown)
+        base = f"http://127.0.0.1:{server.server_port}"
+        with mock.patch.object(gateway, "BASE_URL", base), mock.patch("time.sleep"):
+            Redirect.body = b"All credentials for model x are cooling down"
+            with self.assertRaises(gateway.RateLimited):
+                gateway.post("/v1/messages", {})
+            self.assertEqual(seen, ["/v1/messages"])
+            gateway.LIMITED.clear()
+            seen.clear()
+            plugin = api.Anthropic("anthropic-compatible", api.AnthropicCompatibleOptions(
+                key=Secret("env:BENCH_API_KEY"), model="m", base_url=base))
+            with self.assertRaises(gateway.RateLimited):
+                ai.with_retries(lambda: plugin.ask(ai.Prompt("system", "user"), 5), sleep=lambda seconds: None)
+            self.assertEqual(seen, ["/v1/messages"])
+            gateway.LIMITED.clear()
+            seen.clear()
+            Redirect.body = b"moved"
+            with self.assertRaises(RuntimeError) as raised:
+                gateway.post("/v1/messages", {})
+            self.assertNotIsInstance(raised.exception, gateway.RateLimited)
+            self.assertEqual(seen, ["/v1/messages"])
+
+    def test_a_lookup_that_fails_once_a_limit_is_seen_gets_no_row(self):
+        def lookup(*args, **kwargs):
+            try:
+                gateway.limited("the hedge copy met a limit")
+            except gateway.RateLimited:
+                pass
+            raise TimeoutError("the other copy ran out of time")
+        with mock.patch.object(check.store, "connect", lambda *args, **kwargs: mock.Mock()), \
+                mock.patch.object(check.check, "lookup", lookup), self.assertRaises(gateway.RateLimited):
+            check.Store(mock.Mock()).lookup("a question")
 
     def test_plain_text_that_names_no_limit_fails_as_before(self):
         network, calls = self.answering("<html>upstream hiccup</html>")
@@ -303,6 +390,14 @@ class RateLimitTest(unittest.TestCase):
             self.assertEqual(len(graded), 4)
             self.assertEqual(graded.count(questions[0]["id"]), 1)
             self.assertTrue(all(r["correct"] and "regraded" in r for r in run.read_jsonl(path)))
+
+    def test_the_lookup_screen_stops_cleanly_when_its_first_lookup_is_limited(self):
+        def one(stores, case, phrases):
+            gateway.limited("test")
+        with tempfile.TemporaryDirectory() as out, mock.patch.object(lookups, "OUT", out), \
+                mock.patch.dict(lookups.TESTS, {"fake": lambda: ([tools_case(0)], {"g": []}, {}, False)}), \
+                mock.patch.object(lookups, "one", one):
+            self.assertEqual(lookups.main(["t", "--tests", "fake", "--workers", "1"]), 1)
 
     def test_the_lookup_screen_keeps_finished_rows_and_resumes(self):
         cases = [tools_case(i) for i in range(3)]
@@ -420,7 +515,7 @@ class Mem0ClientTest(unittest.TestCase):
             if isinstance(reply, Exception):
                 raise reply
             return reply
-        with mock.patch("urllib.request.urlopen", urlopen):
+        with mock.patch.object(gateway, "_open", urlopen):
             try:
                 return mem0.gateway_client().chat.completions.create(
                     model="m", messages=[{"role": "user", "content": "hi"}]), calls

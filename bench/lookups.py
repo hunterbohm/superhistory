@@ -111,7 +111,9 @@ def main(argv=None):
                     fh.flush()
                 except gateway.RateLimited as exc:
                     stopped = exc
-        print(report(test, run.read_jsonl(path)))
+        rows = run.read_jsonl(path)
+        if rows:
+            print(report(test, rows))
         if stopped:
             print(stopped, file=sys.stderr)
             return 1

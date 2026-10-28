@@ -256,6 +256,8 @@ class Store:
         except gateway.RateLimited:
             raise
         except Exception as exc:
+            # A lookup that failed once a limit was seen, say a hedge whose other copy met it, gets no row.
+            gateway.check_limited()
             # The hook prints nothing when the check fails, so the agent sees nothing.
             seconds = time.monotonic() - started
             return Retrieved("", [], seconds, type(exc).__name__, counted.settle(counted.traits.check_budget))
