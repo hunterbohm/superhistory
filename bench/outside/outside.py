@@ -36,8 +36,6 @@ import sys
 import tempfile
 import threading
 import time
-import urllib.error
-import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import numpy as np
@@ -56,7 +54,7 @@ import run
 import tools
 import tools.supermemory
 from tools import check
-from limits import Limits, RateLimited, Stopped
+from limits import Limits, RateLimited
 from mem0_locomo import LocomoMem0
 
 OUT = os.path.join(HERE, "results")
@@ -186,26 +184,13 @@ def op_prompt(case, tool, context):
 LIMITS = Limits()
 
 
+# gateway.post as bench/gateway.py has it: it reads every reply for a rate limit and never retries one. A run swaps
+# gateway.post for post below, which sends it in one of the run's two slots.
+GATEWAY_POST = gateway.post
+
+
 def post(path, body, timeout=300):
-    """gateway.post without its retries on 429; other failures are tried 3 times."""
-    headers = {"content-type": "application/json", "anthropic-version": "2023-06-01",
-               "authorization": "Bearer " + gateway._key()}
-
-    def call():
-        req = urllib.request.Request(gateway.BASE_URL + path, data=json.dumps(body).encode(), headers=headers,
-                                     method="POST")
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            return json.load(resp)
-
-    for attempt in range(3):
-        try:
-            return LIMITS.send(body["model"], call)
-        except (RateLimited, Stopped):
-            raise
-        except (RuntimeError, urllib.error.URLError, TimeoutError, ConnectionError):
-            if attempt == 2:
-                raise
-            time.sleep(2 ** attempt + 1)
+    return LIMITS.send(body["model"], lambda: GATEWAY_POST(path, body, timeout))
 
 
 def install_limits():

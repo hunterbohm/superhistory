@@ -53,10 +53,14 @@ class Incomplete(RuntimeError):
 
 def install():
     """Every model call this process makes goes through outside.LIMITS: the answer loop, judge and token counts
-    (gateway.post, without its 429 retries) and Mem0's OpenAI client (SDK retries off)."""
-    import openai
-    from openai.resources.chat.completions import Completions
+    (gateway.post, without its retries) and, where the OpenAI SDK that Mem0 needs is installed, Mem0's OpenAI client
+    (SDK retries off)."""
     gateway.post = outside.post
+    try:
+        import openai
+        from openai.resources.chat.completions import Completions
+    except ImportError:
+        return
     init, create = openai.OpenAI.__init__, Completions.create
 
     def no_retries(self, *args, **kwargs):

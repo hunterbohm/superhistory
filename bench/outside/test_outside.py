@@ -12,7 +12,9 @@ import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-import outside  # puts bench/ on the path for the next two
+import outside  # puts bench/ on the path for the next three
+import gateway
+from limits import Stopped
 import mem0_locomo
 from tools import Retrieved
 
@@ -21,12 +23,22 @@ def row(user, kind, score=None, answer="a", subtype=""):
     return {"user": user, "group": "g", "kind": kind, "score": score, "answer": answer, "subtype": subtype}
 
 
-class SetupTest(unittest.TestCase):
+class Fresh(unittest.TestCase):
+    """gateway.LIMITED belongs to the whole process, so each test starts and ends with it clear."""
+
+    def setUp(self):
+        gateway.LIMITED.clear()
+
+    def tearDown(self):
+        gateway.LIMITED.clear()
+
+
+class SetupTest(Fresh):
     def test_replies_come_from_the_benchmarks_answer_model(self):
         self.assertEqual(outside.run.ANSWER_MODEL, "claude-sonnet-5-5")
 
 
-class LimitsTest(unittest.TestCase):
+class LimitsTest(Fresh):
     def test_no_more_than_two_calls_run_at_once(self):
         limits, lock, now, most = outside.Limits(), threading.Lock(), [0], [0]
 
@@ -45,18 +57,50 @@ class LimitsTest(unittest.TestCase):
             t.join()
         self.assertEqual(most[0], 2)
 
-    def test_a_limited_model_gets_no_calls_until_its_pause_ends_and_a_second_limit_stops_the_run(self):
+    def test_a_limit_pauses_every_model_until_its_pause_ends_and_a_second_limit_stops_the_run(self):
         limits = outside.Limits()
         limits.PAUSE_SECONDS = 0.2
         limits.limited("m")
+        for model in ("m", "other"):
+            with self.assertRaises(outside.RateLimited):
+                limits.send(model, lambda: self.fail("sent during the pause"))
+        limits.wait()
+        self.assertEqual(limits.send("m", lambda: "ok"), "ok")
+        limits.limited("other")
+        with self.assertRaises(Stopped):
+            limits.wait()
+
+    def test_a_limit_seen_by_the_gateways_own_guard_pauses_the_run_and_clears_once_it_is_over(self):
+        limits = outside.Limits()
+        limits.PAUSE_SECONDS = 0.2
+        with self.assertRaises(gateway.RateLimited):
+            gateway.limited("HTTP 429 from the plan")
         with self.assertRaises(outside.RateLimited):
             limits.send("m", lambda: self.fail("sent during the pause"))
-        self.assertEqual(limits.send("other", lambda: "ok"), "ok")
-        time.sleep(0.25)
+        limits.wait()
+        self.assertFalse(gateway.LIMITED.is_set())
         self.assertEqual(limits.send("m", lambda: "ok"), "ok")
-        limits.limited("m")
-        with self.assertRaises(outside.Stopped):
+        with self.assertRaises(gateway.RateLimited):
+            gateway.limited("HTTP 429 again")
+        with self.assertRaises(Stopped):
             limits.wait()
+
+    def test_a_call_refused_for_a_pause_after_getting_its_slot_is_no_new_limit(self):
+        class PausesWhileQueued(outside.Limits):
+            checks = 0
+
+            def _may_start(self, model):
+                self.checks += 1
+                if self.checks == 2:
+                    raise outside.RateLimited(model)
+
+        limits = PausesWhileQueued()
+        with self.assertRaises(outside.RateLimited):
+            limits.send("m", lambda: self.fail("sent while paused"))
+        self.assertEqual(limits.limits, 0)
+
+    def test_the_bench_has_one_rate_limit_error(self):
+        self.assertIs(outside.RateLimited, gateway.RateLimited)
 
 
     def test_a_call_waiting_for_a_slot_does_not_send_once_a_pause_starts(self):
@@ -83,7 +127,7 @@ class LimitsTest(unittest.TestCase):
         self.assertEqual((sent, len(errors)), ([], 1))
 
 
-class RowTest(unittest.TestCase):
+class RowTest(Fresh):
     def test_a_message_whose_lookup_failed_gets_no_row(self):
         tool = SimpleNamespace(retrieve=lambda q: Retrieved("", [], 10.0, "TimeoutError"))
         case = outside.Case("op", "g/u/irrelevance_easy/0", "g", "irrelevance_easy", "u", "hi", "", "", ())
@@ -91,7 +135,7 @@ class RowTest(unittest.TestCase):
             outside.run_case("check", tool, case)
 
 
-class Mem0Test(unittest.TestCase):
+class Mem0Test(Fresh):
     sample = {"sample_id": "conv-x", "conversation": {"speaker_a": "A", "speaker_b": "B"}}
 
     def test_a_benchmark_run_never_builds_a_mem0_store(self):
@@ -125,7 +169,7 @@ class Mem0Test(unittest.TestCase):
         self.assertEqual((worker.is_alive(), count.n), (False, 1))
 
 
-class SupermemoryTest(unittest.TestCase):
+class SupermemoryTest(Fresh):
     def test_a_benchmark_run_never_feeds_supermemory_a_store(self):
         ready, outside.supermemory_ready = outside.supermemory_ready, lambda count: False
         try:
@@ -149,7 +193,7 @@ class SupermemoryTest(unittest.TestCase):
             outside.tools.supermemory.Supermemory, outside.tools.supermemory.api = make, api
 
 
-class RepetitionTest(unittest.TestCase):
+class RepetitionTest(Fresh):
     def test_the_tables_read_stored_similarities_only_for_the_replies_they_were_made_from(self):
         with tempfile.TemporaryDirectory() as out:
             saved, outside.OUT = outside.OUT, out
@@ -169,7 +213,7 @@ class RepetitionTest(unittest.TestCase):
                 outside.OUT = saved
 
 
-class SampleTest(unittest.TestCase):
+class SampleTest(Fresh):
     def test_op_strata_record_each_persons_count_and_messages_weigh_by_it(self):
         cases = [outside.Case("op", f"g/{p}/irrelevance_easy/{n}", "g", "irrelevance_easy", p, "q", "", "", ())
                  for p, count in (("a", 1), ("b", 3)) for n in range(count)]
@@ -179,7 +223,7 @@ class SampleTest(unittest.TestCase):
         self.assertAlmostEqual(outside.weighted(values, weights, np.arange(4)), 0.5)
 
 
-class ParseTest(unittest.TestCase):
+class ParseTest(Fresh):
     def test_fact_score_takes_the_first_grade_it_finds_in_the_judges_order(self):
         self.assertEqual(outside.fact_score("0.5"), 0.5)
         self.assertEqual(outside.fact_score("Score: 1.0"), 1.0)
@@ -191,7 +235,7 @@ class ParseTest(unittest.TestCase):
         self.assertIsNone(outside.op_score("none"))
 
 
-class OpScoresTest(unittest.TestCase):
+class OpScoresTest(Fresh):
     def embed(self, texts):
         vectors = {"same": [1.0, 0.0], "other": [0.0, 1.0]}
         return np.array([vectors[t] for t in texts])
