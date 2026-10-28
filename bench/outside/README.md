@@ -84,10 +84,10 @@ All rows behind these numbers are in `results/sample/`, one per tool and message
 | No memory | 0.171 [0.135, 0.209] | 0.220 | 0.196 | 0.000 | 0.237 | 0% |
 | Gold sessions | 0.891 [0.863, 0.918] | 0.973 | 0.866 | 0.781 | 0.605 | 100% |
 | The check | 0.650 [0.601, 0.699] | 0.696 | 0.643 | 0.609 | 0.395 | 60% |
-| Mem0 | 0.511 [0.467, 0.553] | 0.696 | 0.518 | 0.094 | 0.263 | 100% |
-| Supermemory | 0.685 [0.641, 0.729] | 0.753 | 0.634 | 0.625 | 0.447 | 100% |
+| Mem0, self-hosted | 0.511 [0.467, 0.553] | 0.696 | 0.518 | 0.094 | 0.263 | 100% |
+| Supermemory, self-hosted | 0.685 [0.641, 0.729] | 0.753 | 0.634 | 0.625 | 0.447 | 100% |
 
-The check minus Supermemory is -0.036 [-0.083, 0.016], no measurable difference. The check minus Mem0 is 0.139 [0.090, 0.191].
+The check minus self-hosted Supermemory is -0.036 [-0.083, 0.016], no measurable difference. The check minus self-hosted Mem0 is 0.139 [0.090, 0.191].
 
 **Staying quiet: OP-Bench.** Higher is better, x100, over 340 sampled messages.
 
@@ -95,19 +95,19 @@ The check minus Supermemory is -0.036 [-0.083, 0.016], no measurable difference.
 |---|---|---|---|---|---|---|---|---|
 | No memory | 99.9 [99.6, 100.0] | 99.5 [98.8, 100.0] | 36.5 [35.4, 37.5] | 97.7 [96.6, 98.8] | 97.0 [96.3, 97.7] | 86.0 [77.0, 94.3] | 81.9 [80.7, 83.0] | 100% |
 | The check | 97.6 [95.6, 99.2] | 71.0 [58.5, 84.2] | 36.3 [35.1, 37.3] | 96.5 [94.9, 98.0] | 97.3 [96.7, 97.9] | 42.6 [32.0, 53.5] | 68.7 [65.1, 72.2] | 76% |
-| Mem0 | 68.3 [62.0, 74.2] | 49.2 [34.5, 64.7] | 31.0 [29.8, 32.2] | 92.4 [90.5, 94.4] | 95.2 [93.8, 96.4] | 14.3 [9.9, 19.6] | 50.6 [46.6, 54.9] | 0% |
-| Supermemory | 57.2 [52.0, 62.3] | 24.2 [21.5, 27.0] | 29.5 [28.3, 30.5] | 92.6 [90.5, 94.8] | 94.3 [92.5, 95.6] | 12.2 [9.0, 15.5] | 40.9 [39.4, 42.5] | 0% |
+| Mem0, self-hosted | 68.3 [62.0, 74.2] | 49.2 [34.5, 64.7] | 31.0 [29.8, 32.2] | 92.4 [90.5, 94.4] | 95.2 [93.8, 96.4] | 14.3 [9.9, 19.6] | 50.6 [46.6, 54.9] | 0% |
+| Supermemory, self-hosted | 57.2 [52.0, 62.3] | 24.2 [21.5, 27.0] | 29.5 [28.3, 30.5] | 92.6 [90.5, 94.8] | 94.3 [92.5, 95.6] | 12.2 [9.0, 15.5] | 40.9 [39.4, 42.5] | 0% |
 
-Each column is a mean of per-person means, as OP-Bench's code computes it: a sampled message stands for its person's share of the task, since people have 9 to 21 off-topic messages. The check minus Supermemory is 27.7 [24.2, 31.3] overall, and the check minus Mem0 18.0 [13.4, 22.6]. The check minus no memory is -13.2 [-16.9, -9.5]: -43.4 [-55.5, -30.6] on false memories and -28.5 [-41.2, -15.3] on baiting. The paired differences for every column are in `results/sample-table.md`.
+Each column is a mean of per-person means, as OP-Bench's code computes it: a sampled message stands for its person's share of the task, since people have 9 to 21 off-topic messages. The check minus self-hosted Supermemory is 27.7 [24.2, 31.3] overall, and the check minus self-hosted Mem0 18.0 [13.4, 22.6]. The check minus no memory is -13.2 [-16.9, -9.5]: -43.4 [-55.5, -30.6] on false memories and -28.5 [-41.2, -15.3] on baiting. The paired differences for every column are in `results/sample-table.md`.
 
 For comparison, OP-Bench's paper reports Mem0 at 46.32 overall and no memory at 83.10, with gpt-4o-mini answering and judging; LoCoMo-Conv's reports mem0 at 0.330 on implicit messages and its oracle at 0.724, with gemma-4-31B-it answering. Both are in `published.json` with their sources. The answer model, judge and setup differ from these runs, so they are context, not a ranking.
 
 ## What limits these numbers
 
 - **The sample.** 20% of each stratum, one run per message. The intervals cover resampling the messages, not run-to-run variation in the models. Small strata give wide intervals: 19 open-domain messages, and 20 each for baiting, false facts and false values.
-- **The check against Supermemory on implicit messages.** The check's own lookup brought a gold session on 97 of 307 messages, against 206 for Supermemory's and 244 for Mem0's. The check's agent then searched with `kb search` and `kb get` on all 307 and reached one on 261. Supermemory's agent, which sees about 12,000 characters before every message, searched on 61 and reached one on 229. They end up level.
+- **The check against self-hosted Supermemory on implicit messages.** The check's own lookup brought a gold session on 97 of 307 messages, against 206 for Supermemory's and 244 for Mem0's. The check's agent then searched with `kb search` and `kb get` on all 307 and reached one on 261. Supermemory's agent, which sees about 12,000 characters before every message, searched on 61 and reached one on 229. They end up level.
 - **Where the check loses points on OP-Bench.** On false memories, such as "remember when I told you...", the check added cards on 19 of 40, and those replies went along with the false memory, scoring 15.5. When it added nothing they scored 67.1. On baiting messages it added cards on 6 of 20, scoring 37.5 against 85.4 without. Even without cards, the agent searched with `kb search` on all 40 false-memory messages.
-- **Mem0 on temporal questions.** Mem0's open-source extraction writes the day a memory is made into it, as in "as of October 27, 2026": that date is in 4,475 of the 6,140 memories its lookups returned for sampled implicit messages. That is right in live use, but these chats are from 2022 to 2024, so replies mix the load date with the session dates. That costs Mem0 on temporal questions: 0.094, against 0.696 on single-hop. It is a limit of replaying history, not necessarily of Mem0 in use.
+- **Self-hosted Mem0 on temporal questions.** Mem0's open-source extraction writes the day a memory is made into it, as in "as of October 27, 2026": that date is in 4,475 of the 6,140 memories its lookups returned for sampled implicit messages. That is right in live use, but these chats are from 2022 to 2024, so replies mix the load date with the session dates. That costs Mem0 on temporal questions: 0.094, against 0.696 on single-hop. It is a limit of replaying history, not necessarily of Mem0 in use.
 - **Repetition.** As above, the local embedder puts every tool's repetition score lower than the paper's. Compare tools within the table only.
 - **Supermemory's own model calls.** Supermemory's server calls its model while it takes in a conversation, and those calls cannot go through a run's slots; how it handles a rate limit is up to it. So it takes in conversations only during `--load-only`, with `SUPERMEMORY_INGEST_CONCURRENCY=2`. The ten conversations behind these numbers were taken in before the two-call limit was set, most of them 8 at a time, and every one of their 272 sessions finished extracting; none failed.
 - **Rivals self-hosted.** Mem0 and Supermemory ran their open-source servers on `claude-haiku-5-5`, as for the month. Both say their hosted platforms extract memories better.
@@ -115,7 +115,7 @@ For comparison, OP-Bench's paper reports Mem0 at 46.32 overall and no memory at 
 
 ## Month B: the rivals beside the check's final run
 
-The month benchmark's head-to-head runs on month B (`bench/month-b`), the held-out month the check is never tuned on. `month_b.py` runs Supermemory, Mem0 and claude-mem on it with month A's setup from `bench/README.md`, through `bench/run.py`'s own answer loop, judge and row format, imported unchanged. Each row goes to `bench/results/hillclimb/month/b-final/<rival>.jsonl` as its question finishes, beside the check's final row, which the Hillclimb track writes; a rerun runs only the questions with no row yet. These runs are not held-out runs of the check and are not logged as one. `results/month-b-runs.json` records each rival's load, passes, rate limits and models.
+The month benchmark's head-to-head runs on month B (`bench/month-b`), the held-out month the check is never tuned on. `month_b.py` runs self-hosted Supermemory, Mem0 and claude-mem on it with month A's setup from `bench/README.md`, through `bench/run.py`'s own answer loop, judge and row format, imported unchanged. Each row goes to `bench/results/hillclimb/month/b-final/<rival>.jsonl` as its question finishes, beside the check's final row, which the Hillclimb track writes; a rerun runs only the questions with no row yet. These runs are not held-out runs of the check and are not logged as one. `results/month-b-runs.json` records each rival's load, passes, rate limits and models.
 
 ```bash
 SUPERMEMORY_URL=... SUPERMEMORY_KEY_FILE=... CLAUDE_MEM_HOME=<month B home> \
