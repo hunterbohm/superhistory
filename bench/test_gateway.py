@@ -1,4 +1,5 @@
 import argparse
+import importlib.util
 import io
 import json
 import os
@@ -53,6 +54,14 @@ class Answer(io.BytesIO):
 
     def __exit__(self, *exc):
         return False
+
+
+class StalledAnswer(io.BufferedReader):
+    """A status 200 reply whose body stops arriving after `first`."""
+    headers, url, status = {}, "http://gateway/v1/messages", 200
+
+    def __init__(self, first):
+        super().__init__(Stalled(first))
 
 
 class RateLimitTest(unittest.TestCase):
@@ -191,6 +200,37 @@ class RateLimitTest(unittest.TestCase):
             ai.with_retries(lambda: check.model().ask(ai.Prompt("system", "user"), 5), sleep=lambda seconds: None)
         self.assertEqual(len(calls), 1)
 
+    def replying(self, make):
+        """A network whose every call answers with a fresh `make()`, and the list of calls it saw."""
+        calls = []
+
+        def urlopen(request, timeout):
+            calls.append(request)
+            return make()
+        return mock.patch("urllib.request.urlopen", urlopen), calls
+
+    def assert_both_paths_stop(self, make):
+        network, calls = self.replying(make)
+        with network, mock.patch("time.sleep"), self.assertRaises(gateway.RateLimited):
+            gateway.post("/v1/messages", {})
+        self.assertEqual(len(calls), 1)
+        gateway.LIMITED.clear()
+        network, calls = self.replying(make)
+        with network, self.assertRaises(gateway.RateLimited):
+            ai.with_retries(lambda: check.model().ask(ai.Prompt("system", "user"), 5), sleep=lambda seconds: None)
+        self.assertEqual(len(calls), 1)
+
+    def test_a_200_error_that_stalls_after_it_ends_still_stops_both_paths(self):
+        error = json.dumps({"type": "error", "error": {"message": "All credentials for model x are cooling down"}})
+        self.assert_both_paths_stop(lambda: StalledAnswer(error.encode()))
+
+    def test_plain_text_that_starts_like_json_still_stops_both_paths(self):
+        self.assert_both_paths_stop(lambda: Answer(b"[ERROR] All credentials for model x are cooling down"))
+
+    def test_a_completion_is_never_read_for_limit_words(self):
+        self.assertFalse(gateway.limited_reply({"choices": [{"message": {"content": "a rate limit cooling down"}}]}))
+        self.assertTrue(gateway.limited_reply({"choices": None, "message": "model x is cooling down"}))
+
     def test_plain_text_that_names_no_limit_fails_as_before(self):
         network, calls = self.answering("<html>upstream hiccup</html>")
         with network, self.assertRaises(ValueError):
@@ -307,13 +347,14 @@ class RateLimitTest(unittest.TestCase):
 
 
 class Mem0RateLimitTest(unittest.TestCase):
-    """Mem0 calls its LLM through the OpenAI client, not gateway.post, so its adapter has its own guard."""
+    """Mem0 calls its LLM through the OpenAI client, not gateway.post, so the adapter gives that client a transport
+    through gateway.urlopen and stops its load on the flag."""
 
     def setUp(self):
         gateway.LIMITED.clear()
         self.addCleanup(gateway.LIMITED.clear)
 
-    def load(self, error):
+    def load(self, add):
         from tools import mem0
         added = []
 
@@ -326,8 +367,7 @@ class Mem0RateLimitTest(unittest.TestCase):
 
             def add(self, messages, **kwargs):
                 added.append(messages)
-                if error:
-                    raise error
+                add()
 
             def get_all(self, **kwargs):
                 return {"results": []}
@@ -335,63 +375,85 @@ class Mem0RateLimitTest(unittest.TestCase):
                  for i in range(3)]
         with mock.patch.dict(sys.modules, {"mem0": mock.Mock(Memory=Memory)}), \
                 mock.patch("importlib.metadata.version", lambda name: "test"), \
-                mock.patch.object(gateway, "_key", lambda: "test"):
+                mock.patch.object(mem0, "gateway_client", lambda: None):
             try:
                 return mem0.Mem0().load(items, tempfile.gettempdir()), added
             except gateway.RateLimited as exc:
                 return exc, added
 
-    def test_a_429_inside_mem0_stops_the_load(self):
-        class APIStatusError(Exception):
-            status_code = 429
-        try:
+    def test_a_rate_limit_inside_mem0s_model_call_stops_the_load(self):
+        def add():
             try:
-                raise APIStatusError("Error code: 429")
-            except APIStatusError as inner:
+                gateway.limited("test")
+            except gateway.RateLimited as inner:
                 raise RuntimeError("LLM extraction failed") from inner
-        except RuntimeError as wrapped:
-            result, added = self.load(wrapped)
-        self.assertIsInstance(result, gateway.RateLimited)
-        self.assertEqual(len(added), 1)
-        self.assertTrue(gateway.LIMITED.is_set())
-
-    def test_a_cooling_down_inside_mem0_stops_the_load(self):
-        class InternalServerError(Exception):
-            status_code = 503
-            body = "All credentials for model x are cooling down"
-        result, added = self.load(InternalServerError("Error code: 503"))
+        result, added = self.load(add)
         self.assertIsInstance(result, gateway.RateLimited)
         self.assertEqual(len(added), 1)
 
     def test_other_mem0_errors_still_count_as_failed_adds(self):
-        stats, added = self.load(RuntimeError("Error code: 400 - bad request"))
+        def add():
+            raise RuntimeError("Error code: 400 - bad request")
+        stats, added = self.load(add)
         self.assertEqual((stats["add_failures"], len(added)), (3, 3))
 
-    def test_mem0s_client_retries_a_busy_server_but_not_a_rate_limit(self):
-        from tools import mem0
-        client = mock.Mock(_should_retry=lambda response: True)
-        mem0.no_retry_on_limits(client)
-        self.assertFalse(client._should_retry(mock.Mock(status_code=429, text="")))
-        self.assertFalse(client._should_retry(mock.Mock(status_code=503, text="model x is cooling down")))
-        self.assertTrue(client._should_retry(mock.Mock(status_code=503, text="busy")))
 
-    def test_a_200_that_says_cooling_down_stops_before_mem0_reads_it(self):
-        from tools import mem0
-        reply = {"choices": None, "message": "All credentials for model x are cooling down"}
-        client = mock.Mock()
-        client.chat.completions.create = lambda **kwargs: mock.Mock(model_dump=lambda: reply)
-        mem0.no_retry_on_limits(client)
-        with self.assertRaises(gateway.RateLimited):
-            client.chat.completions.create(model="m", messages=[])
-        self.assertTrue(gateway.LIMITED.is_set())
+@unittest.skipUnless(importlib.util.find_spec("httpx2") and importlib.util.find_spec("openai"),
+                     "needs the Mem0 Python, which has the OpenAI client")
+class Mem0ClientTest(unittest.TestCase):
+    """The OpenAI client Mem0 gets, against replies at the network: run with the Mem0 Python."""
 
-    def test_a_completion_about_rate_limits_reaches_mem0(self):
+    def setUp(self):
+        gateway.LIMITED.clear()
+        self.addCleanup(gateway.LIMITED.clear)
+        for patch in (mock.patch.dict(os.environ, {"BENCH_API_KEY": "test"}), mock.patch("time.sleep")):
+            patch.start()
+            self.addCleanup(patch.stop)
+
+    def ask(self, *replies):
         from tools import mem0
-        reply = {"choices": [{"message": {"content": "the job is cooling down after a rate limit"}}]}
-        client = mock.Mock()
-        client.chat.completions.create = lambda **kwargs: mock.Mock(model_dump=lambda: reply)
-        mem0.no_retry_on_limits(client)
-        self.assertEqual(client.chat.completions.create(model="m").model_dump(), reply)
+        calls = []
+
+        def urlopen(request, timeout):
+            calls.append(request)
+            reply = replies[min(len(calls), len(replies)) - 1]
+            if isinstance(reply, Exception):
+                raise reply
+            return reply
+        with mock.patch("urllib.request.urlopen", urlopen):
+            try:
+                return mem0.gateway_client().chat.completions.create(
+                    model="m", messages=[{"role": "user", "content": "hi"}]), calls
+            except Exception as exc:
+                return exc, calls
+
+    def test_a_429_whose_reply_stalls_is_sent_once_and_stops(self):
+        result, calls = self.ask(stalled_error(429))
+        self.assertIsInstance(result, gateway.RateLimited)
+        self.assertEqual(len(calls), 1)
+
+    def test_a_plain_text_cooling_down_is_sent_once_and_stops(self):
+        result, calls = self.ask(Answer(b"[ERROR] All credentials for model x are cooling down"))
+        self.assertIsInstance(result, gateway.RateLimited)
+        self.assertEqual(len(calls), 1)
+
+    def test_a_busy_server_and_a_timeout_are_still_retried(self):
+        import openai
+        result, calls = self.ask(http_error(503, "busy"))
+        self.assertIsInstance(result, openai.InternalServerError)
+        self.assertEqual(len(calls), 3)
+        result, calls = self.ask(TimeoutError("timed out"))
+        self.assertIsInstance(result, openai.APITimeoutError)
+        self.assertEqual(len(calls), 3)
+        gateway.check_limited()
+
+    def test_a_completion_about_rate_limits_comes_through(self):
+        reply = {"id": "a", "object": "chat.completion", "created": 1, "model": "m", "choices": [
+            {"index": 0, "finish_reason": "stop",
+             "message": {"role": "assistant", "content": "the job is cooling down after a rate limit"}}]}
+        result, calls = self.ask(Answer(json.dumps(reply).encode()))
+        self.assertEqual(result.choices[0].message.content, reply["choices"][0]["message"]["content"])
+        self.assertEqual(len(calls), 1)
         gateway.check_limited()
 
 

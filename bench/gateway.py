@@ -52,8 +52,9 @@ def is_rate_limit(code, detail):
 
 def limited_reply(response):
     """Whether a reply that came back as JSON says the plan is rate limited, as some gateways do with status 200.
-    Only a reply that is neither a message nor a token count is read, so a model's own words never count."""
+    A message, a completion or a token count is never read for it, so a model's own words never count."""
     if isinstance(response, dict) and (isinstance(response.get("content"), list)
+                                       or isinstance(response.get("choices"), list)
                                        or isinstance(response.get("input_tokens"), int)):
         return False
     text = json.dumps(response).lower()
@@ -93,8 +94,13 @@ def urlopen(request, timeout):
     with reply:
         raw, failed = _read(reply, REPLY_BYTES)
     text = raw.decode(errors="replace")
-    # A JSON reply can quote a model, so limited_reply judges it whole once parsed; plain text is never a model's.
-    if not text.lstrip().startswith(("{", "[")) and is_rate_limit(0, text):
+    try:
+        said = limited_reply(json.loads(text))
+    except ValueError:
+        # Not JSON, or cut short by a stall: read by its words. A model's reply cut short that names a limit stops the
+        # run too, the safer way to be wrong.
+        said = is_rate_limit(0, text)
+    if said:
         limited(f"from {request.full_url}: {' '.join(text.split())}")
     if failed:
         raise failed
@@ -118,10 +124,7 @@ def post(path, body, timeout=300):
         try:
             req = urllib.request.Request(BASE_URL + path, data=data, headers=headers, method="POST")
             with urlopen(req, timeout=timeout) as resp:
-                reply = json.load(resp)
-            if limited_reply(reply):
-                limited(f"from {BASE_URL}{path}: {json.dumps(reply)[:300]}")
-            return reply
+                return json.load(resp)
         except urllib.error.HTTPError as e:
             detail = e.read()[:300].decode(errors="replace")
             if e.code < 500 or last:

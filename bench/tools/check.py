@@ -82,8 +82,6 @@ def _counted_post(url, body, headers, timeout):
     # Nothing is sent once a rate limit is seen, not even the copy kb's hedge starts after a failed call.
     gateway.check_limited()
     response = _post(url, body, headers, timeout)
-    if gateway.limited_reply(response):
-        gateway.limited(f"from {url}: {json.dumps(response)[:300]}")
     sink = getattr(_local, "sink", None)
     if sink is not None:
         usage = response.get("usage") or {}
