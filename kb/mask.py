@@ -10,6 +10,10 @@ _NB = r"(?<![A-Za-z0-9])"
 # JSON or YAML value can sit on the next line): \s would also take U+2028, U+2029, U+0085, a vertical tab or a form
 # feed, which end a value early or make "password=\u2028password" look like a placeholder.
 SECRET_PATTERNS = [
+    # A whole key, header to footer, whatever its lines' lengths, with the header fields an encrypted key has. A dash
+    # may not start "-----", so a header without a footer stops at the next such line instead of scanning on.
+    re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----(?:[A-Za-z0-9+/=\s:,]|-(?!----)|\\[nr])*?"
+               r"-----END [A-Z ]*PRIVATE KEY-----"),
     # The body may come with its line breaks escaped, as in a service account's JSON key or a repr(). It is taken a
     # base64 line at a time, so a key cut off before its footer does not run on into the words after it, such as the
     # name of the next secret; only its last line, next to the footer or at the end of the text, may be short.
@@ -144,7 +148,8 @@ def _headless_keys(text):
     """A private key's body lines up to its footer when its header is gone, cut off or masked apart by an older
     kb's row-by-row remask. Found from each footer back, a line at a time, so text without a footer costs one search.
     The line next to the footer may be short; a word alone before a footer stays."""
-    for footer in reversed(list(KEY_FOOTER.finditer(text))):
+    spans = []
+    for footer in KEY_FOOTER.finditer(text):
         line = _key_line_before(text, footer.start())
         if not line:
             continue
@@ -153,8 +158,8 @@ def _headless_keys(text):
         while line and line[1] - line[0] >= FULL_LINE:
             start, full, line = line[0], True, _key_line_before(text, line[0])
         if full:
-            text = text[:start] + "[masked]" + text[footer.end():]
-    return text
+            spans.append((start, footer.end()))
+    return _replace(text, spans, "[masked]")
 
 
 def _key_rest(text):
@@ -182,9 +187,16 @@ def _key_rest(text):
         if (lines if first else full >= 2) or (first >= FULL_LINE and (_line_ends(text, end) or text[end] in " \t")):
             footer = KEY_FOOTER.match(text, _after_break(text, end))
             spans.append((glued.end(), footer.end() if footer else end))
-    for start, end in reversed(spans):
-        text = text[:start] + text[end:]
-    return text
+    return _replace(text, spans, "")
+
+
+def _replace(text, spans, replacement):
+    """`text` with each of the ordered spans replaced, built once: one copy per span would be quadratic."""
+    out, last = [], 0
+    for start, end in spans:
+        out += [text[last:start], replacement]
+        last = end
+    return "".join(out + [text[last:]])
 
 
 def mask(text):

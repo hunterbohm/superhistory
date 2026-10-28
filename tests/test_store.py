@@ -428,10 +428,13 @@ class MaskVersionTest(TempDB):
 
     def test_an_id_without_a_host_is_checked_whole(self):
         for sid in ("password:walrus2secret9", "https://user:walrus9pw@example.com/notes",
-                    "Cookie:sessionid=Walrus2Secret987654", "cookie:sessionid=Walrus2Secret987654", "token=>walrus2secret9"):
+                    "Cookie:sessionid=Walrus2Secret987654", "cookie:sessionid=Walrus2Secret987654", "token=>walrus2secret9",
+                    "token2:walrus2secret9", "my-password:walrus2secret9"):
             with self.subTest(sid=sid):
-                self.assertTrue(store.secret_id("notes", sid), "bare")
-                self.assertTrue(store.secret_id("notes", f"desk:{sid}"), "under a host")
+                self.assertTrue(store.secret_id("notes", sid), "with no host given")
+                self.assertTrue(store.secret_id("notes", f"desk:{sid}", host="desk"), "under a host")
+                if not sid.startswith(("token2", "my-password")):  # these two can be hosts, if a row says so
+                    self.assertTrue(store.secret_id("notes", sid, host=sid.partition(":")[0]), "no host is named so")
                 with self.assertRaises(ValueError):
                     store.replace_rows(self.db, "notes", sid, [{"kind": "doc", "ts": iso(), "title": "t",
                                                                 "content": "c", "metadata": {}}])
@@ -441,15 +444,32 @@ class MaskVersionTest(TempDB):
         self.assertEqual(self.ids(), [], "and remask deletes them")
 
     def test_the_host_and_the_readers_id_are_checked_apart(self):
-        for host in ("desk", "tokenbox", "secret-lab", "studio-pw", "passwordless"):
+        for host in ("desk", "tokenbox", "secret-lab", "studio-pw", "passwordless", "token2"):
             with self.subTest(host=host):
-                self.assertFalse(store.secret_id("notes", f"{host}:Areas/notes-2026-10-27.md"))
-                self.assertTrue(store.secret_id("notes", f"{host}:key-{self.TOKEN}.md"))
-        self.assertTrue(store.secret_id("notes", f"{self.TOKEN}:a.md"), "a host that is a token")
-        self.assertTrue(store.secret_id(self.TOKEN, "desk:a.md"), "a source that is a token")
-        row = {"kind": "doc", "ts": iso(), "title": "t", "content": "c", "metadata": {}}
+                self.assertFalse(store.secret_id("notes", f"{host}:Areas/notes-2026-10-27.md", host=host))
+                self.assertTrue(store.secret_id("notes", f"{host}:key-{self.TOKEN}.md", host=host))
+        self.assertTrue(store.secret_id("notes", f"{self.TOKEN}:a.md", host=self.TOKEN), "a host that is a token")
+        self.assertTrue(store.secret_id(self.TOKEN, "desk:a.md", host="desk"), "a source that is a token")
+        self.assertTrue(store.secret_id("notes", "tokenbox:walrus2secret9.md"), "with no host given, read whole")
+        row = {"kind": "doc", "ts": iso(), "title": "t", "content": "c", "metadata": {"host": "tokenbox"}}
         store.replace_rows(self.db, "notes", "tokenbox:Areas/notes-2026-10-27.md", [row])
-        self.assertEqual(len(self.ids()), 1)
+        self.assertEqual(len(self.ids()), 1, "the row's own host, in its metadata, says how its id is read")
+
+    def test_a_whole_key_with_short_lines_is_masked(self):
+        body = ["MC4CAQAw", "BQYDK2Vw", "BCIEIAAB", "AgMEBQYH", "CAkKCwwN", "Dg8QERIT", "FBUWFxgZ", "GhscHR4f"]
+        for brk in ("\n", "\r\n", "\\n"):
+            with self.subTest(brk=brk):
+                key = brk.join(["-----BEGIN PRIVATE KEY-----", *body, "-----END PRIVATE KEY-----"])
+                self.assertNotIn("CAkKCwwN", store.mask(key))
+                self.add(f"k{len(brk)}", f"notes {key} after")
+        self.old("old", "-----BEGIN PRIVATE KEY-----\n" + "\n".join(body) + "\n-----END PRIVATE KEY-----")
+        store.remask(self.db)
+        self.assertNotIn("CAkKCwwN", json.dumps(self.rows()))
+
+    def test_an_encrypted_key_is_masked_with_its_header_fields(self):
+        key = ("-----BEGIN RSA PRIVATE KEY-----\nProc-Type: 4,ENCRYPTED\nDEK-Info: AES-256-CBC,0A1B2C3D4E5F60718293A4B5C6D7E8F9"
+               "\n\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7\nAgMEBQYH\n-----END RSA PRIVATE KEY-----")
+        self.assertEqual(store.mask(f"key: {key} done"), "key: [masked] done")
 
     def test_chunks_are_written_all_at_once(self):
         def chunk(text, n):

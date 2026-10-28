@@ -116,7 +116,7 @@ def search(db, query, after=None, sources=(), limit=10, before=None, keep=None):
     fresh = current(db, [h["id"] for h in best.values()])
     # A store from before ingest refused such ids can hold an item whose id or source looks like a secret.
     allowed = (h for h in best.values()
-               if h["id"] in fresh or not secret_id(h["source"], h["source_id"]))
+               if h["id"] in fresh or not secret_id(h["source"], h["source_id"], h["meta"].get("host")))
     hits = sorted((h for h in allowed if keep is None or keep(h)), key=lambda h: -h["score"])[:limit]
     for hit in hits:
         if hit["id"] in fresh:

@@ -153,22 +153,29 @@ def _whole(rows):
         for i, part in enumerate(parts)]
 
 
-def secret_id(source, source_id):
-    """Whether kb refuses an item under this source and stored id. kb stores "<host>:<reader's id>", with a host as
-    config allows one, never a secret's key word. Such an id is checked as its two parts, since joined by kb's colon a
-    host such as "tokenbox" would read as the name of a secret. Any other id is checked whole, so "password:...",
-    "cookie:..." or a link with a password in it is refused."""
-    host, colon, sid = source_id.partition(":")
-    if colon and NAME_RE.match(host) and not KEY_WORD.fullmatch(host) and not sid.startswith("//"):
-        return holds_secret(source) or holds_secret(host) or secret_in_id(sid)
+def secret_id(source, source_id, host=None):
+    """Whether kb refuses an item under this source and stored id. kb stores "<host>:<reader's id>" and records the
+    host in the item's metadata. Given that host, with the name config allows a host and the id starting with it, the
+    id is checked as its two parts, since joined by kb's colon a host such as "tokenbox" would read as the name of a
+    secret. Any other id is checked whole, so "password:...", "token2:..." or a link with a password in it is
+    refused."""
+    if (host and source_id.startswith(f"{host}:") and NAME_RE.match(host) and not KEY_WORD.fullmatch(host)
+            and not source_id.startswith("//", len(host) + 1)):
+        return holds_secret(source) or holds_secret(host) or secret_in_id(source_id[len(host) + 1:])
     return holds_secret(source) or secret_in_id(source_id)
+
+
+def _host(rows):
+    """The host the rows' metadata names, if they all name the same one."""
+    hosts = {r["metadata"].get("host") if isinstance(r["metadata"], dict) else None for r in rows}
+    return hosts.pop() if len(hosts) == 1 else None
 
 
 def replace_rows(db, source, source_id, rows, kinds=ITEM_KINDS):
     """Swap one item's rows of the given kinds for `rows` (dicts: kind, ts, title, content, metadata), masked with
     today's mask() and marked with its version. Raises ValueError for a source or item id that looks like it holds a
     secret, which ingest does not store either: a masked id could stand for two items."""
-    if secret_id(source, source_id):
+    if rows and secret_id(source, source_id, _host(rows)):
         raise ValueError("a source or item id that looks like it holds a secret is not stored; rename it")
     if "raw" not in kinds and any(r["kind"] == "raw" for r in rows):
         # Chunks added one write at a time would be masked apart, and a secret could run from one into the next.
@@ -301,7 +308,9 @@ def remask(db, seconds=None, log=None):
     started, changed = time.monotonic(), 0
     items = db.execute("SELECT DISTINCT source, source_id FROM docs WHERE masked IS NOT ?", (VERSION,)).fetchall()
     for n, (source, source_id) in enumerate(items, 1):
-        if secret_id(source, source_id):
+        host = db.execute("SELECT json_extract(metadata, '$.host') FROM docs WHERE source=? AND source_id=? LIMIT 1",
+                          (source, source_id)).fetchone()[0]
+        if secret_id(source, source_id, host):
             changed += delete_item(db, source, source_id)
             if log:
                 log.warning("remask: deleted %s %s, whose name looks like it holds a secret; rename it to index it",
