@@ -216,6 +216,57 @@ class HeadlessKeyTest(unittest.TestCase):
         self.assertLess(time.monotonic() - started, 2)
 
 
+class EscapeTest(unittest.TestCase):
+    """JSON text, such as a tool's input stored as JSON, escapes a line break as "\\n": a secret right after one, or on
+    the next line after another's value, is masked as at the start of a line."""
+    ESCAPES = ("\\n", "\\r\\n", "\\t", "\\u00a0")
+    SECRETS = ("sk-ant-api03-" + "Z" * 24, "ghp_" + "A1" * 12, "AKIA" + "B" * 16, "xoxb-" + "1" * 12,
+               "eyJabcdefghijkl.abcdefghijkl.abcdefghijkl", "Bearer walrusbearer2token9", "cookie: walrus2cookie9",
+               "curl -u me:walrus2secret9", "STRIPE_KEY=walrus2secret9", "password: walrus2secret9")
+
+    def test_a_secret_right_after_an_escape_is_masked(self):
+        for escape in self.ESCAPES:
+            for secret in self.SECRETS:
+                with self.subTest(escape=escape, secret=secret):
+                    masked = mask(f"output{escape}{secret}")
+                    self.assertIn("[masked]", masked)
+                    self.assertNotIn(secret[-9:], masked)
+
+    def test_a_value_ends_where_an_escape_starts_the_next_name(self):
+        for escape in self.ESCAPES:
+            text = (f"secret_token=walrus1secret1{escape}api_key: walrus2secret2{escape}PASSWORD = walrus3secret3"
+                    f"{escape}curl -u me:walrus4secret4{escape}DB_KEY=walrus5secret5")
+            with self.subTest(escape=escape):
+                masked = mask(text)
+                self.assertNotIn("walrus", masked)
+                self.assertIn(f"{escape}api_key: [masked]", masked)
+
+    def test_a_password_with_a_backslash_in_it_is_masked_whole(self):
+        for password in ("Ab3\\nQz9kLm", "C:\\temp\\walrus9", "pa\\u00e4ss9word"):
+            with self.subTest(password=password):
+                self.assertEqual(mask(f"password={password} next"), "password=[masked] next")
+
+    def test_a_tool_input_stored_as_json_is_masked(self):
+        import json
+        stored = json.dumps({"content": "first line\nghp_" + "A1" * 12, "env": "A=1\nAPI_KEY=walrus2secret9\nB=2"})
+        masked = mask(stored)
+        self.assertNotIn("A1A1A1", masked)
+        self.assertNotIn("walrus2secret9", masked)
+        self.assertEqual(json.loads(masked)["content"], "first line\n[masked]")
+
+    def test_a_long_run_of_escapes_after_a_value_costs_time_in_proportion(self):
+        import time
+        for head, unit in (("password=", "\\r\\n"), ("token=x", "\\n"), ("", "\\ncookie: ")):
+            with self.subTest(unit=unit):
+                took = {}
+                for size in (1 << 16, 1 << 20):
+                    text = head + unit * (size // len(unit))
+                    started = time.process_time()
+                    mask(text)
+                    took[size] = time.process_time() - started
+                self.assertLess(took[1 << 20], 40 * max(took[1 << 16], 0.01), took)
+
+
 class RepeatTest(unittest.TestCase):
     """mask() repeats until a pass changes nothing, so masked text masks to itself, and stops: no pattern matches a
     placeholder alone, and a text still changing at the pass limit has its changing part masked whole."""
