@@ -63,7 +63,8 @@ so an interrupted run leaves the rest old. The file is rebuilt once none are lef
 on the next ingest. The header counts the rows left, and `kb remask` does them all at once. An HTTP error body longer
 than kb reads is left out of the error.
 
-`tests/test_write_fuzz.py` runs a few thousand seeded sequences of the store's writes: ingest, Sync-shaped full and
+`tests/test_write_fuzz.py` generates key blocks of every header kind, line width, line break and cut, and runs a few
+thousand seeded sequences of the store's writes: ingest, Sync-shaped full and
 piecemeal writes, summary rows, an older kb's store_item and remask (`tests/legacy_store.py`), remask cut off at a
 random item or in its rebuild, deletes and supersede marks. Canaries cross chunk and call boundaries. After each
 sequence no reader may show a piece of a canary, and no row may read as current unless its whole item masks clean.

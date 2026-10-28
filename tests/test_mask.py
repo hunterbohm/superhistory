@@ -207,6 +207,31 @@ class HeadlessKeyTest(unittest.TestCase):
         self.assertLess(time.monotonic() - started, 2)
 
 
+class KeyShapeTest(unittest.TestCase):
+    """Keys as they come: any header kind, an encrypted key's fields, lines of 1 to 100 characters, LF, CRLF or
+    escaped breaks, whole or cut anywhere, with words, a newline, a cut's mark or the next secret after them."""
+
+    def test_no_key_shape_leaves_its_body_readable(self):
+        import random
+        import re
+        from tests.test_write_fuzz import Planted
+        for seq in range(3000):
+            planted = Planted(random.Random(seq), seq)
+            block = planted.key()
+            body = planted.bodies[0]
+            for after in (" after", "\nafter", "", "\nclientSecretToken: walrus2secret9", " …"):
+                masked = mask(f"note {block}{after}")
+                readable = re.sub(r"\s+|\\[nr]", "", masked)
+                leaked = [body[i:i + 12] for i in range(0, len(body) - 11, 4) if body[i:i + 12] in readable]
+                self.assertEqual(leaked, [], f"seq {seq}: {block[-60:]!r}{after!r}")
+                self.assertNotIn("walrus2secret9", masked)
+
+    def test_words_around_a_lone_footer_stay(self):
+        for text in ("ordinary words here\n-----END PRIVATE KEY-----", "abc\ndef\n-----END PRIVATE KEY-----",
+                     "notes\n-----END PRIVATE KEY-----"):
+            self.assertEqual(mask(text), text)
+
+
 class SecretInIdTest(unittest.TestCase):
     """An item id is a name someone chose, read more narrowly than text so a real item is not dropped."""
 

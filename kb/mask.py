@@ -9,19 +9,32 @@ _NB = r"(?<![A-Za-z0-9])"
 # A secret's value ends at a space, tab or line break, and the space around its "=" is spaces, tabs and line breaks (a
 # JSON or YAML value can sit on the next line): \s would also take U+2028, U+2029, U+0085, a vertical tab or a form
 # feed, which end a value early or make "password=\u2028password" look like a placeholder.
+# For a key cut off before its footer: what may follow a line of it on the same line (not "=", ":", "=>" or "is",
+# which name the next secret), and where its cut last line may start: right after the header, another of its lines,
+# or the blank line after an encrypted key's fields. Such a line holds a capital, a digit or "+/=", as base64 almost
+# always does and a word of prose does not.
+_NOT_ASSIGNED = r"(?![ \t]*(?:[:=]|=>|is\b))"
+_AFTER_KEY_LINE = (r"(?:(?<=[A-Za-z0-9+/=\n-]\n)|(?<=[A-Za-z0-9+/=\n-]\r\n)|(?<=[A-Za-z0-9+/=-]\\n)"
+                   r"|(?<=[A-Za-z0-9+/=-]\\r\\n))")
+# The base64 lines of a key after its header (or fields), as above, and its footer if there is one.
+_KEY_LINES = (r"(?:(?:\s|\\[nr])*(?:[A-Za-z0-9+/=]+(?=[ \t]*(?:[\r\n\"'…\\]|\.\.\.|\Z|-----)"
+              r"|(?<=[A-Za-z0-9+/=]{16})[ \t]+" + _NOT_ASSIGNED + r")|" + _AFTER_KEY_LINE
+              + r"(?=[a-z]*[A-Z0-9+/=])[A-Za-z0-9+/=]+(?=[ \t]+" + _NOT_ASSIGNED + r")))*"
+              r"(?:(?:\s|\\[nr])*-----END [A-Z ]*PRIVATE KEY-----)?")
 SECRET_PATTERNS = [
     # A whole key, header to footer, whatever its lines' lengths, with the header fields an encrypted key has. A dash
     # may not start "-----", so a header without a footer stops at the next such line instead of scanning on.
     re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----(?:[A-Za-z0-9+/=\s:,]|-(?!----)|\\[nr])*?"
                r"-----END [A-Z ]*PRIVATE KEY-----"),
     # A key cut off before its footer, its line breaks plain or escaped as in a service account's JSON key or a
-    # repr(): the header and each whole line of base64 after it, any length, up to a line that is not one. A line may
-    # end in a cut's "…" or "...", and one of a key line's length may run on into words, but not into an assignment:
-    # so the name of the next secret, as in "clientSecretToken: X" or "... = X", stays for that secret's own rule.
-    re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----(?:(?:\s|\\[nr])*[A-Za-z0-9+/=]+"
-               r"(?=[ \t]*(?:[\r\n\"'…]|\\[nr]|\.\.\.|\Z|-----)"
-               r"|(?<=[A-Za-z0-9+/=]{16})[ \t]+(?![ \t]*(?:[:=]|=>|is\b))))*"
-               r"(?:(?:\s|\\[nr])*-----END [A-Z ]*PRIVATE KEY-----)?"),
+    # repr(): the header, an encrypted key's header fields, and each whole line of base64 after them, any length, up to
+    # a line that is not one. A line may end in a cut's "…" or "..." or a backslash an escaped break was cut at, and
+    # one of a key line's length may run on into words, but not into an assignment: so the name of the next secret,
+    # as in "clientSecretToken: X" or "... = X", stays for that secret's own rule.
+    re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----(?:(?:\s|\\[nr])*(?:Proc-Type|DEK-Info):[^\r\n\\]*)*" + _KEY_LINES),
+    # An encrypted key's body after its DEK-Info line, where an older kb's row-by-row remask took the header and left
+    # the rest: the line names the cipher, so the base64 lines after it are a key's.
+    re.compile(r"DEK-Info:[ \t]*[A-Z0-9-]+,[0-9A-Fa-f]+" + _KEY_LINES),
     re.compile(_NB + r"sk-(?:ant-|proj-|or-v1-)?[A-Za-z0-9_-]{20,}"),
     re.compile(_NB + r"(?:sk|rk|pk)_(?:live|test)_[A-Za-z0-9]{16,}"),
     re.compile(_NB + r"(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})"),
@@ -108,16 +121,20 @@ FULL_LINE = 16
 
 
 def _spaces_end(text, pos):
-    while pos < len(text) and text[pos] in " \t":
+    while pos < len(text) and text[pos] in " \t\r":
         pos += 1
     return pos
 
 
 def _after_break(text, pos):
-    """Past any spaces and one line break, plain or escaped, from `pos`."""
-    pos = _spaces_end(text, pos)
-    brk = _KEY_BREAK.match(text, pos)
-    return brk.end() if brk else pos
+    """Past any spaces and a line break, plain or escaped, from `pos`, and a blank line after it, as an encrypted
+    key has between its fields and its body."""
+    for _ in range(2):
+        brk = _KEY_BREAK.match(text, _spaces_end(text, pos))
+        if not brk:
+            break
+        pos = brk.end()
+    return pos
 
 
 def _line_ends(text, pos):
@@ -151,44 +168,52 @@ def _key_line_before(text, end):
 def _headless_keys(text):
     """A private key's body lines up to its footer when its header is gone, cut off or masked apart by an older
     kb's row-by-row remask. Found from each footer back, a line at a time, so text without a footer costs one search.
-    The line next to the footer may be short; a word alone before a footer stays."""
+    The lines may be of any length, as a key wrapped narrow has them, and the top one may follow other text on its
+    line if it is of a key line's length. Lowercase words alone before a footer stay: a key's base64 has a capital, a
+    digit or "+/=" in any 16 characters, and a short lowercase line on top of the lines is a word, not a key's."""
     spans = []
     for footer in KEY_FOOTER.finditer(text):
-        line = _key_line_before(text, footer.start())
-        if not line:
-            continue
-        start, full = line[0], line[1] - line[0] >= FULL_LINE
-        line = _key_line_before(text, start)
-        while line and line[1] - line[0] >= FULL_LINE:
-            start, full, line = line[0], True, _key_line_before(text, line[0])
-        if full:
+        start, size, line = footer.start(), 0, _key_line_before(text, footer.start())
+        while line:
+            whole = line[0] == 0 or text.endswith(("\n", "\\n"), 0, line[0])
+            short = line[1] - line[0] < FULL_LINE
+            above = _key_line_before(text, line[0]) if whole else None
+            if short and (not whole or (not above and text[line[0]:line[1]].islower())):
+                break
+            start, size, line = line[0], size + line[1] - line[0], above
+        if size >= FULL_LINE and re.search(r"[A-Z0-9+/=]", text[start:footer.start()]):
             spans.append((start, footer.end()))
     return _replace(text, spans, "[masked]")
 
 
 def _key_rest(text):
     """The rest of a key's body after a placeholder, as an older kb's row-by-row remask leaves the chunk after the
-    header's: the line glued to it, the base64 lines after it, and the footer if there is one. A word glued to a
-    placeholder, with no line of a key's shape, stays, and so does one line of a key's shape on the line after it,
-    such as a hash. The last line may run on into words, which stay."""
+    header's: the line glued to it, the base64 lines after it, and the footer if there is one. main's key pattern
+    stops at a backslash, so a placeholder followed at once by an escaped line break counts as glued too, and the
+    lines after a glued placeholder may be of any length. A word glued to a placeholder, with no line of a key's
+    shape, stays, and so does one line of a key's shape on the line after an unglued one, such as a hash. The last
+    line may run on into words, which stay, but not into an assignment."""
     spans = []
     for glued in _PLACEHOLDER.finditer(text):
         run = _KEY_RUN.match(text, glued.end())
         end = run.end() if run else glued.end()
         first, lines, full = end - glued.end(), 0, 0
+        stuck = bool(first) or text.startswith(("\\n", "\\r\\n"), glued.end())
         while _line_ends(text, end):
             run = _KEY_RUN.match(text, _after_break(text, end))
             if not run or run.start() == end:
                 break
             length = run.end() - run.start()
             if not _line_ends(text, run.end()):
-                if length >= FULL_LINE and text[run.end()] in " \t":
+                base64ish = length >= FULL_LINE or (stuck and not run.group().islower())
+                if (base64ish and text[run.end()] in " \t"
+                        and not re.match(r"[ \t]*(?:[:=]|=>|is\b)", text[run.end():run.end() + 8])):
                     end, lines, full = run.end(), lines + 1, full + 1
                 break
-            if length < FULL_LINE and not _last_line(text, run.end()):
+            if length < FULL_LINE and not stuck and not _last_line(text, run.end()):
                 break
             end, lines, full = run.end(), lines + 1, full + (length >= FULL_LINE)
-        if (lines if first else full >= 2) or (first >= FULL_LINE and (_line_ends(text, end) or text[end] in " \t")):
+        if (lines if stuck else full >= 2) or (first >= FULL_LINE and (_line_ends(text, end) or text[end] in " \t\r")):
             footer = KEY_FOOTER.match(text, _after_break(text, end))
             spans.append((glued.end(), footer.end() if footer else end))
     return _replace(text, spans, "")
