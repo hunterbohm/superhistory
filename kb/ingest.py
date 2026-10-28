@@ -7,7 +7,7 @@ import json
 import sys
 import time
 
-from kb import ai, store, summarize
+from kb import ai, mask as mask_module, store, summarize
 from kb.mask import holds_secret, mask, masked_log, secret_in_id
 from kb.remote import HostAway, SshReader
 from kb.sources import Excludes, Gone, Item, Progress, Run
@@ -132,6 +132,7 @@ def run(db, config, log, only=(), with_summaries=True, model_factory=None):
     """Every configured source, or those named in `only`, then summaries for new long items. Returns the number of
     failures. The caller holds the database lock."""
     log = masked_log(log)
+    capped = mask_module.capped
     model_factory = model_factory or (lambda: ai.load(config.ai))
     local = LocalReader(model_factory)
     remote = {h.name: SshReader(h) for h in config.hosts}
@@ -176,5 +177,11 @@ def run(db, config, log, only=(), with_summaries=True, model_factory=None):
         else:
             store.record_ok(db, "summarize")
             db.commit()
+    if mask_module.capped > capped:
+        total = int(store.get_watermark(db, store.STATE, "mask_capped") or 0) + mask_module.capped - capped
+        store.set_watermark(db, store.STATE, "mask_capped", total)
+        db.commit()
+        log.warning("masking stopped at its pass limit %d times and masked those regions whole",
+                    mask_module.capped - capped)
     log.info("ingest done: %d failures", failures)
     return failures

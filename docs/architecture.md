@@ -63,7 +63,9 @@ footer, through the end of its paragraph (the next blank line, plain or escaped)
 line after its DEK-Info field. A footer with no header masks its paragraph up to it, and what an older kb's
 row-by-row remask left after its placeholder (base64 glued to it, or an escaped break and a key line) masks through
 its footer or the end of its paragraph. Text after a broken key in its paragraph is masked with it; that is the cost.
-`mask()` repeats until a pass changes nothing, so masked text masks to itself. Each ingest masks older rows again for up to a minute
+`mask()` repeats until a pass changes nothing, so masked text masks to itself and plain text costs one pass. No
+pattern matches a placeholder alone, so it stops; at its limit of eight passes it masks the part still changing whole,
+and ingest counts such texts for `kb stats`. Each ingest masks older rows again for up to a minute
 (`store.remask`), deletes items whose id holds a secret and logs each with its id masked, and records today's version,
 so an interrupted run leaves the rest old. The file is rebuilt once none are left, and a rebuild cut short runs again
 on the next ingest. The header counts the rows left, and `kb remask` does them all at once. An HTTP error body longer

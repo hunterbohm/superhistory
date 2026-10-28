@@ -520,6 +520,18 @@ class CliTest(unittest.TestCase):
         finally:
             db.close()
 
+    def test_masking_that_hits_its_pass_limit_is_counted_in_stats(self):
+        from kb import mask as mask_module
+        self.configure(self.make_notes())
+        real = mask_module._mask_once
+        with mock.patch.object(mask_module, "_mask_once",  # a pass that never settles on the note's text
+                               lambda text: text + "!" if "walrus pricing" in text else real(text)):
+            self.assertEqual(self.ingest(), 0)
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            cli.main(["stats"])
+        self.assertIn("Masking reached its pass limit on", out.getvalue())
+
     def test_ingest_reads_the_configured_sources(self):
         self.configure(self.make_notes())
         self.assertEqual(self.ingest(), 0)

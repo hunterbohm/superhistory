@@ -1,6 +1,7 @@
 import bisect
 import hashlib
 import logging
+import os
 import re
 import sys
 import traceback
@@ -151,15 +152,28 @@ def _mask_once(text):
     return ENV_KEY_SECRET.sub(_mask_keyed, KEYED_SECRET.sub(_mask_keyed, text))
 
 
+# How many passes mask() makes at most, and how often, in this process, a text still changed at the last one.
+MAX_PASSES = 8
+capped = 0
+
+
 def mask(text):
     """The text with every secret replaced by "[masked]". A placeholder can make the text next to it read as a secret
-    or as a key's leftovers, so masking repeats until a pass changes nothing: masked text masks to itself."""
-    for _ in range(8):
+    or as a key's leftovers, so masking repeats until a pass changes nothing: masked text masks to itself, and text
+    with no secret costs one pass. No pattern matches a placeholder alone, so it stops; should a text still change at
+    the last pass, the region still changing is masked whole, and counted in `capped`."""
+    global capped
+    original = text
+    for _ in range(MAX_PASSES):
         masked = _mask_once(text)
         if masked == text:
-            break
+            return text
         text = masked
-    return text
+    # Still changing: everything between what the original and the last pass share at both ends becomes one mask.
+    head = len(os.path.commonprefix([original, text]))
+    tail = len(os.path.commonprefix([original[head:][::-1], text[head:][::-1]]))
+    capped += 1
+    return text[:head] + "[masked]" + text[len(text) - tail:]
 
 
 def clip(text, limit, more=" …"):

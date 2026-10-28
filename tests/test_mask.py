@@ -1,4 +1,5 @@
 import unittest
+from unittest import mock
 
 from kb.mask import is_auth_code, is_auth_noise, mask, secret_in_id
 
@@ -213,6 +214,55 @@ class HeadlessKeyTest(unittest.TestCase):
         started = time.monotonic()
         mask(("A" * 40 + "\n") * 5000)
         self.assertLess(time.monotonic() - started, 2)
+
+
+class RepeatTest(unittest.TestCase):
+    """mask() repeats until a pass changes nothing, so masked text masks to itself, and stops: no pattern matches a
+    placeholder alone, and a text still changing at the pass limit has its changing part masked whole."""
+
+    def test_no_pattern_matches_a_placeholder_alone(self):
+        from kb import mask as mask_module
+        patterns = (mask_module.SECRET_PATTERNS + mask_module.PREFIXED_SECRETS
+                    + [mask_module.KEYED_SECRET, mask_module.ENV_KEY_SECRET, mask_module._GLUED_RUN,
+                       mask_module._KEY_REST])
+        for text in ("[masked]", "[masked] [masked]\n[masked]\n\n[masked]", "a [masked], b [masked].", '"[masked]"'):
+            with self.subTest(text=text):
+                for pattern in patterns:
+                    self.assertIsNone(pattern.search(text), pattern.pattern[:60])
+                self.assertEqual(mask_module._mask_once(text), text)
+
+    def test_masked_text_masks_to_itself(self):
+        import random
+        from tests.test_write_fuzz import Planted
+        for seq in range(2000):
+            text = Planted(random.Random(seq), seq).text()
+            once = mask(text)
+            self.assertEqual(mask(once), once, f"seq {seq}")
+        for text in ("Order ref VP1" + "A" * 26 + "ghp_" + "B" * 30 + " thanks", "x passwd y set-cookie: basic "):
+            self.assertEqual(mask(mask(text)), mask(text))
+
+    def test_text_still_changing_at_the_limit_is_masked_whole_and_counted(self):
+        from kb import mask as mask_module
+        before = mask_module.capped
+        with mock.patch.object(mask_module, "_mask_once", lambda text: text[:6] + "x" + text[6:]):
+            self.assertEqual(mask_module.mask("keep: secret part"), "keep: [masked]secret part")
+        self.assertEqual(mask_module.capped, before + 1)
+
+    def test_plain_text_costs_one_pass(self):
+        import time
+        from kb import mask as mask_module
+        plain = "walrus ledger notes deploy plan " * 20000
+        with mock.patch.object(mask_module, "_mask_once", wraps=mask_module._mask_once) as once:
+            mask(plain)
+            self.assertEqual(once.call_count, 1)
+            mask(plain + " password=walrus2secret9")
+            self.assertEqual(once.call_count, 3, "a text with a secret: one pass that masks, one that confirms")
+        took = {}
+        for name, fn in (("mask", mask), ("one pass", mask_module._mask_once)):
+            started = time.process_time()
+            fn(plain)
+            took[name] = time.process_time() - started
+        self.assertLess(took["mask"], 1.5 * took["one pass"] + 0.02, took)
 
 
 class KeyShapeTest(unittest.TestCase):
