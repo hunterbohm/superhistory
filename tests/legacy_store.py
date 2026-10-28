@@ -3,8 +3,9 @@ rows recorded a mask version, copied as they were. `mask` stands for that kb's m
 patterns miss every secret, the worst an older kb can do."""
 import hashlib
 import json
+import re
 
-from kb.mask import clean
+from kb.mask import SECRET_PATTERNS, clean
 
 ITEM_KINDS = ("doc", "raw")
 SUMMARY_KINDS = ("segment", "atom")
@@ -93,3 +94,16 @@ def remask(db, mask):
                 updates.append((new_title, new_content, rid))
         db.executemany("UPDATE docs SET title=?, content=? WHERE id=?", updates)
         last = batch[-1][0]
+
+
+# main's private key pattern, which takes any run of base64 characters and whitespace after the header, so in one
+# chunk it masks to the chunk's end and leaves the rest of the body, glued to its placeholder, in the next.
+MAIN_KEY = re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----[A-Za-z0-9+/=\s]*(?:-----END [A-Z ]*PRIVATE KEY-----)?")
+
+
+def token_mask(text):
+    """A mask that knows only token shapes, with main's key pattern for keys."""
+    text = MAIN_KEY.sub("[masked]", text)
+    for pattern in SECRET_PATTERNS[1:]:
+        text = pattern.sub("[masked]", text)
+    return text

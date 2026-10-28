@@ -162,7 +162,24 @@ class HeadlessKeyTest(unittest.TestCase):
         for brk in ("\n", "\r\n", "\\n", "\\r\\n"):
             with self.subTest(brk=brk):
                 text = f"[masked]{self.LINE}{brk}{self.LINE}{brk}-----END PRIVATE KEY-----{brk}after"
-                self.assertEqual(mask(text), f"[masked][masked]{brk}after")
+                self.assertEqual(mask(text), f"[masked]{brk}after")
+                self.assertEqual(mask(text.replace("[masked]", "notes\n")), f"notes\n[masked]{brk}after")
+
+    def test_a_short_last_line_and_a_placeholder_glued_body_are_masked(self):
+        for text in (f"[masked]{self.LINE}\n{self.LINE}\nAg==\n-----END PRIVATE KEY-----",
+                     f"{self.LINE}\nAg==\n-----END PRIVATE KEY-----", f"[masked]rem\n{self.LINE}\n{self.LINE} \nAg==",
+                     f"[masked]{self.LINE}\\n{self.LINE}\\nAg==\\n\""):
+            with self.subTest(text=text[:30]):
+                self.assertNotIn(self.LINE[:12], mask(text))
+                self.assertNotIn("Ag==", mask(text))
+        for text in ("x [masked] and Ag==\nwords", "token=[masked]\n3f2a9c" + "0" * 34 + "\nnext"):
+            self.assertEqual(mask(text), text, "a word or one hash line after a placeholder stays")
+
+    def test_the_rest_of_a_token_masked_a_chunk_at_a_time_is_masked(self):
+        # An older kb masked "sk-ant-..." in one chunk; the token's last characters began the next.
+        self.assertEqual(mask("see [masked]QQQQQQQQQQQQQQQ and more"), "see [masked] and more")
+        # Its key pattern ran on into the next line and took the start of a secret's name.
+        self.assertEqual(mask("[masked]_key: walrus2secret9 next"), "[masked] next")
 
     def test_text_before_the_body_and_a_footer_alone_stay(self):
         self.assertEqual(mask(f"notes before\n{self.LINE}\n-----END PRIVATE KEY-----"), "notes before\n[masked]")

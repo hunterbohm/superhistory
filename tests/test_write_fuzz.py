@@ -22,7 +22,7 @@ import unittest
 from unittest import mock
 
 from kb import ai, check, cli, ingest, search, store, summarize
-from kb.mask import SECRET_PATTERNS, mask, mask_all
+from kb.mask import mask, mask_all
 from kb.sources import Item
 from tests import legacy_store
 
@@ -58,14 +58,23 @@ class Planted:
     def keyed(self):
         return self.r.choice(("password=", "api_key: ", "secret_token=", "PASSWORD = ")) + self._value("fz{}Kq12345678")
 
-    def pem(self):
+    def pem(self, whole=False):
+        """A private key: whole, long enough that a middle chunk holds only body lines, cut off before its footer, or
+        as an older kb's row-by-row remask leaves it, its placeholder and then the rest of the body."""
         line = (self._value("Fz{}xPemBodyLine" + "PemBodyLine" * 5)[:64])
         self.pieces.update((line, line[:12]))
-        return "-----BEGIN PRIVATE KEY-----\n" + "\n".join([line] * self.r.randint(2, 6)) + "\n-----END PRIVATE KEY-----"
+        body = "\n".join([line] * self.r.randint(2, 10))
+        shape = 1 if whole else self.r.random()
+        if shape < 0.2:
+            return "-----BEGIN PRIVATE KEY-----\n" + body
+        if shape < 0.4:
+            # main's key pattern takes the line break too, so what follows its placeholder starts glued to it
+            return "[masked]" + body[self.r.randint(0, 70):].lstrip("\n") + self.r.choice(("\n-----END PRIVATE KEY-----", ""))
+        return "-----BEGIN PRIVATE KEY-----\n" + body + "\n-----END PRIVATE KEY-----"
 
     def text(self):
         if self.r.random() < 0.25:
-            return " ".join(self.r.choice(FILLER) for _ in range(self.r.randint(5, 80))) + " walrus ledger"
+            return "walrus ledger " + " ".join(self.r.choice(FILLER) for _ in range(self.r.randint(5, 80)))
         parts = []
         for _ in range(self.r.randint(2, 6)):
             pick = self.r.random()
@@ -73,7 +82,9 @@ class Planted:
                 parts.append(" ".join(self.r.choice(FILLER) for _ in range(self.r.randint(3, 30))))
             else:
                 parts.append((self.token, self.keyed, self.pem)[int(pick * 10) % 3]())
-        return self.r.choice((" ", "\n", " \n")).join(parts) + " walrus ledger"
+        if self.r.random() < 0.15:  # a key cut off by a size limit, anywhere in a line, ends the text
+            parts.append(self.pem(whole=True)[:self.r.randint(40, 600)])
+        return "walrus ledger " + self.r.choice((" ", "\n", " \n")).join(parts)
 
     def title(self):
         return self.r.choice(("Walrus notes", f"Notes {self.token()}", f"Plan {self.keyed()}"))
@@ -141,11 +152,7 @@ def op_old_kb(db, r, p):
 
 def op_old_remask(db, r, p):
     """An older kb's remask, whose mask knows only token shapes and masks each row by itself."""
-    def older(text):
-        for pattern in SECRET_PATTERNS:
-            text = pattern.sub("[masked]", text)
-        return text
-    legacy_store.remask(db, older)
+    legacy_store.remask(db, legacy_store.token_mask)
 
 
 def op_remask(db, r, p):
