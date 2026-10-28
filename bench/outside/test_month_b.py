@@ -25,6 +25,7 @@ class Installed(unittest.TestCase):
     """Runs each test with month_b.install() applied and a fresh set of limits, then undoes both."""
 
     def setUp(self):
+        gateway.LIMITED.clear()
         self.saved = [gateway.post, outside.LIMITS]
         if openai:
             self.saved += [openai.OpenAI.__init__, Completions.create]
@@ -32,6 +33,7 @@ class Installed(unittest.TestCase):
         month_b.install()
 
     def tearDown(self):
+        gateway.LIMITED.clear()
         gateway.post, outside.LIMITS = self.saved[:2]
         if openai:
             openai.OpenAI.__init__, Completions.create = self.saved[2:]
@@ -45,7 +47,8 @@ class GatewayTest(Installed):
             sent.append(req.full_url)
             raise urllib.error.HTTPError(req.full_url, 429, "Too Many Requests", {}, io.BytesIO(b"cooling down"))
 
-        urllib.request.urlopen = limited
+        urllib.request.urlopen, key = limited, os.environ.get("BENCH_API_KEY")
+        os.environ["BENCH_API_KEY"] = "test"
         outside.LIMITS.PAUSE_SECONDS = 0.1
         try:
             with self.assertRaises(outside.RateLimited):
@@ -62,6 +65,10 @@ class GatewayTest(Installed):
                 outside.LIMITS.wait()
         finally:
             urllib.request.urlopen = urlopen
+            if key is None:
+                del os.environ["BENCH_API_KEY"]
+            else:
+                os.environ["BENCH_API_KEY"] = key
 
 
 @unittest.skipUnless(openai, "needs the OpenAI SDK, as Mem0 does")
@@ -120,6 +127,28 @@ class RunnerTest(Installed):
                     month_b.load_claude_mem(reused, [])
             finally:
                 month_b.STORES, claude_mem.worker = saved, worker
+
+    def test_a_rate_limit_raised_by_gateway_during_mem0s_load_pauses_then_loads_once_more(self):
+        calls = []
+
+        def load(items, folder):
+            calls.append(folder)
+            if len(calls) == 1:
+                gateway.limited("Mem0's model call: HTTP 429")
+            return {"add_failures": 0, "memories": 3}
+
+        make, run_tool, saved = month_b.tools.make, month_b.run.run_tool, month_b.STORES
+        month_b.tools.make = lambda name: SimpleNamespace(load=load, retrieve=lambda q: Retrieved("", [], 0.0))
+        month_b.run.run_tool = lambda *args: {"ran": 0, "failed": 0}
+        outside.LIMITS.PAUSE_SECONDS = 0.1
+        with tempfile.TemporaryDirectory() as stores:
+            month_b.STORES = stores
+            try:
+                entry = month_b.run_rival("mem0", [], [], 2)
+            finally:
+                month_b.tools.make, month_b.run.run_tool, month_b.STORES = make, run_tool, saved
+        self.assertEqual((len(calls), entry["load"]["memories"], outside.LIMITS.limits), (2, 3, 1))
+        self.assertFalse(gateway.LIMITED.is_set())
 
     def test_it_runs_only_the_rivals(self):
         with self.assertRaises(SystemExit):
