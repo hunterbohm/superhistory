@@ -13,7 +13,8 @@ import sqlite3
 import time
 from datetime import datetime, timezone
 
-from .mask import VERSION, clean, holds_secret, mask, mask_all, masked_log, secret_in_id
+from .config import NAME_RE
+from .mask import KEY_WORD, VERSION, clean, holds_secret, mask, mask_all, masked_log, secret_in_id
 
 CHUNK = 4000
 ITEM_KINDS = ("doc", "raw")
@@ -153,13 +154,14 @@ def _whole(rows):
 
 
 def secret_id(source, source_id):
-    """Whether kb refuses an item under this source and stored id, "<host>:<reader's id>". The host and the reader's
-    id are checked apart, the host as a config name and the id with secret_in_id(): joined by kb's colon, a host such
-    as "tokenbox" would read as the name of a secret."""
+    """Whether kb refuses an item under this source and stored id. kb stores "<host>:<reader's id>", with a host as
+    config allows one, never a secret's key word. Such an id is checked as its two parts, since joined by kb's colon a
+    host such as "tokenbox" would read as the name of a secret. Any other id is checked whole, so "password:...",
+    "cookie:..." or a link with a password in it is refused."""
     host, colon, sid = source_id.partition(":")
-    if not colon:
-        host, sid = "", source_id
-    return holds_secret(source) or holds_secret(host) or secret_in_id(sid)
+    if colon and NAME_RE.match(host) and not KEY_WORD.fullmatch(host) and not sid.startswith("//"):
+        return holds_secret(source) or holds_secret(host) or secret_in_id(sid)
+    return holds_secret(source) or secret_in_id(source_id)
 
 
 def replace_rows(db, source, source_id, rows, kinds=ITEM_KINDS):

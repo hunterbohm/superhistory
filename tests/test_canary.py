@@ -40,7 +40,8 @@ KINDS = ("env", "cmd", "cmdfail", "cmdtimeout", "configkey", "itemtext", "itemme
          "httpbad", "httpstatus", "modeltext", "imap", "imapbad", "imaperr", "remoteopt", "aipath", "session")
 CANARY = {kind: f"sk-ant-api03-canary-{kind}-" + "Z" * 24 for kind in KINDS}
 # Secrets that only their field name gives away, as in "password=...": mask() knows them by the name in front.
-KEYED = ("metapw", "metanested", "ghtail", "aitail", "turntail", "sumjoin", "syncpw", "idassign", "syncappend")
+KEYED = ("metapw", "metanested", "ghtail", "aitail", "turntail", "sumjoin", "syncpw", "idassign", "syncappend",
+         "idarrow", "barepw")
 CANARY.update({kind: f"canary{kind}Zz12345678" for kind in KEYED})
 NAMES = ("machinename", "hostname", "sourcename", "timestamp", "mark", "ghargs", "hookprompt", "hooksession",
          "transcript", "hooksettings", "schedout", "sortsubject", "sortsender", "contextmessage", "trialid",
@@ -231,7 +232,8 @@ class CanaryTest(unittest.TestCase):
                             f"The pelican staging token is {CANARY['itemtext']}\n" + "Long line of notes.\n" * 800,
                  f"key-{CANARY['notepath']}.md": "the first file named after a token",
                  f"key-{CANARY['notepath2']}.md": "the second file named after a token",
-                 f"token={CANARY['idassign']}.md": "a file whose name assigns a token by its key's name"}
+                 f"token={CANARY['idassign']}.md": "a file whose name assigns a token by its key's name",
+                 f"password=>{CANARY['idarrow']}.md": "a file whose name assigns a password with =>"}
         for name, text in texts.items():
             with open(os.path.join(self.notes, "Area", name), "w") as fh:
                 fh.write(text)
@@ -511,6 +513,9 @@ password = "cmd:echo {CANARY['cmdfail']} >&2; exit 3"
             {"kind": "raw", "ts": NOW.isoformat(), "title": "split", "content": split[i:i + store.CHUNK],
              "metadata": {"hash": "synclong", "chunk": n, "chunks": 3}}
             for n, i in enumerate(range(0, len(split), store.CHUNK))])
+        with self.assertRaises(ValueError, msg="an id with no host is read whole"):
+            store.replace_rows(db, "notes", f"password:{CANARY['barepw']}", [
+                {"kind": "doc", "ts": NOW.isoformat(), "title": "t", "content": "walrus bare", "metadata": {}}])
         with self.assertRaises(ValueError, msg="an id that looks like a secret is refused, as ingest refuses it"):
             store.replace_rows(db, "notes", f"desk:key-{CANARY['syncid']}.md", [
                 {"kind": "doc", "ts": NOW.isoformat(), "title": "t", "content": "walrus id", "metadata": {}}])

@@ -8,7 +8,7 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from unittest import mock
 
-from kb import store
+from kb import search, store
 
 
 def iso(delta=timedelta(0)):
@@ -425,6 +425,20 @@ class MaskVersionTest(TempDB):
                 store.replace_rows(self.db, source, sid, [row])
             self.assertNotIn(self.TOKEN[:12], str(caught.exception))
         self.assertEqual(self.ids(), [])
+
+    def test_an_id_without_a_host_is_checked_whole(self):
+        for sid in ("password:walrus2secret9", "https://user:walrus9pw@example.com/notes",
+                    "Cookie:sessionid=Walrus2Secret987654", "cookie:sessionid=Walrus2Secret987654", "token=>walrus2secret9"):
+            with self.subTest(sid=sid):
+                self.assertTrue(store.secret_id("notes", sid), "bare")
+                self.assertTrue(store.secret_id("notes", f"desk:{sid}"), "under a host")
+                with self.assertRaises(ValueError):
+                    store.replace_rows(self.db, "notes", sid, [{"kind": "doc", "ts": iso(), "title": "t",
+                                                                "content": "c", "metadata": {}}])
+                self.old(sid, "walrus deployment")
+        self.assertEqual(search.search(self.db, "walrus deployment"), [], "old rows with such ids are left out")
+        store.remask(self.db)
+        self.assertEqual(self.ids(), [], "and remask deletes them")
 
     def test_the_host_and_the_readers_id_are_checked_apart(self):
         for host in ("desk", "tokenbox", "secret-lab", "studio-pw", "passwordless"):

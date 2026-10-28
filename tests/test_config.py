@@ -100,6 +100,18 @@ class ParseTest(unittest.TestCase):
         self.assertEqual(c.units(), ("notes@studio", "summarize"))
 
 
+class KeyWordHostTest(unittest.TestCase):
+    def test_a_machine_or_host_named_as_a_secrets_key_word_is_refused(self):
+        for name in ("password", "token", "cookie", "api_key", "passcode"):
+            with self.subTest(name=name):
+                with self.assertRaises(config.ConfigError):
+                    config.parse(f'machine = "{name}"\n')
+                with self.assertRaises(config.ConfigError):
+                    config.parse(f'[hosts.{name}]\nssh = "x"\n')
+        for name in ("tokenbox", "secret-lab", "studio-pw", "passwordless", "desk"):
+            self.assertEqual(config.parse(f'machine = "{name}"\n').machine, name)
+
+
 class SecretTest(unittest.TestCase):
     def test_env_file_and_command(self):
         with tempfile.TemporaryDirectory() as tmp:

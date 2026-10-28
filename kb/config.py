@@ -28,7 +28,7 @@ import typing
 from dataclasses import dataclass
 from typing import Any, Optional, Tuple
 
-from kb.mask import holds_secret, mask
+from kb.mask import KEY_WORD, holds_secret, mask
 
 # Names go into every stored id and into the logs, so one that looks like a key is refused; the message is masked.
 SECRET_NAME = "{where}: this name looks like a secret; use a plain name"
@@ -199,7 +199,7 @@ def parse(text):
     if not isinstance(machine, str) or not NAME_RE.match(machine):
         problems.append("machine: use lowercase letters, digits, - and _, up to 40 characters")
         machine = "local"
-    elif holds_secret(machine):
+    elif holds_secret(machine) or KEY_WORD.fullmatch(machine):
         problems.append(SECRET_NAME.format(where="machine"))
         machine = "local"
     tables = {key: raw.pop(key, {}) for key in ("ai", "check", "summarize", "schedule", "hosts", "sources")}
@@ -218,7 +218,7 @@ def parse(text):
     for name, table in tables["hosts"].items():
         if name == machine or not NAME_RE.match(name):
             problems.append(f"hosts.{name}: a host name differs from machine and uses lowercase letters, digits, - and _")
-        elif holds_secret(name):
+        elif holds_secret(name) or KEY_WORD.fullmatch(name):
             problems.append(SECRET_NAME.format(where=f"hosts.{name}"))
         elif not isinstance(table, dict):
             problems.append(f"hosts.{name}: expected a table")

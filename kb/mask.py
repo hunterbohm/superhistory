@@ -47,9 +47,14 @@ _ENV_KEY_NAME = r"(?<![A-Za-z0-9_])([A-Z][A-Z0-9_]*_KEY)(?![A-Za-z0-9_])"
 _VALUE = r"([^ \t\n\r\"'`,;<>)\]}]+)"
 KEYED_SECRET = re.compile(_KEY_NAME + r"((?:[\"'])?[ \t\r\n]*(?:[:=]|=>|\bis\b)[ \t\r\n]*[\"']?)" + _VALUE)
 ENV_KEY_SECRET = re.compile(_ENV_KEY_NAME + r"((?:[\"'])?[ \t\r\n]*[:=][ \t\r\n]*[\"']?)" + _VALUE)
-# In an item id, a value counts by its key's name only in assignment form, "token=..." or "token:...", with no space.
-KEYED_ID = re.compile(_KEY_NAME + r"((?:[\"'])?[:=][\"']?)" + _VALUE)
-ENV_KEY_ID = re.compile(_ENV_KEY_NAME + r"((?:[\"'])?[:=][\"']?)" + _VALUE)
+# In an item id, a value counts by its key's name only in assignment form, "token=...", "token=>..." or "token:...",
+# with no space.
+KEYED_ID = re.compile(_KEY_NAME + r"((?:[\"'])?(?:=>|[:=])[\"']?)" + _VALUE)
+ENV_KEY_ID = re.compile(_ENV_KEY_NAME + r"((?:[\"'])?(?:=>|[:=])[\"']?)" + _VALUE)
+# A name that is a secret's key word by itself, such as "password" or "cookie". No host may be named so, which lets an
+# id's first colon be read as kb's own "<host>:" only when what comes before it could be a host.
+KEY_WORD = re.compile(r"(?i)(?:api[_-]?key|access[_-]?key|private[_-]?key|secret|token|credentials?|passw(?:or)?d|"
+                      r"passcode|pass|pwd|pw|session[_-]?(?:token|key|secret|cookie)|bw_session|(?:set-)?cookie|\w+_key)")
 PASSWORD_NAME = re.compile(r"(?i)passw(?:or)?d|passcode|bw_session|[_-](?:pass|pwd|pw)$")
 PLACEHOLDERS = {"string", "str", "none", "null", "nil", "true", "false", "undefined", "required", "optional",
                 "xxx", "xxxx", "****", "...", "redacted", "<redacted>", "secret", "password", "token"}
