@@ -14,9 +14,16 @@ python3 bench/outside/outside.py                          # every message, every
 python3 bench/outside/outside.py --groups conv-26 --limit 5 --tools none,check
 ```
 
-The tables need only the packages pinned in `outside.py`'s header, which `uv run` installs. A run needs the Python that has the rivals' packages, and a Supermemory server, as for the month (`bench/README.md`). `SUPERMEMORY_URL` and `SUPERMEMORY_KEY_FILE` point the adapter at it. Rows go to `results/<test>/<tool>.jsonl`, one per message; a rerun runs only messages with no row yet. `results/runs.json` records each run's models, data hashes, store stats, rate limits and failures.
+The tables need only the packages pinned in `outside.py`'s header, which `uv run` installs. The tests need the same packages, and the OpenAI SDK for the one test of Mem0's client, which skips without it:
 
-A run makes at most two model calls at once, the limit for a benchmark run on the shared model plans. Answers, judges, the check's own calls and its summaries all wait for one of two slots, and the check's hedge, which sends a second copy of a call still running after 3 seconds, sends it only when a slot is free. Mem0's calls go through the same slots, with the OpenAI SDK's own retries off; Supermemory's server makes its own, as below. After an HTTP 429 or "cooling down" from a model, no new call goes to it for 30 minutes, checked again whenever a call gets a slot, then it is tried once more; a second limit stops the run. A message whose lookup fails, times out or meets a limit gets no row and runs again, so no reply is graded without the lookup it should have had.
+```bash
+uv run --no-project --python 3.12 --with openai==3.39.0 --with numpy==2.1.3 --with nltk==3.9.1 --with regex==2024.11.6 \
+  python -m unittest discover -s bench/outside -p "test_*.py"
+```
+
+A run needs the Python that has the rivals' packages, and a Supermemory server, as for the month (`bench/README.md`). `SUPERMEMORY_URL` and `SUPERMEMORY_KEY_FILE` point the adapter at it. Rows go to `results/<test>/<tool>.jsonl`, one per message; a rerun runs only messages with no row yet. `results/runs.json` records each run's models, data hashes, store stats, rate limits and failures.
+
+A run makes at most two model calls at once, the limit for a benchmark run on the shared model plans. Answers, judges, the check's own calls and its summaries all wait for one of two slots, and the check's hedge, which sends a second copy of a call still running after 3 seconds, sends it only when a slot is free. Mem0's calls go through the same slots, with the OpenAI SDK's own retries off; Supermemory's server makes its own, as below. After an HTTP 429 or "cooling down" from any model, no new call goes out for 30 minutes, checked again whenever a call gets a slot, then work resumes once; a second limit stops the run. The pause is kept on `bench/gateway.py`'s own rate-limit flag and raises its `RateLimited`, so a limit that gateway.py's guard or the Mem0 adapter sees first starts the same pause. A message whose lookup fails, times out or meets a limit gets no row and runs again, so no reply is graded without the lookup it should have had.
 
 ## Licenses
 
@@ -115,6 +122,6 @@ SUPERMEMORY_URL=... SUPERMEMORY_KEY_FILE=... CLAUDE_MEM_HOME=<month B home> \
   python3 bench/outside/month_b.py --tools claude-mem,mem0,supermemory
 ```
 
-The rivals run one at a time, with at most two model calls at once. `bench/gateway.py`'s retries on HTTP 429 are replaced and the OpenAI SDK's, which Mem0 uses, are turned off, so a rate limit stops new work on that model for 30 minutes and work then resumes once; a second limit stops the run (`test_month_b.py`). A Mem0 store built while a model was limited may be missing memories, so it is not kept and is built once more after the pause. Mem0's store is kept outside `/tmp`, Supermemory's server keeps its documents, and claude-mem's worker keeps its store, so a restart picks up where the run stopped; a claude-mem replay that stopped partway has to start again on an empty store.
+The rivals run one at a time, with at most two model calls at once. `bench/gateway.py`'s `post` is replaced by one under these limits and the OpenAI SDK's retries, which Mem0 uses, are turned off, so a rate limit, whichever guard sees it, stops new work for 30 minutes and work then resumes once; a second limit stops the run (`test_month_b.py`). A Mem0 store built while a model was limited may be missing memories, so it is not kept and is built once more after the pause. Mem0's store is kept outside `/tmp`, Supermemory's server keeps its documents, and claude-mem's worker keeps its store, so a restart picks up where the run stopped; a claude-mem replay that stopped partway has to start again on an empty store.
 
 Supermemory's server and claude-mem's worker call their model while they take in the month, and those calls cannot go through the run's slots: Supermemory's ingest runs 2 at a time and claude-mem's worker has 2 agent slots, nothing else runs while either takes in the month, and how either handles a rate limit is its own.
