@@ -45,6 +45,7 @@ class PairedTest(unittest.TestCase):
             git(repo, "config", "user.email", "test@example.com")
             git(repo, "config", "user.name", "test")
             open(os.path.join(repo, "kb", "check.py"), "w").write("PICKS = 4\n")
+            open(os.path.join(repo, "kb", "items.jsonl"), "w").write("{}\n")
             git(repo, "add", ".")
             git(repo, "commit", "-qm", "baseline")
             base = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True).stdout.strip()
@@ -62,6 +63,11 @@ class PairedTest(unittest.TestCase):
             self.assertFalse(os.path.exists(os.path.join(folder, "kb", "added.py")))
             self.assertEqual(open(os.path.join(folder, "bench", "harness.py")).read(), "HARNESS = 2\n")
             self.assertEqual(paired.baseline_checkout(folder, head, base, expected, kb_hash, repo), expected)
+            open(os.path.join(folder, "kb", "items.jsonl"), "w").write('{"changed": 1}\n')
+            with self.assertRaises(SystemExit) as stop:
+                paired.baseline_checkout(folder, head, base, expected, kb_hash, repo)
+            self.assertIn("kb/items.jsonl", str(stop.exception))
+            open(os.path.join(folder, "kb", "items.jsonl"), "w").write("{}\n")
             open(os.path.join(folder, "bench", "harness.py"), "w").write("HARNESS = 3\n")
             with self.assertRaises(SystemExit):
                 paired.baseline_checkout(folder, head, base, expected, kb_hash, repo)

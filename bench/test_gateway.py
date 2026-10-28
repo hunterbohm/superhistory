@@ -421,6 +421,20 @@ class RateLimitTest(unittest.TestCase):
         self.assertEqual(len(calls), gateway.ATTEMPTS)
         gateway.check_limited()
 
+    def test_a_rate_limit_error_type_under_another_status_stops_both_paths(self):
+        body = json.dumps({"error": {"type": "rate_limit_error", "message": "Rate limit exceeded"}})
+        for make in (lambda: http_error(503, body), lambda: http_error(500, '{"error": "Rate limit exceeded"}')):
+            gateway.LIMITED.clear()
+            network, calls = self.failing(make())
+            with network, mock.patch("time.sleep"), self.assertRaises(gateway.RateLimited):
+                gateway.post("/v1/messages", {})
+            self.assertEqual(len(calls), 1)
+            gateway.LIMITED.clear()
+            network, calls = self.failing(make())
+            with network, self.assertRaises(gateway.RateLimited):
+                ai.with_retries(lambda: check.model().ask(ai.Prompt("system", "user"), 5), sleep=lambda seconds: None)
+            self.assertEqual(len(calls), 1)
+
     def test_cooling_down_after_a_long_diagnostic_still_stops_both_paths(self):
         body = json.dumps({"diagnostic": "x" * 1000, "message": "All credentials for model x are cooling down"})
         network, calls = self.failing((503, body))

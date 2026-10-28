@@ -50,8 +50,17 @@ def check_limited():
                           "minutes")
 
 
+# What a reply that is not a model's says when the plan is limited, in an error's type or its message.
+LIMIT_WORDS = ("rate_limit", "rate limit", "cooling down")
+
+
+def names_limit(text):
+    text = text.lower()
+    return any(word in text for word in LIMIT_WORDS)
+
+
 def is_rate_limit(code, detail):
-    return code == 429 or "cooling down" in detail.lower()
+    return code == 429 or names_limit(detail)
 
 
 def limited_reply(response):
@@ -63,12 +72,11 @@ def limited_reply(response):
                  or response.get("choices") and isinstance(response["choices"], list)
                  or isinstance(response.get("input_tokens"), int))):
         return False
-    text = json.dumps(response).lower()
-    return "rate_limit" in text or "rate limit" in text or "cooling down" in text
+    return names_limit(json.dumps(response))
 
 
 # The longest phrase that names a limit, less one: how much of the text before a new piece is searched with it.
-OVERLAP = len("cooling down") - 1
+OVERLAP = max(map(len, LIMIT_WORDS)) - 1
 
 
 class _Arriving:

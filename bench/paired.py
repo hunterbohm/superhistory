@@ -101,6 +101,10 @@ def baseline_checkout(folder, head, base, expected, code=code_id, repo=ROOT):
     changed = code_changes(folder, kb_from_baseline=True)
     if changed:
         raise SystemExit(f"{folder} differs from {head[:7]} outside the baseline's kb/: {changed}")
+    # Every file under kb/, not only the Python the code id hashes, must be the baseline's.
+    differs = git(folder, "diff", "--name-only", base, "--", "kb").split()
+    if differs:
+        raise SystemExit(f"{folder}'s kb/ differs from {base[:7]}'s: {differs}")
     for cache in (os.path.join(dirpath, d) for dirpath, dirs, _ in os.walk(os.path.join(folder, "kb"))
                   for d in dirs if d == "__pycache__"):
         shutil.rmtree(cache, ignore_errors=True)
