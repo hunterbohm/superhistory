@@ -13,6 +13,9 @@ import sys
 import tempfile
 import threading
 import time
+import types
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 import gateway
@@ -67,10 +70,17 @@ def model():
 
 
 _post = api.post
+# kb's plug-in cuts a failed call's reply to 300 characters before it raises, and retries a busy server. Its calls go
+# through gateway.urlopen, which reads the whole reply first and raises gateway.RateLimited on a limit, so nothing
+# retries it.
+api.urllib = types.SimpleNamespace(
+    request=types.SimpleNamespace(Request=urllib.request.Request, urlopen=gateway.urlopen), error=urllib.error)
 
 
 def _counted_post(url, body, headers, timeout):
     """The gateway caches every prompt, and its `input_tokens` leaves the cached part out, so all three count."""
+    # Nothing is sent once a rate limit is seen, not even the copy kb's hedge starts after a failed call.
+    gateway.check_limited()
     response = _post(url, body, headers, timeout)
     sink = getattr(_local, "sink", None)
     if sink is not None:
@@ -243,7 +253,11 @@ class Store:
             seconds = time.monotonic() - started
             return Retrieved(check.render(found.hits, CONFIG.machine), [h["source_id"] for h in found.hits], seconds,
                              None, counted.settle(counted.traits.check_budget), found.query)
+        except gateway.RateLimited:
+            raise
         except Exception as exc:
+            # A lookup that failed once a limit was seen, say a hedge whose other copy met it, gets no row.
+            gateway.check_limited()
             # The hook prints nothing when the check fails, so the agent sees nothing.
             seconds = time.monotonic() - started
             return Retrieved("", [], seconds, type(exc).__name__, counted.settle(counted.traits.check_budget))

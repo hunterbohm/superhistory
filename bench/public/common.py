@@ -242,6 +242,7 @@ def answer(store, system, question, context):
 
 
 def run_case(stores, case, system, score):
+    gateway.check_limited()
     store, stats = stores.get(case.group)
     found = store.lookup(case.question)
     text, calls, shown, printed, empty = answer(store, system(case), case.question, found.context)

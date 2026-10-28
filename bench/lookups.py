@@ -13,7 +13,7 @@ import os
 import statistics
 import sys
 import tempfile
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path[:0] = [HERE, os.path.join(HERE, "public"), os.path.join(HERE, "month")]
@@ -55,6 +55,7 @@ TESTS = {"month": month_cases, "longmemeval": longmemeval_cases, "locomo": locom
 
 
 def one(stores, case, phrases):
+    gateway.check_limited()
     store, _ = stores.get(case.group)
     try:
         found = store.lookup(case.question)
@@ -94,16 +95,28 @@ def main(argv=None):
     p.add_argument("--workers", type=int, default=8)
     args = p.parse_args(argv)
     os.makedirs(OUT, exist_ok=True)
+    stopped = None
     for test in args.tests.split(","):
         cases, groups, phrases, summaries = TESTS[test]()
         path = os.path.join(OUT, f"{test}-{args.label}.jsonl")
-        if not os.path.exists(path):
-            with tempfile.TemporaryDirectory(prefix="bench-lookups-") as workdir, ThreadPoolExecutor(args.workers) as pool:
-                stores = common.Stores(groups, cases, workdir, summaries)
-                rows = list(pool.map(lambda c: one(stores, c, phrases.get(c.id, ())), cases))
-            with open(path, "w", encoding="utf-8") as fh:
-                fh.writelines(json.dumps(r) + "\n" for r in rows)
-        print(report(test, run.read_jsonl(path)))
+        done = {r["id"] for r in run.read_jsonl(path)} if os.path.exists(path) else set()
+        todo = [c for c in cases if c.id not in done]
+        with tempfile.TemporaryDirectory(prefix="bench-lookups-") as workdir, \
+                ThreadPoolExecutor(args.workers) as pool, open(path, "a", encoding="utf-8") as fh:
+            stores = common.Stores(groups, todo, workdir, summaries)
+            futures = [pool.submit(one, stores, c, phrases.get(c.id, ())) for c in todo]
+            for future in as_completed(futures):
+                try:
+                    fh.write(json.dumps(future.result()) + "\n")
+                    fh.flush()
+                except gateway.RateLimited as exc:
+                    stopped = exc
+        rows = run.read_jsonl(path)
+        if rows:
+            print(report(test, rows))
+        if stopped:
+            print(stopped, file=sys.stderr)
+            return 1
     return 0
 
 
