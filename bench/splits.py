@@ -4,8 +4,9 @@
     python3 bench/splits.py           # write bench/splits/*.json from the data
     python3 bench/splits.py --check   # fail if the committed files differ from a fresh split
 
-Tuning reads only dev numbers. Each test half runs at most three times in total, once under each label in RUNS, and
-`held_out_run` logs every one in bench/splits/heldout-runs.tsv.
+Tuning reads only dev numbers. Each test half runs at most four times in total, once under each label in RUNS, and
+`held_out_run` logs every one in bench/splits/heldout-runs.tsv. The fourth, baseline-paired, runs the baseline's code
+beside the final at the same time, with the final's code frozen first (bench/public/DEVIATIONS.md says why).
 
 - Month: dev is month A (demo/month); test is month B (bench/month-b), written apart from any tuning.
 - LongMemEval S: 250 and 250. Within each question type, abstention questions apart, questions sorted by the
@@ -24,9 +25,10 @@ from datetime import datetime, timezone
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 FOLDER = os.path.join(HERE, "splits")
-LOG = os.path.join(FOLDER, "heldout-runs.tsv")
+# BENCH_HELDOUT_LOG lets a run from a second checkout, the paired baseline's, log beside the final's.
+LOG = os.environ.get("BENCH_HELDOUT_LOG") or os.path.join(FOLDER, "heldout-runs.tsv")
 SPLITS = ("dev", "test")
-RUNS = ("baseline", "midpoint", "final")
+RUNS = ("baseline", "midpoint", "final", "baseline-paired")
 LOG_FIELDS = ("date", "test", "label", "run", "code", "commit")
 
 
@@ -54,12 +56,15 @@ def read(test, split):
         return set(json.load(fh)[split])
 
 
-def held_out_run(test, label, code, commit, run):
+def held_out_run(test, label, code, commit, run, hold=True):
     """Log `run` on a test half. Raises SystemExit for a label outside RUNS, or for a label already logged with another
-    run or other code: rerunning a label only fills in the questions its run has no row for yet."""
+    run or other code: rerunning a label only fills in the questions its run has no row for yet. `hold` keeps any other
+    run of the same test and label from starting until this process exits; a run logged ahead of time, before its
+    code is started, holds nothing."""
     if label not in RUNS:
         raise SystemExit(f"a held-out run is labelled {', '.join(RUNS)}; got {label!r}")
-    _hold(test)
+    if hold:
+        _hold(test, label)
     with open(LOG, "a+", encoding="utf-8", newline="") as fh:
         fcntl.flock(fh, fcntl.LOCK_EX)
         fh.seek(0)
@@ -80,16 +85,16 @@ def held_out_run(test, label, code, commit, run):
 _held = {}
 
 
-def _hold(test):
-    """One held-out run of `test` at a time on this computer, until this process exits: two at once would each run
-    the questions that have no row yet."""
-    fh = open(os.path.join(tempfile.gettempdir(), f"bench-heldout-{test}.lock"), "w")
+def _hold(test, label):
+    """One held-out run of `test` under `label` at a time on this computer, until this process exits: two at once
+    would each run the questions that have no row yet. Two labels write two files, so they can run side by side."""
+    fh = open(os.path.join(tempfile.gettempdir(), f"bench-heldout-{test}-{label}.lock"), "w")
     try:
         fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except BlockingIOError:
         fh.close()
-        raise SystemExit(f"another held-out run of {test} is running; wait for it to end") from None
-    _held[test] = fh
+        raise SystemExit(f"another held-out {label} run of {test} is running; wait for it to end") from None
+    _held[test, label] = fh
 
 
 def fresh():
