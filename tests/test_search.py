@@ -94,6 +94,19 @@ class OldRowTest(TempDB):
         self.assertEqual((old["snippet"], old["excerpt"]), (current["snippet"], current["excerpt"]))
         self.assertNotIn("suffix", old["excerpt"])
 
+    def test_an_old_row_matched_by_its_title_alone_gets_a_current_rows_card(self):
+        for n, body in enumerate(("Opening [note] " + "ordinary filler " * 60,
+                                  "token sk-ant-api03-old-" + "Z" * 24 + " " + "ordinary filler " * 60)):
+            with self.subTest(body=body[:20]):
+                self.add(f"now{n}.md", body, title=f"walrus{n}")
+                self.db.execute("INSERT INTO docs(kind, source, source_id, ts, title, content, metadata) "
+                                "VALUES ('doc', 's', ?, ?, ?, ?, '{}')", (f"then{n}.md", iso(), f"walrus{n}", body))
+                self.db.commit()
+                hits = {h["source_id"]: h for h in search.search(self.db, f"walrus{n}")}
+                old, current = hits[f"then{n}.md"], hits[f"now{n}.md"]
+                self.assertEqual((old["snippet"], old["excerpt"]), (current["snippet"], current["excerpt"]))
+                self.assertNotIn("Z" * 12, old["snippet"] + old["excerpt"])
+
     def test_current_rows_keep_the_index_snippet(self):
         self.add("d.md", "ordinary filler " * 100 + "walrus deployment was approved by Dana.")
         hit = search.search(self.db, "walrus deployment")[0]

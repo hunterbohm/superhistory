@@ -131,7 +131,7 @@ def search(db, query, after=None, sources=(), limit=10, before=None, keep=None):
             # the masked text, so their cards read as a current row's would.
             hit["title"], hit["meta"] = mask(hit["title"]), mask_all(hit["meta"])
             hit["content"], own = _masked_item(db, hit)
-            snip, marked = _snippets(own, match)
+            snip, marked = _snippets(hit["title"], own, match)
         hit["snippet"] = re.sub(r"\s+", " ", snip if "[" in snip else own[:SNIPPET_CHARS]).strip()
         hit["excerpt"] = excerpt(marked if MARK in marked else own)
     return hits
@@ -157,14 +157,15 @@ def _masked_item(db, hit):
     return whole, whole
 
 
-def _snippets(text, match):
-    """The two passages search() cuts from a current row, cut by FTS5 itself from an index of just this text, so
-    stemming matches and the matching words cluster as they do in the store."""
+def _snippets(title, text, match):
+    """The two passages search() cuts from a current row, cut by FTS5 itself from an index of just this title and
+    text, laid out as docs_fts is, so stemming matches, a match in the title alone counts, and the matching words
+    cluster as they do in the store."""
     index = sqlite3.connect(":memory:")
     try:
-        index.execute(f"CREATE VIRTUAL TABLE t USING fts5(content, tokenize='{TOKENIZE}')")
-        index.execute("INSERT INTO t(rowid, content) VALUES (1, ?)", (text,))
-        row = index.execute(f"SELECT {SNIPPETS.format(table='t', column=0)} FROM t WHERE t MATCH ?", (match,)).fetchone()
+        index.execute(f"CREATE VIRTUAL TABLE t USING fts5(title, content, tokenize='{TOKENIZE}')")
+        index.execute("INSERT INTO t(rowid, title, content) VALUES (1, ?, ?)", (title, text))
+        row = index.execute(f"SELECT {SNIPPETS.format(table='t', column=1)} FROM t WHERE t MATCH ?", (match,)).fetchone()
         return row if row else ("", text)
     finally:
         index.close()
