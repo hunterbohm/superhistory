@@ -6,7 +6,14 @@ import re
 import sys
 import traceback
 
-_NB = r"(?<![A-Za-z0-9])"
+# JSON text escapes a line break as "\n" and other characters likewise. A secret right after an escape reads as glued
+# to its letter, and a value ends at an escape that starts the next "name=" or "name:", as at the line's end the
+# escape stands for, so that name keeps its own value. At most four escapes before the name: a longer run read back
+# one escape at a time from every backslash in it would cost time in the square of its length.
+_AFTER_ESCAPE = r"(?<=\\[nrtbf])|(?<=\\u[0-9A-Fa-f]{4})"
+_NEXT_NAME = r"(?:\\(?:[nrtbf]|u[0-9A-Fa-f]{4})){1,4}[A-Za-z0-9_.-]+[\"']?[ \t]*(?:[:=]|=>)"
+_NB = rf"(?:(?<![A-Za-z0-9])|{_AFTER_ESCAPE})"
+_WORD = rf"(?:\b|{_AFTER_ESCAPE})"
 # A blank line ends a paragraph: an empty line, with any spaces, its breaks plain or escaped as in JSON.
 _BLANK = r"(?:\r?\n[ \t]*\r?\n|\\(?:r\\)?n[ \t]*\\(?:r\\)?n)"
 _KEY_END = r"-----END [A-Z ]*PRIVATE KEY-----"
@@ -42,13 +49,13 @@ SECRET_PATTERNS = [
     re.compile(r"https://(?:[\w-]+\.)?discord(?:app)?\.com/api/webhooks/\d+/[\w-]+"),
     re.compile(r"https://hooks\.slack\.com/(?:services|workflows|triggers)/[\w/-]+"),
     re.compile(_NB + r"eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}"),
-    re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._~+/-]{16,}=*"),
-    re.compile(r"(?i)\bbasic\s+(?=[A-Za-z0-9+/]*[0-9+/=])[A-Za-z0-9+/]{12,}={0,2}"),
+    re.compile(rf"(?i){_WORD}bearer\s+[A-Za-z0-9._~+/-]{{16,}}=*"),
+    re.compile(rf"(?i){_WORD}basic\s+(?=[A-Za-z0-9+/]*[0-9+/=])[A-Za-z0-9+/]{{12,}}={{0,2}}"),
 ]
 PREFIXED_SECRETS = [
-    re.compile(r"(?i)(\b(?:set-)?cookie[\"']?\s*:\s*)[^\"'\n]{8,}"),
+    re.compile(rf"(?i)({_WORD}(?:set-)?cookie[\"']?\s*:\s*)[^\"'\n]{{8,}}"),
     re.compile(r"([a-z][a-z0-9+.-]*://[^/ \t\n\r:@'\"]+:)[^/ \t\n\r@'\"]{3,}(?=@)"),
-    re.compile(r"(\bcurl\b[^\n|;]*?\s(?:-u|--user)\s+['\"]?[^ \t\n\r:'\"]+:)[^ \t\n\r'\"]+"),
+    re.compile(rf"({_WORD}curl\b[^\n|;]*?\s(?:-u|--user)\s+['\"]?[^ \t\n\r:'\"]+:)(?:(?!{_NEXT_NAME})[^ \t\n\r'\"])+"),
 ]
 _KEY_NAME = (
     r"(?i)(?<![A-Za-z0-9_.-])("
@@ -56,8 +63,8 @@ _KEY_NAME = (
     r"session[_-]?(?:token|key|secret|cookie)|bw_session)[A-Za-z0-9_-]*?"
     r"|[A-Za-z0-9]+(?:[_-][A-Za-z0-9]+)*[_-](?:pass|pwd|pw)"
     r")(?![A-Za-z0-9_.-])")
-_ENV_KEY_NAME = r"(?<![A-Za-z0-9_])([A-Z][A-Z0-9_]*_KEY)(?![A-Za-z0-9_])"
-_VALUE = r"([^ \t\n\r\"'`,;<>)\]}]+)"
+_ENV_KEY_NAME = rf"(?:(?<![A-Za-z0-9_])|{_AFTER_ESCAPE})([A-Z][A-Z0-9_]*_KEY)(?![A-Za-z0-9_])"
+_VALUE = rf"((?:(?!{_NEXT_NAME})[^ \t\n\r\"'`,;<>)\]}}])+)"
 KEYED_SECRET = re.compile(_KEY_NAME + r"((?:[\"'])?[ \t\r\n]*(?:[:=]|=>|\bis\b)[ \t\r\n]*[\"']?)" + _VALUE)
 ENV_KEY_SECRET = re.compile(_ENV_KEY_NAME + r"((?:[\"'])?[ \t\r\n]*[:=][ \t\r\n]*[\"']?)" + _VALUE)
 # In an item id, a value counts by its key's name only in assignment form, "token=...", "token=>..." or "token:...",

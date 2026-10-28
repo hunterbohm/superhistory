@@ -109,7 +109,9 @@ class Planted:
                 parts.append((self.token, self.keyed, self.pem, self.key)[int(pick * 10) % 4]())
         if self.r.random() < 0.15:  # a key cut off by a size limit, anywhere in a line, ends the text
             parts.append(self.pem(whole=True)[:self.r.randint(40, 600)])
-        return "walrus ledger " + self.r.choice((" ", "\n", " \n")).join(parts)
+        # Parts meet at a space or a line break, or at an escape as JSON text writes one, which a secret after it
+        # reads as glued to.
+        return "walrus ledger " + self.r.choice((" ", "\n", " \n", "\\n", "\\r\\n", "\\t", "\\u00a0")).join(parts)
 
     def title(self):
         return self.r.choice(("Walrus notes", f"Notes {self.token()}", f"Plan {self.keyed()}"))
