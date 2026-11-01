@@ -13,7 +13,7 @@ import traceback
 # four escapes before the name: a longer run read back one escape at a time from every backslash in it would cost
 # time in the square of its length.
 _AFTER_ESCAPE = r"(?<=\\[nrtbf])|(?<=\\u[0-9A-Fa-f]{4})|(?<=%[0-9A-Fa-f]{2})|(?<=%25[0-9A-Fa-f]{2})"
-_NEXT_NAME = r"(?:\\(?:[nrtbf]|u[0-9A-Fa-f]{4})){1,4}(?:[A-Za-z0-9_.-]+[\"']?[ \t]*(?:[:=]|=>)|-{1,2}[A-Za-z])"
+_NEXT_NAME = r"(?:\\(?:[nrtbf]|u[0-9A-Fa-f]{4})){1,4}(?::?[A-Za-z0-9_.-]+[\"']?[ \t]*(?:[:=]|=>)|-{1,2}[A-Za-z])"
 _NB = rf"(?:(?<![A-Za-z0-9])|{_AFTER_ESCAPE})"
 # A quote around a name or a value as text writes it: plain, escaped as JSON writes it, once or as JSON inside JSON
 # does, percent-encoded as in a link, or as an HTML entity. And "=" or ":" between them, plain or encoded the same ways.
