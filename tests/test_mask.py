@@ -122,6 +122,18 @@ class MaskTest(unittest.TestCase):
             with self.subTest(text):
                 self.assertEqual(mask(text), text)
 
+    def test_a_value_counts_as_a_pointer_only_in_a_pointers_whole_shape(self):
+        for text in ("password=$ecretP4ss99", "password=~Zx9Kq2Lm4Np", '"password": "Abc(123)xyzQ"',
+                     '"api_key": "*Gh7kL9mPq2Rs4Tv6"', "password=/Zx9Kq2Lm4Np"):
+            with self.subTest(text=text):
+                self.assertIn("[masked]", mask(text))
+        for value in ("$DB_PASSWORD", "${DB_PASSWORD}", "$(cat pw.txt)", "%APPDATA%", "%(password)s", "{{ secrets.db }}",
+                      "${{ secrets.TOKEN }}", "~/.secrets/db", "/run/secrets/db_password", "./secret.txt",
+                      "os.environ['X']", "process.env.TOKEN", "getpass()", "env:DB_PASSWORD", "****", "[REDACTED]",
+                      "config.db.password", "$api_key"):
+            with self.subTest(value=value):
+                self.assertNotIn("[masked]", mask(f"password={value}"))
+
     def test_keyed_mask_keeps_the_key_name(self):
         self.assertEqual(mask("password: sw0rdfish9"), "password: [masked]")
 
