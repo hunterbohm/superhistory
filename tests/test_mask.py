@@ -381,6 +381,19 @@ class EscapeTest(unittest.TestCase):
             with self.subTest(text=text):
                 self.assertEqual(mask(text), text)
 
+    def test_a_long_run_of_letters_and_digits_costs_time_in_proportion(self):
+        # A link's scheme was read on from every letter of a run, as in contract bytecode or a hash's hex.
+        import time
+        for unit in ("0123456789abcdef", "abcdefghij", "a.b+c-d"):
+            with self.subTest(unit=unit):
+                took = {}
+                for size in (1 << 13, 1 << 17):
+                    text = unit * (size // len(unit))
+                    started = time.process_time()
+                    mask(text)
+                    took[size] = time.process_time() - started
+                self.assertLess(took[1 << 17], 40 * max(took[1 << 13], 0.01), took)
+
     def test_a_password_with_a_backslash_in_it_is_masked_whole(self):
         for password in ("Ab3\\nQz9kLm", "C:\\temp\\walrus9", "pa\\u00e4ss9word"):
             with self.subTest(password=password):
