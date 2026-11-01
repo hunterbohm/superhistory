@@ -10,6 +10,7 @@ import threading
 import time
 import unittest
 import urllib.error
+import urllib.request
 from unittest import mock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -61,6 +62,31 @@ class Answer(io.BytesIO):
 
     def __exit__(self, *exc):
         return False
+
+
+class Pieces(io.RawIOBase):
+    """A reply that arrives in the given pieces."""
+
+    def __init__(self, pieces):
+        self.pieces = list(pieces)
+
+    def readable(self):
+        return True
+
+    def readinto(self, buffer):
+        if not self.pieces:
+            return 0
+        piece = self.pieces.pop(0)
+        buffer[:len(piece)] = piece
+        return len(piece)
+
+
+class PiecesAnswer(io.BufferedReader):
+    """A status 200 reply that arrives in the given pieces."""
+    headers, url, status = {}, "http://gateway/v1/messages", 200
+
+    def __init__(self, pieces):
+        super().__init__(Pieces(pieces))
 
 
 class StalledAnswer(io.BufferedReader):
@@ -326,6 +352,57 @@ class RateLimitTest(unittest.TestCase):
                 mock.patch.object(check.check, "lookup", lookup), self.assertRaises(gateway.RateLimited):
             check.Store(mock.Mock()).lookup("a question")
 
+    def test_a_limit_named_across_two_pieces_is_found(self):
+        pieces = [b"All credentials for model x are cool", b"ing down"]
+        self.assert_both_paths_stop(lambda: PiecesAnswer(pieces))
+        gateway.LIMITED.clear()
+        network, calls = self.failing(urllib.error.HTTPError(
+            "http://gateway/v1/messages", 503, "error", {}, io.BufferedReader(Pieces(pieces))))
+        with network, mock.patch("time.sleep"), self.assertRaises(gateway.RateLimited):
+            gateway.post("/v1/messages", {})
+        self.assertEqual(len(calls), 1)
+
+    def test_a_long_reply_is_parsed_once_not_after_every_piece(self):
+        reply = json.dumps({"type": "message", "content": [{"type": "text", "text": "x" * 2_000_000}]}).encode()
+        pieces = [reply[i:i + 4096] for i in range(0, len(reply), 4096)]
+        request = urllib.request.Request("http://gateway/v1/messages", data=b"{}", method="POST")
+        with mock.patch.object(gateway, "_open", lambda request, timeout: PiecesAnswer(pieces)), \
+                mock.patch.object(gateway.json, "loads", wraps=json.loads) as loads:
+            with gateway.urlopen(request, 5) as answer:
+                self.assertEqual(answer.read(), reply)
+        self.assertGreater(len(pieces), 400)
+        self.assertEqual(loads.call_count, 1)
+        gateway.check_limited()
+
+    def test_two_hedged_lookups_at_once_send_at_most_two_calls_at_a_time(self):
+        reply = json.dumps({"type": "message", "content": [{"type": "text", "text": "ok"}],
+                            "usage": {"input_tokens": 1, "output_tokens": 1}}).encode()
+        lock, now, most, sent = threading.Lock(), [0], [0], []
+
+        def opened(request, timeout):
+            with lock:
+                now[0] += 1
+                most[0] = max(most[0], now[0])
+                sent.append(request)
+            time.sleep(0.3)
+            with lock:
+                now[0] -= 1
+            return Answer(reply)
+
+        def lookup():
+            model = check.Counted(check.model())
+            with check.counting(model):
+                ai.hedged(model, ai.Prompt("system", "user"), timeout=3, hedge_after=0.05)
+                model.settle(3)
+        with mock.patch.object(gateway, "_open", opened):
+            workers = [threading.Thread(target=lookup) for _ in range(2)]
+            for worker in workers:
+                worker.start()
+            for worker in workers:
+                worker.join(10)
+        self.assertEqual(len(sent), 4)
+        self.assertLessEqual(most[0], 2)
+
     def test_plain_text_that_names_no_limit_fails_as_before(self):
         network, calls = self.answering("<html>upstream hiccup</html>")
         with network, self.assertRaises(ValueError):
@@ -343,6 +420,20 @@ class RateLimitTest(unittest.TestCase):
         self.assertNotIsInstance(raised.exception, gateway.RateLimited)
         self.assertEqual(len(calls), gateway.ATTEMPTS)
         gateway.check_limited()
+
+    def test_a_rate_limit_error_type_under_another_status_stops_both_paths(self):
+        body = json.dumps({"error": {"type": "rate_limit_error", "message": "Rate limit exceeded"}})
+        for make in (lambda: http_error(503, body), lambda: http_error(500, '{"error": "Rate limit exceeded"}')):
+            gateway.LIMITED.clear()
+            network, calls = self.failing(make())
+            with network, mock.patch("time.sleep"), self.assertRaises(gateway.RateLimited):
+                gateway.post("/v1/messages", {})
+            self.assertEqual(len(calls), 1)
+            gateway.LIMITED.clear()
+            network, calls = self.failing(make())
+            with network, self.assertRaises(gateway.RateLimited):
+                ai.with_retries(lambda: check.model().ask(ai.Prompt("system", "user"), 5), sleep=lambda seconds: None)
+            self.assertEqual(len(calls), 1)
 
     def test_cooling_down_after_a_long_diagnostic_still_stops_both_paths(self):
         body = json.dumps({"diagnostic": "x" * 1000, "message": "All credentials for model x are cooling down"})

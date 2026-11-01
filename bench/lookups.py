@@ -92,7 +92,7 @@ def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("label")
     p.add_argument("--tests", default=",".join(TESTS))
-    p.add_argument("--workers", type=int, default=8)
+    p.add_argument("--workers", type=int, default=1)
     args = p.parse_args(argv)
     os.makedirs(OUT, exist_ok=True)
     stopped = None

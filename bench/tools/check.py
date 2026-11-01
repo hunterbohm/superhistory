@@ -84,9 +84,7 @@ def _counted_post(url, body, headers, timeout):
     response = _post(url, body, headers, timeout)
     sink = getattr(_local, "sink", None)
     if sink is not None:
-        usage = response.get("usage") or {}
-        sink.add(sum(usage.get(k) or 0 for k in ("input_tokens", "cache_creation_input_tokens",
-                                                   "cache_read_input_tokens", "output_tokens")))
+        sink.add(response.get("usage") or {}, response.get("model"))
     return response
 
 
@@ -101,12 +99,20 @@ class Counted:
     def __init__(self, inner):
         self.inner, self.name, self.model, self.traits = inner, inner.name, inner.model, inner.traits
         self.tokens = self.calls = self.running = 0
+        # Where the tokens went, and the model each reply named, so a change in either shows in the rows.
+        self.detail = {"input": 0, "output": 0, "thinking": 0, "models": []}
         self.changed = threading.Condition()
 
-    def add(self, tokens):
+    def add(self, usage, model=None):
+        given = sum(usage.get(k) or 0 for k in ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens"))
         with self.changed:
-            self.tokens += tokens
+            self.tokens += given + (usage.get("output_tokens") or 0)
             self.calls += 1
+            self.detail["input"] += given
+            self.detail["output"] += usage.get("output_tokens") or 0
+            self.detail["thinking"] += (usage.get("output_tokens_details") or {}).get("thinking_tokens") or 0
+            if model and model not in self.detail["models"]:
+                self.detail["models"].append(model)
 
     def started(self):
         with self.changed:
@@ -251,8 +257,9 @@ class Store:
                 found = check.lookup(db, message, list(before), "", set(), counted, counted.traits.check_budget,
                                      counted.traits.hedge_after)
             seconds = time.monotonic() - started
+            tokens = counted.settle(counted.traits.check_budget)
             return Retrieved(check.render(found.hits, CONFIG.machine), [h["source_id"] for h in found.hits], seconds,
-                             None, counted.settle(counted.traits.check_budget), found.query)
+                             None, tokens, found.query, dict(counted.detail))
         except gateway.RateLimited:
             raise
         except Exception as exc:
@@ -260,7 +267,8 @@ class Store:
             gateway.check_limited()
             # The hook prints nothing when the check fails, so the agent sees nothing.
             seconds = time.monotonic() - started
-            return Retrieved("", [], seconds, type(exc).__name__, counted.settle(counted.traits.check_budget))
+            tokens = counted.settle(counted.traits.check_budget)
+            return Retrieved("", [], seconds, type(exc).__name__, tokens, None, dict(counted.detail))
         finally:
             db.close()
 

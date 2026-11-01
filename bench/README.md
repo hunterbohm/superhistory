@@ -39,7 +39,7 @@ The rival tools need their own setup, all local, with no account:
 3. The answer model (`claude-sonnet-5-5`) answers from that text. It is told it works for the month's persona and that today is October 1, 2026. When the product gives agents commands to read more, the answer model gets them as tools: `kb search` and `kb get` for the check (its own header tells agents to run them), `search_memory` for Mem0 (OpenMemory MCP's name), a search for Supermemory, and claude-mem's three MCP search tools (`search`, `timeline`, `get_observations`), served by claude-mem's own MCP server with its own schemas and replies. It gets at most 8 tool turns.
 4. The judge (`gpt-6.1-sol`, a different model family from the answer model and from the check's own `claude-haiku-5-5`) compares the answer with the gold answer and returns correct or not, with a reason.
 
-The check's own two model calls, and the summaries at ingest, run on `claude-haiku-5-5`, as they do in kb. The check's model tokens count the gateway's cached input too: the gateway caches every prompt, and its `input_tokens` leaves the cached part out.
+The check's own two model calls, and the summaries at ingest, run on `claude-haiku-5-5`, as they do in kb. A run makes at most two model calls at once, kb's hedged copies included, and runs one question at a time by default. The check's model tokens count the gateway's cached input too: the gateway caches every prompt, and its `input_tokens` leaves the cached part out.
 
 ## What each column means
 
