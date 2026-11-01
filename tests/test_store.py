@@ -600,6 +600,19 @@ class MaskVersionTest(TempDB):
         self.assertEqual([r[0] for r in self.db.execute("SELECT DISTINCT source_id FROM docs")], [kept],
                          "a name that is a secret's word alone, or one the rows do not record, is not split off")
 
+    def test_an_items_names_come_from_its_own_rows_not_its_summaries(self):
+        # An older kb's summary rows copied only url, path and host, so they record no profile.
+        sid = "desk:secret-project:20261028_101500_a1b2c3"
+        item = {"host": "desk", "profile": "secret-project", "session_id": "20261028_101500_a1b2c3"}
+        for n in range(2):
+            self.old(sid, f"hermes session part {n}", kind="raw", meta={**item, "chunk": n, "chunks": 2})
+        self.old(sid, "Which plan?\nThe one in the notes.", kind="segment", meta={"host": "desk", "of_hash": "3f2a9c"})
+        store.remask(self.db)
+        self.assertEqual(len(self.ids(sid)), 3, "remask keeps the item and its summary")
+        summary = {"kind": "segment", "ts": iso(), "title": "t", "content": "Which?\nThat one.", "metadata": {"host": "desk"}}
+        store.replace_rows(self.db, "s", sid, [summary], store.SUMMARY_KINDS)
+        self.assertEqual(len(self.ids(sid)), 3, "a summary written alone takes the item's names")
+
     def test_remask_stopped_by_its_time_leaves_the_rest_old(self):
         for i in range(120):
             self.old(f"n{i}", f"note {i} with {self.TOKEN}")
