@@ -23,6 +23,8 @@ _SEP = r"(?:[:=\uff1a\uff1d]|=>|%(?:25)?3[ADad]|\\{1,7}u003[AaDd])"
 # "%20" or "+".
 _SPACE = r"(?:[ \t\r\n\u00a0\u3000+]|%(?:25)?20)"
 _GAP = rf"{_SPACE}*"
+# The same on one line, for a value that never sits on the next one, as a header's does.
+_LINE_SPACE = r"(?:[ \t\u00a0\u3000+]|%(?:25)?20)"
 # A value stops before a quote escaped to close it, so the escape stays with the quote. At most seven backslashes, as
 # JSON three times inside JSON writes one: an unbounded run read ahead from every backslash would cost time in the
 # square of its length.
@@ -136,7 +138,8 @@ FLAG_SECRET = re.compile(rf"(?i)(?:(?<![A-Za-z0-9_.-])|{_AFTER_ESCAPE})(--" + _K
                          r"(?<!-helper)(?<!-length)(?<!-type)(?<!-url)((?:[ \t]|%(?:25)?20)+[\"']?)(?!-)" + _VALUE)
 # An HTTP Authorization header's credentials, after any scheme word: "Token ...", "Bot ...", "ApiKey ...".
 AUTH_SECRET = re.compile(rf"(?i)((?:(?<![A-Za-z0-9_.-])|{_AFTER_ESCAPE})(?:proxy-)?authorization)"
-                         rf"({_QUOTE}?{_GAP}(?::|=|%(?:25)?3[ADad]){_GAP}{_QUOTE}?(?:[A-Za-z][A-Za-z0-9_-]*{_SPACE}+)?)"
+                         rf"({_QUOTE}?{_LINE_SPACE}*(?::|=|%(?:25)?3[ADad]){_LINE_SPACE}*{_QUOTE}?"
+                         rf"(?:[A-Za-z][A-Za-z0-9_-]*{_LINE_SPACE}+)?)"
                          + _VALUE)
 # Commands that take a password after a short flag, which counts only on that command's line: from its first word to a
 # pipe, ";" or a line break, plain or escaped. Each row: the command, the flag and what parts it from the password, and
