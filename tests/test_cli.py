@@ -361,6 +361,37 @@ class OlderStoreTest(TempHome):
         code, out, err = self.run_kb("search", "pelican")
         self.assertEqual(code, 0, err)
 
+    def add_rotated_items(self, n=2):
+        # Sessions a source has since rotated out: rows the old store holds that no source can give again.
+        self.db.executemany("INSERT INTO docs(kind, source, source_id, ts, title, content, metadata, masked) VALUES "
+                            "('doc', 'notes', ?, ?, 'old', 'an old note', '{}', NULL)",
+                            [(f"studio:rotated-{i}.md", iso()) for i in range(n)])
+        self.db.commit()
+        self.db.close()
+
+    def test_rebuild_stops_when_a_source_would_lose_items_and_keeps_the_old_store(self):
+        self.add_rotated_items()
+        folder = os.path.dirname(self.path)
+        with open(self.path, "rb") as fh:
+            before, files = fh.read(), set(os.listdir(folder)) - {"kb.lock"}
+        code, out, err = self.run_kb("rebuild")
+        self.assertEqual(code, 1)
+        self.assertIn("notes: 2 fewer items", err)
+        self.assertIn("--accept-loss", err)
+        self.assertNotIn(self.SECRET, out + err)
+        with open(self.path, "rb") as fh:
+            self.assertEqual(fh.read(), before, "the old store is kept as it was")
+        self.assertEqual(set(os.listdir(folder)) - {"kb.lock"}, files, "and no copy of either is left")
+
+    def test_rebuild_with_accept_loss_replaces_the_store_anyway(self):
+        self.add_rotated_items()
+        code, out, err = self.run_kb("rebuild", "--accept-loss")
+        self.assertEqual(code, 0, err)
+        self.assertIn("notes: 2 fewer items", out)
+        db = store.connect(self.path)
+        self.addCleanup(db.close)
+        self.assertEqual([r[0] for r in db.execute("SELECT source_id FROM docs")], ["studio:plan.md"])
+
     def test_rebuild_keeps_the_old_store_when_a_source_fails(self):
         self.db.close()
         folder = os.path.dirname(self.path)
