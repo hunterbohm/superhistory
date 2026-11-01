@@ -155,6 +155,56 @@ class MaskTest(unittest.TestCase):
         self.assertEqual(out, "key [masked] and more words")
 
 
+class OtherKeyFormatTest(unittest.TestCase):
+    """Private keys that are not PEM's "PRIVATE KEY": PGP's armored blocks, PuTTY's key files and age's secret keys."""
+    PGP_BODY = ("lQOYBGcW1aEBCADTkzY3c2VjcmV0cGdwYm9keWxpbmUxMjM0NTY3ODkw", "WalrusPgpBodySecond2Line3456789abcdefghij")
+
+    def test_a_pgp_block_is_masked_whole_cut_or_footer_alone(self):
+        body = "\n".join(self.PGP_BODY)
+        for kind in ("PRIVATE", "SECRET"):
+            for brk in ("\n", "\r\n", "\\n"):
+                block = (f"-----BEGIN PGP {kind} KEY BLOCK-----\nVersion: GnuPG v2\n\n{body}\n=Ab3D\n"
+                         f"-----END PGP {kind} KEY BLOCK-----").replace("\n", brk)
+                for text in (block, block[:block.index("=Ab3D")], block[block.index(self.PGP_BODY[0]):]):
+                    with self.subTest(kind=kind, brk=brk, text=text[:20]):
+                        masked = mask(f"first{brk}{brk}{text}{brk}{brk}last paragraph")
+                        self.assertNotIn("Walrus", masked)
+                        self.assertNotIn("lQOYBGcW", masked)
+                        self.assertTrue(masked.endswith(f"{brk}{brk}last paragraph"), masked)
+
+    def test_a_putty_key_files_private_lines_are_masked(self):
+        text = ("PuTTY-User-Key-File-3: ssh-ed25519\nEncryption: none\nComment: eddsa-key\nPublic-Lines: 2\n"
+                "AAAAC3NzaC1lZDI1NTE5AAAAIHB1YmxpY3B1YmxpYw==\nPrivate-Lines: 1\n"
+                "AAAAIFdhbHJ1c1B1dHR5UHJpdmF0ZUJvZHlTZWNyZXQ5\nPrivate-MAC: 3f2a9c00112233445566778899aabbcc")
+        for brk in ("\n", "\\n"):
+            masked = mask(text.replace("\n", brk) + f"{brk}{brk}last paragraph")
+            self.assertNotIn("AAAAIFdhbHJ1", masked)
+            self.assertIn("Public-Lines: 2", masked)
+            self.assertTrue(masked.endswith("last paragraph"))
+
+    def test_an_age_secret_key_is_masked(self):
+        key = "AGE-SECRET-KEY-1QYQSZQGPQYQSZQGPQYQSZQGPQYQSZQGPQYQSZQGPQYQSZQGPQYQSZQGP0ABCDE"
+        for text in (key, f"# created\n{key}\n", f"identity\\n{key}", key[:40]):
+            with self.subTest(text=text[:20]):
+                self.assertNotIn("QYQSZQGPQYQS", mask(text))
+
+    def test_an_ssh2_key_file_is_masked(self):
+        body = "P2/56wAAAi4AAAA3aWYtbW9kbntzaWduWalrusSsh2BodyLine"
+        for kind in ("ENCRYPTED PRIVATE KEY", "PRIVATE KEY"):
+            block = f"---- BEGIN SSH2 {kind} ----\nComment: \"rsa-key\"\n{body}\n---- END SSH2 {kind} ----"
+            for text in (block, block[:block.index("\n---- END")]):
+                with self.subTest(kind=kind, cut=text is not block):
+                    masked = mask(f"first\n\n{text}\n\nlast paragraph")
+                    self.assertNotIn("WalrusSsh2", masked)
+                    self.assertEqual(masked, "first\n\n[masked]\n\nlast paragraph")
+
+    def test_prose_about_those_formats_stays(self):
+        for text in ("PGP keys are signed in a block", "Private-Lines counts the lines", "an AGE-SECRET-KEY-1 identity",
+                     "-----BEGIN PGP PUBLIC KEY BLOCK-----\n\nmQENBGcW1aEBCAD\n-----END PGP PUBLIC KEY BLOCK-----"):
+            with self.subTest(text=text[:20]):
+                self.assertEqual(mask(text), text)
+
+
 class HeadlessKeyTest(unittest.TestCase):
     """A key's body without its header, as an older kb's row-by-row remask leaves the chunk after the header's."""
     LINE = "MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7"
@@ -175,8 +225,34 @@ class HeadlessKeyTest(unittest.TestCase):
             with self.subTest(text=text[:30]):
                 self.assertNotIn(self.LINE[:12], mask(text))
                 self.assertNotIn("Ag==", mask(text))
-        for text in ("x [masked] and Ag==\nwords", "token=[masked]\n3f2a9c" + "0" * 34 + "\nnext"):
-            self.assertEqual(mask(text), text, "a word, or a hash on the next line, after a placeholder stays")
+        for text in ("x [masked] and Ag==\nwords", "apiKey: [masked]\nconnectionTimeoutMillis: 3000\nnext"):
+            self.assertEqual(mask(text), text, "a word, or a line that is not a key's, after a placeholder stays")
+        # A chunk that ended between a key's header and its line break left a line break, then the body.
+        for after in ("", "\n-----END PRIVATE KEY-----"):
+            text = f"notes [masked]\n{self.LINE}\n{self.LINE}{after}\n\nnext paragraph"
+            self.assertEqual(mask(text), "notes [masked]\n\nnext paragraph")
+
+    def test_after_a_placeholder_and_a_line_break_a_keys_first_line_starts_the_rest_of_a_key(self):
+        # main's key pattern stops at a backslash, so in escaped text it masks a key's header and leaves its body from
+        # the first line, cut anywhere, which starts as a real key's DER or OpenSSH body does.
+        for first in ("MIIEvQIBADANBgkqhkiG9w0BAQEFAASC", "MHcCAQEEIJQyFkwn", "MC4CAQAwBQYDK2Vw", "MIGkAgEBBDAqCr+V",
+                      "MEcCAQAwBQYDK2Vx", "b3BlbnNzaC1rZXkt"):
+            for brk in ("\\n", "\\r\\n", "\n", "\r\n"):
+                for rest in (first[:4] + " …", first[:13] + " password=walrus2secret9 harbor …",
+                             first + brk + self.LINE + brk + "-----END PRIVATE KEY-----"):
+                    with self.subTest(first=first, brk=brk, rest=rest[:20]):
+                        text = f"walrus ledger [masked]{brk}{rest}{brk}{brk}next paragraph"
+                        self.assertEqual(mask(text), f"walrus ledger [masked]{brk}{brk}next paragraph")
+
+    def test_after_a_placeholder_and_a_line_break_other_lines_stay(self):
+        for brk in ("\\n", "\n"):
+            for line in ("/usr/local/bin/python3 deploy.py --env prod", "3f2a9c" + "0" * 34, "MCP server started",
+                         "Make the deploy", "PATH=/usr/local/bin:/usr/bin", "MD5 checksums", "QUJDREVGR0hJSktM"):
+                with self.subTest(brk=brk, line=line):
+                    text = f"export GH=[masked]{brk}{line}{brk}then open it"
+                    self.assertEqual(mask(text), text)
+        text = "export GH=ghp_" + "A1" * 12 + "\\n/usr/local/bin/python3 deploy.py\\nthen open it"
+        self.assertEqual(mask(text), "export GH=[masked]\\n/usr/local/bin/python3 deploy.py\\nthen open it")
 
     def test_the_rest_of_a_token_masked_a_chunk_at_a_time_is_masked(self):
         # An older kb masked "sk-ant-..." in one chunk; the token's last characters began the next.
@@ -314,6 +390,33 @@ class EscapeTest(unittest.TestCase):
                 self.assertNotIn("walrus", masked)
                 self.assertIn(f"{escape}api_key: [masked]", masked)
 
+    def test_a_percent_encoded_secret_or_one_in_escaped_quotes_is_masked(self):
+        aws, jwt = "AKIA" + "B" * 16, "eyJabcdefghijkl.abcdefghijkl.abcdefghijkl"
+        for text, secret in ((f"key%3D{aws}&x=1", aws), ("q=x%20AIza" + "B" * 35, "B" * 35), (f"%0A{aws}", aws),
+                             (f"Bearer%20{jwt}", jwt), ("Bearer%20walrusbearer2token9", "walrusbearer2token9"),
+                             ("Basic+d2FscnVzOndhbHJ1czJzZWNyZXQ5", "d2FscnVzOndhbHJ1czJzZWNyZXQ5"),
+                             ("password%3Dwalrus2secret9&next=1", "walrus2secret9"),
+                             ("%22password%22%3A%22walrus2secret9%22", "walrus2secret9"),
+                             ('{\\"password\\": \\"walrus2secret9\\"}', "walrus2secret9"),
+                             ('{\\\\\\"api_key\\\\\\": \\\\\\"walrus2secret9\\\\\\"}', "walrus2secret9"),
+                             ("{&quot;password&quot;: &quot;walrus2secret9&quot;}", "walrus2secret9"),
+                             ('{\\"STRIPE_KEY\\": \\"walrus2secret9\\"}', "walrus2secret9"),
+                             ('{\\"cookie\\": \\"sid=walrus2cookie9\\"}', "walrus2cookie9")):
+            with self.subTest(text=text):
+                masked = mask(text)
+                self.assertNotIn(secret, masked)
+                self.assertIn("[masked]", masked)
+        self.assertEqual(mask('{\\"password\\": \\"walrus2secret9\\"}'), '{\\"password\\": \\"[masked]\\"}',
+                         "the escaped quote after a value stays")
+        for link in ("next=https%3A%2F%2Fbob%3Awalrus2secret9%40example.com%2Fx",
+                     "next=https%253A%252F%252Fbob%253Awalrus2secret9%2540example.com"):
+            with self.subTest(link=link):
+                self.assertNotIn("walrus2secret9", mask(link))
+                self.assertIn("example.com", mask(link))
+        for text in ("hello%20world%3Dfine", "100%25 done%2C next", "a%2Fb%2Fc.md", "&quot;password&quot; is a word",
+                     "next=https%3A%2F%2Fexample.com%3A8443%2Fpath%40v2"):
+            self.assertEqual(mask(text), text)
+
     def test_a_password_with_a_backslash_in_it_is_masked_whole(self):
         for password in ("Ab3\\nQz9kLm", "C:\\temp\\walrus9", "pa\\u00e4ss9word"):
             with self.subTest(password=password):
@@ -329,7 +432,8 @@ class EscapeTest(unittest.TestCase):
 
     def test_a_long_run_of_escapes_after_a_value_costs_time_in_proportion(self):
         import time
-        for head, unit in (("password=", "\\r\\n"), ("token=x", "\\n"), ("", "\\ncookie: ")):
+        for head, unit in (("password=", "\\r\\n"), ("token=x", "\\n"), ("", "\\ncookie: "), ("password=", "\\"),
+                           ('{\\"cookie\\": \\"', "\\"), ("x", "&#0")):
             with self.subTest(unit=unit):
                 took = {}
                 for size in (1 << 16, 1 << 20):
@@ -461,11 +565,73 @@ class KeyShapeTest(unittest.TestCase):
                 if after.endswith("the next paragraph") and text[end:] in (after, after[1:]):
                     self.assertEqual(masked, "note [masked]" + text[end:], f"seq {seq}: {text!r}")
 
+    def test_encrypted_key_fields_cost_time_near_prose(self):
+        # An encrypted key's footer comes after one blank line, the one after its DEK-Info field, so a field's search
+        # for it stops at the next.
+        import time
+
+        def took(text):
+            started = time.process_time()
+            mask(text)
+            return time.process_time() - started
+
+        size = 1 << 18
+        prose = took("the walrus ledger notes plan\n\n" * (size // 30))
+        for unit in ("DEK-Info: AES-128-CBC,00112233\n\n", "Proc-Type: 4,ENCRYPTED\n\n", "[masked],ENCRYPTED\n\n",
+                     "DEK-Info: x\\n\\n"):
+            with self.subTest(unit=unit):
+                self.assertLess(took(unit * (size // len(unit))), 4 * max(prose, 0.01))
+
     def test_paragraphs_after_a_broken_key_stay(self):
         for key in ("-----BEGIN PRIVATE KEY-----\nMIIEvQIBADAN", "-----BEGIN RSA PRIVATE KEY-----\nProc-Type: 4,ENCRYPTED\n"
                     "DEK-Info: AES-256-CBC,0A1B\n\nMIIEvQIBADAN", "abc\n-----END PRIVATE KEY-----"):
             for brk in ("\n\n", "\r\n\r\n", "\\n\\n"):
                 self.assertEqual(mask(f"{key}{brk}the next paragraph"), f"[masked]{brk}the next paragraph")
+
+
+class CommandLineTest(unittest.TestCase):
+    """A password given on a command line: after a long flag named for it, or after a short flag of the command that
+    takes it."""
+    PW = "walrus2wolfpack9"
+
+    def test_a_password_a_command_line_gives_is_masked(self):
+        pw = self.PW
+        for text in (f"docker login -u bob --password {pw}", f"docker login -p {pw} registry.example.com",
+                     f"podman login --username bob -p {pw} quay.example.com", f"mysql -u root -p{pw} shop",
+                     "mysql -u root -proot shop", f"mysqldump -p{pw} shop > shop.sql", f"redis-cli -h cache -a {pw} ping",
+                     f"sshpass -p {pw} ssh deploy@build", f"sshpass -p{pw} scp a b",
+                     f"openssl rsa -in k.pem -passin pass:{pw}", f"openssl pkcs12 -export -passout pass:{pw}",
+                     f"tool --api-key {pw}", f"tool --token {pw}", f"tool --secret '{pw}'", f"tool --passwd {pw}",
+                     f"tool --client-secret {pw}", f"curl -H 'Authorization: Token {pw}' https://api.example.com",
+                     f"X-Auth: {pw}", f"X-Auth-Key: {pw}", f"password\u00a0=\u00a0{pw}", f"password\uff1a{pw}",
+                     f"password\uff1d{pw}", f"curl -s -X POST https://api.example.com/v1/items -u bob:{pw} -d x",
+                     f"run\\ncurl -u bob:{pw}\\nnext"):
+            with self.subTest(text=text):
+                masked = mask(text)
+                self.assertNotIn(pw, masked)
+                self.assertNotIn("-proot", masked)
+
+    def test_prose_about_those_flags_stays(self):
+        for text in ("Use the --password flag to set it.", "mysql -p dbname", "docker login -p is deprecated",
+                     "pass --token instead", "the --secret-name flag", "redis-cli -a is unsafe",
+                     "docker run -u 1000:1000 alpine", "git push -u origin main", "Authorization: pending review",
+                     "docker login --password-stdin registry.example.com", "tool --token-file ~/.config/token",
+                     "tool --api-key $API_KEY", "X-Authenticated: true"):
+            with self.subTest(text=text):
+                self.assertEqual(mask(text), text)
+
+    def test_a_long_run_of_command_words_costs_time_in_proportion(self):
+        import time
+        for unit in ("curl ", "mysql ", "sshpass ", "docker login ", "redis-cli ", "--password ", "curl -u ",
+                     "Authorization: ", "curl\\n"):
+            with self.subTest(unit=unit):
+                took = {}
+                for size in (1 << 14, 1 << 18):
+                    text = unit * (size // len(unit))
+                    started = time.process_time()
+                    mask(text)
+                    took[size] = time.process_time() - started
+                self.assertLess(took[1 << 18], 40 * max(took[1 << 14], 0.01), took)
 
 
 class SecretInIdTest(unittest.TestCase):
@@ -487,6 +653,17 @@ class SecretInIdTest(unittest.TestCase):
                 self.assertFalse(secret_in_id(name))
         for name in ("Tokens: 2026Q4-plan.md", "Meeting - token: budget2026review.md"):
             self.assertNotEqual(mask(name), name, "in text the same words are still masked")
+
+    def test_a_name_with_basic_or_bearer_in_it_does_not(self):
+        for name in ("Courses/Basic Statistics/lecture-01.md", "Wedding/Ring Bearer duties/wedding-2026-plan.md",
+                     "Spanish/Basic Phrases/week1.md", "Basic Training/2025-06-01.md", "Basic Kubernetes101.md",
+                     "Ring Bearer instructions-for-the-wedding-2026.md", "Basic Statistics/Probability 101.md"):
+            with self.subTest(name=name):
+                self.assertFalse(secret_in_id(name))
+        # A real Basic credential is "user:password" in base64.
+        for name in ("curl Basic d2FscnVzOndhbHJ1czJzZWNyZXQ5.md", "h=Basic%20d2FscnVzOndhbHJ1czJzZWNyZXQ5"):
+            with self.subTest(name=name):
+                self.assertTrue(secret_in_id(name))
 
     def test_machine_made_ids_do_not(self):
         for name in ("acme/app@" + "3f2a9c" * 6 + "e1d4", "1781000000000000001", "<CAFx3k+Q2Fu_ZXJ5=@mail.gmail.com>",

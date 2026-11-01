@@ -11,7 +11,7 @@
 - **Recency.** The check's search scores recent items higher, measured from today's date rather than the question's. Every item in both datasets is over two years old, which makes the boost under 1% and the same for every item. In effect it is off.
 - **Short questions.** As shipped, the check makes no search for a message with fewer than 3 search words. That skips 11 LongMemEval questions and 38 LoCoMo questions. The answer model can still search with its tools.
 - **One pass.** Each question runs once, with no seeds or repeats, so the results give no run-to-run spread. The Mem0 paper reports the mean of 10 runs.
-- **Load.** The check's two model calls share a 10-second budget, as shipped. Runs used 8 to 10 workers per set, with up to three sets running at once on one gateway. Each table counts lookup errors.
+- **Load.** The check's two model calls share a 10-second budget, as shipped. Runs used 8 to 10 workers per set, with up to three sets running at once on one gateway. Each table counts lookup errors. Since then every run holds its model calls to two at once, kb's hedged copies included (`bench/gateway.py`), and runs one question at a time by default, so each question's calls and its hedge copy get the two slots; the paired final pass runs that way.
 
 ## LongMemEval
 
@@ -30,3 +30,7 @@
 - **Answer prompt.** The answer is a short phrase of at most six words, using the records' own words, with relative times worked out from the record's date. This follows LoCoMo's QA prompt ("a short phrase … exact words from the context") and Mem0's answer prompt (at most 5 or 6 words, relative times turned into dates). LoCoMo appends "Use DATE of CONVERSATION to answer with an approximate date." to category 2 questions only. Here that rule sits in the system prompt for every question, so no question carries its category.
 - **Today.** The date of the conversation's last session.
 - **Items.** One item per session. Each item has a header with both names and the session's date and time, then one `Name: text` line per turn. A shared image's caption follows its turn as `[shares <caption>]`, since LoCoMo's own prompts include captions.
+
+## Held-out passes
+
+- **A fourth pass, the baseline's code run again beside the final.** Each test half, month B included, was to run three times: baseline, midpoint and final. Between the baseline and the final, the check model's tokens for the same code rose by up to 18%, and one unchanged code's month score moved from 161 to 157 of 171, so a final measured days after its baseline would mix the code's effect with the gateway's. The final pass therefore runs the baseline's code a second time, labelled `baseline-paired`, at the same time as the final and in the same question order (`bench/paired.py`). Both use the final's harness, answer loop and judge; only `kb/` differs, and the baseline's is checked against the code id its first runs logged. The final code is committed, pushed and recorded with both code ids (`bench/splits/paired-freeze.json`, and both runs in `heldout-runs.tsv`) before either run starts, and nothing is tuned on the pair. The results are the paired differences, each with a 95% interval (`bench/compare.py final baseline-paired --split test --paired`). The earlier baseline and midpoint runs stay in the tables as history.

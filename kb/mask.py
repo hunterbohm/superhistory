@@ -1,3 +1,4 @@
+import base64
 import bisect
 import hashlib
 import logging
@@ -6,17 +7,29 @@ import re
 import sys
 import traceback
 
-# JSON text escapes a line break as "\n" and other characters likewise. A secret right after an escape reads as glued
-# to its letter, and a value ends at an escape that starts the next "name=" or "name:", as at the line's end the
-# escape stands for, so that name keeps its own value. At most four escapes before the name: a longer run read back
-# one escape at a time from every backslash in it would cost time in the square of its length.
-_AFTER_ESCAPE = r"(?<=\\[nrtbf])|(?<=\\u[0-9A-Fa-f]{4})"
+# JSON text escapes a line break as "\n" and other characters likewise, and a link as "%0A", once or, encoded twice,
+# as "%250A". A secret right after an escape reads as glued to its letter, and a value ends at an escape that starts
+# the next "name=" or "name:", as at the line's end the escape stands for, so that name keeps its own value. At most
+# four escapes before the name: a longer run read back one escape at a time from every backslash in it would cost
+# time in the square of its length.
+_AFTER_ESCAPE = r"(?<=\\[nrtbf])|(?<=\\u[0-9A-Fa-f]{4})|(?<=%[0-9A-Fa-f]{2})|(?<=%25[0-9A-Fa-f]{2})"
 _NEXT_NAME = r"(?:\\(?:[nrtbf]|u[0-9A-Fa-f]{4})){1,4}[A-Za-z0-9_.-]+[\"']?[ \t]*(?:[:=]|=>)"
 _NB = rf"(?:(?<![A-Za-z0-9])|{_AFTER_ESCAPE})"
+# A quote around a name or a value as text writes it: plain, escaped as JSON writes it, once or as JSON inside JSON
+# does, percent-encoded as in a link, or as an HTML entity. And "=" or ":" between them, plain or encoded the same ways.
+_QUOTE = r"(?:\\{0,7}[\"']|\\{1,7}u00(?:22|27)|%(?:25)?2[27]|&(?:quot|apos|#0{0,3}3[49]|#[xX]0{0,3}2[27]);)"
+_SEP = r"(?:[:=\uff1a\uff1d]|=>|%(?:25)?3[ADad]|\\{1,7}u003[AaDd])"
+# The space around a separator: spaces, tabs, line breaks, and no-break and full-width spaces.
+_GAP = r"[ \t\r\n\u00a0\u3000]*"
+# A value stops before a quote escaped to close it, so the escape stays with the quote. At most seven backslashes, as
+# JSON three times inside JSON writes one: an unbounded run read ahead from every backslash would cost time in the
+# square of its length.
+_CLOSE = r"(?!\\{1,7}[\"']|&(?:quot|apos|#0{0,3}3[49]|#[xX]0{0,3}2[27]);)"
 _WORD = rf"(?:\b|{_AFTER_ESCAPE})"
 # A blank line ends a paragraph: an empty line, with any spaces, its breaks plain or escaped as in JSON.
 _BLANK = r"(?:\r?\n[ \t]*\r?\n|\\(?:r\\)?n[ \t]*\\(?:r\\)?n)"
-_KEY_END = r"-----END [A-Z ]*PRIVATE KEY-----"
+_PGP_KEY = r"PGP (?:PRIVATE|SECRET) KEY BLOCK"
+_KEY_END = rf"-----END (?:[A-Z ]*PRIVATE KEY|{_PGP_KEY})-----"
 # The rest of a paragraph, from a key's header or an encrypted key's fields on: past the blank line after a
 # DEK-Info field, where an encrypted key's body starts, then to the next blank line, the next key's header, or the
 # end of the text. Stopping at the next header leaves that key its own match.
@@ -24,6 +37,13 @@ _IN_PARAGRAPH = rf"(?:(?!{_BLANK})(?!-----BEGIN )[\s\S])"
 _KEY_PARAGRAPH = rf"(?:{_IN_PARAGRAPH}*?DEK-Info:[^\r\n\\]*{_BLANK})?{_IN_PARAGRAPH}*"
 # A key's footer, looked for in the next 16 KB and before any other header.
 _TO_KEY_END = rf"(?:(?!-----BEGIN )[\s\S]){{0,16384}}?{_KEY_END}"
+# From an encrypted key's fields, its footer comes after one blank line, the one after its DEK-Info field, so the
+# search stops at the next.
+_FIELDS_TO_KEY_END = rf"{_IN_PARAGRAPH}{{0,16384}}?(?:{_BLANK}{_IN_PARAGRAPH}{{0,16384}}?)?{_KEY_END}"
+# An HTTP authorization scheme's word and its value are parted by spaces, or in a link by "%20" or "+".
+_SCHEME_GAP = r"(?:\s|%(?:25)?20|\+)+"
+BEARER = re.compile(rf"(?i){_WORD}bearer{_SCHEME_GAP}[A-Za-z0-9._~+/-]{{16,}}=*")
+BASIC = re.compile(rf"(?i){_WORD}basic{_SCHEME_GAP}(?=[A-Za-z0-9+/]*[0-9+/=])[A-Za-z0-9+/]{{12,}}={{0,2}}")
 # A secret's value ends at a space, tab or line break, and the space around its "=" is spaces, tabs and line breaks (a
 # JSON or YAML value can sit on the next line): \s would also take U+2028, U+2029, U+0085, a vertical tab or a form
 # feed, which end a value early or make "password=\u2028password" look like a placeholder.
@@ -32,10 +52,18 @@ SECRET_PATTERNS = [
     # footer, through the end of its paragraph. So a key cut off, wrapped at any width or followed at once by other
     # text is masked whole; what follows a key without a footer in its paragraph is masked with it, which is the cost.
     re.compile(rf"-----BEGIN [A-Z ]*PRIVATE KEY-----(?:{_TO_KEY_END}|{_KEY_PARAGRAPH})"),
+    # A PGP armored private key the same way, whose body comes after a blank line, after any armor headers.
+    re.compile(rf"-----BEGIN {_PGP_KEY}-----(?:{_TO_KEY_END}|{_IN_PARAGRAPH}*(?:{_BLANK}{_IN_PARAGRAPH}*)?)"),
+    # A PuTTY key file's private lines and its MAC, through the end of their paragraph.
+    re.compile(rf"Private-Lines: *\d+{_IN_PARAGRAPH}*"),
+    re.compile(_NB + r"AGE-SECRET-KEY-1[0-9A-Z]{20,}"),
+    # ssh.com's SSH2 key files, from the header through the footer, or through the end of the paragraph.
+    re.compile(rf"---- BEGIN SSH2 [A-Z ]*PRIVATE KEY ----(?:(?!---- BEGIN )[\s\S]){{0,16384}}?"
+               rf"---- END SSH2 [A-Z ]*PRIVATE KEY ----|---- BEGIN SSH2 [A-Z ]*PRIVATE KEY ----{_IN_PARAGRAPH}*"),
     # An encrypted key whose header an older kb's row-by-row remask took: from its fields, the same way, or from what
     # that remask left of them, "[masked],ENCRYPTED".
     re.compile(rf"(?:Proc-Type: *4,ENCRYPTED|\[masked\],ENCRYPTED|DEK-Info:)"
-               rf"(?:{_TO_KEY_END}|{_KEY_PARAGRAPH}(?:{_BLANK}{_IN_PARAGRAPH}*)?)"),
+               rf"(?:{_FIELDS_TO_KEY_END}|{_KEY_PARAGRAPH}(?:{_BLANK}{_IN_PARAGRAPH}*)?)"),
     re.compile(_NB + r"sk-(?:ant-|proj-|or-v1-)?[A-Za-z0-9_-]{20,}"),
     re.compile(_NB + r"(?:sk|rk|pk)_(?:live|test)_[A-Za-z0-9]{16,}"),
     re.compile(_NB + r"(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})"),
@@ -49,14 +77,22 @@ SECRET_PATTERNS = [
     re.compile(r"https://(?:[\w-]+\.)?discord(?:app)?\.com/api/webhooks/\d+/[\w-]+"),
     re.compile(r"https://hooks\.slack\.com/(?:services|workflows|triggers)/[\w/-]+"),
     re.compile(_NB + r"eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}"),
-    re.compile(rf"(?i){_WORD}bearer\s+[A-Za-z0-9._~+/-]{{16,}}=*"),
-    re.compile(rf"(?i){_WORD}basic\s+(?=[A-Za-z0-9+/]*[0-9+/=])[A-Za-z0-9+/]{{12,}}={{0,2}}"),
+    BEARER,
+    BASIC,
 ]
+# In an item id, "Bearer" and "Basic" are words: "Ring Bearer duties/plan.md" names a note. A Basic credential still
+# counts there by what it is, "user:password" in base64; a bearer token counts only by a provider's shape above.
+_ID_PATTERNS = [p for p in SECRET_PATTERNS if p not in (BEARER, BASIC)]
+_BASIC_VALUE = re.compile(rf"(?i){_WORD}basic{_SCHEME_GAP}([A-Za-z0-9+/]{{12,}})")
 PREFIXED_SECRETS = [
-    re.compile(rf"(?i)({_WORD}(?:set-)?cookie[\"']?\s*:\s*)[^\"'\n]{{8,}}"),
+    re.compile(rf"(?i)({_WORD}(?:set-)?cookie{_QUOTE}?\s*(?::|%(?:25)?3[Aa])\s*{_QUOTE}?)(?:{_CLOSE}[^\"'\n]){{8,}}"),
     # A scheme is at most 32 characters: unbounded, each letter of a long run would read on to its end.
     re.compile(r"([a-z][a-z0-9+.-]{0,31}://[^/ \t\n\r:@'\"]+:)[^/ \t\n\r@'\"]{3,}(?=@)"),
-    re.compile(rf"({_WORD}curl\b[^\n|;]*?\s(?:-u|--user)\s+['\"]?[^ \t\n\r:'\"]+:)(?:(?!{_NEXT_NAME})[^ \t\n\r'\"])+"),
+    # The same link percent-encoded, once or twice, as a parameter of another link.
+    re.compile(r"(?i)([a-z][a-z0-9+.-]{0,31}%(?:25)?3A%(?:25)?2F%(?:25)?2F(?:(?!%(?:25)?(?:3A|2F|40))[^/ \t\n\r@'\"&])+"
+               r"%(?:25)?3A)(?:(?!%(?:25)?(?:2F|40))[^/ \t\n\r@'\"&]){3,}(?=%(?:25)?40)"),
+    # openssl's "-passin pass:..." and "-passout pass:...".
+    re.compile(rf"((?<![A-Za-z0-9_-])-pass(?:in|out)?[ \t]+['\"]?pass:)(?:(?!{_NEXT_NAME}){_CLOSE}[^ \t\n\r'\"])+"),
 ]
 # A secret's name is a whole run of name characters whose last dotted part holds a key word, or one ending in "_pw" or
 # the like. Read as that part after the run's last dot, it takes one pass over a long run; read as any characters
@@ -66,11 +102,39 @@ _KEY_NAME = (
     r"(?:[A-Za-z0-9_.-]*\.)?(?=[A-Za-z0-9_-]*?(?:api[_-]?key|access[_-]?key|private[_-]?key|secret|token|"
     r"credentials?|passw(?:or)?d|passcode|session[_-]?(?:token|key|secret|cookie)|bw_session))[A-Za-z0-9_-]+"
     r"|[A-Za-z0-9]+(?:[_-][A-Za-z0-9]+)*[_-](?:pass|pwd|pw)"
+    r"|x-(?:[A-Za-z0-9]+-)*auth(?:-[A-Za-z0-9]+)*"
     r")(?![A-Za-z0-9_.-])")
 _ENV_KEY_NAME = rf"(?:(?<![A-Za-z0-9_])|{_AFTER_ESCAPE})([A-Z][A-Z0-9_]*_KEY)(?![A-Za-z0-9_])"
-_VALUE = rf"((?:\[masked\]|(?!{_NEXT_NAME})[^ \t\n\r\"'`,;<>)\]}}])+)"
-KEYED_SECRET = re.compile(_KEY_NAME + r"((?:[\"'])?[ \t\r\n]*(?:[:=]|=>|\bis\b)[ \t\r\n]*[\"']?)" + _VALUE)
-ENV_KEY_SECRET = re.compile(_ENV_KEY_NAME + r"((?:[\"'])?[ \t\r\n]*[:=][ \t\r\n]*[\"']?)" + _VALUE)
+_VALUE = rf"((?:\[masked\]|(?!{_NEXT_NAME}){_CLOSE}[^ \t\n\r\"'`,;<>)\]}}])+)"
+KEYED_SECRET = re.compile(_KEY_NAME + rf"({_QUOTE}?{_GAP}(?:{_SEP}|\bis\b){_GAP}{_QUOTE}?)" + _VALUE)
+ENV_KEY_SECRET = re.compile(_ENV_KEY_NAME + rf"({_QUOTE}?{_GAP}{_SEP}{_GAP}{_QUOTE}?)" + _VALUE)
+# A long flag named for a secret, and its value after a space or a quote: "--api-key ...". A flag that names where the
+# secret is, such as "--token-file" or "--password-stdin", takes none, and a value never starts with "-".
+FLAG_SECRET = re.compile(r"(?i)(?<![A-Za-z0-9_.-])(--" + _KEY_NAME[len(r"(?i)(?<![A-Za-z0-9_.-])("):]
+                         + r"(?<!-stdin)(?<!-file)(?<!-env)(?<!-path)(?<!-name)(?<!-id)(?<!-cmd)(?<!-command)"
+                         r"(?<!-helper)(?<!-length)(?<!-type)(?<!-url)([ \t]+[\"']?)(?!-)" + _VALUE)
+# An HTTP Authorization header's credentials, after any scheme word: "Token ...", "Bot ...", "ApiKey ...".
+AUTH_SECRET = re.compile(rf"(?i)((?<![A-Za-z0-9_.-])(?:proxy-)?authorization)"
+                         rf"({_QUOTE}?[ \t]*(?::|=|%(?:25)?3[ADad])[ \t]*{_QUOTE}?(?:[A-Za-z][A-Za-z0-9_-]*[ \t]+)?)"
+                         + _VALUE)
+# Commands that take a password after a short flag, which counts only on that command's line: from its first word to a
+# pipe, ";" or a line break, plain or escaped. Each row: the command, the flag and what parts it from the password, and
+# whether any value counts; otherwise a value of letters only after a space is a word, as after "is" ("docker login -p
+# is deprecated"). curl's -u takes "user:password", and mysql's -p takes its password glued, since "-p shop" names a
+# database.
+COMMAND_FLAGS = (
+    (r"curl", r"\s(?:-u|--user)\s*['\"]?[^ \t\n\r:'\"]+:", True),
+    (r"mysql|mysqldump|mysqladmin|mariadb|mariadb-dump", r"\s-p(?=[^ \t\n\r'\"])", True),
+    (r"sshpass", r"\s-p[ \t]*['\"]?", False),
+    (r"(?:docker|podman|nerdctl|buildah|skopeo|oras)\s+login|helm\s+registry\s+login", r"\s-p[ \t]+['\"]?", False),
+    (r"redis-cli", r"\s-a[ \t]+['\"]?", False),
+)
+_COMMANDS = [(re.compile(rf"(?i)(?:(?<![A-Za-z0-9_.-])|{_AFTER_ESCAPE})(?:{command})(?![A-Za-z0-9_.-])"
+                         r"(?:[^\n|;\\]|\\(?![nr]))*"),
+              re.compile(rf"({flag})((?:{_CLOSE}[^ \t\n\r'\"])+)"), always) for command, flag, always in COMMAND_FLAGS]
+_ANY_COMMAND = re.compile(r"(?i)curl|mysql|mariadb|sshpass|login|redis-cli")
+# A field name that by itself names a secret, as a dict's key does.
+_SECRET_FIELD = re.compile(rf"(?:{_KEY_NAME[4:]}|{_ENV_KEY_NAME})$", re.I)
 # In an item id, a value counts by its key's name only in assignment form, "token=...", "token=>..." or "token:...",
 # with no space.
 KEYED_ID = re.compile(_KEY_NAME + r"((?:[\"'])?(?:=>|[:=])[\"']?)" + _VALUE)
@@ -152,26 +216,53 @@ INVISIBLE = re.compile(r"[\u00ad\u034f\u061c\u115f\u1160\u17b4\u17b5\u180b-\u180
 # Which mask() a stored row was masked with. A row of another version, or of none, is masked again when read and by
 # the next ingest. The patterns change it by themselves; bump REVISION when the code that applies them changes what
 # it masks.
-REVISION = 3
+REVISION = 4
 VERSION = hashlib.sha256(repr((REVISION, [p.pattern for p in SECRET_PATTERNS + PREFIXED_SECRETS], KEYED_SECRET.pattern,
-                                ENV_KEY_SECRET.pattern, PASSWORD_NAME.pattern, sorted(PLACEHOLDERS),
-                                REFERENCE.pattern, INVISIBLE.pattern, CODE_HEAD.pattern, CODE_RUN.pattern,
-                                sorted(CODE_LENGTH.items()), MIN_CODE)).encode()).hexdigest()[:16]
+                                ENV_KEY_SECRET.pattern, FLAG_SECRET.pattern, AUTH_SECRET.pattern, COMMAND_FLAGS,
+                                PASSWORD_NAME.pattern, sorted(PLACEHOLDERS), REFERENCE.pattern, INVISIBLE.pattern,
+                                CODE_HEAD.pattern, CODE_RUN.pattern, sorted(CODE_LENGTH.items()),
+                                MIN_CODE)).encode()).hexdigest()[:16]
+
+
+def _looks_secret(name, sep, value):
+    """Whether `value`, after a secret's name `name` and the separator `sep`, is a secret and not a word, a placeholder
+    or a pointer to one."""
+    if value.lower() in PLACEHOLDERS or REFERENCE.search(value):
+        return False
+    if PASSWORD_NAME.search(name):
+        word = value.rstrip(".!?")
+        return len(value) >= 4 and (not _prose(sep) or bool(re.search(r"[^A-Za-z]", word)))
+    mixed = re.search(r"\d", value) and re.search(r"[A-Za-z]", value)
+    return (len(value) >= 16 and not value.isdigit()) or bool(len(value) >= 8 and mixed)
+
+
+_SEP_CHARACTER = re.compile(r"[:=\uff1a\uff1d]|%(?:25)?3[ADad]|u003[AaDd]")
+
+
+def _prose(sep):
+    """Whether a separator reads as prose does, "is" or a space with no "=" or ":" in it, after which a value of
+    letters only is a word and not a password."""
+    return not _SEP_CHARACTER.search(sep) and ("is" in sep.lower() or sep[-1:].isspace())
+
+
+def _command_passwords(text):
+    """`text` with each password COMMAND_FLAGS finds masked. A command's line is read once from its first word, so a
+    line that names the command again and again costs time in proportion to its length."""
+    if not _ANY_COMMAND.search(text):
+        return text
+    for line_pattern, flag, always in _COMMANDS:
+        spans = [(m.start(2), m.end(2)) for line in line_pattern.finditer(text)
+                 for m in flag.finditer(text, line.start(), line.end())
+                 if always or _looks_secret("password", m.group(1), m.group(2))]
+        text = _replace(text, spans, "[masked]")
+    return text
 
 
 def _mask_keyed(m):
     name, sep, value = m.groups()
     if "[masked]" in value and value != "[masked]":  # the rest of a value a token or a code in it was masked out of
         return f"{name}{sep}[masked]"
-    if value.lower() in PLACEHOLDERS or REFERENCE.search(value):
-        return m.group(0)
-    if PASSWORD_NAME.search(name):
-        word = value.rstrip(".!?")
-        looks_secret = len(value) >= 4 and ("is" not in sep.lower() or re.search(r"[^A-Za-z]", word))
-    else:
-        mixed = re.search(r"\d", value) and re.search(r"[A-Za-z]", value)
-        looks_secret = (len(value) >= 16 and not value.isdigit()) or (len(value) >= 8 and mixed)
-    return f"{name}{sep}[masked]" if looks_secret else m.group(0)
+    return f"{name}{sep}[masked]" if _looks_secret(name, sep, value) else m.group(0)
 
 
 KEY_FOOTER = re.compile(_KEY_END)
@@ -181,11 +272,16 @@ _BLANK_LINE = re.compile(_BLANK)
 # they never leave one glued. Such a name keeps its value masked with it.
 _GLUED_RUN = re.compile(r"\[masked\](?:[A-Za-z0-9_.-]+[ \t]*(?:[:=]|=>)[ \t]*[\"']?" + _VALUE[1:-1]
                         + r"|[A-Za-z0-9_+/=-]+)")
-# The rest of a key after an older kb's placeholder: base64 glued to it and running to a line break, or, where main's
-# key pattern stopped at a backslash, an escaped line break right after it and a key line, 16 characters of base64 or
-# more as real keys' are. Masked through its footer, or through the end of its paragraph.
+# How every private key's body starts: DER, a SEQUENCE in long form ("MII...", "MIG...") or in short form before an
+# INTEGER or a SEQUENCE ("MHcC...", "MC4C..."), or OpenSSH's "openssh-key-v1" ("b3Bl...").
+_KEY_BODY_START = r"(?:MI[E-P][A-Za-z0-9+/]|M[A-H][A-Za-z0-9+/][Cw]|b3Bl)"
+# The rest of a key after an older kb's placeholder: base64 glued to it and running to a line break, as main's key
+# pattern leaves when it took the line break too; or a line break, plain or escaped, and a key's body from its first
+# line, cut anywhere, as main's pattern leaves in escaped text, where it stops at the backslash after the header, or
+# where a chunk ended between a header and its line break. Masked through its footer, or through the end of its
+# paragraph.
 _KEY_REST = re.compile(rf"\[masked\]((?:[A-Za-z0-9+/=]+[ \t\r]*(?=\n|\\(?:r\\)?n)"
-                       rf"|(?=\\(?:r\\)?n[A-Za-z0-9+/=]{{16}}))"
+                       rf"|(?=(?:\r?\n|\\(?:r\\)?n){_KEY_BODY_START}))"
                        rf"(?:(?!{_KEY_END}){_IN_PARAGRAPH})*(?:{_KEY_END})?)")
 
 
@@ -217,12 +313,15 @@ def _replace(text, spans, replacement):
     return "".join(out + [text[last:]])
 
 
-# The patterns that read a value by its name: in text, and in an item id, where only the assignment form counts.
-TEXT_NAMES, ID_NAMES = (KEYED_SECRET, ENV_KEY_SECRET), (KEYED_ID, ENV_KEY_ID)
+# What a pass reads, in text and in an item id: the secrets known by their shape, and the patterns that read a value by
+# its name. An id reads "Bearer" and "Basic" as words, and a named value only in assignment form.
+_TEXT_RULES = (SECRET_PATTERNS, (KEYED_SECRET, ENV_KEY_SECRET, FLAG_SECRET, AUTH_SECRET))
+_ID_RULES = (_ID_PATTERNS, (KEYED_ID, ENV_KEY_ID))
 
 
-def _pass(text, names):
-    for pattern in SECRET_PATTERNS:
+def _pass(text, rules):
+    patterns, keyed = rules
+    for pattern in patterns:
         text = pattern.sub("[masked]", text)
     text = _GLUED_RUN.sub("[masked]", _headless_keys(_key_rest(text)))
     # Codes after the tokens, since a token can hold a run that reads as one and would be cut apart, and before the
@@ -230,19 +329,20 @@ def _pass(text, names):
     text = _replace(text, _code_spans(text), "[masked]")
     for pattern in PREFIXED_SECRETS:
         text = pattern.sub(lambda m: m.group(1) + "[masked]", text)
-    for pattern in names:
+    text = _command_passwords(text)
+    for pattern in keyed:
         text = pattern.sub(_mask_keyed, text)
     return text
 
 
-def _mask_once(text, names=TEXT_NAMES):
+def _mask_once(text, rules=_TEXT_RULES):
     """One pass of every pattern. In a text with characters a reader does not see, the pass matches the text without
     them, and the stretch it changed there, from its first change to its last, replaces the same stretch of the text
     as written: the rest keeps them, so an emoji or a script that joins with them reads as it did."""
     if not INVISIBLE.search(text):
-        return _pass(text, names)
+        return _pass(text, rules)
     view = INVISIBLE.sub("", text)
-    masked = _pass(view, names)
+    masked = _pass(view, rules)
     if masked == view:
         return text
     head = len(os.path.commonprefix([view, masked]))
@@ -291,12 +391,40 @@ def holds_secret(text):
     return mask(text) != text
 
 
-def secret_in_id(text):
+def _basic_credential(value):
+    """Whether base64 decodes to "user:password" text, as a Basic credential does."""
+    try:
+        decoded = base64.b64decode(value[:len(value) // 4 * 4], validate=True).decode("utf-8")
+    except ValueError:  # not base64, or not text
+        return False
+    return ":" in decoded and decoded.isprintable()
+
+
+# Fields of an item's metadata that name where its reader read it, and that its reader's id starts with, joined by a
+# colon: a Hermes profile, as in "secret-project:20261028_101500_a1b2c3", which would read as a secret's name and value.
+ID_NAMES = ("profile",)
+
+
+def id_names(meta):
+    """The values an item's metadata records for ID_NAMES, in order."""
+    return tuple(meta.get(field) for field in ID_NAMES) if isinstance(meta, dict) else ()
+
+
+def secret_in_id(text, names=()):
     """Whether an item id holds a secret, so that kb does not store the item: a masked id could stand for two items.
     An id is a name someone chose, so it is read more narrowly than text: a provider's token shape or a credential in
-    a link still counts, but a value its key names counts only in assignment form. A title such as "Tokens: 2026Q4
-    plan" or "the password is changed" is a name, which mask() would mask in text."""
-    return _mask_once(text, ID_NAMES) != text
+    a link still counts, but a value its key names counts only in assignment form, and a Basic value only as base64
+    of "user:password". A title such as "Tokens: 2026Q4 plan" or "the password is changed" is a name, which mask()
+    would mask in text. `names` are what the id starts with, each joined by a colon, as the item's metadata records
+    them (id_names): each is read by itself and the rest of the id apart from it. A name that is a secret's word by
+    itself, such as "password", is not read apart, so "password:..." still counts."""
+    name = names[0] if names else None
+    if (isinstance(name, str) and name and text.startswith(f"{name}:") and not KEY_WORD.fullmatch(name)
+            and not text.startswith("//", len(name) + 1)):
+        return secret_in_id(name) or secret_in_id(text[len(name) + 1:], names[1:])
+    if any(_basic_credential(m.group(1)) for m in _BASIC_VALUE.finditer(INVISIBLE.sub("", text))):
+        return True
+    return _mask_once(text, _ID_RULES) != text
 
 
 def mask_all(value, key=None):
@@ -306,6 +434,8 @@ def mask_all(value, key=None):
     if isinstance(value, str):
         if key is None:
             return mask(value)
+        if _SECRET_FIELD.match(key) and _looks_secret(key, "=", value.strip()):
+            return "[masked]"  # the whole value, which may hold a space or a quote that would end it in text
         masked = mask(f"{key}={value}")
         head = mask(key) + "="
         return masked[len(head):] if masked.startswith(head) else mask(value)

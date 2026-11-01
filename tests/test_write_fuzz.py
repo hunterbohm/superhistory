@@ -38,6 +38,12 @@ TS = "2026-10-01T10:00:00Z"
 KEY_KINDS = ("PRIVATE KEY", "RSA PRIVATE KEY", "EC PRIVATE KEY", "DSA PRIVATE KEY", "OPENSSH PRIVATE KEY",
              "ENCRYPTED PRIVATE KEY")
 BASE64 = string.ascii_letters + string.digits + "+/"
+# How each kind's body starts, as real keys' do: DER for all but OpenSSH's (openssl genpkey, genrsa, ecparam and
+# ssh-keygen, every size and curve). An encrypted key's body after its DEK-Info field is ciphertext, so random.
+KEY_STARTS = {"PRIVATE KEY": ("MIIEvQIBADANBgkqhkiG9w0BAQEFAASC", "MC4CAQAwBQYDK2VwBCIEI", "MIGHAgEAMBMGByqGSM49"),
+              "RSA PRIVATE KEY": ("MIIEpAIBAAKCAQEA", "MIICXAIBAAKBgQ"), "EC PRIVATE KEY": ("MHcCAQEEI", "MIGkAgEBBDA"),
+              "DSA PRIVATE KEY": ("MIIBuwIBAAKBgQ",), "OPENSSH PRIVATE KEY": ("b3BlbnNzaC1rZXktdjEAAAAA",),
+              "ENCRYPTED PRIVATE KEY": ("MIIFLTBXBgkqhkiG9w0BBQ0w",)}
 FILLER = ("walrus", "ledger", "deploy", "notes", "harbor", "the", "plan", "moved", "today", "approved")
 
 
@@ -72,7 +78,7 @@ class Planted:
     def pem(self, whole=False):
         """A private key: whole, long enough that a middle chunk holds only body lines, cut off before its footer, or
         as an older kb's row-by-row remask leaves it, its placeholder and then the rest of the body."""
-        line = (self._value("Fz{}xPemBodyLine" + "PemBodyLine" * 5)[:64])
+        line = ("MIIEvQIBAD" + self._value("Fz{}xPemBodyLine" + "PemBodyLine" * 5))[:64]
         self.pieces.update((line, line[:12]))
         body = "\n".join([line] * self.r.randint(2, 10))
         shape = 1 if whole else self.r.random()
@@ -91,7 +97,9 @@ class Planted:
         kind, brk, width = self.r.choice(KEY_KINDS), self.r.choice(("\n", "\r\n", "\\n")), self.r.randint(self.narrowest, 100)
         body = "".join(self.r.choice(BASE64) for _ in range(self.r.randint(24, 400))) + "=" * self.r.randint(0, 2)
         head = [f"-----BEGIN {kind}-----"]
-        if kind in KEY_KINDS[1:4] and self.r.random() < 0.4:
+        if not (kind in KEY_KINDS[1:4] and self.r.random() < 0.4):
+            body = self.r.choice(KEY_STARTS[kind]) + body
+        else:
             iv = "".join(self.r.choice("0123456789ABCDEF") for _ in range(32))
             head += ["Proc-Type: 4,ENCRYPTED", f"DEK-Info: AES-256-CBC,{iv}", ""]
         block = brk.join(head + [body[i:i + width] for i in range(0, len(body), width)] + [f"-----END {kind}-----"])

@@ -325,6 +325,26 @@ class HealthTest(TempDB):
         store.record_ok(self.db, "a@laptop")
         self.assertEqual([unit for unit, _ in store.failing(self.db)], ["b@laptop"])
 
+    def test_state_an_older_kb_wrote_shows_no_secret_and_goes_at_the_next_failure(self):
+        token = "ghp_" + "Zq7Lm2Xc9Vb4Nn8Rt1Yw" + "Kd5Hs3Pf"
+        # An older kb cut a failure line to 200 characters before masking it, and kept positions read from any id.
+        self.db.executemany("INSERT INTO ingest_state(source, key, watermark) VALUES (?, ?, ?)", [
+            (store.STATE, "fail:notes@desk", "2026-10-28T10:00:00Z " + "r" * 170 + " and " + token[:19]),
+            ("_summarize_failed", "notes|desk:token=walrus2secret9.md", "3f2a9c"),
+            ("notes", "desk", json.dumps({"key-" + token + ".md": 1.0}))])
+        self.db.commit()
+        [(unit, line)] = store.failing(self.db)
+        self.assertEqual(unit, "notes@desk")
+        self.assertTrue(line.startswith("2026-10-28T10:00:00Z"), "when it failed still shows")
+        self.assertNotIn(token[4:15], line)
+        store.record_failure(self.db, "gmail@desk", RuntimeError("sign-in failed"))
+        [(unit, line)] = store.failing(self.db)
+        self.assertEqual(unit, "gmail@desk", "the older line is gone")
+        self.assertIn("sign-in failed", line)
+        state = json.dumps(self.db.execute("SELECT * FROM ingest_state").fetchall())
+        self.assertNotIn(token[4:15], state)
+        self.assertNotIn("walrus2secret9", state)
+
     def test_away_keeps_the_first_miss_and_clears(self):
         store.record_away(self.db, "laptop")
         first = store.away(self.db)
@@ -507,9 +527,9 @@ class MaskVersionTest(TempDB):
                     "token2:walrus2secret9", "my-password:walrus2secret9"):
             with self.subTest(sid=sid):
                 self.assertTrue(store.secret_id("notes", sid), "with no host given")
-                self.assertTrue(store.secret_id("notes", f"desk:{sid}", host="desk"), "under a host")
+                self.assertTrue(store.secret_id("notes", f"desk:{sid}", names=("desk",)), "under a host")
                 if not sid.startswith(("token2", "my-password")):  # these two can be hosts, if a row says so
-                    self.assertTrue(store.secret_id("notes", sid, host=sid.partition(":")[0]), "no host is named so")
+                    self.assertTrue(store.secret_id("notes", sid, names=(sid.partition(":")[0],)), "no host is named so")
                 with self.assertRaises(ValueError):
                     store.replace_rows(self.db, "notes", sid, [{"kind": "doc", "ts": iso(), "title": "t",
                                                                 "content": "c", "metadata": {}}])
@@ -521,10 +541,10 @@ class MaskVersionTest(TempDB):
     def test_the_host_and_the_readers_id_are_checked_apart(self):
         for host in ("desk", "tokenbox", "secret-lab", "studio-pw", "passwordless", "token2"):
             with self.subTest(host=host):
-                self.assertFalse(store.secret_id("notes", f"{host}:Areas/notes-2026-10-27.md", host=host))
-                self.assertTrue(store.secret_id("notes", f"{host}:key-{self.TOKEN}.md", host=host))
-        self.assertTrue(store.secret_id("notes", f"{self.TOKEN}:a.md", host=self.TOKEN), "a host that is a token")
-        self.assertTrue(store.secret_id(self.TOKEN, "desk:a.md", host="desk"), "a source that is a token")
+                self.assertFalse(store.secret_id("notes", f"{host}:Areas/notes-2026-10-27.md", names=(host,)))
+                self.assertTrue(store.secret_id("notes", f"{host}:key-{self.TOKEN}.md", names=(host,)))
+        self.assertTrue(store.secret_id("notes", f"{self.TOKEN}:a.md", names=(self.TOKEN,)), "a host that is a token")
+        self.assertTrue(store.secret_id(self.TOKEN, "desk:a.md", names=("desk",)), "a source that is a token")
         self.assertTrue(store.secret_id("notes", "tokenbox:walrus2secret9.md"), "with no host given, read whole")
         row = {"kind": "doc", "ts": iso(), "title": "t", "content": "c", "metadata": {"host": "tokenbox"}}
         store.replace_rows(self.db, "notes", "tokenbox:Areas/notes-2026-10-27.md", [row])
@@ -637,6 +657,23 @@ class MaskVersionTest(TempDB):
         self.assertEqual(self.ids(), [])
         with open(self.path, "rb") as fh:
             self.assertNotIn(self.TOKEN.encode(), fh.read())
+
+    def test_remask_keeps_an_old_note_named_with_basic_or_bearer(self):
+        for n, name in enumerate(("Courses/Basic Statistics/lecture-01.md", "Wedding/Ring Bearer duties/plan-2026.md")):
+            self.old(f"desk:{name}", f"central limit theorem {n}", meta={"host": "desk"})
+        store.remask(self.db)
+        self.assertEqual(len(self.ids()), 2)
+        self.assertEqual(len(search.search(self.db, "central limit theorem")), 2)
+
+    def test_remask_reads_a_profile_its_rows_record_apart_from_the_id_after_it(self):
+        kept = "desk:secret-project:20261028_101500_a1b2c3"
+        self.old(kept, "hermes session", meta={"host": "desk", "profile": "secret-project"})
+        for sid, profile in (("desk:password:walrus2secret9", "password"), ("desk:my-token:walrus2secret9", None),
+                             ("desk:my-token:walrus2secret9x", "other")):
+            self.old(sid, "hermes session", meta={"host": "desk", **({"profile": profile} if profile else {})})
+        store.remask(self.db)
+        self.assertEqual([r[0] for r in self.db.execute("SELECT DISTINCT source_id FROM docs")], [kept],
+                         "a name that is a secret's word alone, or one the rows do not record, is not split off")
 
     def test_remask_stopped_by_its_time_leaves_the_rest_old(self):
         for i in range(120):

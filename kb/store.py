@@ -14,7 +14,7 @@ import time
 from datetime import datetime, timezone
 
 from .config import NAME_RE
-from .mask import KEY_WORD, VERSION, clean, holds_secret, mask, mask_all, masked_log, secret_in_id
+from .mask import ID_NAMES, KEY_WORD, VERSION, clean, holds_secret, mask, mask_all, masked_log, secret_in_id
 
 CHUNK = 4000
 ITEM_KINDS = ("doc", "raw")
@@ -174,36 +174,49 @@ def _as_stored(rows):
     return rows
 
 
-def secret_id(source, source_id, host=None):
+# Fields of an item's metadata whose values its stored id starts with, each joined by a colon: kb's host, then its
+# reader's own (mask.ID_NAMES).
+ID_FIELDS = ("host",) + ID_NAMES
+
+
+def secret_id(source, source_id, names=()):
     """Whether kb refuses an item under this source and stored id. kb stores "<host>:<reader's id>" and records the
-    host in the item's metadata. Given that host, with the name config allows a host and the id starting with it, the
-    id is checked as its two parts, since joined by kb's colon a host such as "tokenbox" would read as the name of a
-    secret. Any other id is checked whole, so "password:...", "token2:..." or a link with a password in it is
-    refused."""
+    host in the item's metadata. `names` are the values the item's rows agree on for ID_FIELDS, the host first. Given
+    that host, with the name config allows a host and the id starting with it, the id is checked as the host and the
+    reader's id apart, since joined by kb's colon a host such as "tokenbox" would read as the name of a secret; the
+    reader's id is read with the reader's names (mask.secret_in_id). Any other id is checked whole, so
+    "password:...", "token2:..." or a link with a password in it is refused."""
+    host = names[0] if names else None
     if (host and source_id.startswith(f"{host}:") and NAME_RE.match(host) and not KEY_WORD.fullmatch(host)
             and not source_id.startswith("//", len(host) + 1)):
-        return holds_secret(source) or holds_secret(host) or secret_in_id(source_id[len(host) + 1:])
+        return holds_secret(source) or holds_secret(host) or secret_in_id(source_id[len(host) + 1:], names[1:])
     return holds_secret(source) or secret_in_id(source_id)
 
 
-def item_host(db, source, source_id):
-    """The host every stored row of the item names in its metadata, or None when they differ or one names none."""
-    hosts = {h for (h,) in db.execute(
-        "SELECT json_extract(metadata, '$.host') FROM docs WHERE source=? AND source_id=?", (source, source_id))}
-    return hosts.pop() if len(hosts) == 1 else None
+def _agreed(values):
+    """The one value in `values`, or None when they differ."""
+    return values.pop() if len(values) == 1 else None
 
 
-def _host(rows):
-    """The host the rows' metadata names, if they all name the same one."""
-    hosts = {r["metadata"].get("host") if isinstance(r["metadata"], dict) else None for r in rows}
-    return hosts.pop() if len(hosts) == 1 else None
+def item_names(db, source, source_id):
+    """The values every stored row of the item records for ID_FIELDS, each None where they differ or one records
+    none."""
+    fields = ", ".join(f"json_extract(metadata, '$.{field}')" for field in ID_FIELDS)
+    rows = db.execute(f"SELECT {fields} FROM docs WHERE source=? AND source_id=?", (source, source_id)).fetchall()
+    return tuple(_agreed({row[i] for row in rows}) for i in range(len(ID_FIELDS)))
+
+
+def _names(rows):
+    """The values the rows' metadata agrees on for ID_FIELDS, as item_names() reads them from stored rows."""
+    meta = [r["metadata"] if isinstance(r["metadata"], dict) else {} for r in rows]
+    return tuple(_agreed({m.get(field) for m in meta}) for field in ID_FIELDS)
 
 
 def replace_rows(db, source, source_id, rows, kinds=ITEM_KINDS):
     """Swap one item's rows of the given kinds for `rows` (dicts: kind, ts, title, content, metadata), masked with
     today's mask() and marked with its version. Raises ValueError for a source or item id that looks like it holds a
     secret, which ingest does not store either: a masked id could stand for two items."""
-    if rows and secret_id(source, source_id, _host(rows)):
+    if rows and secret_id(source, source_id, _names(rows)):
         raise ValueError("a source or item id that looks like it holds a secret is not stored; rename it")
     if "raw" not in kinds and any(r["kind"] == "raw" for r in rows):
         # Chunks added one write at a time would be masked apart, and a secret could run from one into the next.
@@ -289,8 +302,23 @@ def record_ok(db, unit):
     db.execute("DELETE FROM ingest_state WHERE source=? AND key=?", (STATE, f"fail:{unit}"))
 
 
+def clean_state(db):
+    """Drop what ingest_state holds from before today's mask(), once for each version: every failure line, since an
+    older kb cut one before masking it and the next failing run writes it again, and every row whose source, key or
+    value holds a secret, such as a position an older kb read from an id it now refuses. A source whose position goes
+    reads from the start again."""
+    if get_watermark(db, STATE, "state_masked") == VERSION:
+        return
+    db.execute("DELETE FROM ingest_state WHERE source=? AND key GLOB 'fail:*'", (STATE,))
+    db.executemany("DELETE FROM ingest_state WHERE source=? AND key=?", [
+        (source, key) for source, key, value in db.execute("SELECT source, key, watermark FROM ingest_state")
+        if holds_secret(source) or holds_secret(key) or holds_secret(str(value))])
+    set_watermark(db, STATE, "state_masked", VERSION)
+
+
 def record_failure(db, unit, exc):
     db.rollback()
+    clean_state(db)
     line = mask(str(exc).splitlines()[0])[:200] if str(exc) else type(exc).__name__
     set_watermark(db, STATE, f"fail:{unit}", f"{now_iso()} {line}")
     db.commit()
@@ -315,8 +343,12 @@ def succeeded(db):
 
 
 def failing(db):
-    """(unit, "<when> <error line>") for units whose last run failed."""
-    return _state(db, "fail:")
+    """(unit, "<when> <error line>") for units whose last run failed. Until clean_state() has run under today's
+    mask(), a line may be an older kb's, which can hold a piece of a secret too short to mask, so only its time shows."""
+    if get_watermark(db, STATE, "state_masked") != VERSION:
+        return [(unit, line.split(" ", 1)[0] + " (recorded before kb was updated; the next run records the error)")
+                for unit, line in _state(db, "fail:")]
+    return [(unit, mask(line)) for unit, line in _state(db, "fail:")]
 
 
 def away(db):
@@ -338,7 +370,7 @@ def remask(db, seconds=None, log=None):
     started, changed = time.monotonic(), 0
     items = db.execute("SELECT DISTINCT source, source_id FROM docs WHERE masked IS NOT ?", (VERSION,)).fetchall()
     for n, (source, source_id) in enumerate(items, 1):
-        if secret_id(source, source_id, item_host(db, source, source_id)):
+        if secret_id(source, source_id, item_names(db, source, source_id)):
             changed += delete_item(db, source, source_id)
             if log:
                 log.warning("remask: deleted %s %s, whose name looks like it holds a secret; rename it to index it",

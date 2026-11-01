@@ -114,6 +114,21 @@ class CliTest(TempHome):
         self.assertEqual(code, 0, err)
         return out
 
+    def test_a_command_run_in_process_closes_the_database_it_opened(self):
+        # A program that runs kb's commands in-process would otherwise keep a file handle open for each one, until
+        # its garbage collector ran, and run out of them.
+        import sqlite3
+        self.write_config('machine = "studio"\n')
+        self.add("a", "the pangolin report")
+        opened, connect = [], store.connect
+        with mock.patch.object(store, "connect", lambda *a, **k: opened.append(connect(*a, **k)) or opened[-1]):
+            for args in (("search", "pangolin"), ("get", 1), ("get", 99), ("stats",)):
+                self.run_kb(*args)
+        self.assertEqual(len(opened), 4)
+        for db in opened:
+            with self.assertRaises(sqlite3.ProgrammingError):
+                db.execute("SELECT 1")
+
     def test_search_stats_and_supersede_end_to_end(self):
         self.add("a", "the pangolin report is in drive", title="Pangolin", meta={"url": "https://example.com/p"})
         self.add("b", "pangolin draft", title="Draft", meta={"path": "/tmp/d.md", "host": "laptop"})

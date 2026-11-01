@@ -105,6 +105,17 @@ class IngestCase(unittest.TestCase):
         return None if raw is None else json.loads(raw)
 
 
+class OlderStateTest(IngestCase):
+    def test_an_ingest_drops_failure_lines_an_older_kb_wrote(self):
+        # An older kb cut this line before masking it, so the piece of a token in it is too short to know.
+        self.db.execute("INSERT INTO ingest_state(source, key, watermark) VALUES (?, 'fail:fake@m2', ?)",
+                        (store.STATE, "2026-10-28T10:00:00Z token ghp_Zq7Lm2Xc9Vb4Nn8"))
+        self.db.commit()
+        self.run_all(Script(events=[item("x")]))
+        self.assertEqual(store.failing(self.db), [])
+        self.assertNotIn("Zq7Lm2Xc9", json.dumps(self.db.execute("SELECT * FROM ingest_state").fetchall()))
+
+
 class RunUnitTest(IngestCase):
     def test_ids_are_prefixed_with_the_host_and_meta_carries_it(self):
         self.run_unit(Script(events=[item("x", "alpha text")]))
