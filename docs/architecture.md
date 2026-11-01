@@ -39,8 +39,10 @@ The Sync client goes in `kb/sync/`. It meets the engine at two points.
   store that cut an item before masking it can split a secret in two that neither chunk shows, and so it writes
   an item's chunks all at once or not at all. It refuses a source or item id that holds a secret, as ingest does
   (`store.secret_id`: the host the rows' metadata names and the reader's id apart, then any name of the reader's own
-  that the metadata records, such as a Hermes profile, apart from the rest, and any other id whole). An id is read
-  more narrowly than text, so a note titled "Tokens: 2026 plan" or filed under "Ring Bearer duties/" is kept. It
+  that the metadata records, such as a Hermes profile, apart from the rest, and any other id whole). The names come
+  from the item's own rows, since an older kb's summary rows record only some of them. An id is read more narrowly
+  than text, so a note titled "Tokens: 2026 plan", filed under "Ring Bearer duties/" or named "sk-learn-notes.md" is
+  kept. It
   records on each row the version of `mask()` it used (`mask.VERSION`, which follows the patterns and `REVISION`). A database trigger clears that version when anything else changes a row's time, title,
   text or metadata, as an older kb would.
 - Out of kb: the kb command's stdout and stderr, every log line (through `masked_log`, whatever logger the caller
@@ -65,10 +67,11 @@ matching, and leaves out an item whose id holds a secret. `kb get` and the summa
 footer, through the end of its paragraph (the next blank line, plain or escaped), an encrypted key's past the blank
 line after its DEK-Info field, and a PGP key's past the blank line after its armor headers. PEM, PGP and ssh.com's
 SSH2 keys work this way; a PuTTY key file masks from `Private-Lines:` through its paragraph, and an age secret key by
-its shape. A footer with no header masks its paragraph up to it. What an older kb's key pattern left after its
-placeholder masks through its footer or the end of its paragraph: base64 glued to it, or a line break and a key's
-body from its first line, which starts as every private key's does (DER's "MII", "MHcC" or "MC4C", or OpenSSH's
-"b3Bl"). Text after a broken key in its paragraph is masked with it; that is the cost.
+its shape. A PEM private key written as base64, as a Kubernetes secret holds one, masks through the lines that wrap it,
+and so does a Docker config written as base64, or Docker's "auth" field when it decodes to "user:password". A footer with no header masks its paragraph up to it. What an older kb's key pattern left after its
+placeholder masks through its footer or the end of its paragraph: base64 glued to it, or a key's body from its first
+line, which starts as every private key's does (DER's "MII", "MHcC" or "MC4C", or OpenSSH's "b3Bl"), after what can
+stand before a line's text (line breaks plain or escaped at any depth, quotes, "#", ">", "+", <br> and spaces). Text after a broken key in its paragraph is masked with it; that is the cost.
 
 Text can arrive escaped. In JSON text a secret right after an escape such as "\n" is masked as at the start of a
 line, and a value ends where an escape starts the next "name=" or "name:", so that name keeps its own. A percent
