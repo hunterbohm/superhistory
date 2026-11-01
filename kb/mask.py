@@ -49,7 +49,7 @@ _SCHEME_GAP = r"(?:\s|%(?:25)?20|\+)+"
 # A provider's "sk-" key. In an item id, only one after a provider's own prefix, or a run of 32 or more letters and
 # digits, counts: "sk-learn-pipeline-experiments.md" names a note.
 SK_TOKEN = re.compile(_NB + r"sk-(?:ant-|proj-|or-v1-)?[A-Za-z0-9_-]{20,}")
-_SK_ID = re.compile(_NB + r"sk-(?:(?:ant|proj|svcacct|admin|or-v1)-[A-Za-z0-9_-]{20,}|[A-Za-z0-9]{32,}(?![A-Za-z0-9_-]))")
+_SK_ID = re.compile(_NB + r"sk-(?:(?:ant|proj|svcacct|admin|or-v1)-[A-Za-z0-9_-]{20,}|[A-Za-z0-9]{32,}(?![A-Za-z0-9]))")
 BEARER = re.compile(rf"(?i){_WORD}bearer{_SCHEME_GAP}[A-Za-z0-9._~+/-]{{16,}}=*")
 BASIC = re.compile(rf"(?i){_WORD}basic{_SCHEME_GAP}(?=[A-Za-z0-9+/]*[0-9+/=])[A-Za-z0-9+/]{{12,}}={{0,2}}")
 # A secret's value ends at a space, tab or line break, and the space around its "=" is spaces, tabs and line breaks (a
@@ -133,7 +133,7 @@ FLAG_SECRET = re.compile(rf"(?i)(?:(?<![A-Za-z0-9_.-])|{_AFTER_ESCAPE})(--" + _K
                          r"(?<!-helper)(?<!-length)(?<!-type)(?<!-url)((?:[ \t]|%(?:25)?20)+[\"']?)(?!-)" + _VALUE)
 # An HTTP Authorization header's credentials, after any scheme word: "Token ...", "Bot ...", "ApiKey ...".
 AUTH_SECRET = re.compile(rf"(?i)((?:(?<![A-Za-z0-9_.-])|{_AFTER_ESCAPE})(?:proxy-)?authorization)"
-                         rf"({_QUOTE}?[ \t]*(?::|=|%(?:25)?3[ADad])[ \t]*{_QUOTE}?(?:[A-Za-z][A-Za-z0-9_-]*[ \t]+)?)"
+                         rf"({_QUOTE}?{_GAP}(?::|=|%(?:25)?3[ADad]){_GAP}{_QUOTE}?(?:[A-Za-z][A-Za-z0-9_-]*{_SPACE}+)?)"
                          + _VALUE)
 # Commands that take a password after a short flag, which counts only on that command's line: from its first word to a
 # pipe, ";" or a line break, plain or escaped. Each row: the command, the flag and what parts it from the password, and
@@ -365,10 +365,10 @@ def secret_in_id(text, names=()):
     of "user:password". A title such as "Tokens: 2026Q4 plan" or "the password is changed" is a name, which mask()
     would mask in text. `names` are what the id starts with, each joined by a colon, as the item's metadata records
     them (id_names): each is read by itself and the rest of the id apart from it. A name that is a secret's word by
-    itself, such as "password", is not read apart, so "password:..." still counts."""
+    itself, such as "password", is read apart too: the metadata says it is a name, and an id with no such name
+    recorded, such as a note's "password:...", is still read whole."""
     name = names[0] if names else None
-    if (isinstance(name, str) and name and text.startswith(f"{name}:") and not KEY_WORD.fullmatch(name)
-            and not text.startswith("//", len(name) + 1)):
+    if isinstance(name, str) and name and text.startswith(f"{name}:") and not text.startswith("//", len(name) + 1):
         return secret_in_id(name) or secret_in_id(text[len(name) + 1:], names[1:])
     if any(_basic_credential(m.group(1)) for m in _BASIC_VALUE.finditer(text)):
         return True
