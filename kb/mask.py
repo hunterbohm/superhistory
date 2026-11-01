@@ -28,7 +28,8 @@ _CLOSE = r"(?!\\{1,7}[\"']|&(?:quot|apos|#0{0,3}3[49]|#[xX]0{0,3}2[27]);)"
 _WORD = rf"(?:\b|{_AFTER_ESCAPE})"
 # A blank line ends a paragraph: an empty line, with any spaces, its breaks plain or escaped as in JSON.
 _BLANK = r"(?:\r?\n[ \t]*\r?\n|\\(?:r\\)?n[ \t]*\\(?:r\\)?n)"
-_KEY_END = r"-----END [A-Z ]*PRIVATE KEY-----"
+_PGP_KEY = r"PGP (?:PRIVATE|SECRET) KEY BLOCK"
+_KEY_END = rf"-----END (?:[A-Z ]*PRIVATE KEY|{_PGP_KEY})-----"
 # The rest of a paragraph, from a key's header or an encrypted key's fields on: past the blank line after a
 # DEK-Info field, where an encrypted key's body starts, then to the next blank line, the next key's header, or the
 # end of the text. Stopping at the next header leaves that key its own match.
@@ -51,6 +52,11 @@ SECRET_PATTERNS = [
     # footer, through the end of its paragraph. So a key cut off, wrapped at any width or followed at once by other
     # text is masked whole; what follows a key without a footer in its paragraph is masked with it, which is the cost.
     re.compile(rf"-----BEGIN [A-Z ]*PRIVATE KEY-----(?:{_TO_KEY_END}|{_KEY_PARAGRAPH})"),
+    # A PGP armored private key the same way, whose body comes after a blank line, after any armor headers.
+    re.compile(rf"-----BEGIN {_PGP_KEY}-----(?:{_TO_KEY_END}|{_IN_PARAGRAPH}*(?:{_BLANK}{_IN_PARAGRAPH}*)?)"),
+    # A PuTTY key file's private lines and its MAC, through the end of their paragraph.
+    re.compile(rf"Private-Lines: *\d+{_IN_PARAGRAPH}*"),
+    re.compile(_NB + r"AGE-SECRET-KEY-1[0-9A-Z]{20,}"),
     # An encrypted key whose header an older kb's row-by-row remask took: from its fields, the same way, or from what
     # that remask left of them, "[masked],ENCRYPTED".
     re.compile(rf"(?:Proc-Type: *4,ENCRYPTED|\[masked\],ENCRYPTED|DEK-Info:)"
