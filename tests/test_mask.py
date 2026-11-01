@@ -144,6 +144,13 @@ class MaskTest(unittest.TestCase):
             with self.subTest(text):
                 self.assertEqual(mask(text), text)
 
+    def test_text_that_starts_like_a_sync_code_reads_as_any_other(self):
+        # kb masks no Sync codes: Cloud's egress masks them before anything leaves the computer.
+        self.assertEqual(mask('{"VP1ApplicationPassword12":"walrus2secret9"}'), '{"VP1ApplicationPassword12":"[masked]"}')
+        for text in ("VP1 sent them back next week", "VRC2 rollout plan for the team"):
+            with self.subTest(text):
+                self.assertEqual(mask(text), text)
+
     def test_ordinary_text_and_code_untouched(self):
         safe = [
             "token: string",
