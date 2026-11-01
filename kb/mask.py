@@ -208,12 +208,14 @@ _GLUED_RUN = re.compile(r"\[masked\](?:[A-Za-z0-9_.-]+[ \t]*(?:[:=]|=>)[ \t]*[\"
 # INTEGER or a SEQUENCE ("MHcC...", "MC4C..."), or OpenSSH's "openssh-key-v1" ("b3Bl...").
 _KEY_BODY_START = r"(?:MI[E-P][A-Za-z0-9+/]|M[A-H][A-Za-z0-9+/][Cw]|b3Bl)"
 # The rest of a key after an older kb's placeholder: base64 glued to it and running to a line break, as main's key
-# pattern leaves when it took the line break too; or a line break, plain or escaped, and a key's body from its first
-# line, cut anywhere, as main's pattern leaves in escaped text, where it stops at the backslash after the header, or
-# where a chunk ended between a header and its line break. Masked through its footer, or through the end of its
-# paragraph.
+# pattern leaves when it took the line break too; or a key's body from its first line, cut anywhere, after what can
+# stand between a line's start and its text: line breaks plain or escaped at any depth, quotes, "#", ">", "+", <br> and
+# spaces. main's pattern stops at the first character that is not base64 or a space, so in escaped text, in code with
+# a string a line, behind comment or quote marks and where a chunk ended between a header and its line break, it
+# leaves exactly that. Masked through its footer, or through the end of its paragraph.
+_BEFORE_BODY = r"(?:\\{1,7}[nrt]|<br\s*/?>|[\s\"'#>+,;|*])"
 _KEY_REST = re.compile(rf"\[masked\]((?:[A-Za-z0-9+/=]+[ \t\r]*(?=\n|\\(?:r\\)?n)"
-                       rf"|(?=(?:\r?\n|\\(?:r\\)?n){_KEY_BODY_START}))"
+                       rf"|(?={_BEFORE_BODY}{{0,64}}{_KEY_BODY_START}))"
                        rf"(?:(?!{_KEY_END}){_IN_PARAGRAPH})*(?:{_KEY_END})?)")
 
 
