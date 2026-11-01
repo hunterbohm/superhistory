@@ -96,15 +96,15 @@ entity. The Claude Code, Codex and Hermes readers also mask a tool's input field
 they write it as JSON, and `mask_all()` masks a string under a secret's field name whole.
 A secret reads through characters a reader does not see: NUL and the other C0 controls that are not whitespace, and
 Unicode's default ignorable code points, such as zero-width spaces and joiners, the word joiner, the soft hyphen and
-direction marks. The vertical tab, the form feed and the separators from 0x1c are whitespace and part words. A pass
-matches the text without the invisible ones, so a key split by them, or with one between every character, is one
-match, even where its first part is a key by itself. Where one stood, a token may also start right after a letter, as
-after a space: one before a key parts it from the word before it (`budget<ZWSP>sk-...`) rather than gluing the two, as
-stripping them first would. A run of them just before where a secret's reading starts (a secret's name and its
-separator, a scheme word, a link's scheme, a command a password follows, a key's header) stays a break, so a token
-before it never takes the name. The stretch a pass changes replaces the same stretch of the text as written, and the
-rest keeps them, so an emoji joined by them reads as it did; then the text as written has a pass of its own, where
-they part words as a space does.
+direction marks. The vertical tab, the form feed and the separators from 0x1c are whitespace and part words. Each pass
+first reads the text without the invisible ones, the view, for the secrets only it holds: a key split by them, or with
+one between every character, even where its first part is a key by itself, and a secret's name split by them, whose
+value goes with it. In the view a token may also start right after a letter where one stood, as after a space, so one
+before a key glued to a word reads it (`budget<ZWSP>s<ZWSP>k-...`). Each such secret is masked in place in the text as
+written, and the invisible characters inside it go with it. A split token ends before any reading the text as written
+starts inside it, such as a link's scheme, a command or a secret's name, and a run of invisibles just before one stays
+a break. Then the pass reads the text as written, as main does, where invisibles part words as a space does. So a text
+whose invisible characters split no secret masks as on main and keeps every one of them, an emoji's joiners too.
 
 kb masks no Sync recovery or pairing codes. The Sync client's egress masks them before anything leaves the computer.
 
