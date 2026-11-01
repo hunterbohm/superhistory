@@ -6,7 +6,7 @@
    "git": "kb/sources/git.py", "github": "kb/sources/github.py"},
   "skips": {}},
 
- {"tool": "supermemory", "setup": "Supermemory, Max plan, notes kept in Notion", "per_month": "$100",
+ {"tool": "supermemory", "setup": "Supermemory, self-hosted run, with the sources its Max plan lists, notes kept in Notion (hosted plan not tested)", "per_month": "$100",
   "reads": {
    "claude_code": "Plugins on every plan: \"All plugins: Claude Code, Cursor, Hermes and more\". https://supermemory.ai/pricing, checked 2026-10-27",
    "codex": "\"Supermemory comes built with plugins for Claude Code, Muse Code, Cursor, Codex, OpenCode, OpenClaw, and Hermes.\" https://github.com/supermemoryai/supermemory, checked 2026-10-27",
@@ -18,7 +18,7 @@
    "git": "The GitHub connector syncs only documentation files (.md, .txt and the like), not commits or code, and needs the Scale plan. https://supermemory.ai/docs/connectors/github, checked 2026-10-27",
    "github": "The GitHub connector does not sync issues or pull requests. https://supermemory.ai/docs/connectors/github, checked 2026-10-27"}},
 
- {"tool": "supermemory", "setup": "Supermemory, free plan", "per_month": "$0",
+ {"tool": "supermemory", "setup": "Supermemory, self-hosted run, with the sources its free plan lists (hosted plan not tested)", "per_month": "$0",
   "reads": {
    "claude_code": "\"All plugins: Claude Code, Cursor, Hermes and more\". https://supermemory.ai/pricing, checked 2026-10-27",
    "codex": "Codex plugin, codex-supermemory. https://github.com/supermemoryai/supermemory, checked 2026-10-27",
@@ -30,7 +30,7 @@
    "git": "The GitHub connector syncs only documentation files and needs the Scale plan. https://supermemory.ai/docs/connectors/github, checked 2026-10-27",
    "github": "The GitHub connector does not sync issues or pull requests. https://supermemory.ai/docs/connectors/github, checked 2026-10-27"}},
 
- {"tool": "mem0", "setup": "Mem0, free plan with its agent plugins", "per_month": "$0",
+ {"tool": "mem0", "setup": "Mem0, self-hosted run, with the sources its free plan's agent plugins list (hosted plan not tested)", "per_month": "$0",
   "reads": {
    "claude_code": "\"Hooks save user messages, Claude's answers, changed files, and test/build results locally.\" Needs a Mem0 Platform key. https://docs.mem0.ai/integrations/claude-code, checked 2026-10-27",
    "codex": "Codex plugin with automatic capture and recall; needs a Mem0 Platform key. https://docs.mem0.ai/integrations/codex, checked 2026-10-27",
@@ -42,7 +42,7 @@
    "git": "None of the 31 listed integrations pulls in git history. https://mem0.ai/integrations, checked 2026-10-27",
    "github": "None of the 31 listed integrations pulls in issues or pull requests. https://mem0.ai/integrations, checked 2026-10-27"}},
 
- {"tool": "claude-mem", "setup": "claude-mem", "per_month": "$0",
+ {"tool": "claude-mem", "setup": "claude-mem, self-hosted run, with the sources its README lists (its plugins not tested live)", "per_month": "$0",
   "reads": {
    "claude_code": "\"Works with Claude Code, OpenClaw, Codex, Gemini, Hermes, Copilot, OpenCode + More.\" https://github.com/thedotmack/claude-mem, checked 2026-10-27",
    "codex": "Same line. https://github.com/thedotmack/claude-mem, checked 2026-10-27",

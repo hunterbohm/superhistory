@@ -63,8 +63,8 @@ STORES = os.path.expanduser(os.environ.get("BENCH_OUTSIDE_STORES", "~/.cache/kb-
 JUDGE_MODEL = "gpt-6.1-sol"
 EMBEDDER = "BAAI/bge-base-en-v1.5"
 TOOLS = ("none", "oracle", "check", "mem0", "supermemory")
-LABELS = {"none": "No memory", "oracle": "Gold sessions", "check": f"{product.NAME} check", "mem0": "Mem0",
-          "supermemory": "Supermemory"}
+LABELS = {"none": "No memory", "oracle": "Gold sessions", "check": f"{product.NAME} check", "mem0": "Mem0, self-hosted",
+          "supermemory": "Supermemory, self-hosted"}
 CONV_REV = "1925e924c36e632283ea91f2212157829f4e0e45"
 OP_REV = "44e7d0e526152997b04208218a8ad7362174dae4"
 FILES = {
