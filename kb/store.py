@@ -117,7 +117,37 @@ def connect(path, readonly=False):
         if not _versioned(db):
             db.execute("ALTER TABLE docs ADD COLUMN masked TEXT")  # an empty store from before rows recorded it
         db.execute("CREATE INDEX IF NOT EXISTS docs_masked ON docs(masked)")
+        _move_marks(db)
     return db
+
+
+# Who made a mark moved from a store an older kb wrote: this computer, before it had an install id. As the lowest
+# name it ranks below any mark this install makes since, a clear too, and above a synced one, as an unsynced mark does.
+MOVED_MARK_BY = ""
+
+
+def _old_marks(db):
+    """{item: the item that replaces it} as an older kb kept them: each in docs.superseded_by, the replacing row's
+    id. Empty for a store with no such column."""
+    if not any(column[1] == "superseded_by" for column in db.execute("PRAGMA table_info(docs)")):
+        return {}
+    marks = {}
+    for src, sid, new_src, new_sid in db.execute(
+            "SELECT o.source, o.source_id, n.source, n.source_id FROM docs o JOIN docs n ON n.id = o.superseded_by "
+            "ORDER BY o.id"):
+        marks[(src, sid)] = (new_src, new_sid)
+    return marks
+
+
+def _move_marks(db):
+    """Moves an older kb's supersede marks into the supersedes table, once: the column is emptied as they move."""
+    marks = _old_marks(db)
+    if marks:
+        db.executemany("INSERT OR IGNORE INTO supersedes(source, source_id, marked_by, new_source, new_source_id, at, "
+                       "v) VALUES (?,?,?,?,?,?,NULL)",
+                       [(*item, MOVED_MARK_BY, *new, now_iso()) for item, new in marks.items()])
+        db.execute("UPDATE docs SET superseded_by = NULL WHERE superseded_by IS NOT NULL")
+        db.commit()
 
 
 def has_unversioned(db):
@@ -299,10 +329,22 @@ def delete_item(db, source, source_id):
     return db.execute("DELETE FROM docs WHERE source=? AND source_id=?", (source, source_id)).rowcount
 
 
+def _refuse_secret_ids(db, *items):
+    """Raises ValueError when an item's id holds a secret, as an older kb's row can, so no mark copies it."""
+    if any(_secret_item(db, *item) for item in items):
+        raise ValueError("an item whose id looks like it holds a secret takes no supersede mark")
+
+
+def _secret_item(db, source, source_id):
+    return secret_id(source, source_id, item_names(db, source, source_id))
+
+
 def mark_superseded(db, source, source_id, new, by, at=None, v=None):
     """Marks the item as replaced by `new`, a (source, source_id) pair. The mark is about items, not rows, so it
     survives a refresh of either. `by` is the install that made it, and each install keeps its own mark on an item, so
-    a mark synced from another computer never overwrites this one's. `v` is Sync's version of the mark."""
+    a mark synced from another computer never overwrites this one's. `v` is Sync's version of the mark. Raises
+    ValueError when either item's id holds a secret."""
+    _refuse_secret_ids(db, (source, source_id), new)
     db.execute("INSERT INTO supersedes(source, source_id, marked_by, new_source, new_source_id, at, v) "
                "VALUES (?,?,?,?,?,?,?) ON CONFLICT(source, source_id, marked_by) DO UPDATE SET "
                "new_source=excluded.new_source, new_source_id=excluded.new_source_id, at=excluded.at, v=excluded.v",
@@ -311,7 +353,8 @@ def mark_superseded(db, source, source_id, new, by, at=None, v=None):
 
 def clear_superseded(db, source, source_id, by, at=None, v=None):
     """Clears this install's mark by keeping its row with no target, so the clear still outranks an older mark from
-    another computer."""
+    another computer. Raises ValueError when the item's id holds a secret."""
+    _refuse_secret_ids(db, (source, source_id))
     db.execute("INSERT INTO supersedes(source, source_id, marked_by, new_source, new_source_id, at, v) "
                "VALUES (?,?,?,NULL,NULL,?,?) ON CONFLICT(source, source_id, marked_by) DO UPDATE SET "
                "new_source=NULL, new_source_id=NULL, at=excluded.at, v=excluded.v",
@@ -326,8 +369,11 @@ def superseded(db, items):
     """{item: the item that replaces it} for those of `items` that are superseded. Of several marks the latest wins:
     one not synced yet (no `v`), else the highest `v`, then the highest marking install. A winning clear (no target)
     means the item is not superseded."""
-    marks = {}
     items = list(items)
+    if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='supersedes'").fetchone():
+        old = _old_marks(db)  # a store an older kb wrote, read before kb first wrote to it
+        return {item: old[item] for item in items if item in old and not _secret_item(db, *old[item])}
+    marks = {}
     for i in range(0, len(items), 400):
         batch = items[i:i + 400]
         where = " OR ".join("(source=? AND source_id=?)" for _ in batch)
@@ -337,7 +383,8 @@ def superseded(db, items):
             rank = (v is None, v or 0, by)
             if (src, sid) not in marks or rank > marks[(src, sid)][0]:
                 marks[(src, sid)] = (rank, (new_src, new_sid))
-    return {item: new for item, (_, new) in marks.items() if new[0] is not None}
+    # A mark that names an id holding a secret, synced or written before kb refused one, names no replacement.
+    return {item: new for item, (_, new) in marks.items() if new[0] is not None and not _secret_item(db, *new)}
 
 
 def store_item(db, source, source_id, ts, title, content, meta):
@@ -490,10 +537,22 @@ def remask(db, seconds=None, log=None):
             db.commit()
             if seconds is not None and time.monotonic() - started > seconds:
                 break
+    if _drop_secret_marks(db):
+        set_watermark(db, STATE, "remask", "rebuild")
+        db.commit()
     left = old_rows(db)
     if not left and (seconds is None or rebuild_owed(db)):
         _rebuild(db)
     return changed, left
+
+
+def _drop_secret_marks(db):
+    """Deletes every supersede mark on or to an item whose id holds a secret. Returns how many."""
+    doomed = [(src, sid, by) for src, sid, by, new_src, new_sid in db.execute(
+        "SELECT source, source_id, marked_by, new_source, new_source_id FROM supersedes").fetchall()
+        if _secret_item(db, src, sid) or new_src is not None and _secret_item(db, new_src, new_sid)]
+    db.executemany("DELETE FROM supersedes WHERE source=? AND source_id=? AND marked_by=?", doomed)
+    return len(doomed)
 
 
 def rebuild_owed(db):

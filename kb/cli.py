@@ -419,6 +419,17 @@ def _per_source(path, kept):
         raise Fail(f"could not count the items in {path} ({exc}), so {kept}") from None
 
 
+def _item_key(source_id, config):
+    """An item as (the install that read it, the host it was read on or None for this computer, the reader's id), so
+    an id an older kb wrote under the host's name, "<host>:<id>", is the same item as the one this install writes,
+    "<install>:<id>" or "<install>@<host>:<id>" (kb.ids)."""
+    head, _, rest = source_id.partition(":")
+    install, at, host = head.partition("@")
+    if ids.INSTALL_ID.fullmatch(install):
+        return install, host if at else None, rest
+    return config.install, None if head == config.machine else head, rest
+
+
 def _reading_back(config, before):
     """`config` with each source's window reaching back to its oldest item in `before`, the old store's per-source
     counts, and no cap on one run, so a single pass reads all of the old store's items that the source still has."""
@@ -489,6 +500,7 @@ def cmd_rebuild(paths, config, args):
     moved."""
     if not config.sources:
         raise Fail(f"No sources in {paths.config_file}, so there is nothing to rebuild from.")
+    config = _own(paths, config)  # the fresh store's items are this install's, as an ingest writes them
     log = _logger(paths)
     target = os.path.realpath(paths.db)  # a linked store is replaced where it is, so the old one's bytes go
     fresh, old = f"{target}.rebuild", f"{target}.old"
@@ -522,7 +534,9 @@ def cmd_rebuild(paths, config, args):
                            f"{paths.log_dir}), so {kept}")
             after = _per_source(fresh, kept)
             # Which items, not how many: a source can have let some go and gained as many since.
-            lost = {source: len(ids - after.get(source, (set(),))[0]) for source, (ids, _) in sorted(before.items())}
+            keys = lambda found: {_item_key(source_id, config) for source_id in found}
+            lost = {source: len(keys(found) - keys(after.get(source, (set(),))[0]))
+                    for source, (found, _) in sorted(before.items())}
             lost = {source: n for source, n in lost.items() if n}
             losses = ", ".join(f"{source}: {n:,} {'item' if n == 1 else 'items'}" for source, n in lost.items())
             if lost and not args.accept_loss:
@@ -605,11 +619,14 @@ def cmd_supersede(paths, config, args):
     db = open_db(paths, readonly=False)
     old = _item_of(db, args.old_id)
     mine = ids.install_id(paths)
-    with db:
-        if args.clear:
-            store.clear_superseded(db, *old, mine)
-        else:
-            store.mark_superseded(db, *old, _item_of(db, args.new_id), mine)
+    try:
+        with db:
+            if args.clear:
+                store.clear_superseded(db, *old, mine)
+            else:
+                store.mark_superseded(db, *old, _item_of(db, args.new_id), mine)
+    except ValueError as exc:
+        raise Fail(f"{exc}. Run `kb remask`, which deletes such an item; rename it at its source to index it again")
     print(f"#{args.old_id} " + ("is no longer marked superseded" if args.clear else f"superseded by #{args.new_id}"))
 
 
