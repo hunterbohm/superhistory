@@ -178,10 +178,18 @@ REFERENCE = re.compile(r"^(?:\$(?:[{(]|[A-Z_][A-Z0-9_]*$|[a-z_][a-z0-9_]*$|env:)
                        r"[a-z]+://|(?:env|file|cmd):|[a-z_][\w.]*\()|"
                        r"^[A-Za-z_]+(?:\.[A-Za-z_]+)+$|^[A-Z][A-Z_]{2,}$|^[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+$")
 
-# A PEM written as base64, as a Kubernetes secret holds a TLS key: "-----BEGIN" is "LS0tLS1CRUdJTi". It runs on through
-# the whole base64 lines that wrap it, and counts when its header says it is a private key.
-_ENCODED_PEM = re.compile(_NB + r"LS0tLS1CRUdJTi[A-Za-z0-9+/=]*"
-                          r"(?:(?:\r?\n|\\(?:r\\)?n)[A-Za-z0-9+/=]+(?=\r?\n|\\[rn]|[\"'\s]|\Z))*")
+# A private key in a file written as base64, as a Kubernetes secret holds a TLS key: wherever the file's text says
+# "PRIVATE KEY", the run holds that word's base64 at one of the three byte offsets a word can start at.
+def _base64_of(word):
+    """The base64 characters `word`'s bytes alone decide, at each of the three offsets it can start at."""
+    return [base64.b64encode(b"\0" * k + word + b"\0\0\0").decode()[-(-8 * k // 6):8 * (k + len(word)) // 6]
+            for k in range(3)]
+
+
+_ENCODED_KEY = re.compile("|".join(map(re.escape, _base64_of(b"PRIVATE KEY"))))
+_BASE64 = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=")
+_LINE_BREAK = re.compile(r"\r?\n|\\r\\n|\\n")
+_BREAK_BEFORE = re.compile(r"(?:\r?\n|\\r\\n|\\n)\Z")
 # Docker's config holds a registry login in an "auth" field, base64 of "user:password".
 _AUTH_FIELD = re.compile(rf"(?i)((?:(?<![A-Za-z0-9_.-])|{_AFTER_ESCAPE})auth{_QUOTE}?{_GAP}[:=]{_GAP}{_QUOTE}?)"
                          r"([A-Za-z0-9+/]{4,}={0,2})")
@@ -194,7 +202,7 @@ REVISION = 3
 VERSION = hashlib.sha256(repr((REVISION, [p.pattern for p in SECRET_PATTERNS + PREFIXED_SECRETS], KEYED_SECRET.pattern,
                                 ENV_KEY_SECRET.pattern, JSON_SECRET.pattern, FLAG_SECRET.pattern, AUTH_SECRET.pattern,
                                 COMMAND_FLAGS,
-                                PASSWORD_NAME.pattern, sorted(PLACEHOLDERS), REFERENCE.pattern, _ENCODED_PEM.pattern,
+                                PASSWORD_NAME.pattern, sorted(PLACEHOLDERS), REFERENCE.pattern, _ENCODED_KEY.pattern,
                                 _AUTH_FIELD.pattern)).encode()).hexdigest()[:16]
 
 
@@ -219,13 +227,42 @@ def _prose(sep):
     return not _SEP_CHARACTER.search(sep) and ("is" in sep.lower() or sep[-1:].isspace())
 
 
+def _base64_block(text, start, end):
+    """The run of base64 around text[start:end], through the base64 lines that wrap it: on each side the next line's
+    run counts when it meets the line break, and below, when it fills its line."""
+    while start and text[start - 1] in _BASE64:
+        start -= 1
+    while True:
+        brk = _BREAK_BEFORE.search(text, max(start - 4, 0), start)
+        if not brk:
+            break
+        first = brk.start()
+        while first and text[first - 1] in _BASE64:
+            first -= 1
+        if brk.start() - first < 16:
+            break
+        start = first
+    while end < len(text) and text[end] in _BASE64:
+        end += 1
+    while True:
+        brk = _LINE_BREAK.match(text, end)
+        if not brk:
+            break
+        last = brk.end()
+        while last < len(text) and text[last] in _BASE64:
+            last += 1
+        if last == brk.end() or not (last == len(text) or _LINE_BREAK.match(text, last) or text[last] in "\"'"):
+            break
+        end = last
+    return start, end
+
+
 def _encoded_secrets(text):
-    """`text` with each private key written as base64 masked, and each Docker "auth" login."""
+    """`text` with each private key in a file written as base64 masked, and each Docker "auth" login."""
     spans = []
-    for m in _ENCODED_PEM.finditer(text):
-        head = re.sub(r"\s|\\[rn]", "", m.group())[:48]
-        if "PRIVATE KEY" in base64.b64decode(head[:len(head) // 4 * 4]).decode("latin-1"):
-            spans.append((m.start(), m.end()))
+    for m in _ENCODED_KEY.finditer(text):
+        if not spans or m.start() >= spans[-1][1]:
+            spans.append(_base64_block(text, m.start(), m.end()))
     text = _replace(text, spans, "[masked]")
     return _AUTH_FIELD.sub(lambda m: m.group(1) + "[masked]" if _basic_credential(m.group(2)) else m.group(0), text)
 
