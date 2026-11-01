@@ -2,6 +2,7 @@ import contextlib
 import io
 import os
 import re
+import sqlite3
 import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
@@ -404,6 +405,97 @@ class OlderStoreTest(TempHome):
         with open(self.path, "rb") as fh:
             self.assertEqual(fh.read(), before)
         self.assertEqual(set(os.listdir(folder)) - {"kb.lock"}, files, "the folder is as it was")
+
+    def test_rebuild_leaves_no_fresh_store_when_it_is_stopped(self):
+        self.db.close()
+        folder = os.path.dirname(self.path)
+        files = set(os.listdir(folder)) - {"kb.lock"}
+        for stop in (KeyboardInterrupt, sqlite3.OperationalError("disk I/O error")):
+            with self.subTest(stop=stop):
+                with mock.patch("kb.ingest.run", side_effect=stop), contextlib.suppress(KeyboardInterrupt):
+                    self.run_kb("rebuild")
+                self.assertEqual(set(os.listdir(folder)) - {"kb.lock"}, files)
+
+    def test_rebuild_keeps_the_old_store_when_a_host_is_asleep(self):
+        from kb.remote import HostAway
+        self.db.close()
+        folder = os.path.dirname(self.path)
+        with open(self.path, "rb") as fh:
+            before, files = fh.read(), set(os.listdir(folder)) - {"kb.lock"}
+        with mock.patch("kb.ingest.run_unit", side_effect=HostAway("ssh: connect to host studio: timed out")):
+            code, out, err = self.run_kb("rebuild")
+        self.assertEqual(code, 1)
+        self.assertIn("studio could not be reached", err)
+        self.assertNotIn("--accept-loss", err, "its items are not gone, only out of reach")
+        with open(self.path, "rb") as fh:
+            self.assertEqual(fh.read(), before)
+        self.assertEqual(set(os.listdir(folder)) - {"kb.lock"}, files)
+
+    def test_rebuild_replaces_a_linked_store_where_the_link_points(self):
+        self.db.close()
+        elsewhere = os.path.join(self.tmp.name, "elsewhere")
+        os.makedirs(elsewhere)
+        target = os.path.join(elsewhere, "kb.sqlite")
+        for suffix in ("", "-wal", "-shm"):  # macOS's SQLite keeps -wal and -shm
+            if os.path.exists(self.path + suffix):
+                os.replace(self.path + suffix, target + suffix)
+        os.symlink(target, self.path)
+        code, out, err = self.run_kb("rebuild")
+        self.assertEqual(code, 0, err)
+        self.assertTrue(os.path.islink(self.path), "the link stays")
+        self.assertEqual(os.path.realpath(self.path), os.path.realpath(target))
+        self.assertEqual(sorted(os.listdir(elsewhere)), ["kb.sqlite"], "and no copy of the old store is left")
+        with open(target, "rb") as fh:
+            self.assertNotIn(self.SECRET.encode(), fh.read())
+        db = store.connect(self.path)
+        self.addCleanup(db.close)
+        self.assertEqual([r[0] for r in db.execute("SELECT source_id FROM docs")], ["studio:plan.md"])
+
+    def add_mail(self, ages, **options):
+        """A Gmail source with one thread for each age in days, and an old store holding each as an item."""
+        from tests.test_gmail import PASSWORD, FakeGmail
+        from kb.sources import gmail
+        self.gmail = FakeGmail()
+        for patch in (mock.patch.object(gmail, "connect", lambda: self.gmail),
+                      mock.patch.dict(os.environ, {"KB_TEST_GMAIL_PASSWORD": PASSWORD})):
+            patch.start()
+            self.addCleanup(patch.stop)
+        self.threads = [f"17820000000000000{n}" for n in range(len(ages))]
+        for thread, days in zip(self.threads, ages):
+            self.gmail.add(thread, datetime.now(timezone.utc) - timedelta(days=days), "Ann <ann@example.com>",
+                           f"about the {thread} order", subject=f"Order {thread}")
+            self.db.execute("INSERT INTO docs(kind, source, source_id, ts, title, content, metadata, masked) VALUES "
+                            "('doc', 'mail', ?, ?, 'old', 'an old thread', '{}', NULL)",
+                            (f"studio:{thread}", iso(timedelta(days=days))))
+        self.db.commit()
+        self.db.close()
+        self.write_config(NOTES_CONFIG.format(path=self.notes) + '\n[sources.mail]\ntype = "gmail"\n'
+                          'address = "me@example.com"\npassword = "env:KB_TEST_GMAIL_PASSWORD"\nsort = false\n'
+                          + "".join(f"{key} = {value}\n" for key, value in options.items()))
+
+    def mail_ids(self):
+        db = store.connect(self.path)
+        try:
+            return sorted(r[0] for r in db.execute("SELECT DISTINCT source_id FROM docs WHERE source='mail'"))
+        finally:
+            db.close()
+
+    def test_rebuild_reads_a_source_back_to_the_old_stores_oldest_item_past_its_window(self):
+        self.add_mail((400, 2))
+        code, out, err = self.run_kb("rebuild")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(self.mail_ids(), [f"studio:{t}" for t in self.threads])
+        # The next ingest goes on from the rebuild's place, rather than reading the source's window again.
+        self.gmail.bodies_read.clear()
+        code, out, err = self.run_kb("ingest", "--no-summaries")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(self.gmail.bodies_read, [])
+
+    def test_rebuild_reads_past_a_sources_cap_on_one_run(self):
+        self.add_mail((3, 2, 1), run_cap=2)
+        code, out, err = self.run_kb("rebuild")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(self.mail_ids(), [f"studio:{t}" for t in self.threads])
 
 
 class LoginTest(unittest.TestCase):

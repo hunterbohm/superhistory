@@ -708,15 +708,19 @@ class UnversionedRowTest(TempDB):
         self.assertEqual(self.db.execute("SELECT content, masked FROM docs WHERE source_id='older'").fetchone(),
                          (f"pelican api_key: [masked] {self.SECRET}", None), "left as it was, and not stamped")
 
-    def test_a_store_from_before_versions_does_not_open(self):
-        self.db.execute("CREATE TABLE plain AS SELECT * FROM docs")
+    def test_a_store_from_before_versions_does_not_open_and_is_left_as_it_was(self):
         self.db.close()
         old = sqlite3.connect(self.path)
         old.executescript("DROP TRIGGER docs_unmask; DROP INDEX docs_masked; ALTER TABLE docs DROP COLUMN masked;")
         old.commit()
         old.close()
-        with self.assertRaises(store.NeedsRebuild):
-            store.connect(self.path, readonly=True)
+        with open(self.path, "rb") as fh:
+            before = fh.read()
+        for readonly in (True, False):
+            with self.subTest(readonly=readonly), self.assertRaises(store.NeedsRebuild):
+                store.connect(self.path, readonly=readonly)
+        with open(self.path, "rb") as fh:
+            self.assertEqual(fh.read(), before, "kb wrote nothing to it, so the older kb still opens it as it was")
 
 
 class FtsTriggerTest(TempDB):
