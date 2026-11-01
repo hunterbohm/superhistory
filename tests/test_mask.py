@@ -416,6 +416,16 @@ class EscapeTest(unittest.TestCase):
                     took[size] = time.process_time() - started
                 self.assertLess(took[1 << 17], 40 * max(took[1 << 13], 0.01), took)
 
+    def test_a_json_value_with_an_escaped_quote_is_masked_whole(self):
+        for text in ('{"password": "ab\\"cdefgh9"}', '{"password": "walrus\\"2secret9", "user": "bob"}',
+                     '{"api_key":"walrus\\\\path\\"2secret9x"}', '{\n  "db_password": "a\\"b\\"c2secret9"\n}'):
+            with self.subTest(text=text):
+                masked = mask(text)
+                self.assertNotIn("cdefgh9", masked)
+                self.assertNotIn("2secret9", masked)
+                self.assertNotIn("c2secret", masked)
+        self.assertEqual(mask('{"password": "walrus\\"2secret9", "user": "bob"}'), '{"password": "[masked]", "user": "bob"}')
+
     def test_a_password_with_a_backslash_in_it_is_masked_whole(self):
         for password in ("Ab3\\nQz9kLm", "C:\\temp\\walrus9", "pa\\u00e4ss9word"):
             with self.subTest(password=password):
