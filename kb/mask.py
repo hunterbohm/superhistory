@@ -195,12 +195,12 @@ def _base64_of(word):
 
 _ENCODED_KEY = re.compile("|".join(map(re.escape, _base64_of(b"PRIVATE KEY"))))
 _WRAP = r"[ \t\r]*(?:\r?\n|\\r\\n|\\n)[ \t]*"
-# A run of base64, with each line after it that it wraps onto: a line that is base64 from its indentation to its end.
-# A run as short as a word starts one only when lines follow it. A run can start just after a backslash, so the
-# letter of an escape such as \n can lead it.
-_WRAPPED_LINE = rf"{_WRAP}[A-Za-z0-9+/]{{4,}}={{0,2}}(?=[ \t\r]*(?:\r?\n|\\r\\n|\\n|\\?[\"'<]|\Z))"
+# A run of base64, with each line after it that it wraps onto: a line that is base64 from its indentation to its end,
+# however short. A run shorter than 16 starts one only when lines follow it. A run can start just after a backslash,
+# so the letter of an escape such as \n can lead it. Which of the lines hold a key is _key_range's to say.
+_WRAPPED_LINE = rf"{_WRAP}[A-Za-z0-9+/]+={{0,2}}(?=[ \t\r]*(?:\r?\n|\\r\\n|\\n|\\?[\"'<]|\Z))"
 _WRAPPED_BASE64 = re.compile(rf"(?<![A-Za-z0-9+/])(?:[A-Za-z0-9+/]{{16,}}={{0,2}}(?:{_WRAPPED_LINE})*"
-                             rf"|[A-Za-z0-9+/]{{4,}}={{0,2}}(?:{_WRAPPED_LINE})+)")
+                             rf"|[A-Za-z0-9+/]+={{0,2}}(?:{_WRAPPED_LINE})+)")
 _UNWRAP = re.compile(_WRAP)
 _ESCAPE_LETTER = re.compile(r"(?<=\\)(?:[nrt]|u[0-9A-Fa-f]{4})")
 # Docker's config holds a registry login in an "auth" field, base64 of "user:password".
@@ -240,13 +240,6 @@ def _prose(sep):
     return not _SEP_CHARACTER.search(sep) and ("is" in sep.lower() or sep[-1:].isspace())
 
 
-def _starts_line(text, start):
-    """Whether only indentation stands between text[start] and the line break, plain or escaped, before it."""
-    while start and text[start - 1] in " \t":
-        start -= 1
-    return not start or text[start - 1] == "\n" or text[start - 2:start] in ("\\n", "\\r")
-
-
 def _wrapped_lines(text, start, end):
     """The (start, end) of each line of the base64 block text[start:end], without line breaks and indentation."""
     lines, at = [], start
@@ -256,62 +249,65 @@ def _wrapped_lines(text, start, end):
     return lines + [(at, end)]
 
 
-_WHOLE_FILE_END = re.compile(rb"-----END [A-Z0-9 ]+-----\s*\Z")
+# Where in a base64 group of 4 characters each encoding of "PRIVATE KEY" starts, which fixes how the groups of the
+# base64 around it fall.
+_KEY_WORD_PHASE = {code: -(-8 * k // 6) for k, code in enumerate(_base64_of(b"PRIVATE KEY"))}
+_NOT_TEXT = re.compile(rb"[^\t\n\r\x20-\x7e]")
+_FOOTER = re.compile(rb"-----END [A-Z0-9 ]+-----")
+_FILE_END = re.compile(rb"-----END [A-Z0-9 ]+-----\s*\Z")
 
 
-def _ends_file(text, lines, top, bottom, total):
-    """Whether the base64 on lines[top:bottom + 1], `total` characters, decodes to a file that ends with a key's or
-    certificate's footer. Only its last 64 characters are read: they hold the longest footer."""
-    if total % 4:
-        return False
-    tail, need = [], 64
-    while bottom >= top and need > 0:
-        a, b = lines[bottom]
-        tail.append(text[max(a, b - need):b])
-        need -= len(tail[-1])
-        bottom -= 1
+def _decoded(joined, start, end):
+    """What joined[start:end], whole groups of base64, decodes to, or None when it is not base64."""
     try:
-        return bool(_WHOLE_FILE_END.search(base64.b64decode("".join(reversed(tail)), validate=True)))
+        return base64.b64decode(joined[start:end], validate=True)
     except ValueError:
-        return False
+        return None
 
 
-def _key_range(text, lines, widths, top, name_end, floor):
-    """The first and last of the lines of a base64 block that hold a key whose encoded "PRIVATE KEY" runs from line
-    `top` to line `name_end`, none above line `floor`. Wrapped lines are all as wide as the wrap but the first, which
-    may follow words on its line such as "tls.key: ", and the last, which may be narrower. Above, the key's lines run
-    up through lines of the wrap's width and such a first line, so a heading such as "Notes" or a word between two
-    keys stays. Below, they run past the encoded name, to where the base64 decodes to a file ending in a footer, a
-    line wider than the wrap, or a short line that leaves the base64 at a length no encoder writes: a tail that short
-    holds no more than the footer."""
-    wrap = max(widths[top:top + 2])
-    while top > floor and widths[top - 1] == wrap:
-        top -= 1
-    if top > floor and widths[top - 1] < wrap and not _starts_line(text, lines[top - 1][0]):
-        top -= 1
-    bottom, total = name_end, sum(widths[top:name_end + 1])
-    for width in widths[name_end + 1:]:
-        if (width > wrap or _ends_file(text, lines, top, bottom, total)
-                or width < wrap and (total + width) % 4 and width < 24):
+def _key_range(joined, starts, ends, found, floor):
+    """The first and last lines of a base64 block that hold the key whose encoded "PRIVATE KEY" is `found`, none above
+    line `floor`. A key file is text, so a line is the key's while the base64 through it, in the groups `found` fixes,
+    still decodes to text: a heading, a word between two keys or another stream decodes to other bytes and stays,
+    however the lines are wrapped. Below, the key's lines end where the text ends in a footer."""
+    phase = (found.start() - _KEY_WORD_PHASE[found.group()]) % 4
+    down = lambda p: p - (p - phase) % 4  # the group boundary at or before p
+    up = lambda p: p + (phase - p) % 4  # the group boundary at or after p
+    top = bisect.bisect_right(ends, found.start())
+    bottom = bisect.bisect_left(ends, found.end())
+    while top > floor and up(starts[top - 1]) < down(starts[top]):
+        above = _decoded(joined, up(starts[top - 1]), down(starts[top]))
+        if above is None or _NOT_TEXT.search(above):
             break
-        bottom += 1
-        total += width
-        if width < wrap:
+        top -= 1
+    recent = _decoded(joined, up(max(starts[top], ends[bottom] - 48)), down(ends[bottom])) or b""
+    for line in range(bottom + 1, len(ends)):
+        if ends[bottom] == down(ends[bottom]) and _FILE_END.search(recent):
             break
+        below = _decoded(joined, down(ends[bottom]), down(ends[line]))
+        if below is None:
+            break
+        other = _NOT_TEXT.search(below)
+        if other:
+            if _FOOTER.search(recent + below[:other.start()]):  # the text ended in a footer within this line
+                bottom = line
+            break
+        bottom = line
+        recent = (recent + below)[-48:]
     return top, bottom
 
 
 def _key_spans(text, lines):
     """The spans to mask in a base64 block: for each encoded "PRIVATE KEY" outside the spans before it, its key's
-    lines."""
-    widths = [b - a for a, b in lines]
-    ends = list(itertools.accumulate(widths))
+    lines. The block is joined once, and each key's lines are read once."""
+    joined = "".join(text[a:b] for a, b in lines)
+    ends = list(itertools.accumulate(b - a for a, b in lines))
+    starts = [0] + ends[:-1]
     spans, floor = [], 0
-    for found in _ENCODED_KEY.finditer("".join(text[a:b] for a, b in lines)):
-        top = bisect.bisect_right(ends, found.start())
-        if top < floor:
+    for found in _ENCODED_KEY.finditer(joined):
+        if bisect.bisect_right(ends, found.start()) < floor:
             continue
-        top, bottom = _key_range(text, lines, widths, top, bisect.bisect_left(ends, found.end()), floor)
+        top, bottom = _key_range(joined, starts, ends, found, floor)
         spans.append((lines[top][0], lines[bottom][1]))
         floor = bottom + 1
     return spans

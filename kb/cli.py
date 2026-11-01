@@ -438,17 +438,34 @@ def _as_configured(db, config):
 
 
 def _put_back(target, old):
-    """Moves the store a stopped swap set aside at `old` back to `target`, each WAL file with it, but never over a
-    file there: when a store is at `target` again, the old one stays aside and kb says where."""
-    if not os.path.exists(old):
-        return
-    if os.path.exists(target):
-        print(f"kb: the rebuild stopped while {target} held a knowledge base again, so the old one stays at {old}, "
-              f"with any of its -wal and -shm files.", file=sys.stderr)
-        return
-    for suffix in ("", "-wal", "-shm"):
-        if os.path.exists(f"{old}{suffix}") and not os.path.exists(f"{target}{suffix}"):
-            os.replace(f"{old}{suffix}", f"{target}{suffix}")
+    """Moves the store a stopped swap set aside at `old` back to `target`, its WAL files with it. A move is a hard link
+    that fails when a file is at the name, so nothing there is ever replaced. The swap sets the WAL files aside first,
+    so once the store itself is aside, a WAL file at `target` is another store's: then, or when a store is at
+    `target` again, the old one stays aside. kb names every file it leaves aside."""
+    if os.path.exists(old):
+        clear = not any(os.path.exists(f"{target}{suffix}") for suffix in ("", "-wal", "-shm"))
+        back = clear and _move_back(old, target)
+    else:
+        back = True  # the store never left; only its WAL files may have
+    if back:
+        for suffix in ("-wal", "-shm"):
+            _move_back(f"{old}{suffix}", f"{target}{suffix}")
+    left = [f"{old}{suffix}" for suffix in ("", "-wal", "-shm") if os.path.exists(f"{old}{suffix}")]
+    if left:
+        print(f"kb: the rebuild stopped while {target} held a knowledge base or its files again, so the old one stays "
+              f"aside: {', '.join(left)}.", file=sys.stderr)
+
+
+def _move_back(aside, name):
+    """Moves `aside` to `name` unless a file is there. Returns whether it moved."""
+    if not os.path.exists(aside):
+        return False
+    try:
+        os.link(aside, name)
+    except OSError:
+        return False
+    os.remove(aside)
+    return True
 
 
 def cmd_rebuild(paths, config, args):
@@ -502,7 +519,9 @@ def cmd_rebuild(paths, config, args):
             _remove_store(fresh)
             raise
         try:
-            for suffix in ("", "-wal", "-shm"):  # the old WAL files go too, or SQLite would read them into the new one
+            # The old WAL files go too, or SQLite would read them into the new store, and first, so that once the
+            # store is aside a WAL file at its name is another store's.
+            for suffix in ("-wal", "-shm", ""):
                 if os.path.exists(f"{target}{suffix}"):
                     os.replace(f"{target}{suffix}", f"{old}{suffix}")
             os.replace(fresh, target)
