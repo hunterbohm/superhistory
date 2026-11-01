@@ -459,6 +459,24 @@ class EscapeTest(unittest.TestCase):
             with self.subTest(text=text):
                 self.assertNotIn("Qx7RedisBytes", mask(text))
 
+    def test_a_value_after_a_carriage_return_is_masked(self):
+        for text in ("password:\r\r\n  walrus2pw9", "password:\rwalrus2pw9", "password:\r \n  walrus2pw9",
+                     "API_KEY=\rabcd1234efgh5678", "Password is\rwalrus2!x", "db:\r\r\n  password:\r\r\n    walrus2pw9"):
+            with self.subTest(text=text):
+                self.assertNotIn("walrus2", mask(text))
+                self.assertNotIn("abcd1234", mask(text))
+
+    def test_values_left_as_they_were_cost_time_in_proportion(self):
+        import time
+        for unit in ("token=/a/", "next_token=https://a.example/cb?"):
+            with self.subTest(unit=unit):
+                took = {}
+                for size in (4_000, 32_000):
+                    started = time.process_time()
+                    mask(unit * (size // len(unit)))
+                    took[size] = time.process_time() - started
+                self.assertLess(took[32_000], 16 * max(took[4_000], 0.01))
+
     def test_a_value_that_holds_a_secrets_word_is_still_a_value(self):
         # A value is refused as the next line's name only when the space after its separator crossed a line break.
         for text in ("the wifi password: SecretGarden99 is on the fridge", "DB_PASSWORD=Tokyo-Token-2026 is what I set",
@@ -478,7 +496,11 @@ class EscapeTest(unittest.TestCase):
                 masked = mask(text)
                 self.assertNotIn("Qx7pass2026", masked)
                 self.assertNotIn("Garden99x", masked)
-        self.assertEqual(mask("Authorization: pending review"), "Authorization: pending review")
+        for text in ("Authorization: pending review", "Authorization: Organization-level approval needed",
+                     "Authorization: Implementation-specific, see RFC 7235."):
+            self.assertEqual(mask(text), text)
+        aws = "Authorization: AWS4-HMAC-SHA256 Credential=" + "AKIA" + "QW3RTY7UIOPAS2DF" + "/20261101/us-east-1/s3/aws4_request"
+        self.assertEqual(mask(aws), "Authorization: AWS4-HMAC-SHA256 Credential=[masked]/20261101/us-east-1/s3/aws4_request")
 
     def test_a_value_ends_where_an_escape_starts_a_flag(self):
         for text in ('{"command": "export API_TOKEN=abc123def456\\n--api-key s3cr3tV4lu3XYZ99"}',

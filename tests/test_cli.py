@@ -322,7 +322,7 @@ class OlderStoreTest(TempHome):
         self.write_config(NOTES_CONFIG.format(path=self.notes))
         # An older kb's row: what its masking left of a secret, and no mask version.
         self.db.execute("INSERT INTO docs(kind, source, source_id, ts, title, content, metadata, masked) VALUES "
-                        "('doc', 'notes', 'studio:gone.md', ?, 'gone', ?, '{}', NULL)",
+                        "('doc', 'notes', 'studio:plan.md', ?, 'plan', ?, '{}', NULL)",
                         (iso(), f"db_password: [masked] {self.SECRET} pelican"))
         self.db.commit()
 
@@ -377,7 +377,7 @@ class OlderStoreTest(TempHome):
             before, files = fh.read(), set(os.listdir(folder)) - {"kb.lock"}
         code, out, err = self.run_kb("rebuild")
         self.assertEqual(code, 1)
-        self.assertIn("notes: 2 fewer items", err)
+        self.assertIn("notes: 2 items", err)
         self.assertIn("--accept-loss", err)
         self.assertNotIn(self.SECRET, out + err)
         with open(self.path, "rb") as fh:
@@ -388,7 +388,7 @@ class OlderStoreTest(TempHome):
         self.add_rotated_items()
         code, out, err = self.run_kb("rebuild", "--accept-loss")
         self.assertEqual(code, 0, err)
-        self.assertIn("notes: 2 fewer items", out)
+        self.assertIn("notes: 2 items", out)
         db = store.connect(self.path)
         self.addCleanup(db.close)
         self.assertEqual([r[0] for r in db.execute("SELECT source_id FROM docs")], ["studio:plan.md"])
@@ -590,6 +590,27 @@ class OlderStoreTest(TempHome):
         self.assertFalse(os.path.exists(self.path))
         self.assertTrue(os.path.exists(aside))
         self.assertIn(aside, err.getvalue())
+
+    def test_rebuild_stops_when_a_source_lost_items_and_gained_as_many(self):
+        # Sessions a source has since deleted, and as many new ones: the count is the same, the old items are gone.
+        self.db.execute("INSERT INTO docs(kind, source, source_id, ts, title, content, metadata, masked) VALUES "
+                        "('doc', 'notes', 'studio:rotated.md', ?, 'old', 'an old note', '{}', NULL)", (iso(),))
+        self.db.commit()
+        self.db.close()
+        with open(os.path.join(self.notes, "new.md"), "w", encoding="utf-8") as fh:
+            fh.write("a note written since\n")
+        folder = os.path.dirname(self.path)
+        with open(self.path, "rb") as fh:
+            before, files = fh.read(), set(os.listdir(folder)) - {"kb.lock"}
+        code, out, err = self.run_kb("rebuild")
+        self.assertEqual(code, 1, out)
+        self.assertIn("notes: 1 item", err)
+        with open(self.path, "rb") as fh:
+            self.assertEqual(fh.read(), before)
+        self.assertEqual(set(os.listdir(folder)) - {"kb.lock"}, files)
+        code, out, err = self.run_kb("rebuild", "--accept-loss")
+        self.assertEqual(code, 0, err)
+        self.assertIn("notes: 1 item", out)
 
     def test_rebuild_keeps_the_old_store_when_a_host_is_asleep(self):
         from kb.remote import HostAway
