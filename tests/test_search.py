@@ -94,6 +94,22 @@ class OldRowTest(TempDB):
         self.assertEqual((old["snippet"], old["excerpt"]), (current["snippet"], current["excerpt"]))
         self.assertNotIn("suffix", old["excerpt"])
 
+    def test_an_old_chunk_a_key_runs_into_gets_the_card_of_its_whole_masked_item(self):
+        line = ("T2xkUGVtQm9keUxpbmU" * 4)[:64]
+        key = "-----BEGIN PRIVATE KEY-----\n" + f"{line}\n" * 90 + "-----END PRIVATE KEY-----"
+        text = "context " + " " * 3800 + "\n" + key + "\nwalrus deployment notes\n"
+        self.add("now.md", text)
+        parts = store.chunk(text)
+        self.assertEqual(len(parts), 3)
+        for i, part in enumerate(parts):
+            self.old("then.md", part, kind="raw", meta=f'{{"chunk": {i}, "chunks": 3}}')
+        hits = {h["source_id"]: h for h in search.search(self.db, "walrus deployment")}
+        old, current = hits["then.md"], hits["now.md"]
+        self.assertEqual(old["meta"]["chunk"], 2, "the match is in the chunk the key runs into")
+        self.assertEqual((old["snippet"], old["excerpt"]), (current["snippet"], current["excerpt"]))
+        self.assertIn("context", old["excerpt"])
+        self.assertNotIn(line[:12], old["snippet"] + old["excerpt"])
+
     def test_an_old_row_matched_by_its_title_alone_gets_a_current_rows_card(self):
         for n, body in enumerate(("Opening [note] " + "ordinary filler " * 60,
                                   "token sk-ant-api03-old-" + "Z" * 24 + " " + "ordinary filler " * 60)):

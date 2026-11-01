@@ -140,8 +140,9 @@ def search(db, query, after=None, sources=(), limit=10, before=None, keep=None):
 
 def _masked_item(db, hit):
     """The hit's item masked whole, and the hit's own stretch of it. A doc or summary row is its own item. A chunk's
-    item is its chunks joined in order, masked together so a secret across two chunks is still found; its own stretch
-    is what lies between the masked text before and after it, or the whole item when a secret crosses its edge."""
+    item is its chunks joined in order, masked together so a secret across two chunks is still found. Its own stretch
+    is the chunk masked alone when the text before it, the chunk and the text after it, each masked alone, join up to
+    the whole masked item; otherwise a secret crosses its edge and the stretch is the whole item."""
     if hit["kind"] != "raw":
         whole = mask(hit["content"])
         return whole, whole
@@ -152,10 +153,8 @@ def _masked_item(db, hit):
     at = [i for i, (_, chunk) in enumerate(rows) if chunk == hit["meta"].get("chunk")]
     if len(at) != 1:
         return whole, whole
-    before, after = mask("".join(parts[:at[0]])), mask("".join(parts[at[0] + 1:]))
-    if whole.startswith(before) and whole.endswith(after) and len(before) + len(after) <= len(whole):
-        return whole, whole[len(before):len(whole) - len(after)]
-    return whole, whole
+    before, own, after = (mask("".join(p)) for p in (parts[:at[0]], parts[at[0]:at[0] + 1], parts[at[0] + 1:]))
+    return whole, own if before + own + after == whole else whole
 
 
 def _snippets(title, text, match):
