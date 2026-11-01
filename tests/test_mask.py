@@ -1,7 +1,7 @@
 import unittest
 from unittest import mock
 
-from kb.mask import is_auth_code, is_auth_noise, mask, secret_in_id
+from kb.mask import mask_older, is_auth_code, is_auth_noise, mask, secret_in_id
 
 
 class MaskTest(unittest.TestCase):
@@ -225,6 +225,29 @@ class OtherKeyFormatTest(unittest.TestCase):
                      "-----BEGIN PGP PUBLIC KEY BLOCK-----\n\nmQENBGcW1aEBCAD\n-----END PGP PUBLIC KEY BLOCK-----"):
             with self.subTest(text=text[:20]):
                 self.assertEqual(mask(text), text)
+
+
+class OlderTextTest(unittest.TestCase):
+    """Text an older kb wrote, read with mask_older(): what main's mask left that today's patterns cannot read."""
+
+    def test_a_value_main_left_after_a_placeholder_is_masked(self):
+        from tests.legacy_mask import mask as main_mask
+        # main's named-value rule read a value through an escaped line break into the next line's name, and its key
+        # pattern took a key's body and the words after it up to the first punctuation, a command's name included.
+        for text in ("db_password: walrus2secret1\\napi_key: Zq7wLm4Np8Rt2Kd9Vh3B\\nnext",
+                     "X-Api-Key: walrus2secret1\\nAuthorization: Token Zq7wLm4Np8Rt2Kd9Vh3B",
+                     "export REDIS_PASSWORD=walrus2secret1\\nredis-cli -a Zq7wLm4Np8Rt2Kd9Vh3B ping",
+                     "-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkq\nthe notes moved\nredis-cli -a Zq7wLm4Np8Rt2Kd9Vh3B",
+                     "-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkq\nAuthorization: Token Zq7wLm4Np8Rt2Kd9Vh3B",
+                     "-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkq\nmysql -u root -pZq7wLm4Np8Rt2Kd9Vh3B shop"):
+            with self.subTest(text=text[:30]):
+                older = main_mask(text)
+                self.assertIn("Zq7wLm4Np8Rt", older, "main left the value readable")
+                self.assertNotIn("Zq7wLm4Np8Rt", mask_older(older))
+
+    def test_text_after_a_tokens_placeholder_stays(self):
+        for text in ("token [masked] ordinary words walrus deployment", "see [masked], then the plan", "[masked]) and more"):
+            self.assertEqual(mask_older(text), text)
 
 
 class HeadlessKeyTest(unittest.TestCase):
