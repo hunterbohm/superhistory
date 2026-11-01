@@ -412,7 +412,7 @@ class ItemHashTest(TempDB):
 
     def test_an_item_and_its_summary_stored_together_keep_one_hash_when_the_mask_changes_the_text(self):
         import hashlib
-        text = "VP1-0123-4567-89AB-CDEF-GHJK-MNPQ-RW"  # a code a mask before this one left as it was
+        text = "ghp_" + "A1" * 6 + "\u2060" + "A1" * 6  # a token split by a word joiner, which main's mask left
         sent = hashlib.sha1(("title\0" + text).encode()).hexdigest()[:16]
         rows = [{"kind": kind, "ts": iso(), "title": "title", "content": text if kind == "doc" else "summary",
                  "metadata": {field: sent, **({"prefix": "0f1e2d3c4b5a6978"} if kind == "segment" else {})}}

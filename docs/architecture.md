@@ -94,14 +94,19 @@ line, and a value ends where an escape starts the next "name=" or "name:", so th
 escape such as "%20" counts the same way, and a quote may be escaped, nested in JSON, percent-encoded or an HTML
 entity. The Claude Code, Codex and Hermes readers also mask a tool's input field by field with `mask_all()` before
 they write it as JSON, and `mask_all()` masks a string under a secret's field name whole.
-A secret reads through characters a reader does not see: NUL and the other C0 controls but tab, line feed and carriage
-return, and Unicode's default ignorable code points, such as zero-width spaces and joiners, the word joiner, the soft
-hyphen and direction marks. A pass matches the text without them, so a key split by them, or with one between every
-character, is one match, even where its first part is a key by itself. Where one stood, a token may also start right
-after a letter, as after a space: one before a key parts it from the word before it (`budget<ZWSP>sk-...`) rather than
-gluing the two, as stripping them first would. The stretch a pass changes replaces the same stretch of the text as
-written, and the rest keeps them, so an emoji joined by them reads as it did; then the text as written has a pass of its
-own, where they part words as a space does.
+A secret reads through characters a reader does not see: NUL and the other C0 controls that are not whitespace, and
+Unicode's default ignorable code points, such as zero-width spaces and joiners, the word joiner, the soft hyphen and
+direction marks. The vertical tab, the form feed and the separators from 0x1c are whitespace and part words. A pass
+matches the text without the invisible ones, so a key split by them, or with one between every character, is one
+match, even where its first part is a key by itself. Where one stood, a token may also start right after a letter, as
+after a space: one before a key parts it from the word before it (`budget<ZWSP>sk-...`) rather than gluing the two, as
+stripping them first would. A run of them just before where a secret's reading starts (a secret's name and its
+separator, a scheme word, a link's scheme, a command a password follows, a key's header) stays a break, so a token
+before it never takes the name. The stretch a pass changes replaces the same stretch of the text as written, and the
+rest keeps them, so an emoji joined by them reads as it did; then the text as written has a pass of its own, where
+they part words as a space does.
+
+kb masks no Sync recovery or pairing codes. The Sync client's egress masks them before anything leaves the computer.
 
 A command line's password is masked by the flag that takes it: a long flag named for a secret ("--api-key X"), and
 the short flags of the commands in `mask.COMMAND_FLAGS` (curl's -u, mysql's -p, sshpass -p, a registry login's -p,

@@ -198,97 +198,6 @@ _AUTH_FIELD = re.compile(rf"(?i)((?:(?<![A-Za-z0-9_.-])|{_AFTER_ESCAPE})auth{_QU
                          r"([A-Za-z0-9+/]{4,}={0,2})")
 
 
-# The sync client's recovery and pairing codes: "VRC" or "VP" and a version digit, then Crockford base32, 32
-# characters for a recovery code and 26 for a pairing code, written in groups of four. Its parser upper-cases a code as
-# Python does, so "ı" reads as I and "ß" as SS, reads I and L as 1 and O as 0 after the head, and drops dashes and
-# spaces anywhere. A code counts here as that parser reads it, in groups of four, a character at a time or unbroken,
-# with at least 20 characters after its head, so one cut short counts too; prose after "VP1" in words of other
-# lengths does not. A line break, plain or escaped, parts groups as a space does, since a code wraps.
-CODE_GAP = re.compile(r"(?:[- \r\n]|\\[nr])*")
-# A head starts a word: after "-" or "_" it is part of a name, such as "password-VP1-...", which keeps its value.
-CODE_HEAD = re.compile(rf"(?:(?<![A-Za-z0-9_-])|{_AFTER_ESCAPE})[Vv]{CODE_GAP.pattern}(?:[Rr]{CODE_GAP.pattern}[Cc]|[Pp])"
-                       rf"{CODE_GAP.pattern}[0-9]")
-# Crockford's characters with I, L and O, in either case, and the characters Python upper-cases into them.
-CODE_RUN = re.compile(r"[0-9A-TV-Za-tv-z\u00df\u0131\u017f\ufb00-\ufb06]+")
-CODE_LENGTH = {"recovery": 32, "pairing": 26}
-MIN_CODE = 20
-
-
-# What follows a run that is the start of a name rather than a code's group: "_" or "." in the name, or its separator.
-_NAME_GOES_ON = re.compile(r"[_.]|[ \t]*[:=]")
-
-
-def _code_end(text, head, inner=False):
-    """Where the code whose head is `head` ends, and the length of its body as the parser reads it. It ends before a
-    run that starts another code, so that code keeps its head; a run that only looks like a head goes on."""
-    limit = CODE_LENGTH["recovery" if "r" in head.group().lower() else "pairing"]
-    end, total, shape = head.end(), 0, None
-    while True:
-        start = CODE_GAP.match(text, end).end()
-        run = CODE_RUN.match(text, start)
-        if run and _NAME_GOES_ON.match(text, run.end()):  # the start of a name, as "api" in "\\napi_key: ...": no group
-            run = None
-        size = len(run.group().upper()) if run else 0
-        if not inner:
-            other = CODE_HEAD.match(text, start)
-            if other and _code_end(text, other, inner=True)[1] >= MIN_CODE:
-                break
-        if shape is None:
-            if size >= MIN_CODE:  # unbroken
-                return run.end(), size
-            if size not in (1, 4):
-                break
-            shape = size
-        if not size or size > shape or (size < shape and shape == 1) or total + size > limit:
-            break
-        end, total = run.end(), total + size
-        if size < shape:  # a last, shorter group
-            break
-    return end, total
-
-
-# A code's body is random base32, so it holds digits, and the client prints it in capitals. A body with fewer than
-# MIN_DIGITS digits, about one code in 1,400, counts in capitals, or typed lowercase when it reads as base32 rather than
-# words: no I, L or O, which base32 has only for digits, and fewer than CODE_VOWELS of its letters vowels, as base32
-# has only A and E. Words after a head, such as "VP1 team will meet next week", hold them. Of runs of four-letter
-# dictionary words read as a code, 0.25% pass for one; of lowercase codes of letters only, 1 in 50,000 does not.
-MIN_DIGITS = 2
-CODE_VOWELS = 0.4
-
-
-def _reads_as_code(body):
-    """Whether a code's body, as written, reads as base32 rather than words (MIN_DIGITS, CODE_VOWELS)."""
-    # In capitals but for "l", "i" or "o", which a person can type for 1 and 0 and the parser reads so.
-    if sum(c.isdigit() for c in body) >= MIN_DIGITS or not re.search(r"[a-hjkmnp-z]", body):
-        return True
-    letters = [c for c in body.lower() if c.isalpha()]
-    return (not any(c in "ilo" for c in letters)
-            and sum(c in "aeiou" for c in letters) < CODE_VOWELS * max(len(letters), 1))
-
-
-def _code_spans(text):
-    """Where the sync client's codes are, as (start, end) spans."""
-    spans = []
-    for head in CODE_HEAD.finditer(text):
-        if spans and head.start() < spans[-1][1]:
-            continue
-        end, total = _code_end(text, head)
-        # Groups it read, from the last: a word after a code, such as "plan", can read as its last group.
-        runs, at = [], head.end()
-        while at < end:
-            run = CODE_RUN.match(text, CODE_GAP.match(text, at).end())
-            if not run or run.end() > end:
-                break
-            runs.append((run.end(), len(run.group().upper())))
-            at = run.end()
-        while total >= MIN_CODE and runs:
-            if _reads_as_code(text[head.start():runs[-1][0]][head.end() - head.start():]):
-                spans.append((head.start(), runs[-1][0]))
-                break
-            total -= runs.pop()[1]
-    return spans
-
-
 # Characters a reader does not see: NUL and the other C0 controls that are not whitespace, as UTF-16 text read as bytes
 # holds them, and Unicode's default ignorable code points: zero-width spaces and joiners, direction marks and isolates,
 # the soft hyphen, the byte order mark, variation selectors, fillers and tag characters. A secret reads through them,
@@ -306,8 +215,7 @@ REVISION = 6
 VERSION = hashlib.sha256(repr((REVISION, [p.pattern for p in SECRET_PATTERNS + PREFIXED_SECRETS], KEYED_SECRET.pattern,
                                 ENV_KEY_SECRET.pattern, JSON_SECRET.pattern, FLAG_SECRET.pattern, AUTH_SECRET.pattern,
                                 COMMAND_FLAGS, PASSWORD_NAME.pattern, sorted(PLACEHOLDERS), REFERENCE.pattern,
-                                _AUTH_FIELD.pattern, INVISIBLE.pattern, CODE_HEAD.pattern, CODE_RUN.pattern,
-                                sorted(CODE_LENGTH.items()), MIN_CODE, MIN_DIGITS, CODE_VOWELS)).encode()).hexdigest()[:16]
+                                _AUTH_FIELD.pattern, INVISIBLE.pattern)).encode()).hexdigest()[:16]
 
 
 def _looks_secret(name, sep, value):
@@ -351,8 +259,6 @@ def _command_passwords(text):
 
 def _mask_keyed(m):
     name, sep, value = m.groups()
-    if "[masked]" in value and value != "[masked]":  # the rest of a value a token or a code in it was masked out of
-        return f"{name}{sep}[masked]"
     return f"{name}{sep}[masked]" if _looks_secret(name, sep, value) else m.group(0)
 
 
@@ -500,9 +406,6 @@ def _pass(text, rules):
     for pattern in patterns:
         text = pattern.sub("[masked]", text)
     text = _GLUED_RUN.sub("[masked]", _headless_keys(_key_rest(_docker_logins(text))))
-    # Codes after the tokens, since a token can hold a run that reads as one and would be cut apart, and before the
-    # names, since "passcode: VP1 ..." would take the head as its value and leave the rest headless.
-    text = _replace(text, _code_spans(text), "[masked]")
     for pattern in PREFIXED_SECRETS:
         text = pattern.sub(lambda m: m.group(1) + "[masked]", text)
     text = _command_passwords(text)

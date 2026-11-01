@@ -57,7 +57,6 @@ class Planted:
 
     def __init__(self, r, seq):
         self.r, self.seq, self.n, self.pieces, self.items, self.bodies, self.narrowest = r, seq, 0, set(), {}, [], 1
-        self.codes = []
 
     def _value(self, shape):
         self.n += 1
@@ -111,34 +110,6 @@ class Planted:
             block += self.r.choice((brk, " ")) + name + self._value("fz{}Kq12345678")
         return block
 
-    def code(self):
-        """A sync recovery or pairing code as its client writes it or a person types it: in either case, with I, L or O
-        for 1 and 0, with dashes or spaces, unbroken, a character at a time, wrapped, or cut short, and at times of
-        letters only. Its body is checked as the client's parser reads it."""
-        recovery = self.r.random() < 0.5
-        alphabet = "ABCDEFGHJKMNPQRSTVWXYZ" if self.r.random() < 0.3 else "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
-        body = "".join(self.r.choice(alphabet) for _ in range(32 if recovery else 26))
-        if self.r.random() < 0.3:
-            body = body[:self.r.randint(20, len(body))]
-        self.codes.append(body)
-        typed = "".join(self.r.choice(("I", "L", "l", "\u0131")) if c == "1" and self.r.random() < 0.3
-                        else "O" if c == "0" and self.r.random() < 0.3 else c for c in body)
-        head, groups = ("VRC" if recovery else "VP") + str(self.r.randint(1, 9)), [typed[i:i + 4] for i in range(0, len(typed), 4)]
-        form = self.r.random()
-        if form < 0.3:
-            return head + "-" + "-".join(groups)
-        if form < 0.5:
-            return f"{head} {' '.join(groups)}".lower()
-        if form < 0.6:
-            return head + typed
-        if form < 0.7:
-            return " ".join(head + typed)
-        if form < 0.8:
-            return " ".join(head) + "--" + "--".join(groups)
-        wrap = self.r.randint(1, len(groups) - 1)
-        brk = self.r.choice(("\n", "\\n", "\\r\\n"))  # an f-string holds no backslash before Python 3.12
-        return f"{head}-{'-'.join(groups[:wrap])}-{brk}{'-'.join(groups[wrap:])}"
-
     def text(self):
         if self.r.random() < 0.25:
             return "walrus ledger " + " ".join(self.r.choice(FILLER) for _ in range(self.r.randint(5, 80)))
@@ -148,7 +119,7 @@ class Planted:
             if pick < 0.4:
                 parts.append(" ".join(self.r.choice(FILLER) for _ in range(self.r.randint(3, 30))))
             else:
-                parts.append((self.token, self.keyed, self.pem, self.key, self.code)[int(pick * 10) % 5]())
+                parts.append((self.token, self.keyed, self.pem, self.key)[int(pick * 10) % 4]())
         if self.r.random() < 0.15:  # a key cut off by a size limit, anywhere in a line, ends the text
             parts.append(self.pem(whole=True)[:self.r.randint(40, 600)])
         # Parts meet at a space or a line break, or at an escape as JSON text writes one, which a secret after it
@@ -355,9 +326,6 @@ def run_sequence(seq, root, ops=None):
         text = INVISIBLE.sub("", "\n".join(shown(db, path)))  # as a reader sees it
         problems += [f"a reader shows {piece!r}" for piece in sorted(planted.pieces) if piece in text]
         squeezed = re.sub(r"\s+|\\[nr]", "", text)  # a key's body read through its line breaks
-        parsed = re.sub(r"[- \r\n]|\\[nr]", "", text).upper().translate(str.maketrans("ILO", "110"))  # as the parser
-        problems += [f"a reader shows {code[i:i + 12]!r} of a code" for code in planted.codes
-                     for i in range(0, len(code) - 11, 4) if code[i:i + 12] in parsed][:3]
         problems += [f"a reader shows {body[i:i + 12]!r} of a key" for body in planted.bodies
                      for i in range(0, len(body) - 11, 4) if body[i:i + 12] in squeezed][:3]
     finally:
