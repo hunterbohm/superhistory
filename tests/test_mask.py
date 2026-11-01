@@ -318,6 +318,13 @@ class HeadlessKeyTest(unittest.TestCase):
                                   if p in readable], [])
                 self.assertTrue(mask(older).endswith("next paragraph"))
 
+    def test_after_a_placeholder_lines_that_only_start_like_a_key_stay(self):
+        for text in ("DB_PASSWORD=[masked]\nMINIO_ENDPOINT=http://minio.internal:9000\nMINIO_BUCKET=walrus-uploads",
+                     "token=[masked] MINUTES of the meeting\nnext line", "[masked]\nMIGRATION plan for the walrus\nmore",
+                     "[masked]\n\"MILESTONE\" is done", "api_key: [masked]\n# MIGRATE the walrus-uploads bucket"):
+            with self.subTest(text=text[:30]):
+                self.assertEqual(mask(text), text)
+
     def test_after_a_placeholder_and_a_line_break_other_lines_stay(self):
         for brk in ("\\n", "\n"):
             for line in ("/usr/local/bin/python3 deploy.py --env prod", "3f2a9c" + "0" * 34, "MCP server started",
@@ -434,7 +441,7 @@ class EscapeTest(unittest.TestCase):
     def test_a_long_run_of_a_secrets_word_costs_time_in_proportion(self):
         # A secret's name was read around its key word, back over the run once for each key word in it.
         import time
-        for unit in ("token", '"token', "password", "a.token.", "api_key_"):
+        for unit in ("token", '"token', "password", "a.token.", "api_key_", "x-a-auth-", "x-auth-auth"):
             with self.subTest(unit=unit):
                 took = {}
                 for size in (1 << 12, 1 << 15):
@@ -482,6 +489,26 @@ class EscapeTest(unittest.TestCase):
                      "Authorization: Token \nAuthorization: Token Zq7wLm4Np8Rt2Kd9Vh3B"):
             with self.subTest(text=text):
                 self.assertNotIn("Zq7wLm4Np8Rt", mask(text))
+
+    def test_a_value_that_holds_a_secrets_word_is_still_a_value(self):
+        # A value is refused as the next line's name only when the space after its separator crossed a line break.
+        for text in ("the wifi password: SecretGarden99 is on the fridge", "DB_PASSWORD=Tokyo-Token-2026 is what I set",
+                     "password=secret:hunter2", "admin_password=SecretPass:42", "passcode: Token4471 is valid until Friday",
+                     "export MYSQL_PWD=Secret:Xq7z"):
+            with self.subTest(text=text):
+                self.assertIn("[masked]", mask(text))
+                self.assertNotIn("Garden99", mask(text))
+                self.assertNotIn("Token-2026", mask(text))
+                self.assertNotIn("hunter2", mask(text))
+
+    def test_an_authorization_value_with_no_scheme_word_is_masked(self):
+        for text in ("use Authorization: Qx7pass2026zzQ9 for the staging API", "Authorization: Qx7pass2026zzQ9 (expires Friday)",
+                     "Authorization=SecretGarden99x is on the fridge"):
+            with self.subTest(text=text):
+                masked = mask(text)
+                self.assertNotIn("Qx7pass2026", masked)
+                self.assertNotIn("Garden99x", masked)
+        self.assertEqual(mask("Authorization: pending review"), "Authorization: pending review")
 
     def test_a_value_ends_where_an_escape_starts_a_flag(self):
         for text in ('{"command": "export API_TOKEN=abc123def456\\n--api-key s3cr3tV4lu3XYZ99"}',
@@ -744,7 +771,8 @@ class SecretInIdTest(unittest.TestCase):
                 self.assertTrue(secret_in_id(name))
 
     def test_a_name_starting_with_an_sk_slug_does_not(self):
-        for name in ("sk-learn-pipeline-experiments.md", "Beauty/sk-ii-facial-treatment-essence-review.md",
+        for name in ("sk-proj-roadmap-and-quarterly-goals.md", "sk-admin-dashboard-redesign-notes.md",
+                     "sk-learn-pipeline-experiments.md", "Beauty/sk-ii-facial-treatment-essence-review.md",
                      "i18n/sk-SK_translation-notes-2026.md", "sk-learn-tutorial-notebooks@" + "3f2a9c" * 6 + "e1d4",
                      "acme/sk-planner-experiments-2026#12"):
             with self.subTest(name=name):
