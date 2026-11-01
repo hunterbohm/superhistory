@@ -36,7 +36,9 @@ _KEY_END = rf"-----END (?:[A-Z ]*PRIVATE KEY|{_PGP_KEY})-----"
 # DEK-Info field, where an encrypted key's body starts, then to the next blank line, the next key's header, or the
 # end of the text. Stopping at the next header leaves that key its own match.
 _IN_PARAGRAPH = rf"(?:(?!{_BLANK})(?!-----BEGIN )[\s\S])"
-_KEY_PARAGRAPH = rf"(?:{_IN_PARAGRAPH}*?DEK-Info:[^\r\n\\]*{_BLANK})?{_IN_PARAGRAPH}*"
+# The DEK-Info field is read from the last one on its line: read from each, a line of them took time in the square of
+# its length.
+_KEY_PARAGRAPH = rf"(?:{_IN_PARAGRAPH}*?DEK-Info:(?:(?!DEK-Info:)[^\r\n\\])*{_BLANK})?{_IN_PARAGRAPH}*"
 # A key's footer, looked for in the next 16 KB and before any other header.
 _TO_KEY_END = rf"(?:(?!-----BEGIN )[\s\S]){{0,16384}}?{_KEY_END}"
 # From an encrypted key's fields, its footer comes after one blank line, the one after its DEK-Info field, so the
