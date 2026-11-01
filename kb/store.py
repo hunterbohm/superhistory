@@ -77,10 +77,11 @@ REBUILD = ("{path} holds rows an older kb wrote, before each row recorded how it
 
 def peek(path):
     """A connection that reads the store at `path` and leaves its files as they are. Closing a writable connection
-    moves the rows in the WAL file into the store, so one is opened read-only when the WAL files are there; without
-    them a read-only one would leave new ones behind, and a writable one has nothing to move."""
+    moves the rows in the WAL file into the store, so one is opened read-only when there is a WAL file; it may leave
+    an index file (-shm) beside it, which SQLite rebuilds anyway. Without one, a read-only connection would leave new
+    WAL files behind, and a writable one has nothing to move."""
     path = os.path.realpath(path)  # SQLite keeps a linked store's WAL files beside its target
-    if os.path.exists(path + "-wal") and os.path.exists(path + "-shm"):
+    if os.path.exists(path + "-wal"):
         db = sqlite3.connect(pathlib.Path(path).as_uri() + "?mode=ro", uri=True)
     else:
         db = sqlite3.connect(path)

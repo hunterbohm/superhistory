@@ -259,11 +259,33 @@ def _holds_key(text, lines):
     return bool(_ENCODED_KEY.search("".join(text[a:b] for a, b in lines)))
 
 
+_WHOLE_FILE_END = re.compile(rb"-----END [A-Z0-9 ]+-----\s*\Z")
+
+
+def _ends_file(text, lines, total):
+    """Whether the base64 on `lines`, `total` characters, decodes to a file that ends with a key's or certificate's
+    footer. Only its last 64 characters are read: they hold the longest footer."""
+    if total % 4:
+        return False
+    tail, need = [], 64
+    for a, b in reversed(lines):
+        tail.append(text[max(a, b - need):b])
+        need -= len(tail[-1])
+        if need <= 0:
+            break
+    try:
+        return bool(_WHOLE_FILE_END.search(base64.b64decode("".join(reversed(tail)), validate=True)))
+    except ValueError:
+        return False
+
+
 def _key_lines(text, lines):
-    """The lines of a base64 block that hold the key, without a heading above it or words below it. Wrapped lines are
-    all as wide as the first full one but the last, which may be narrower and brings the base64 to a whole number of
-    4-character groups or is too long for a word; a shorter one holds no more than the key's footer. A line of its own narrower than the line under it, or of another width than two equal lines
-    under it, is a heading such as "Notes". A line kept out still counts when the key is not found without it."""
+    """The lines of a base64 block that hold its first key, without a heading above it or words below it. Wrapped
+    lines are all as wide as the first full one but the last, which may be narrower. The block ends where its base64
+    decodes to a whole file, at a line wider than the wrap, or at a short line that leaves the base64 at a length no
+    encoder writes: a tail that short holds no more than the key's footer. A line of its own narrower than the line
+    under it, or of another width than two equal lines under it, is a heading such as "Notes". A line kept out still
+    counts when the key is not found without it."""
     widths = [b - a for a, b in lines]
     if len(lines) > 1 and _starts_line(text, lines[0][0]) and (
             widths[0] < widths[1] or len(lines) > 2 and widths[0] != widths[1] == widths[2]):
@@ -272,7 +294,7 @@ def _key_lines(text, lines):
     wrap = max(widths[:2])
     kept, total = lines[:1], widths[0]
     for line, width in zip(lines[1:], widths[1:]):
-        if width > wrap or width < wrap and (total + width) % 4 and width < 24:  # a word, not a tail of base64
+        if width > wrap or _ends_file(text, kept, total) or width < wrap and (total + width) % 4 and width < 24:
             break
         kept.append(line)
         total += width
@@ -281,16 +303,23 @@ def _key_lines(text, lines):
     return kept if _holds_key(text, kept) else lines
 
 
+def _key_spans(text, lines):
+    """The spans to mask in a base64 block: each run of its lines that holds a key."""
+    spans = []
+    while lines and _holds_key(text, lines):
+        kept = _key_lines(text, lines)
+        spans.append((kept[0][0], kept[-1][1]))
+        lines = lines[lines.index(kept[-1]) + 1:]
+    return spans
+
+
 def _encoded_secrets(text):
     """`text` with each private key in a file written as base64 masked, whole with the lines it wraps onto, and each
     Docker "auth" login."""
     spans = []
     for m in _WRAPPED_BASE64.finditer(text):
         escape = _ESCAPE_LETTER.match(text, m.start())
-        lines = _wrapped_lines(text, escape.end() if escape else m.start(), m.end())
-        if _holds_key(text, lines):
-            lines = _key_lines(text, lines)
-            spans.append((lines[0][0], lines[-1][1]))
+        spans += _key_spans(text, _wrapped_lines(text, escape.end() if escape else m.start(), m.end()))
     text = _replace(text, spans, "[masked]")
     return _AUTH_FIELD.sub(lambda m: m.group(1) + "[masked]" if _basic_credential(m.group(2)) else m.group(0), text)
 
@@ -387,8 +416,25 @@ def _mask_once(text):
     text = _command_passwords(text)
     for pattern, masker in ((JSON_SECRET, _mask_keyed), (KEYED_SECRET, _mask_keyed), (ENV_KEY_SECRET, _mask_keyed),
                             (FLAG_SECRET, _mask_keyed), (AUTH_SECRET, _mask_authorization)):
-        text = pattern.sub(masker, text)
+        text = _sub_named(pattern, masker, text)
     return text
+
+
+def _sub_named(pattern, masker, text):
+    """`text` with each of `pattern`'s matches, a name, a separator and a value, given to `masker`. A match left as it
+    was is read again from its value, which can be the next name, as in "secrets: db_password: <value>"."""
+    out, at = [], 0
+    m = pattern.search(text)
+    while m:
+        masked = masker(m)
+        if masked == m.group(0):
+            out.append(text[at:m.start(3)])
+            at = m.start(3)
+        else:
+            out += [text[at:m.start()], masked]
+            at = m.end()
+        m = pattern.search(text, at)
+    return "".join(out) + text[at:]
 
 
 # How many passes mask() makes at most, and how often, in this process, a text still changed at the last one.
