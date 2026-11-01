@@ -388,7 +388,7 @@ def _remove_store(path):
 
 
 def _per_source(path, kept):
-    """Each source's item count and its oldest item's time in the store at `path`, read from ids and times alone: the
+    """Each source's item ids and its oldest item's time in the store at `path`, read from ids and times alone: the
     text of an older kb's rows is never read. When the store cannot be read, as when another program holds it locked,
     no loss could be seen, so the rebuild stops with `kept` ending its message."""
     if not os.path.exists(path):
@@ -396,9 +396,13 @@ def _per_source(path, kept):
     try:
         db = store.peek(path)
         try:
-            return {source: (items, oldest) for source, items, oldest in db.execute(
-                "SELECT source, count(DISTINCT source_id), min(ts) FROM docs WHERE kind IN ('doc', 'raw') "
-                "GROUP BY source")}
+            found = {}
+            for source, source_id, ts in db.execute("SELECT source, source_id, min(ts) FROM docs WHERE kind IN "
+                                                    "('doc', 'raw') GROUP BY source, source_id"):
+                ids, oldest = found.get(source, (set(), ts))
+                ids.add(source_id)
+                found[source] = (ids, min(oldest, ts))
+            return found
         finally:
             db.close()
     except sqlite3.DatabaseError as exc:
@@ -471,7 +475,7 @@ def _move_back(aside, name):
 def cmd_rebuild(paths, config, args):
     """Read every source into a fresh knowledge base, and put it in place of the old one once it checks out: every
     source read, each back to its oldest item in the old one, every host reached, the file sound, no row of no mask
-    version, and no source with fewer items than the old one has, unless --accept-loss. Otherwise the old one stays as
+    version, and no source lacking an item the old one holds, unless --accept-loss. Otherwise the old one stays as
     it was, and no copy of either is kept: the old one may hold an older kb's secrets. A swap that stops puts the old
     one back, but never over a store at its path: then it stays aside, named, and the next rebuild waits for it to be
     moved."""
@@ -509,11 +513,12 @@ def cmd_rebuild(paths, config, args):
                 raise Fail(f"the fresh knowledge base did not check out ({failures} sources failed; see "
                            f"{paths.log_dir}), so {kept}")
             after = _per_source(fresh, kept)
-            lost = {source: n - after.get(source, (0,))[0] for source, (n, _) in sorted(before.items())
-                    if after.get(source, (0,))[0] < n}
-            losses = ", ".join(f"{source}: {n:,} fewer items" for source, n in lost.items())
+            # Which items, not how many: a source can have let some go and gained as many since.
+            lost = {source: len(ids - after.get(source, (set(),))[0]) for source, (ids, _) in sorted(before.items())}
+            lost = {source: n for source, n in lost.items() if n}
+            losses = ", ".join(f"{source}: {n:,} {'item' if n == 1 else 'items'}" for source, n in lost.items())
             if lost and not args.accept_loss:
-                raise Fail(f"the fresh knowledge base has fewer items than {paths.db} for {losses}. A source that keeps "
+                raise Fail(f"the fresh knowledge base lacks items {paths.db} holds, from {losses}. A source that keeps "
                            f"only recent history, as Claude Code deletes sessions after 30 days, has let them go, and "
                            f"no source can give them again. The old one is kept as it was. To replace it anyway and "
                            f"lose those items for good, run `kb rebuild --accept-loss`.")
@@ -602,7 +607,7 @@ def parser():
         fn=cmd_remask)
     rb = sub.add_parser("rebuild", help="read every source into a fresh knowledge base, in place of this one")
     rb.add_argument("--accept-loss", action="store_true",
-                    help="replace it even when a source has fewer items than before, losing those items for good")
+                    help="replace it even when a source lacks items the old one holds, losing those items for good")
     rb.set_defaults(fn=cmd_rebuild)
     sp = sub.add_parser("supersede", help="mark an older record as replaced by a newer one")
     sp.add_argument("old_id", type=int)

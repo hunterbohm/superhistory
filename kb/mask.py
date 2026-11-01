@@ -127,7 +127,7 @@ _VALUE = rf"((?:(?!{_NEXT_NAME}){_CLOSE}[^ \t\n\r\"'`,;<>)\]}}])+)"
 # the value, and the secret after it left. On one line it may: "password: SecretGarden99 is on the fridge".
 _NOT_A_NAME = (rf"(?!:?(?:{_KEY_NAME[4:].replace('(?<![A-Za-z0-9_.-])(', '(?<![A-Za-z0-9_.-])(?:', 1)}"
                rf"|{_ENV_KEY_NAME.replace('([A-Z]', '(?:[A-Z]', 1)}){_QUOTE}?[ \t]*(?:{_SEP}|\bis\b))")
-_AFTER_SEP = rf"(?:{_LINE_SPACE}*{_QUOTE}?|{_LINE_SPACE}*\r?\n{_GAP}{_QUOTE}?{_NOT_A_NAME})"
+_AFTER_SEP = rf"(?:{_LINE_SPACE}*{_QUOTE}?|{_LINE_SPACE}*[\r\n]{_GAP}{_QUOTE}?{_NOT_A_NAME})"
 KEYED_SECRET = re.compile(_KEY_NAME + rf"({_QUOTE}?{_GAP}(?:{_SEP}|\bis\b){_AFTER_SEP})" + _VALUE)
 ENV_KEY_SECRET = re.compile(_ENV_KEY_NAME + rf"({_QUOTE}?{_GAP}{_SEP}{_AFTER_SEP})" + _VALUE)
 # A JSON string value in plain quotes after a secret's name, read as JSON reads it: to the next quote no backslash
@@ -184,8 +184,6 @@ REFERENCE = re.compile(r"^(?:\$(?:[{(]|[A-Z_][A-Z0-9_]*$|[a-z_][a-z0-9_]*$|env:)
                        r"[a-z]+://|(?:env|file|cmd):|[a-z_][\w.]*\()|"
                        r"^[A-Za-z_]+(?:\.[A-Za-z_]+)+$|^[A-Z][A-Z_]{2,}$|^[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+$")
 
-# A private key in a file written as base64, as a Kubernetes secret holds a TLS key: wherever the file's text says
-# "PRIVATE KEY", the run holds that word's base64 at one of the three byte offsets a word can start at.
 # Docker's config holds a registry login in an "auth" field, base64 of "user:password".
 _AUTH_FIELD = re.compile(rf"(?i)((?:(?<![A-Za-z0-9_.-])|{_AFTER_ESCAPE})auth{_QUOTE}?{_GAP}[:=]{_GAP}{_QUOTE}?)"
                          r"([A-Za-z0-9+/]{4,}={0,2})")
@@ -245,12 +243,28 @@ def _mask_keyed(m):
     return f"{name}{sep}[masked]" if _looks_secret(name, sep, value) else m.group(0)
 
 
+# The schemes an Authorization header names before its credential, as IANA lists them and services use them.
+AUTH_SCHEMES = frozenset(("basic", "bearer", "digest", "dpop", "gnap", "hoba", "mutual", "negotiate", "ntlm", "oauth",
+                          "privatetoken", "scram-sha-1", "scram-sha-256", "vapid", "concealed", "aws4-hmac-sha256",
+                          "token", "bot", "apikey", "api-key", "key", "mac", "hawk", "signature", "ssws",
+                          "googlelogin", "kerberos", "splunk"))
+
+
+def _credential(name, sep, word):
+    """Whether `word` after Authorization looks like a credential: not a word of letters, hyphens and an end mark, such
+    as "Organization-level", and not a value already masked."""
+    return ("[masked" not in word and not re.fullmatch(r"[A-Za-z]+(?:-[A-Za-z]+)*[.,;:!?]?", word)
+            and _looks_secret(name, sep, word))
+
+
 def _mask_authorization(m):
-    """An Authorization header with each of its first two words masked that looks like a secret: the first when it is
-    the credential itself, the second when it follows a scheme word, and both when the scheme's name looks like one,
-    as SCRAM-SHA-256 does."""
+    """An Authorization header with its credential masked: the word after a scheme such as Bearer or
+    AWS4-HMAC-SHA256, whose name stays, or else each of its first two words that looks like a credential."""
     name, sep, first, gap, second = m.groups()
-    words = [("[masked]" if word and _looks_secret(name, sep, word) else word) for word in (first, second)]
+    if first.lower() in AUTH_SCHEMES:
+        words = [first, "[masked]" if second and _credential(name, sep, second) else second]
+    else:
+        words = [("[masked]" if word and _credential(name, sep, word) else word) for word in (first, second)]
     if words == [first, second]:
         return m.group(0)
     return f"{name}{sep}{words[0]}{gap or ''}{words[1] or ''}"
@@ -260,9 +274,10 @@ KEY_FOOTER = re.compile(_KEY_END)
 _BLANK_LINE = re.compile(_BLANK)
 # Characters glued to a placeholder are the rest of a secret an older kb masked a chunk at a time, or what its key
 # pattern left of the next secret's name, as in "[masked]_key: value": today's patterns take every such character, so
-# they never leave one glued. Such a name keeps its value masked with it.
+# they never leave one glued. Such a name keeps its value masked with it. A "/" right after a placeholder starts a path
+# instead, as an AWS key id's credential scope does, and stays.
 _GLUED_RUN = re.compile(r"\[masked\](?:[A-Za-z0-9_.-]+[ \t]*(?:[:=]|=>)[ \t]*[\"']?" + _VALUE[1:-1]
-                        + r"|[A-Za-z0-9_+/=-]+)")
+                        + r"|[A-Za-z0-9_+=-][A-Za-z0-9_+/=-]*)")
 # How every private key's body starts: DER, a SEQUENCE in long form ("MII...", "MIG...") or in short form before an
 # INTEGER or a SEQUENCE ("MHcC...", "MC4C..."), or OpenSSH's "openssh-key-v1" ("b3Bl...").
 _KEY_BODY_START = r"(?:MI[E-P][A-Za-z0-9+/]|M[A-H][A-Za-z0-9+/][Cw]|b3Bl)"
@@ -325,18 +340,19 @@ def _mask_once(text):
 
 def _sub_named(pattern, masker, text):
     """`text` with each of `pattern`'s matches, a name, a separator and a value, given to `masker`. A match left as it
-    was is read again from its value, which can be the next name, as in "secrets: db_password: <value>"."""
+    was is tried again at its value, which can be the next name, as in "secrets: db_password: <value>"; past that the
+    search goes on after the match, as re.sub's does, so a long value is read once."""
     out, at = [], 0
     m = pattern.search(text)
     while m:
         masked = masker(m)
-        if masked == m.group(0):
-            out.append(text[at:m.start(3)])
-            at = m.start(3)
-        else:
+        if masked != m.group(0):
             out += [text[at:m.start()], masked]
             at = m.end()
-        m = pattern.search(text, at)
+            m = pattern.search(text, at)
+            continue
+        inner = pattern.match(text, m.start(3))
+        m = inner if inner else pattern.search(text, m.end())
     return "".join(out) + text[at:]
 
 
