@@ -521,6 +521,32 @@ class SupersedeMarkTest(TempDB):
             self.assertIsNone(store.superseded_by(db, "s", "old"), "and the mark is moved once")
 
 
+class MarkMoveFailureTest(SupersedeMarkTest):
+    def test_a_move_that_fails_partway_leaves_the_store_as_it_was_and_a_second_move_does_nothing(self):
+        self.main_store()
+        raw = sqlite3.connect(self.path)
+        # A failure after the table is made and the marks are written, as the column is emptied.
+        raw.execute("CREATE TRIGGER fail_move BEFORE UPDATE OF superseded_by ON docs "
+                    "BEGIN SELECT RAISE(ABORT, 'disk full'); END")
+        raw.commit()
+        before = list(raw.iterdump())
+        with self.assertRaises(sqlite3.Error):
+            store.connect(self.path)
+        self.assertEqual(list(raw.iterdump()), before, "the store is as it was")
+        with contextlib.closing(store.connect(self.path, readonly=True)) as db:
+            self.assertEqual(store.superseded_by(db, "s", "old"), ("s", "new"), "and still reads its marks")
+        raw.execute("DROP TRIGGER fail_move")
+        raw.commit()
+        store.connect(self.path).close()
+        moved = list(raw.iterdump())
+        self.assertNotEqual(moved, before)
+        store.connect(self.path).close()
+        self.assertEqual(list(raw.iterdump()), moved, "a second move does nothing")
+        with contextlib.closing(store.connect(self.path, readonly=True)) as db:
+            self.assertEqual(store.superseded_by(db, "s", "old"), ("s", "new"))
+        raw.close()
+
+
 class ExcerptTest(TempDB):
     def test_a_match_after_a_long_run_of_words_stays_in_the_excerpt(self):
         filler = " ".join(f"word{i}" for i in range(300))

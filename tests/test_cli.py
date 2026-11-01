@@ -369,14 +369,66 @@ class OlderStoreTest(TempHome):
         with contextlib.closing(store.connect(self.path)) as db:
             self.assertEqual([r[0] for r in db.execute("SELECT DISTINCT source_id FROM docs")], [f"{self.mine()}:plan.md"])
 
-    def test_an_item_an_older_kb_stored_under_its_hosts_name_is_the_same_item_under_this_installs_id(self):
+    def test_each_old_item_maps_to_the_one_id_this_installs_ingest_writes_for_it(self):
+        import types
         config = config_mod.Config(machine="studio", install="c-aaaaaaaaaaaaa")
-        key = lambda sid: cli._item_key(sid, config)
-        self.assertEqual(key("studio:plan.md"), key("c-aaaaaaaaaaaaa:plan.md"))
-        self.assertEqual(key("desk:Area/plan.md"), key("c-aaaaaaaaaaaaa@desk:Area/plan.md"))
-        for other in ("c-bbbbbbbbbbbbb:plan.md", "desk:plan.md", "c-aaaaaaaaaaaaa@desk:plan.md", "studio:other.md"):
-            with self.subTest(other=other):
-                self.assertNotEqual(key("studio:plan.md"), key(other))
+        source = types.SimpleNamespace(name="notes", hosts=("studio", "desk"))
+        for old, new in (("studio:plan.md", "c-aaaaaaaaaaaaa:plan.md"),  # an older kb's, read here
+                         ("desk:Area/plan.md", "c-aaaaaaaaaaaaa@desk:Area/plan.md"),  # and read over SSH
+                         ("studio:C:/notes/plan.md", "c-aaaaaaaaaaaaa:C:/notes/plan.md"),
+                         ("c-aaaaaaaaaaaaa:plan.md", "c-aaaaaaaaaaaaa:plan.md"),
+                         ("c-aaaaaaaaaaaaa@desk:plan.md", "c-aaaaaaaaaaaaa@desk:plan.md"),
+                         ("laptop:plan.md", None),  # a host the source no longer reads
+                         ("c-bbbbbbbbbbbbb:plan.md", None),  # another install's
+                         ("plan.md", None)):
+            with self.subTest(old=old):
+                self.assertEqual(cli._rebuilt_id(source, old, config), new)
+
+    def test_a_rebuild_stops_when_two_old_items_are_one_item_now(self):
+        # An older kb's copy and this install's, as an ingest after an update without a rebuild leaves them.
+        self.db.execute("INSERT INTO docs(kind, source, source_id, ts, title, content, metadata, masked) VALUES "
+                        "('doc', 'notes', ?, ?, 'plan', 'the pelican plan', '{}', 'older-mask')",
+                        (f"{self.mine()}:plan.md", iso()))
+        self.db.commit()
+        self.db.close()
+        code, out, err = self.run_kb("rebuild")
+        self.assertEqual(code, 1, out)
+        self.assertIn("notes: 2 items", err)
+        code, out, err = self.run_kb("rebuild", "--accept-loss")
+        self.assertEqual(code, 0, err)
+        with contextlib.closing(store.connect(self.path)) as db:
+            self.assertEqual([r[0] for r in db.execute("SELECT source_id FROM docs")], [f"{self.mine()}:plan.md"])
+
+    def test_a_rebuild_says_how_many_supersede_marks_it_drops_and_that_they_cannot_come_back(self):
+        self.db.executemany("INSERT INTO supersedes(source, source_id, marked_by, new_source, new_source_id, at, v) "
+                            "VALUES ('notes', ?, ?, 'notes', 'studio:new.md', '2026-10-01', NULL)",
+                            [("studio:plan.md", self.mine()), ("studio:plan.md", "c-bbbbbbbbbbbbb")])
+        self.db.commit()
+        self.db.close()
+        code, out, err = self.run_kb("rebuild")
+        self.assertEqual(code, 0, err)
+        self.assertIn("kept 1 item", out)
+        self.assertIn("dropped 2 supersede marks (they aren't rebuilt from sources)", out)
+        self.assertIn("the old knowledge base is gone, so they can't come back", out)
+
+    def test_a_rebuild_with_no_marks_names_none(self):
+        self.db.close()
+        code, out, err = self.run_kb("rebuild")
+        self.assertEqual(code, 0, err)
+        self.assertNotIn("supersede", out)
+
+    def test_a_rebuild_counts_the_marks_of_a_store_main_wrote(self):
+        self.db.execute("DROP TABLE supersedes")
+        self.db.execute("ALTER TABLE docs ADD COLUMN superseded_by INTEGER")
+        self.db.execute("INSERT INTO docs(kind, source, source_id, ts, title, content, metadata, masked) VALUES "
+                        "('doc', 'notes', 'studio:new.md', ?, 'new', 'a newer plan', '{}', NULL)", (iso(),))
+        self.db.execute("UPDATE docs SET superseded_by=(SELECT id FROM docs WHERE source_id='studio:new.md') "
+                        "WHERE source_id='studio:plan.md'")
+        self.db.commit()
+        self.db.close()
+        code, out, err = self.run_kb("rebuild", "--accept-loss")
+        self.assertEqual(code, 0, err)
+        self.assertIn("dropped 1 supersede mark (they aren't rebuilt from sources)", out)
 
     def test_reading_commands_refuse_and_name_the_rebuild(self):
         for args in (("search", "pelican"), ("get", 1), ("stats",), ("ingest",)):
