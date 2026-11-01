@@ -131,6 +131,16 @@ class ReadingTest(CodexCase):
                          "TOOL shell: ls -la", "RESULT: all good"):
             self.assertIn(expected, content)
 
+    def test_tool_arguments_written_as_json_show_no_secret(self):
+        # Arguments with no field kb shows are written as JSON, where a line break reads "\\n" and a quote \\".
+        body = 'deploy notes\nghp_' + "A1" * 12 + '\nconfig {"password": "walrus2wolfpack9"}'
+        content = self.write_and_read(conversation() + [
+            rec(3, "response_item", {"type": "function_call", "name": "notes", "arguments": json.dumps({"body": body})})
+        ]).content
+        self.assertNotIn("A1A1A1", content)
+        self.assertNotIn("walrus2wolfpack9", content)
+        self.assertIn('TOOL notes: {"body": "deploy notes\\n[masked]', content)
+
     def test_long_tool_input_and_output_are_clipped(self):
         lines = conversation() + [
             rec(3, "response_item", {"type": "function_call", "name": "exec_command",

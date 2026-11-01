@@ -130,6 +130,18 @@ class ReadingTest(ClaudeCodeCase):
         self.assertNotIn("k" * 400, content)
         self.assertIn(" …", content)
 
+    def test_a_tool_input_written_as_json_shows_no_secret(self):
+        # An input with no field kb shows is written as JSON, where a line break reads "\\n" and a quote \\".
+        records = turns("j", "go")
+        records.insert(1, {"type": "assistant", "message": {"content": [
+            {"type": "tool_use", "name": "mcp__notes__create", "input": {
+                "body": 'deploy notes\nghp_' + "A1" * 12 + '\nconfig {"password": "walrus2wolfpack9"}'}}]}})
+        self.write("p/j.jsonl", records)
+        content = self.items()["j"].content
+        self.assertNotIn("A1A1A1", content)
+        self.assertNotIn("walrus2wolfpack9", content)
+        self.assertIn('TOOL mcp__notes__create: {"body": "deploy notes\\n[masked]', content)
+
     def test_a_line_separator_inside_a_message_is_read_whole(self):
         records = turns("s1", "first\u2028second\x85third", reply="done\u2029for now")
         path = os.path.join(self.root, "-work-app", "s1.jsonl")

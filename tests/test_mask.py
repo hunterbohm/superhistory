@@ -247,6 +247,27 @@ class EscapeTest(unittest.TestCase):
                 self.assertNotIn("walrus", masked)
                 self.assertIn(f"{escape}api_key: [masked]", masked)
 
+    def test_a_percent_encoded_secret_or_one_in_escaped_quotes_is_masked(self):
+        aws, jwt = "AKIA" + "B" * 16, "eyJabcdefghijkl.abcdefghijkl.abcdefghijkl"
+        for text, secret in ((f"key%3D{aws}&x=1", aws), ("q=x%20AIza" + "B" * 35, "B" * 35), (f"%0A{aws}", aws),
+                             (f"Bearer%20{jwt}", jwt), ("Bearer%20walrusbearer2token9", "walrusbearer2token9"),
+                             ("Basic+d2FscnVzOndhbHJ1czJzZWNyZXQ5", "d2FscnVzOndhbHJ1czJzZWNyZXQ5"),
+                             ("password%3Dwalrus2secret9&next=1", "walrus2secret9"),
+                             ("%22password%22%3A%22walrus2secret9%22", "walrus2secret9"),
+                             ('{\\"password\\": \\"walrus2secret9\\"}', "walrus2secret9"),
+                             ('{\\\\\\"api_key\\\\\\": \\\\\\"walrus2secret9\\\\\\"}', "walrus2secret9"),
+                             ("{&quot;password&quot;: &quot;walrus2secret9&quot;}", "walrus2secret9"),
+                             ('{\\"STRIPE_KEY\\": \\"walrus2secret9\\"}', "walrus2secret9"),
+                             ('{\\"cookie\\": \\"sid=walrus2cookie9\\"}', "walrus2cookie9")):
+            with self.subTest(text=text):
+                masked = mask(text)
+                self.assertNotIn(secret, masked)
+                self.assertIn("[masked]", masked)
+        self.assertEqual(mask('{\\"password\\": \\"walrus2secret9\\"}'), '{\\"password\\": \\"[masked]\\"}',
+                         "the escaped quote after a value stays")
+        for text in ("hello%20world%3Dfine", "100%25 done%2C next", "a%2Fb%2Fc.md", "&quot;password&quot; is a word"):
+            self.assertEqual(mask(text), text)
+
     def test_a_password_with_a_backslash_in_it_is_masked_whole(self):
         for password in ("Ab3\\nQz9kLm", "C:\\temp\\walrus9", "pa\\u00e4ss9word"):
             with self.subTest(password=password):
