@@ -216,6 +216,50 @@ class HeadlessKeyTest(unittest.TestCase):
         self.assertLess(time.monotonic() - started, 2)
 
 
+class SyncCodeTest(unittest.TestCase):
+    """The sync client's recovery and pairing codes, in every form its parser reads, and nothing that only looks like
+    one."""
+    TYPED = ("VRC1-0123-4567-89AB-CDEF-GHJK-MNPQ-RSTV-WXYZ", "VP1-0123-4567-89AB-CDEF-GHJK-MNPQ-RW",
+             "vrc1 0123 4567 89ab cdef ghjk mnpq rstv wxyz", "VRC10123456789ABCDEFGHJKMNPQRSTVWXYZ",
+             "V R C 1--0123--4567--89AB--CDEF--GHJK--MNPQ--RSTV--WXYZ", "vrc1-ol23-4567-89ab-cdef-ghjk-mnpq-rstv-wxyz",
+             "VRC1-0\u013123-4567-89AB-CDEF-GHJK-MNPQ-RSTV-WXYZ", "vp1 0123 4567 89ab cdef ghjk mnpq rw",
+             " ".join("VRC10123456789ABCDEFGHJKMNPQRSTVWXYZ"), "VRC1-0123-4567-89AB-CDEF-GHJK-MNPQ-R\u00dfT-WXYZ",
+             "VRC1-0123-4567-89AB-\ufb01VE-GHJK-MNPQ-RSTV-WXYZ", "VRC1-0123-4567-89AB-CDEF-GHJK-MNPQ-R\u017fTV-WXYZ")
+
+    def test_every_typed_form_is_masked(self):
+        for code in self.TYPED:
+            with self.subTest(code=code):
+                self.assertEqual(mask(f"Your code {code} then more"), "Your code [masked] then more")
+
+    def test_codes_of_letters_only_of_later_versions_wrapped_or_cut_are_masked(self):
+        for code in ("VRC1-ABCD-EFGH-JKMN-PQRS-TVWX-YZAB-CDEF-GHJK", "VP1-WXYZ-ABCD-EFGH-JKMN-PQRS-TV",
+                     "VRC2-0123-4567-89AB-CDEF-GHJK-MNPQ-RSTV-WXYZ", "VP9-0123-4567-89AB-CDEF-GHJK-MNPQ-RW",
+                     "VRC1-0123-4567-89AB-CDEF-\nGHJK-MNPQ-RSTV-WXYZ", "VRC1-0123-4567-89AB-CDEF-\\r\\nGHJK-MNPQ-RSTV-WXYZ",
+                     "VRC1-0123-4567-89AB-CDEF-GHJK", "VP1-0123-4567-89AB-CDEF-GHJK"):
+            with self.subTest(code=code):
+                self.assertEqual(mask(f"Your code {code}, then more"), "Your code [masked], then more")
+
+    def test_prose_and_look_alikes_stay(self):
+        for text in ("VP1 sales meeting at noon", "vp1 office laptop for travel", "VRC1 plan: done", "the VP1 role starts",
+                     "VRC1-style codes", "VP2 of sales", "sign in with WDJB-MJHT", "install c-abcdefghijklm",
+                     "123e4567-e89b-12d3-a456-426614174000", "forward to m-0a1b2c-3d4e5f@in.example.com",
+                     "age1qyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqs3290gq",
+                     "VRC1_0123_4567_89AB_CDEF_GHJK_MNPQ", "VRC1\t0123\t4567\t89AB\t0123\t4567\tMNPQ",
+                     "VRC1-0123-4567-UVWX-CDEF-GHJK-MNPQ"):
+            with self.subTest(text=text):
+                self.assertEqual(mask(text), text)
+
+    def test_a_code_inside_a_token_or_after_a_name_leaves_nothing(self):
+        self.assertEqual(mask("sk-ant-api03-ab-VP1" + "A" * 30), "[masked]")
+        self.assertEqual(mask("passcode: VP1 0123 4567 89AB CDEF GHJK MNPQ RW"), "passcode: [masked]")
+        self.assertEqual(mask("secret=ab-VP1-0123-4567-89AB-CDEF-GHJK-MNPQ-RW x"), "secret=[masked] x")
+        self.assertEqual(mask("api_key=prefix-sk-ant-api03-" + "Z" * 24), "api_key=[masked]")
+
+    def test_an_id_with_a_code_counts(self):
+        self.assertTrue(secret_in_id("VRC1-0123-4567-89AB-CDEF-GHJK-MNPQ-RSTV-WXYZ.md"))
+        self.assertFalse(secret_in_id("VP1 sales meeting.md"))
+
+
 class InvisibleTest(unittest.TestCase):
     """A secret split by characters a reader does not see reads whole, so it is masked; the rest of the text keeps them."""
     INVISIBLE = ("\u200b", "\u200c", "\u200d", "\u2060", "\u00ad", "\ufeff", "\u200e", "\u202e", "\u2066",
@@ -350,7 +394,7 @@ class LinearTimeTest(unittest.TestCase):
     time, where a pattern that reads on from every character would take some two hundred and fifty."""
     RUNS = ("0123456789abcdef", "token", "abcdefghij", "ABCDEFGHIJ", "QUJDRGVm+/9z", "a:", "password=", "a_pw ",
             "set-cookie", "a.", "token.", "x-", "token ", "_KEY_", "curl -u a:", "-----BEGIN ", "[masked]A",
-            "a\u200b", "ghp_\u200b" + "A1" * 12 + " ")
+            "a\u200b", "ghp_\u200b" + "A1" * 12 + " ", "vp1 abcd ", "V R C 1 ", "VRC1-0123-")
     SIZES = (1 << 16, 1 << 20)
 
     def test_every_shape_is_linear_up_to_a_megabyte(self):
