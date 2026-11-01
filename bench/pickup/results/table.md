@@ -1,10 +1,10 @@
 | Setup | Per month | Answer within reach, of 131 | Right from what it collects | Right when handed everything |
 |---|---|---|---|---|
 | The check | $0 | 131 | 122 | 122 |
-| Supermemory, Max plan, notes kept in Notion | $100 | 88 | 80 | 122 |
-| Supermemory, free plan | $0 | 13 | 11 | 122 |
-| Mem0, free plan with its agent plugins | $0 | 13 | 10 | 103 |
-| claude-mem | $0 | 13 | 8 | 19 |
+| Supermemory, self-hosted run, with the sources its Max plan lists, notes kept in Notion (hosted plan not tested) | $100 | 88 | 79 | 121 |
+| Supermemory, self-hosted run, with the sources its free plan lists (hosted plan not tested) | $0 | 13 | 11 | 121 |
+| Mem0, self-hosted run, with the sources its free plan's agent plugins list (hosted plan not tested) | $0 | 13 | 10 | 102 |
+| claude-mem, self-hosted run, with the sources its README lists (its plugins not tested live) | $0 | 13 | 8 | 19 |
 
 Questions whose evidence needs each source. A question can need more than one.
 

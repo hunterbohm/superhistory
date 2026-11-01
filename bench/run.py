@@ -2,6 +2,7 @@
 """Run tools on the made-up month, then print the table.
 
     python3 bench/run.py month [--tools none,oracle,check,check-cards] [--limit N] [--fresh]
+    python3 bench/run.py month --month a|b --label NAME --tools check   # a split run: month A is dev, B is test
     python3 bench/run.py table [DIR]
 
 Each tool loads demo/month/items.jsonl into a fresh store. Each question goes through the tool's lookup as a new
@@ -27,11 +28,14 @@ sys.path.insert(0, HERE)
 
 import gateway
 import product
+import splits
 import tools
 
 ROOT = os.path.dirname(HERE)
-MONTH = os.path.join(ROOT, "demo", "month")
+MONTHS = {"a": os.path.join(ROOT, "demo", "month"), "b": os.path.join(HERE, "month-b")}
+MONTH = MONTHS["a"]
 RESULTS = os.path.join(HERE, "results", "month")
+SPLIT_RESULTS = os.path.join(HERE, "results", "hillclimb", "month")
 ANSWER_MODEL = "claude-sonnet-5-5"
 JUDGE_MODEL = "gpt-6.1-sol"
 MAX_TOOL_TURNS = 8
@@ -115,7 +119,8 @@ def answer(tool, question, context, system):
         results = []
         for use in uses:
             out, ids = tool.call(use["name"], use.get("input") or {})
-            calls.append({"name": use["name"], "input": use.get("input")})
+            calls.append({"name": use["name"], "input": use.get("input"),
+                          "tokens": gateway.count_tokens(ANSWER_MODEL, out)})
             shown += [i for i in ids if i not in shown]
             printed.append(out)
             results.append({"type": "tool_result", "tool_use_id": use["id"], "content": out})
@@ -126,16 +131,17 @@ def answer(tool, question, context, system):
 
 
 def run_one(tool, q, setup):
+    gateway.check_limited()
     found = tool.retrieve(q)
     text, calls, shown, printed = answer(tool, q["question"], found.context, setup.system)
     verdict = grade(setup, q, text)
     return {"id": q["id"], "kind": q["kind"], "question": q["question"], "gold": q["answer"],
             "evidence": q["evidence"], "context": found.context, "context_items": found.items, "query": found.query,
             "lookup_seconds": round(found.seconds, 3), "lookup_error": found.error,
-            "lookup_model_tokens": found.model_tokens,
+            "lookup_model_tokens": found.model_tokens, "lookup_model_detail": found.model_detail,
             "context_tokens": gateway.count_tokens(ANSWER_MODEL, found.context),
             "tool_calls": calls, "read_items": shown,
-            "tool_tokens": sum(gateway.count_tokens(ANSWER_MODEL, t) for t in printed),
+            "tool_tokens": sum(c["tokens"] for c in calls),
             "answer": text, "correct": bool(verdict.get("correct")), "judge_reason": verdict.get("reason")}
 
 
@@ -166,59 +172,123 @@ def run_tool(name, tool, stats, questions, out, workers, fresh, setup):
     return {"tool": name, "load": stats, "ran": len(todo) - failures, "failed": failures}
 
 
-def rejudge(out, questions, setup, workers, second=None):
-    """Grade every tool's saved answers again, taking each question's current gold answer and evidence. With
-    `second`, keep the saved verdicts and write both verdicts for every row to that file instead."""
+def rejudge(out, questions, setup, workers, why, second=None, only=None):
+    """Grade the tools' saved answers again, taking each question's current gold answer and evidence, and record
+    each regraded row's earlier verdict under `why`. With `only`, just those question ids; every other verdict stays.
+    With `second`, keep the saved verdicts and write both verdicts per row to that file instead. A rate limit stops
+    new grading; every verdict already in is saved, and running the same command again grades only the rest.
+    Returns the RateLimited that stopped it, or None."""
     by_id = {q["id"]: q for q in questions}
-    pairs = []
+    pairs = read_jsonl(second) if second and os.path.exists(second) else []
+    paired = {(p["tool"], p["id"]) for p in pairs if p.get("regraded") == why}
+    stopped = None
+
+    def judged(row):
+        gateway.check_limited()
+        return grade(setup, by_id[row["id"]], row["answer"])
+
     for name in sorted(f for f in os.listdir(out) if f.endswith(".jsonl") and f[:-6] in tools.REGISTRY):
+        tool = name[:-6]
         rows = read_jsonl(os.path.join(out, name))
+        done = paired if second else {(tool, r["id"]) for r in rows if (r.get("regraded") or {}).get("why") == why}
+        todo = [r for r in rows if (only is None or r["id"] in only) and (tool, r["id"]) not in done]
+        verdicts = {}
         with ThreadPoolExecutor(workers) as pool:
-            verdicts = list(pool.map(lambda r: grade(setup, by_id[r["id"]], r["answer"]), rows))
+            futures = {pool.submit(judged, r): r for r in todo}
+            for future in as_completed(futures):
+                try:
+                    verdicts[futures[future]["id"]] = future.result()
+                except gateway.RateLimited as exc:
+                    stopped = exc
+        graded = [r for r in todo if r["id"] in verdicts]
         if second:
-            pairs += [{"tool": name[:-6], "id": r["id"], "first": r["correct"], "second": bool(v.get("correct")),
-                       "second_reason": v.get("reason")} for r, v in zip(rows, verdicts)]
+            pairs = [p for p in pairs if (p["tool"], p["id"]) not in {(tool, r["id"]) for r in graded}]
+            pairs += [{"tool": tool, "id": r["id"], "first": r["correct"], "second": bool(verdicts[r["id"]].get("correct")),
+                       "second_reason": verdicts[r["id"]].get("reason"), "regraded": why} for r in graded]
             continue
-        for row, verdict in zip(rows, verdicts):
-            q = by_id[row["id"]]
+        before = summarize(rows) if rows else {}
+        for row in graded:
+            q, verdict = by_id[row["id"]], verdicts[row["id"]]
+            row["regraded"] = {"why": why, "correct_before": row["correct"], "gold_before": row["gold"]}
             row.update(question=q["question"], gold=q["answer"], evidence=q["evidence"],
                        correct=bool(verdict.get("correct")), judge_reason=verdict.get("reason"))
         with open(os.path.join(out, name), "w", encoding="utf-8") as fh:
             fh.writelines(json.dumps(r, ensure_ascii=False) + "\n" for r in rows)
+        if graded:
+            log_regrade(out, name, graded, before, summarize(rows), why)
         print(f"{name}: {sum(r['correct'] for r in rows)}/{len(rows)} correct", file=sys.stderr)
     if second:
+        pairs.sort(key=lambda p: (p["tool"], p["id"]))
         with open(second, "w", encoding="utf-8") as fh:
             fh.writelines(json.dumps(p, ensure_ascii=False) + "\n" for p in pairs)
         agree = sum(p["first"] == p["second"] for p in pairs)
         print(f"second grading agrees on {agree} of {len(pairs)} rows", file=sys.stderr)
+    return stopped
+
+
+REGRADES = os.path.join(HERE, "results", "regrades.tsv")
+
+
+def log_regrade(out, name, rows, before, after, why):
+    """One line per run and tool: which questions were graded again, and the run's numbers before and after."""
+    new = not os.path.exists(REGRADES)
+    with open(REGRADES, "a", encoding="utf-8") as fh:
+        if new:
+            fh.write("date\twhy\trun\ttool\tquestions\tflipped\thandled right before\thandled right after\t"
+                     "accuracy before\taccuracy after\n")
+        flipped = sorted(r["id"] for r in rows if r["regraded"]["correct_before"] != r["correct"])
+        fh.write("\t".join([datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"), why or "",
+                            os.path.relpath(out, HERE), name[:-6], ",".join(sorted(r["id"] for r in rows)),
+                            ",".join(flipped), before.get("handled right", ""), after["handled right"],
+                            before.get("accuracy", ""), after["accuracy"]]) + "\n")
 
 
 def latency(args):
-    """Lookups only, with no answers or grading running beside them, so the times are not inflated by other work."""
+    """Lookups only, with no answers or grading running beside them, so the times are not inflated by other work.
+    Each lookup's row is written as it ends; running the same command again times only the lookups with no row,
+    unless --fresh."""
     items = read_jsonl(os.path.join(MONTH, "items.jsonl"))
     questions = read_jsonl(os.path.join(MONTH, "questions.jsonl"))[::max(1, 171 // args.questions)][:args.questions]
-    rows = []
-    with tempfile.TemporaryDirectory(prefix="bench-latency-") as workdir:
-        loaded = {name: tools.make(name) for name in args.tools.split(",")}
+    path = os.path.join(args.out, "latency.jsonl")
+    if args.fresh and os.path.exists(path):
+        os.remove(path)
+    done = {(r["tool"], r["round"], r["id"]) for r in read_jsonl(path)} if os.path.exists(path) else set()
+    names = args.tools.split(",")
+    with tempfile.TemporaryDirectory(prefix="bench-latency-") as workdir, open(path, "a", encoding="utf-8") as fh:
+        loaded = {name: tools.make(name) for name in names}
         for tool in loaded.values():
             tool.load(items, workdir)
         for n in range(args.rounds):
             for q in questions:
                 for name, tool in loaded.items():
+                    if (name, n + 1, q["id"]) in done:
+                        continue
+                    gateway.check_limited()
                     found = tool.retrieve(q)
-                    rows.append({"tool": name, "round": n + 1, "id": q["id"], "seconds": round(found.seconds, 3),
-                                 "error": found.error, "added": bool(found.context)})
-    path = os.path.join(args.out, "latency.jsonl")
-    with open(path, "w", encoding="utf-8") as fh:
-        fh.writelines(json.dumps(r) + "\n" for r in rows)
+                    fh.write(json.dumps({"tool": name, "round": n + 1, "id": q["id"], "seconds": round(found.seconds, 3),
+                                         "error": found.error, "added": bool(found.context)}) + "\n")
+                    fh.flush()
+    rows = read_jsonl(path)
     for name in loaded:
         times = sorted(r["seconds"] for r in rows if r["tool"] == name)
         print(f"{name}: {len(times)} lookups, p50 {times[len(times) // 2]:.2f} s, p90 {times[int(len(times) * 0.9)]:.2f} s, "
               f"range {times[0]:.2f} to {times[-1]:.2f} s, {sum(bool(r['error']) for r in rows if r['tool'] == name)} errors")
 
 
+def git_head():
+    """This checkout's commit, marked when the package has uncommitted changes."""
+    head = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True, cwd=ROOT).stdout.strip()
+    dirty = subprocess.run(["git", "diff", "--quiet", "HEAD", "--", "kb"], cwd=ROOT).returncode
+    return head + ("+uncommitted" if dirty else "")
+
+
 def pct(part, whole):
     return f"{100 * part / whole:.1f}%" if whole else "n/a"
+
+
+def handled(row):
+    """Right for the user: a correct answer, and for a question nothing fits, a lookup that also added nothing."""
+    return row["correct"] and (row["kind"] != "none" or not row["context"])
 
 
 def summarize(rows):
@@ -229,12 +299,14 @@ def summarize(rows):
     found = sum(bool(set(r["evidence"]) & set((r["context_items"] or []) + r["read_items"])) for r in known)
     return {
         "questions": len(rows),
+        "handled right": pct(sum(map(handled, rows)), len(rows)),
         "accuracy": pct(sum(r["correct"] for r in rows), len(rows)),
         "answerable": pct(sum(r["correct"] for r in answerable), len(answerable)),
         "nothing fits": pct(sum(r["correct"] for r in none), len(none)),
         "added nothing when nothing fits": pct(sum(not r["context"] for r in none), len(none)),
         "evidence reached": pct(found, len(known)) if known else "n/a",
         "tokens added per question": round(statistics.mean(r["context_tokens"] + r["tool_tokens"] for r in rows)),
+        "check model tokens per question": round(statistics.mean(r["lookup_model_tokens"] for r in rows)),
         "lookup p50 s": f"{timed[len(timed) // 2]:.2f}" if timed else "0",
         "lookup p90 s": f"{timed[int(len(timed) * 0.9)]:.2f}" if timed else "0",
         "lookup errors": sum(bool(r["lookup_error"]) for r in rows),
@@ -278,9 +350,12 @@ def main(argv=None):
     m = sub.add_parser("month")
     m.add_argument("--tools", default=",".join(DEFAULT_TOOLS))
     m.add_argument("--limit", type=int, help="run only the first N questions")
-    m.add_argument("--workers", type=int, default=4)
+    m.add_argument("--workers", type=int, default=1)
     m.add_argument("--out", default=RESULTS)
     m.add_argument("--fresh", action="store_true", help="drop earlier rows and rerun every question")
+    m.add_argument("--month", choices=sorted(MONTHS), default="a", help="a is the dev month, b the held-out one")
+    m.add_argument("--label", help="a split run, written to results/hillclimb/month/<month>-<label>; month B "
+                                   "takes " + ", ".join(splits.RUNS))
     t = sub.add_parser("table")
     t.add_argument("out", nargs="?", default=RESULTS)
     lt = sub.add_parser("latency", help="time lookups alone, one at a time, alternating between tools")
@@ -288,10 +363,14 @@ def main(argv=None):
     lt.add_argument("--questions", type=int, default=40)
     lt.add_argument("--rounds", type=int, default=2)
     lt.add_argument("--out", default=RESULTS)
+    lt.add_argument("--fresh", action="store_true", help="drop the rows already timed and start over")
     rj = sub.add_parser("rejudge", help="grade the month's saved answers again with the current gold and judge")
     rj.add_argument("out", nargs="?", default=RESULTS)
-    rj.add_argument("--workers", type=int, default=6)
+    rj.add_argument("--workers", type=int, default=2)
     rj.add_argument("--second", help="keep the saved verdicts; write both verdicts for every row to this file")
+    rj.add_argument("--month", choices=sorted(MONTHS), default="a")
+    rj.add_argument("--only", help="comma-separated question ids to grade again; every other verdict stays")
+    rj.add_argument("--why", help="the reason, logged with each regrade")
     lv = sub.add_parser("live", help="ask questions of an existing knowledge base, read-only")
     lv.add_argument("--db", required=True, help="the kb.sqlite to read")
     lv.add_argument("--questions", required=True)
@@ -306,17 +385,27 @@ def main(argv=None):
         print(table(args.out))
         return 0
     if args.cmd == "latency":
-        latency(args)
+        try:
+            latency(args)
+        except gateway.RateLimited as exc:
+            print(exc, file=sys.stderr)
+            return 1
         return 0
     if args.cmd == "rejudge":
-        rejudge(args.out, read_jsonl(os.path.join(MONTH, "questions.jsonl")), MONTH_SETUP, args.workers, args.second)
+        if not args.why:
+            raise SystemExit("rejudge takes --why, the reason the log records; the same --why resumes a stopped pass")
+        only = set(args.only.split(",")) if args.only else None
+        stopped = rejudge(args.out, read_jsonl(os.path.join(MONTHS[args.month], "questions.jsonl")), MONTH_SETUP,
+                          args.workers, args.why, args.second, only)
+        if stopped:
+            print(stopped, file=sys.stderr)
+            return 1
         print(table(args.out))
         return 0
     os.makedirs(args.out, exist_ok=True)
     ran = []
     if args.cmd == "live":
         from tools import check
-        check.PRODUCT_WORDING = False
         if args.hide:
             with open(args.hide, encoding="utf-8") as fh:
                 check.HIDE.extend(line.strip() for line in fh if line.strip())
@@ -325,13 +414,27 @@ def main(argv=None):
         setup = Setup(LIVE_SYSTEM.format(today=today), args.judge, f"- The agent was told today is {today}.")
         for name in args.tools.split(","):
             tool = tools.make(name)
-            tool.store = check.Store(args.db)
+            tool.store = check.Store.at(args.db)
             ran.append(run_tool(name, tool, {"db": "existing, read-only"}, questions, args.out, args.workers,
                                 args.fresh, setup))
         source = {"questions": os.path.basename(args.questions), "hidden_fragments": len(check.HIDE)}
     else:
-        items = read_jsonl(os.path.join(MONTH, "items.jsonl"))
-        questions = read_jsonl(os.path.join(MONTH, "questions.jsonl"))[:args.limit]
+        month = MONTHS[args.month]
+        if args.label and args.out == RESULTS:
+            args.out = os.path.join(SPLIT_RESULTS, f"{args.month}-{args.label}")
+        elif args.month == "b" or args.label:
+            raise SystemExit("a split run takes --label and writes to its own folder; leave out --out")
+        os.makedirs(args.out, exist_ok=True)
+        if args.month == "b":
+            if args.limit or args.fresh:
+                raise SystemExit("a held-out run takes the whole month and cannot start over; rerunning its label "
+                                 "fills in only the questions with no row")
+            if args.tools != "check":
+                raise SystemExit("a held-out month run measures the check alone: pass --tools check")
+            from tools import check
+            splits.held_out_run("month", args.label, check.code_id(), git_head(), f"b-{args.label}:check")
+        items = read_jsonl(os.path.join(month, "items.jsonl"))
+        questions = read_jsonl(os.path.join(month, "questions.jsonl"))[:args.limit]
         setup = MONTH_SETUP
         with tempfile.TemporaryDirectory(prefix="bench-month-") as workdir:
             for name in args.tools.split(","):
@@ -340,8 +443,9 @@ def main(argv=None):
                 stats = tool.load(items, workdir)
                 print(f"{name}: loaded in {time.monotonic() - started:.0f}s {json.dumps(stats)}", file=sys.stderr)
                 ran.append(run_tool(name, tool, stats, questions, args.out, args.workers, args.fresh, setup))
-        source = {"month": subprocess.run(["git", "log", "-1", "--format=%H", "--", MONTH], capture_output=True,
-                                          text=True, cwd=ROOT).stdout.strip()}
+        source = {"month": args.month, "month_commit": subprocess.run(
+            ["git", "log", "-1", "--format=%H", "--", month], capture_output=True, text=True, cwd=ROOT).stdout.strip(),
+            "check_commit": git_head()}
     meta_path = os.path.join(args.out, "run.json")
     earlier = json.load(open(meta_path)).get("tools", []) if os.path.exists(meta_path) else []
     names = {t["tool"] for t in ran}

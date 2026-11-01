@@ -235,7 +235,8 @@ Published at /work/fernbrook with Dana's OK.""",
           evidence_has=("$1,920", "$3,250", "$2,800", "$2,880")),
         Q("st-20", "multi", "What client dates do I have in the first half of October?",
           "Copperline phase 1 demo Friday Oct 2 at 10am; Copperline phase 2 starts Oct 5; the Tech Night talk "
-          "Thursday Oct 8 at 6:30pm; Quill & Ledger starts Monday Oct 12; Harbor Lane goes live Tuesday Oct 13.",
+          "Thursday Oct 8 at 6:30pm; Quill & Ledger starts Monday Oct 12; Harbor Lane staff training Monday Oct "
+          "12; Harbor Lane goes live Tuesday Oct 13.",
           ("cop-demo-move", "cop-phase2-quote", "st-talk", "ql-scope-cut", "har-golive"),
           evidence_has=("October 2", "October 5", "October 8", "October 12", "October 13")),
     )

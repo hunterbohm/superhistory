@@ -39,7 +39,7 @@ from urllib.parse import parse_qs, quote, urlencode, urlparse
 
 from kb import ai, mask
 from kb.config import Secret
-from kb.sources import Gone, Item, Progress, SourceType
+from kb.sources import SPACE, Gone, Item, Progress, SourceType
 
 # UIDs are 32-bit, so a mark of UIDVALIDITY * 2**32 + UID keeps both and still compares in order.
 UID_SPAN = 2 ** 32
@@ -87,10 +87,11 @@ Answer with JSON only, in this form: {{"keep": [1, 4, 7]}}. List the numbers of 
 TAG = re.compile(r"<[^>]+>")
 HTMLISH = re.compile(r"(?i)<(?:html|body|div|p|br|table|span|a)\b")
 ENTITY = re.compile(r"&(?:nbsp|amp|lt|gt|quot|#\d+|#x[0-9a-f]+);", re.I)
-WROTE = re.compile(r"(?i)^\s*On .{5,200}wrote:\s*$")
-ORIGINAL = re.compile(r"(?i)^\s*-{3,}\s*Original Message\s*-{3,}\s*$")
-OUTLOOK_HEAD = re.compile(r"(?i)^\s*From:\s.+")
-SIG_DELIM = re.compile(r"^--\s?$")
+# Each of these matches within one line, so its spaces are SPACE: \s would also match U+2028 inside a line.
+WROTE = re.compile(rf"(?i)^{SPACE}*On .{{5,200}}wrote:{SPACE}*$")
+ORIGINAL = re.compile(rf"(?i)^{SPACE}*-{{3,}}{SPACE}*Original Message{SPACE}*-{{3,}}{SPACE}*$")
+OUTLOOK_HEAD = re.compile(rf"(?i)^{SPACE}*From:{SPACE}.+")
+SIG_DELIM = re.compile(rf"^--{SPACE}?$")
 LEGAL = re.compile(
     r"(?i)(this (?:e-?mail|message|communication)[^.\n]{0,80}(?:confidential|privileged|intended (?:only )?for)|"
     r"if you (?:are not|have received this)[^.\n]{0,60}(?:intended recipient|in error)|"
@@ -206,7 +207,8 @@ def _sign_in(options):
 
 def _reason(exc):
     text = exc.args[0] if exc.args else ""
-    return (text.decode(errors="replace") if isinstance(text, bytes) else str(text))[:200]
+    # Masked whole before it is cut, so a cut cannot leave the start of a token too short to mask.
+    return mask.mask(text.decode(errors="replace") if isinstance(text, bytes) else str(text))[:200]
 
 
 def _token_request(form):
@@ -224,6 +226,8 @@ def _token_request(form):
             "client_secret, and sign in again for a new refresh token if it was revoked or expired.") from None
     except urllib.error.URLError as exc:
         raise RuntimeError(mask.mask(f"cannot reach {TOKEN_URL}: {exc.reason}")) from None
+    except Exception as exc:
+        raise RuntimeError(mask.mask(f"the token request to {TOKEN_URL} failed: {type(exc).__name__}: {exc}")) from None
 
 
 def oauth_login(client_id, client_secret, open_browser=webbrowser.open, timeout=300):
@@ -280,7 +284,7 @@ def oauth_login(client_id, client_secret, open_browser=webbrowser.open, timeout=
 def _ok(answer):
     status, data = answer
     if status != "OK":
-        raise RuntimeError(mask.mask(f"IMAP answered {status}: {data!r:.200}"))
+        raise RuntimeError(f"IMAP answered {mask.mask(str(status))}: " + repr(mask.mask_all(_decoded(data)))[:200])
     return data
 
 
@@ -315,13 +319,29 @@ def _open_all_mail(conn):
         _, data = conn.response(code)
         if not data or data[0] is None:
             raise RuntimeError(f"Gmail did not report {code} for All Mail")
-        numbers.append(int(data[0]))
+        numbers.append(_number(data[0], code))
     return numbers[0], numbers[1] - 1
 
 
 def _search(conn, criteria):
     data = _ok(conn.uid("SEARCH", criteria))
-    return [int(n) for n in b" ".join(d for d in data if d).split()]
+    return [_number(n, "a UID") for n in b" ".join(d for d in data if d).split()]
+
+
+def _number(value, what):
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        raise RuntimeError(f"Gmail sent {what} that is not a number: " + repr(mask.mask_all(_decoded(value)))[:80]) from None
+
+
+def _decoded(data):
+    """IMAP's answer as text, so it is masked before repr() escapes its line breaks."""
+    if isinstance(data, bytes):
+        return data.decode("utf-8", "replace")
+    if isinstance(data, (list, tuple)):
+        return [_decoded(d) for d in data]
+    return data
 
 
 def _list(conn, since, window_days):
@@ -403,7 +423,7 @@ def _epoch(head):
 
 
 def _one_line(text):
-    return " ".join(str(text or "").split())
+    return " ".join(mask.mask(str(text or "")).split())  # masked first: joining would break a secret in two
 
 
 def _header(msg, name):
@@ -473,7 +493,10 @@ def _text(part):
 
 
 def _body_and_attachments(msg):
-    body = _text(msg.get_body(("plain",))).strip() or _text(msg.get_body(("html",)))
+    # The plain body is used as it came; only whether it holds anything is judged, by SPACE and line breaks, so a
+    # leading U+2028 stays and _clean_body still sees "> 5" as the middle of a line, not a quote.
+    plain = _text(msg.get_body(("plain",)))
+    body = plain if re.sub(rf"(?:{SPACE}|[\r\n])+", "", plain) else _text(msg.get_body(("html",)))
     names = []
     for part in msg.iter_attachments():
         name = part.get_filename()
@@ -482,36 +505,48 @@ def _body_and_attachments(msg):
     return body, names
 
 
+def _lstrip(text):
+    return re.sub(rf"^{SPACE}+", "", text)
+
+
+def _rstrip(text):
+    return re.sub(rf"{SPACE}+\Z", "", text)
+
+
 def _clean_body(body):
+    """The mail's own text, without quoted replies, forwarded originals and signatures. Every marker is found within
+    one line and trimmed of SPACE only: str.strip() would also take a U+2028 and turn "--\u2028" into "--"."""
     if HTMLISH.search(body):
-        body = re.sub(r"(?is)<(script|style).*?</\1>", " ", body)
-        body = re.sub(r"(?i)<br\s*/?>|</p>|</div>", "\n", body)
+        # A tag name ends where HTML ends one, at ASCII whitespace, "/" or ">"; "<script\u2028>" is another tag.
+        body = re.sub(r"(?is)<(script|style)(?=[ \t\r\n\f/>]).*?</\1[ \t\r\n\f]*>", " ", body)
+        body = re.sub(r"(?i)<br[ \t\r\n\f]*/?>|</p>|</div>", "\n", body)  # HTML's own whitespace, not \s
         body = TAG.sub(" ", body)
     if ENTITY.search(body):
         body = unescape(body).replace("\xa0", " ")
-    lines = body.splitlines()
+    # Mail breaks lines at CRLF; splitlines() would also break at U+2028, and a "> 5" after one would look quoted.
+    lines = body.replace("\r\n", "\n").replace("\r", "\n").split("\n")
     out = []
     i = 0
     while i < len(lines):
         line = lines[i]
         head = line
-        if re.match(r"(?i)^\s*On\b", line) and "wrote:" not in line and i + 1 < len(lines):
-            head = line.rstrip() + " " + lines[i + 1].strip()
+        if re.match(rf"(?i)^{SPACE}*On\b", line) and "wrote:" not in line and i + 1 < len(lines):
+            head = _rstrip(line) + " " + _lstrip(_rstrip(lines[i + 1]))
         if WROTE.match(head):
-            rest = [x for x in lines[i + (2 if head is not line else 1):] if x.strip()]
-            if rest and rest[0].lstrip().startswith(">"):
+            rest = [x for x in lines[i + (2 if head is not line else 1):] if _lstrip(x)]
+            if rest and _lstrip(rest[0]).startswith(">"):
                 i += 2 if head is not line else 1
                 continue
             break
         if ORIGINAL.match(line):
             break
         if OUTLOOK_HEAD.match(line) and i + 3 < len(lines) and any(
-                re.match(r"(?i)^\s*(?:Sent|Date):\s", x) for x in lines[i + 1:i + 4]):
+                re.match(rf"(?i)^{SPACE}*(?:Sent|Date):{SPACE}", x) for x in lines[i + 1:i + 4]):
             break
-        if line.lstrip().startswith(">"):
+        if _lstrip(line).startswith(">"):
             i += 1
             continue
-        out.append(line.rstrip())
+        out.append(_rstrip(line))
         i += 1
     for n, line in enumerate(out):
         if SIG_DELIM.match(line) and len(out) - n <= 15:
@@ -522,10 +557,10 @@ def _clean_body(body):
             out = out[:n]
             break
     text = "\n".join(out)
-    text = LONG_URL.sub(lambda m: m.group(0)[:60] + "…", text)
+    text = LONG_URL.sub(lambda m: mask.mask(m.group(0))[:60] + "…", text)
     text = re.sub(r"[ \t]+\n", "\n", text)
-    text = re.sub(r"\n{3,}", "\n\n", text).strip()
-    return text if len(text) <= BODY_CHARS else text[:BODY_CHARS] + " …"
+    text = re.sub(rf"^(?:{SPACE}|\n)+|(?:{SPACE}|\n)+\Z", "", re.sub(r"\n{3,}", "\n\n", text))
+    return mask.clip(text, BODY_CHARS)
 
 
 def render_thread(account, thread_id, messages, mark=0):

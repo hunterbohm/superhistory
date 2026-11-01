@@ -9,9 +9,10 @@ import re
 import subprocess
 import sys
 import tempfile
+import traceback
 
 import kb
-from kb.mask import mask
+from kb.mask import holds_secret, id_names, mask, mask_all, secret_in_id
 from kb.sources import Gone, Item, Progress
 
 # What ssh prints when the computer is off the network, as when a laptop sleeps. A refused login is a fault.
@@ -61,12 +62,14 @@ def package_sources():
 
 
 def script(request):
-    return (f"SOURCES = {package_sources()!r}\nREQUEST = {request!r}\n{BOOTSTRAP}").encode("utf-8")
+    # ascii(), not repr(): the far side reads this from stdin, where Python 3.9 on macOS refuses a non-ASCII byte.
+    return (f"SOURCES = {ascii(package_sources())}\nREQUEST = {ascii(request)}\n{BOOTSTRAP}").encode("ascii")
 
 
 def encode(event):
     if isinstance(event, Item):
-        return json.dumps(event._asdict())
+        return json.dumps({**event._asdict(), "ts": mask(str(event.ts)), "title": mask(event.title),
+                           "content": mask(event.content), "meta": mask_all(event.meta)})
     if isinstance(event, Gone):
         return json.dumps({"source_id": event.source_id, "delete": True, "mark": event.mark})
     return json.dumps({"mark": event.mark})
@@ -76,7 +79,7 @@ def decode(line):
     """An event from one line a remote run printed. Raises ValueError on anything else."""
     data = json.loads(line)
     if not isinstance(data, dict) or "mark" not in data:
-        raise ValueError(mask(f"not an event: {line[:200]!r}"))
+        raise ValueError("not an event: " + repr(mask_all(data))[:200])
     if set(data) == {"mark"}:
         return Progress(data["mark"])
     if data.get("delete") is True and isinstance(data.get("source_id"), str):
@@ -84,11 +87,20 @@ def decode(line):
     try:
         return Item(**data)
     except TypeError:
-        raise ValueError(mask(f"not an event: {line[:200]!r}")) from None
+        raise ValueError("not an event: " + repr(mask_all(data))[:200]) from None
 
 
 def serve(request):
-    """The far side: run one source with the request's options and print its events or ids, one JSON line each."""
+    """The far side: run one source with the request's options and print its events or ids, one JSON line each. A
+    failure prints a masked traceback, because the reading side quotes this computer's stderr."""
+    try:
+        return _serve(request)
+    except Exception:
+        sys.stderr.write(mask(traceback.format_exc()))
+        return 1
+
+
+def _serve(request):
     if sys.version_info < (3, 9):
         sys.stderr.write("kb needs Python 3.9 or newer on this computer\n")
         return 3
@@ -96,18 +108,21 @@ def serve(request):
     from kb.sources import Excludes, Run
     kind = importlib.import_module(f"kb.sources.{request['type']}").TYPE
     if sys.platform not in kind.platforms:
-        sys.stderr.write(f"the {request['type']} source runs only on {', '.join(sorted(kind.platforms))}\n")
+        sys.stderr.write(mask(f"the {request['type']} source runs only on {', '.join(sorted(kind.platforms))}\n"))
         return 3
     problems = []
     options = config.options_from(kind.Options, request["options"], "options", problems)
     if problems:
-        sys.stderr.write("\n".join(problems) + "\n")
+        sys.stderr.write(mask("\n".join(problems)) + "\n")
         return 3
     run = Run(options, Excludes(request["exclude"]), request["since"])
+    # Items whose id looks like a secret never leave this computer; the reading side would not store them either.
     if request["verb"] == "live_ids":
-        lines = (json.dumps(sid) for sid in kind.live_ids(run))
+        lines = (json.dumps(sid) for sid in kind.live_ids(run) if not secret_in_id(sid))
     else:
-        lines = (encode(event) for event in kind.extract(run))
+        lines = (encode(event) for event in kind.extract(run) if not holds_secret(json.dumps(event.mark, default=str))
+                 and (isinstance(event, Progress)
+                      or not secret_in_id(event.source_id, id_names(getattr(event, "meta", None)))))
     for line in lines:
         sys.stdout.write(line + "\n")
     sys.stdout.flush()
@@ -134,9 +149,12 @@ class SshReader:
         with tempfile.TemporaryFile() as program, tempfile.TemporaryFile() as err:
             program.write(script(request))
             program.seek(0)
-            proc = subprocess.Popen(["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", self.host.ssh,
-                                     self.host.python, "-"], stdin=program, stdout=subprocess.PIPE, stderr=err,
-                                    text=True, encoding="utf-8", errors="replace")
+            try:
+                proc = subprocess.Popen(["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", self.host.ssh,
+                                         self.host.python, "-"], stdin=program, stdout=subprocess.PIPE, stderr=err,
+                                        text=True, encoding="utf-8", errors="replace")
+            except OSError as exc:
+                raise RuntimeError(mask(f"ssh did not start: {exc}")) from None
             try:
                 yield from proc.stdout
             except BaseException:
@@ -147,7 +165,7 @@ class SshReader:
                 proc.stdout.close()
             if proc.wait() != 0:
                 err.seek(0)
-                stderr = err.read().decode(errors="replace")[-STDERR_TAIL:]
+                stderr = mask(err.read().decode(errors="replace"))[-STDERR_TAIL:]
                 away = proc.returncode == 255 and OFF_NETWORK.search(stderr)
                 failed = mask(f"ssh {self.host.name} exited {proc.returncode}: {stderr}")
                 raise (HostAway if away else RuntimeError)(failed)

@@ -10,6 +10,7 @@ from typing import Callable, NamedTuple, Optional
 from urllib.parse import quote
 
 from kb.ai import Busy, NotReady, PluginSpec, Refused, Traits
+from kb.mask import mask
 
 NESTED_ENV = "KB_NESTED"
 WORKDIR_PREFIX = "kb-ai-"
@@ -82,9 +83,12 @@ def run(call, workdir, timeout, program):
     env = {k: v for k, v in os.environ.items() if not SCRUB.search(k)}
     env.update(call.env)
     env[NESTED_ENV] = "1"
-    proc = subprocess.Popen(call.argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                            cwd=workdir, env=env, start_new_session=True, text=True, encoding="utf-8",
-                            errors="replace")
+    try:
+        proc = subprocess.Popen(call.argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                cwd=workdir, env=env, start_new_session=True, text=True, encoding="utf-8",
+                                errors="replace")
+    except OSError as e:
+        raise NotReady(f"{program} did not start: {e}") from None
     _running.add(proc)
     try:
         out, err = proc.communicate(call.stdin, timeout=max(timeout, 0.1))
@@ -97,7 +101,7 @@ def run(call, workdir, timeout, program):
     finally:
         _running.discard(proc)
     if proc.returncode:
-        tail = (err.strip() or out.strip())[-300:]
+        tail = mask(err.strip() or out.strip())[-300:]  # masked whole, so a cut can't drop a secret's field name
         raise (NotReady if SIGNED_OUT.search(tail) else Busy)(f"{program} exited {proc.returncode}: {tail}")
     return out
 

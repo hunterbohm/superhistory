@@ -547,6 +547,65 @@ class IngestTest(GmailCase):
                          [f"m1:{PRICING}"])
 
 
+class RenderedBodyTest(unittest.TestCase):
+    def test_a_body_that_starts_with_a_line_separator_keeps_its_text(self):
+        for separator in ("\u2028", "\u2029", "\x85"):
+            msg = EmailMessage()
+            msg["From"], msg["Subject"] = "Dana <dana@example.org>", "Launch"
+            msg.set_content(f"{separator}> 5, and the launch is approved.")
+            thread = gmail.Thread(PRICING, 0, (gmail.Message(1, ago(days=1).timestamp(), ("\\Inbox",),
+                                                             "Dana <dana@example.org>", "Launch"),))
+            item = gmail._render(ME, thread, {1: msg.as_bytes()})
+            self.assertIn("launch is approved.", item.content, repr(separator))
+
+
+class HtmlBreakTest(unittest.TestCase):
+    def test_a_br_with_a_line_separator_inside_is_not_a_line_break(self):
+        for separator in ("\u2028", "\u2029", "\x85"):
+            msg = EmailMessage()
+            msg["From"], msg["Subject"] = "Dana <dana@example.org>", "Launch"
+            msg.set_content(f"<div>Decision: the required comparison is<br{separator}>&gt; 5, and the launch is "
+                            "approved.</div>", subtype="html")
+            thread = gmail.Thread(PRICING, 0, (gmail.Message(1, ago(days=1).timestamp(), ("\\Inbox",),
+                                                             "Dana <dana@example.org>", "Launch"),))
+            self.assertIn("launch is approved.", gmail._render(ME, thread, {1: msg.as_bytes()}).content,
+                          repr(separator))
+
+
+class ScriptTagTest(unittest.TestCase):
+    def test_a_tag_named_script_with_a_line_separator_after_is_not_a_script(self):
+        for tag in ("script", "style"):
+            for separator in ("\u2028", "\u2029", "\x85"):
+                msg = EmailMessage()
+                msg["From"], msg["Subject"] = "Dana <dana@example.org>", "Launch"
+                msg.set_content(f"<div>Decision: <{tag}{separator}>launch is approved.</{tag}></div>", subtype="html")
+                thread = gmail.Thread(PRICING, 0, (gmail.Message(1, ago(days=1).timestamp(), ("\\Inbox",),
+                                                                 "Dana <dana@example.org>", "Launch"),))
+                self.assertIn("launch is approved.", gmail._render(ME, thread, {1: msg.as_bytes()}).content,
+                              repr((tag, separator)))
+
+    def test_a_real_script_is_still_dropped(self):
+        for html in ("<div>Hi<script>alert(1)</script></div>", "<div>Hi<script type=x>alert(1)</script ></div>"):
+            self.assertEqual(gmail._clean_body(html), "Hi", html)
+
+
+class CleanBodyTest(unittest.TestCase):
+    def test_a_line_separator_does_not_start_a_quoted_line(self):
+        body = "Decision: the required comparison is\u2028> 5, and the launch is approved."
+        self.assertEqual(gmail._clean_body(body), body)
+
+    def test_a_line_separator_does_not_make_a_reply_delimiter(self):
+        for body in ("Status\n---\u2028Original Message---\nThe launch is approved.",
+                     "Status\n\u2028> 5, and the launch is approved.",
+                     "Status\n--\u2028\nThe launch is approved.",
+                     "Status\nOn\u2028Monday the team wrote:\n> earlier\nThe launch is approved."):
+            self.assertIn("launch is approved.", gmail._clean_body(body), repr(body))
+
+    def test_crlf_mail_still_drops_its_quoted_reply(self):
+        body = "Thanks, see you then.\r\n\r\nOn Mon, Oct 5, 2026 at 9:00 AM Dana <dana@example.org> wrote:\r\n> old\r\n"
+        self.assertEqual(gmail._clean_body(body), "Thanks, see you then.")
+
+
 if __name__ == "__main__":
     unittest.main()
 

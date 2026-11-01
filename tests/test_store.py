@@ -1,12 +1,14 @@
 import json
+import logging
 import os
 import random
 import sqlite3
 import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
+from unittest import mock
 
-from kb import store
+from kb import search, store
 
 
 def iso(delta=timedelta(0)):
@@ -19,6 +21,10 @@ def long_body(term):
 
 def summary_row(kind, text):
     return {"kind": kind, "ts": iso(), "title": kind, "content": text, "metadata": {}}
+
+
+# The version an earlier mask() recorded on its rows.
+STALE = "0123456789abcdef"
 
 
 class TempDB(unittest.TestCase):
@@ -127,6 +133,20 @@ class StoreItemTest(TempDB):
         self.assertEqual((kind, source, sid, title, content), ("doc", "s", "a", "Title", "short body"))
         self.assertIn('"url": "http://x"', meta)
         self.assertIn('"hash"', meta)
+
+    def test_a_secret_with_a_line_separator_inside_is_masked_whole(self):
+        for separator in ("\u2028", "\u2029", "\x85"):
+            for text in (f"export password=abc{separator}def12345", f"export password={separator}password"):
+                self.add("sep", text)
+                stored = self.db.execute("SELECT content FROM docs WHERE source_id='sep'").fetchone()[0]
+                self.assertEqual(stored, "export password=[masked]", repr(text))
+
+    def test_a_long_items_text_comes_back_whole_from_its_chunks(self):
+        for tail in ("\u2028", "\n   \n", "\u2029\x85"):
+            body = "x" * 8000 + tail
+            self.add("whole", body)
+            rid = self.db.execute("SELECT id FROM docs WHERE source_id='whole' LIMIT 1").fetchone()[0]
+            self.assertEqual("".join(r[4] for r in store.item_rows(self.db, rid)), body, repr(tail))
 
     def test_long_item_is_raw_chunks_only(self):
         body = "".join(f"line {i}\n" for i in range(2000))
@@ -267,6 +287,17 @@ class MovedItemTest(TempDB):
         self.assertEqual([m["path"] for m in self.metas("doc")], ["/new/Notes/a.md"])
         self.assertFalse(self.add("a", "same words", meta={"path": "/new/Notes/a.md"}))
 
+    def test_a_moved_item_keeps_the_mask_version_of_each_row(self):
+        body = long_body("pelican")
+        self.add("a", body, meta={"path": "/old/a.md"})
+        store.replace_rows(self.db, "s", "a", [{"kind": "segment", "ts": iso(), "title": "seg", "content": "summary",
+                                                "metadata": {"path": "/old/a.md", "of_hash": "h1"}}], ())
+        self.db.execute("UPDATE docs SET masked='0123456789abcdef' WHERE kind='segment'")  # an earlier version's
+        self.db.commit()
+        self.assertTrue(self.add("a", body, meta={"path": "/new/a.md"}))
+        self.assertEqual(sorted({(k, v) for k, v in self.db.execute("SELECT kind, masked FROM docs")}),
+                         [("raw", store.VERSION), ("segment", "0123456789abcdef")])
+
     def test_a_moved_long_item_keeps_its_summaries_and_points_them_to_the_new_path(self):
         body = long_body("pelican")
         self.add("a", body, meta={"path": "/old/a.md", "url": "obsidian://old"})
@@ -308,6 +339,26 @@ class HealthTest(TempDB):
         store.record_ok(self.db, "a@laptop")
         self.assertEqual([unit for unit, _ in store.failing(self.db)], ["b@laptop"])
 
+    def test_state_an_older_kb_wrote_shows_no_secret_and_goes_at_the_next_failure(self):
+        token = "ghp_" + "Zq7Lm2Xc9Vb4Nn8Rt1Yw" + "Kd5Hs3Pf"
+        # An older kb cut a failure line to 200 characters before masking it, and kept positions read from any id.
+        self.db.executemany("INSERT INTO ingest_state(source, key, watermark) VALUES (?, ?, ?)", [
+            (store.STATE, "fail:notes@desk", "2026-10-28T10:00:00Z " + "r" * 170 + " and " + token[:19]),
+            ("_summarize_failed", "notes|desk:token=walrus2secret9.md", "3f2a9c"),
+            ("notes", "desk", json.dumps({"key-" + token + ".md": 1.0}))])
+        self.db.commit()
+        [(unit, line)] = store.failing(self.db)
+        self.assertEqual(unit, "notes@desk")
+        self.assertTrue(line.startswith("2026-10-28T10:00:00Z"), "when it failed still shows")
+        self.assertNotIn(token[4:15], line)
+        store.record_failure(self.db, "gmail@desk", RuntimeError("sign-in failed"))
+        [(unit, line)] = store.failing(self.db)
+        self.assertEqual(unit, "gmail@desk", "the older line is gone")
+        self.assertIn("sign-in failed", line)
+        state = json.dumps(self.db.execute("SELECT * FROM ingest_state").fetchall())
+        self.assertNotIn(token[4:15], state)
+        self.assertNotIn("walrus2secret9", state)
+
     def test_away_keeps_the_first_miss_and_clears(self):
         store.record_away(self.db, "laptop")
         first = store.away(self.db)
@@ -324,19 +375,409 @@ class HealthTest(TempDB):
 
 
 class RemaskTest(TempDB):
+    def test_an_older_row_replaced_by_a_write_leaves_no_bytes_after_the_next_remask(self):
+        # An earlier version's mask kept the password; today's ingest writes the item again, masked.
+        self.db.execute("INSERT INTO docs(kind, source, source_id, ts, title, content, masked) VALUES "
+                        "('doc', 's', 'a', ?, 't', 'redis-cli -a Qx7RedisBytes2026zz ping', ?)", (iso(), STALE))
+        self.db.commit()
+        store.store_item(self.db, "s", "a", iso(), "t", "redis-cli -a Qx7RedisBytes2026zz ping", {})
+        self.db.commit()
+        self.assertTrue(store.rebuild_owed(self.db), "the old row's words may still sit in the index and the file")
+        store.remask(self.db)
+        with open(self.path, "rb") as fh:
+            self.assertNotIn(b"qx7redisbytes2026zz", fh.read().lower())
+
     def test_remask_removes_old_values_from_rows_and_index(self):
         leaked = "GITHUB_TOKEN=abcdef1234567890abcdef1234567890"
-        self.db.execute("INSERT INTO docs(kind, source, source_id, ts, title, content) VALUES "
-                        "('doc', 's', 'a', ?, 't', ?)", (iso(), f"deploy with {leaked} today"))
+        self.db.execute("INSERT INTO docs(kind, source, source_id, ts, title, content, masked) VALUES "
+                        "('doc', 's', 'a', ?, 't', ?, ?)", (iso(), f"deploy with {leaked} today", STALE))
         self.db.commit()
         self.assertEqual(self.fts_ids("abcdef1234567890abcdef1234567890"), [1])
-        self.assertEqual(store.remask(self.db), 1)
+        self.assertEqual(store.remask(self.db), (1, 0))
         self.assertNotIn("abcdef1234567890", self.rows()[0][4])
         self.assertEqual(self.fts_ids("abcdef1234567890abcdef1234567890"), [])
         self.assert_fts_consistent()
-        self.assertEqual(store.remask(self.db), 0)
+        self.assertEqual(store.remask(self.db), (0, 0))
         with open(self.path, "rb") as fh:
             self.assertNotIn(b"abcdef1234567890abcdef1234567890", fh.read())
+
+
+class MaskVersionTest(TempDB):
+    """A row records the mask() version it was masked with. Only a row of today's version, and for a chunk only if
+    every chunk of its item is, may be cut as it is stored; ingest and remask bring rows of an earlier version up to
+    date. old() writes a row of an earlier version."""
+    TOKEN = "sk-ant-api03-version-" + "Q" * 24
+
+    def old(self, sid, content, kind="doc", meta=None, version=None):
+        version = STALE if version is None else version
+        self.db.execute("INSERT INTO docs(kind, source, source_id, ts, title, content, metadata, masked) "
+                        "VALUES (?, 's', ?, ?, 't', ?, ?, ?)", (kind, sid, iso(), content, json.dumps(meta or {}),
+                                                                 version))
+        self.db.commit()
+
+    def ids(self, sid=None):
+        sql, args = "SELECT id FROM docs", ()
+        if sid:
+            sql, args = sql + " WHERE source_id=?", (sid,)
+        return [r[0] for r in self.db.execute(sql + " ORDER BY id", args)]
+
+    def test_rows_store_writes_are_current(self):
+        self.add("a", "short note")
+        self.add("b", long_body("kumquat"))
+        self.db.commit()
+        self.assertEqual(store.current(self.db, self.ids()), set(self.ids()))
+        self.assertEqual(store.old_rows(self.db), 0)
+
+    def test_rows_of_another_version_are_old_and_rows_of_none_are_not_remasked(self):
+        self.add("a", "short note")
+        self.old("b", "older note")
+        self.db.execute("INSERT INTO docs(kind, source, source_id, ts, title, content, metadata, masked) "
+                        "VALUES ('doc', 's', 'c', ?, 't', 'an older kb', '{}', NULL)", (iso(),))
+        self.assertEqual(store.current(self.db, self.ids()), set(self.ids("a")))
+        self.assertEqual(store.old_rows(self.db), 1, "a row of no version is the older kb's, which a rebuild replaces")
+
+    def test_a_chunk_is_current_only_while_every_chunk_of_its_item_is(self):
+        self.add("a", long_body("kumquat"))
+        chunks = self.ids("a")
+        self.db.execute("UPDATE docs SET masked=NULL WHERE id=?", (chunks[-1],))
+        self.assertEqual(store.current(self.db, chunks), set())
+
+    def test_a_new_mask_version_makes_every_stored_row_old(self):
+        self.add("a", "short note")
+        with mock.patch.object(store, "VERSION", "next"):
+            self.assertEqual(store.current(self.db, self.ids()), set())
+            self.assertEqual(store.old_rows(self.db), 1)
+            store.remask(self.db)
+            self.assertEqual(store.current(self.db, self.ids()), set(self.ids()))
+
+    def test_a_store_from_before_versions_does_not_open_unless_it_is_empty(self):
+        path = os.path.join(self.tmp.name, "old.sqlite")
+        old = sqlite3.connect(path)
+        old.executescript(store.SCHEMA.replace("  metadata TEXT NOT NULL DEFAULT '{}',\n  masked TEXT\n",
+                                               "  metadata TEXT NOT NULL DEFAULT '{}'\n"))
+        self.assertNotIn("masked", [column[1] for column in old.execute("PRAGMA table_info(docs)")])
+        old.commit()
+        old.close()
+        writer = store.connect(path)
+        self.assertIn("masked", [column[1] for column in writer.execute("PRAGMA table_info(docs)")], "empty: it gains it")
+        writer.close()
+        old = sqlite3.connect(path)
+        old.execute("DROP TRIGGER docs_unmask")
+        old.execute("DROP INDEX docs_masked")
+        old.execute("ALTER TABLE docs DROP COLUMN masked")
+        old.execute("INSERT INTO docs(kind, source, source_id, ts, title, content) VALUES ('doc','s','a',?,'t','x')",
+                    (iso(),))
+        old.commit()
+        old.close()
+        for readonly in (True, False):
+            with self.subTest(readonly=readonly), self.assertRaises(store.NeedsRebuild):
+                store.connect(path, readonly=readonly)
+
+    def test_replace_rows_refuses_an_id_or_source_that_looks_like_a_secret(self):
+        row = {"kind": "doc", "ts": iso(), "title": "t", "content": "c", "metadata": {}}
+        for source, sid in (("s", f"desk:key-{self.TOKEN}.md"), (self.TOKEN, "a")):
+            with self.assertRaises(ValueError) as caught:
+                store.replace_rows(self.db, source, sid, [row])
+            self.assertNotIn(self.TOKEN[:12], str(caught.exception))
+        self.assertEqual(self.ids(), [])
+
+    def test_an_id_without_a_host_is_checked_whole(self):
+        for sid in ("password:walrus2secret9", "https://user:walrus9pw@example.com/notes",
+                    "Cookie:sessionid=Walrus2Secret987654", "cookie:sessionid=Walrus2Secret987654", "token=>walrus2secret9",
+                    "token2:walrus2secret9", "my-password:walrus2secret9"):
+            with self.subTest(sid=sid):
+                self.assertTrue(store.secret_id("notes", sid), "with no host given")
+                self.assertTrue(store.secret_id("notes", f"desk:{sid}", names=("desk",)), "under a host")
+                if not sid.startswith(("token2", "my-password")):  # these two can be hosts, if a row says so
+                    self.assertTrue(store.secret_id("notes", sid, names=(sid.partition(":")[0],)), "no host is named so")
+                with self.assertRaises(ValueError):
+                    store.replace_rows(self.db, "notes", sid, [{"kind": "doc", "ts": iso(), "title": "t",
+                                                                "content": "c", "metadata": {}}])
+                self.old(sid, "walrus deployment")
+        self.assertEqual(search.search(self.db, "walrus deployment"), [], "old rows with such ids are left out")
+        store.remask(self.db)
+        self.assertEqual(self.ids(), [], "and remask deletes them")
+
+    def test_the_host_and_the_readers_id_are_checked_apart(self):
+        for host in ("desk", "tokenbox", "secret-lab", "studio-pw", "passwordless", "token2"):
+            with self.subTest(host=host):
+                self.assertFalse(store.secret_id("notes", f"{host}:Areas/notes-2026-10-27.md", names=(host,)))
+                self.assertTrue(store.secret_id("notes", f"{host}:key-{self.TOKEN}.md", names=(host,)))
+        self.assertTrue(store.secret_id("notes", f"{self.TOKEN}:a.md", names=(self.TOKEN,)), "a host that is a token")
+        self.assertTrue(store.secret_id(self.TOKEN, "desk:a.md", names=("desk",)), "a source that is a token")
+        self.assertTrue(store.secret_id("notes", "tokenbox:walrus2secret9.md"), "with no host given, read whole")
+        row = {"kind": "doc", "ts": iso(), "title": "t", "content": "c", "metadata": {"host": "tokenbox"}}
+        store.replace_rows(self.db, "notes", "tokenbox:Areas/notes-2026-10-27.md", [row])
+        self.assertEqual(len(self.ids()), 1, "the row's own host, in its metadata, says how its id is read")
+
+    def test_the_install_prefix_is_checked_apart_from_the_readers_id(self):
+        # Decision 111: ids carry the prefix of the install that read them, "<install>:" or "<install>@<host>:".
+        install = "c-abcdefghijklm"
+        for host in ("desk", "tokenbox", "secret-lab", "studio-pw"):
+            for prefix, names in ((f"{install}:", ("studio",)), (f"{install}@{host}:", (host,))):
+                with self.subTest(prefix=prefix):
+                    self.assertFalse(store.secret_id("notes", f"{prefix}Areas/notes-2026-10-27.md", names))
+                    self.assertFalse(store.secret_id("hermes", f"{prefix}secret-project:20261028_101500_a1b2c3",
+                                                     names + ("secret-project",)), "a profile named for a secret")
+                    self.assertTrue(store.secret_id("notes", f"{prefix}key-{self.TOKEN}.md", names))
+                    self.assertTrue(store.secret_id("notes", f"{prefix}password:walrus2secret9", names))
+        self.assertTrue(store.secret_id("notes", f"{install}@{self.TOKEN}:a.md", ("desk",)), "a host that is a token")
+        row = {"kind": "doc", "ts": iso(), "title": "t", "content": "c", "metadata": {"host": "tokenbox"}}
+        store.replace_rows(self.db, "notes", f"{install}@tokenbox:Areas/notes-2026-10-27.md", [row])
+        self.assertEqual(len(self.ids()), 1, "an item another install read over SSH, as Sync brings it")
+
+    def test_a_whole_key_with_short_lines_is_masked(self):
+        body = ["MC4CAQAw", "BQYDK2Vw", "BCIEIAAB", "AgMEBQYH", "CAkKCwwN", "Dg8QERIT", "FBUWFxgZ", "GhscHR4f"]
+        for brk in ("\n", "\r\n", "\\n"):
+            with self.subTest(brk=brk):
+                key = brk.join(["-----BEGIN PRIVATE KEY-----", *body, "-----END PRIVATE KEY-----"])
+                self.assertNotIn("CAkKCwwN", store.mask(key))
+                self.add(f"k{len(brk)}", f"notes {key} after")
+        self.old("old", "-----BEGIN PRIVATE KEY-----\n" + "\n".join(body) + "\n-----END PRIVATE KEY-----")
+        store.remask(self.db)
+        self.assertNotIn("CAkKCwwN", json.dumps(self.rows()))
+
+    def test_a_cut_off_key_is_masked_through_the_end_of_its_paragraph(self):
+        line = "MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7"
+        short = ["MC4CAQAw", "BQYDK2Vw", "BCIEIAAB", "AgMEBQYH"]
+        for brk in ("\n", "\r\n", "\\n"):
+            with self.subTest(brk=brk):
+                named = brk.join(["-----BEGIN PRIVATE KEY-----", line, "clientSecretToken: walrus2secret9"])
+                spaced = brk.join(["-----BEGIN PRIVATE KEY-----", line, "clientSecretToken = walrus2secret9"])
+                ran_on = brk.join(["-----BEGIN PRIVATE KEY-----", line, line + " ledger approved"])
+                cut = brk.join(["-----BEGIN PRIVATE KEY-----", *short])
+                for text in (named, spaced, ran_on, cut, cut + brk + "notes after", f'{{"key": "{cut}"}}'):
+                    masked = store.mask(text)
+                    for gone in ("walrus2secret9", *short, line[:12]):
+                        self.assertNotIn(gone, masked, text[-30:])
+                    self.assertEqual(masked, "[masked]" if text.startswith("-") else '{"key": "[masked]', text[-30:])
+                # The next paragraph is not the key's.
+                self.assertEqual(store.mask(cut + brk + brk + "notes after"), "[masked]" + brk + brk + "notes after")
+                self.add(f"cut{len(brk)}", f"walrus {named}{brk}{cut}")
+        self.assertNotIn("walrus2secret9", json.dumps(self.rows()))
+        self.assertNotIn("CAkKCwwN", json.dumps(self.rows()))
+
+    def test_remask_reads_an_items_host_only_when_all_its_rows_agree(self):
+        sid = "token2:walrus2secret9"
+        for hosts in (("token2", None), (None, "token2"), ("token2", "desk")):
+            with self.subTest(hosts=hosts):
+                for n, host in enumerate(hosts):
+                    self.old(sid, "unrelated text" if n == 0 else "walrus ledger", kind="raw",
+                             meta={"chunk": n, "chunks": 2, **({"host": host} if host else {})})
+                self.assertEqual(search.search(self.db, "walrus"), [])
+                store.remask(self.db)
+                self.assertEqual(self.ids(sid), [], "remask deletes it")
+                self.assertEqual(search.search(self.db, "walrus"), [])
+
+    def test_an_encrypted_key_is_masked_with_its_header_fields(self):
+        key = ("-----BEGIN RSA PRIVATE KEY-----\nProc-Type: 4,ENCRYPTED\nDEK-Info: AES-256-CBC,0A1B2C3D4E5F60718293A4B5C6D7E8F9"
+               "\n\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7\nAgMEBQYH\n-----END RSA PRIVATE KEY-----")
+        self.assertEqual(store.mask(f"key: {key} done"), "key: [masked] done")
+
+    def test_chunks_are_written_all_at_once(self):
+        def chunk(text, n):
+            return {"kind": "raw", "ts": iso(), "title": "t", "content": text, "metadata": {"chunk": n, "chunks": 2}}
+        # Two writes that each add a chunk would be masked apart, so "password=" and its value would pass.
+        for kinds in ((), ("doc",), ("segment", "atom")):
+            with self.subTest(kinds=kinds), self.assertRaises(ValueError):
+                store.replace_rows(self.db, "s", "desk:a", [chunk("notes password=", 0)], kinds)
+        self.assertEqual(self.ids(), [])
+        store.replace_rows(self.db, "s", "desk:a", [chunk("notes password=", 0), chunk("walrus2secret9 more", 1)])
+        self.assertNotIn("walrus2secret9", "".join(r[4] for r in self.rows()))
+
+    def test_an_update_by_an_older_kb_clears_the_version(self):
+        # The statements an older kb runs: _repoint's, remask's, and a plain edit of a row's text.
+        self.add("a", "same text", meta={"path": "/one"})
+        rid = self.ids()[0]
+        for sql, args in (("UPDATE docs SET metadata=? WHERE id=?", (json.dumps({"password": "walrus2secret9"}), rid)),
+                          ("UPDATE docs SET title=?, content=?, metadata=? WHERE id=?", ("t", "c", "{}", rid)),
+                          ("UPDATE docs SET ts=? WHERE id=?", (iso(), rid))):
+            with self.subTest(sql=sql):
+                self.db.execute("UPDATE docs SET masked=? WHERE id=?", (store.VERSION, rid))
+                self.db.execute(sql, args)
+                self.assertEqual(store.current(self.db, [rid]), set())
+        store.remask(self.db)
+        self.assertEqual(store.current(self.db, [rid]), set(), "remask leaves an older kb's row")
+        self.db.commit()
+        with self.assertRaises(store.NeedsRebuild):
+            store.connect(self.path)
+        self.db.execute("UPDATE docs SET masked=? WHERE id=?", (store.VERSION, rid))
+        store.mark_superseded(self.db, "s", "a", ("s", "b"), "c-abcdefghijklm")
+        self.assertEqual(store.current(self.db, [rid]), {rid})
+        store.clear_superseded(self.db, "s", "a", "c-abcdefghijklm")
+        self.assertEqual(store.current(self.db, [rid]), {rid}, "a supersede mark is not the row's text")
+
+    def test_a_rebuild_cut_short_after_the_last_batch_is_finished_by_the_next_remask(self):
+        self.old("a", f"note with {self.TOKEN}")
+        with mock.patch.object(store, "_rebuild", side_effect=RuntimeError("interrupted")):
+            with self.assertRaises(RuntimeError):
+                store.remask(self.db, seconds=60)
+        self.assertEqual(store.old_rows(self.db), 0)
+        self.assertTrue(store.rebuild_owed(self.db))
+        self.assertEqual(store.remask(self.db, seconds=60), (0, 0))
+        self.assertFalse(store.rebuild_owed(self.db))
+        with open(self.path, "rb") as fh:
+            self.assertNotIn(self.TOKEN.encode(), fh.read())
+
+    def test_remask_masks_an_old_items_chunks_as_one_text(self):
+        text = "." * (store.CHUNK - 16) + self.TOKEN + "." * store.CHUNK
+        for n, i in enumerate(range(0, len(text), store.CHUNK)):
+            self.old("long", text[i:i + store.CHUNK], kind="raw", meta={"chunk": n, "chunks": 3})
+        self.assertEqual(store.remask(self.db)[1], 0)
+        joined = "".join(r[4] for r in self.rows(source_id="long"))
+        self.assertNotIn(self.TOKEN[:12], joined)
+        self.assertNotIn(self.TOKEN[-12:], joined)
+        self.assertEqual(store.current(self.db, self.ids("long")), set(self.ids("long")))
+
+    def test_remask_deletes_an_old_item_whose_id_looks_like_a_secret(self):
+        self.old(f"desk:key-{self.TOKEN}.md", "a note")
+        with self.assertLogs("varve-test-remask", "WARNING") as logs:
+            self.assertEqual(store.remask(self.db, log=logging.getLogger("varve-test-remask")), (1, 0))
+        self.assertIn("rename it", logs.output[0], "the deletion is logged")
+        self.assertNotIn(self.TOKEN[:12], logs.output[0], "with the id masked")
+        self.assertEqual(self.ids(), [])
+        with open(self.path, "rb") as fh:
+            self.assertNotIn(self.TOKEN.encode(), fh.read())
+
+    def test_remask_keeps_an_old_note_named_with_basic_or_bearer(self):
+        for n, name in enumerate(("Courses/Basic Statistics/lecture-01.md", "Wedding/Ring Bearer duties/plan-2026.md",
+                                  "ML/sk-learn-pipeline-experiments.md")):
+            self.old(f"desk:{name}", f"central limit theorem {n}", meta={"host": "desk"})
+        store.remask(self.db)
+        self.assertEqual(len(self.ids()), 3)
+        self.assertEqual(len(search.search(self.db, "central limit theorem")), 3)
+
+    def test_remask_reads_a_profile_its_rows_record_apart_from_the_id_after_it(self):
+        kept = "desk:secret-project:20261028_101500_a1b2c3"
+        self.old(kept, "hermes session", meta={"host": "desk", "profile": "secret-project"})
+        for sid, profile in (("desk:my-token:walrus2secret9", None), ("desk:my-token:walrus2secret9x", "other")):
+            self.old(sid, "hermes session", meta={"host": "desk", **({"profile": profile} if profile else {})})
+        store.remask(self.db)
+        self.assertEqual([r[0] for r in self.db.execute("SELECT DISTINCT source_id FROM docs")], [kept],
+                         "a name the rows do not record is not split off")
+
+    def test_a_profile_named_exactly_as_a_secrets_word_keeps_its_sessions(self):
+        for profile in ("secret", "token", "credentials", "password"):
+            sid = f"desk:{profile}:20261028_101500_a1b2c3"
+            self.old(sid, "hermes session", meta={"host": "desk", "profile": profile, "session_id": "20261028_101500_a1b2c3"})
+        self.old("desk:password:walrus2secret9.md", "a note", meta={"host": "desk"})
+        store.remask(self.db)
+        self.assertEqual(sorted(r[0].split(":")[1] for r in self.db.execute("SELECT DISTINCT source_id FROM docs")),
+                         ["credentials", "password", "secret", "token"], "a note with no profile is read whole")
+
+    def test_an_items_names_come_from_its_own_rows_not_its_summaries(self):
+        # An older kb's summary rows copied only url, path and host, so they record no profile.
+        sid = "desk:secret-project:20261028_101500_a1b2c3"
+        item = {"host": "desk", "profile": "secret-project", "session_id": "20261028_101500_a1b2c3"}
+        for n in range(2):
+            self.old(sid, f"hermes session part {n}", kind="raw", meta={**item, "chunk": n, "chunks": 2})
+        self.old(sid, "Which plan?\nThe one in the notes.", kind="segment", meta={"host": "desk", "of_hash": "3f2a9c"})
+        store.remask(self.db)
+        self.assertEqual(len(self.ids(sid)), 3, "remask keeps the item and its summary")
+        summary = {"kind": "segment", "ts": iso(), "title": "t", "content": "Which?\nThat one.", "metadata": {"host": "desk"}}
+        store.replace_rows(self.db, "s", sid, [summary], store.SUMMARY_KINDS)
+        self.assertEqual(len(self.ids(sid)), 3, "a summary written alone takes the item's names")
+
+    def test_remask_stopped_by_its_time_leaves_the_rest_old(self):
+        for i in range(120):
+            self.old(f"n{i}", f"note {i} with {self.TOKEN}")
+        changed, left = store.remask(self.db, seconds=0)
+        self.assertEqual((changed, left), (50, 70))
+        done = store.current(self.db, self.ids())
+        self.assertEqual(len(done), 50)
+        for rid in done:
+            self.assertNotIn(self.TOKEN, self.db.execute("SELECT content FROM docs WHERE id=?", (rid,)).fetchone()[0])
+        self.assertEqual(store.get_watermark(self.db, store.STATE, "remask"), "rebuild")
+        self.assertEqual(store.remask(self.db, seconds=60), (70, 0))
+        self.assertIsNone(store.get_watermark(self.db, store.STATE, "remask"))
+        with open(self.path, "rb") as fh:
+            self.assertNotIn(self.TOKEN.encode(), fh.read())
+
+    def test_new_metadata_for_unchanged_text_keeps_the_row_current(self):
+        # store_item masks the new metadata before it gives it to the rows.
+        self.add("a", "same text", meta={"path": "/one"})
+        self.add("a", "same text", meta={"path": "/two"})
+        self.assertEqual(json.loads(self.rows()[0][5])["path"], "/two")
+        self.assertEqual(store.old_rows(self.db), 0)
+
+
+class UnversionedRowTest(TempDB):
+    """Rows that record no mask version came from an older kb. A store that holds one does not open, and a connection
+    already open, when an older writer clears a row's version, reads and masks no such row."""
+    SECRET = "Qx7RedisBytes2026zz"
+
+    def setUp(self):
+        super().setUp()
+        self.add("kept", "the pelican plan is current")
+        self.db.execute("INSERT INTO docs(kind, source, source_id, ts, title, content, metadata, masked) VALUES "
+                        "('doc', 's', 'older', ?, 'older', ?, '{}', NULL)", (iso(), f"pelican api_key: [masked] {self.SECRET}"))
+        self.db.commit()
+
+    def test_a_store_with_one_does_not_open(self):
+        for readonly in (True, False):
+            with self.subTest(readonly=readonly), self.assertRaises(store.NeedsRebuild) as raised:
+                store.connect(self.path, readonly=readonly)
+            self.assertIn("kb rebuild", str(raised.exception))
+
+    def test_a_store_whose_last_writer_left_rows_in_its_wal_is_refused_untouched(self):
+        from tests.support import commit_and_die, store_files
+        self.db.close()
+        commit_and_die(self.path, "INSERT INTO docs(kind, source, source_id, ts, title, content, metadata, masked) "
+                                  "VALUES ('doc', 's', 'in-wal', ?, 'w', 'an older row in the WAL', '{}', NULL)", iso())
+        folder = os.path.dirname(self.path)
+        before = store_files(folder)
+        self.assertGreater(before.get(os.path.basename(self.path) + "-wal", (0,))[0], 0, "the row is in the WAL")
+        for readonly in (True, False):
+            with self.subTest(readonly=readonly), self.assertRaises(store.NeedsRebuild):
+                store.connect(self.path, readonly=readonly)
+            self.assertEqual(store_files(folder), before, "neither the store nor its WAL changed")
+
+    def test_a_linked_store_whose_last_writer_left_rows_in_its_wal_is_refused_untouched(self):
+        from tests.support import commit_and_die, store_files
+        self.db.close()
+        commit_and_die(self.path, "INSERT INTO docs(kind, source, source_id, ts, title, content, metadata, masked) "
+                                  "VALUES ('doc', 's', 'in-wal', ?, 'w', 'an older row in the WAL', '{}', NULL)", iso())
+        folder = os.path.dirname(self.path)
+        before = store_files(folder)
+        link = os.path.join(tempfile.mkdtemp(dir=os.path.dirname(folder)), "kb.sqlite")
+        os.symlink(self.path, link)
+        for readonly in (True, False):
+            with self.subTest(readonly=readonly), self.assertRaises(store.NeedsRebuild):
+                store.connect(link, readonly=readonly)
+            self.assertEqual(store_files(folder), before)
+
+    def test_a_store_with_a_wal_and_no_wal_index_is_refused_untouched(self):
+        from tests.support import commit_and_die, store_files
+        self.db.close()
+        commit_and_die(self.path, "INSERT INTO docs(kind, source, source_id, ts, title, content, metadata, masked) "
+                                  "VALUES ('doc', 's', 'in-wal', ?, 'w', 'an older row in the WAL', '{}', NULL)", iso())
+        os.remove(self.path + "-shm")
+        folder = os.path.dirname(self.path)
+        before = store_files(folder)
+        for readonly in (True, False):
+            with self.subTest(readonly=readonly), self.assertRaises(store.NeedsRebuild):
+                store.connect(self.path, readonly=readonly)
+            self.assertEqual(store_files(folder), before)
+
+    def test_an_open_connection_reads_and_remasks_none(self):
+        self.assertEqual([h["source_id"] for h in search.search(self.db, "pelican")], ["kept"])
+        store.remask(self.db)
+        self.assertEqual(self.db.execute("SELECT content, masked FROM docs WHERE source_id='older'").fetchone(),
+                         (f"pelican api_key: [masked] {self.SECRET}", None), "left as it was, and not stamped")
+
+    def test_a_store_from_before_versions_does_not_open_and_is_left_as_it_was(self):
+        self.db.close()
+        old = sqlite3.connect(self.path)
+        old.executescript("DROP TRIGGER docs_unmask; DROP INDEX docs_masked; ALTER TABLE docs DROP COLUMN masked;")
+        old.commit()
+        old.close()
+        with open(self.path, "rb") as fh:
+            before = fh.read()
+        for readonly in (True, False):
+            with self.subTest(readonly=readonly), self.assertRaises(store.NeedsRebuild):
+                store.connect(self.path, readonly=readonly)
+        with open(self.path, "rb") as fh:
+            self.assertEqual(fh.read(), before, "kb wrote nothing to it, so the older kb still opens it as it was")
 
 
 class FtsTriggerTest(TempDB):

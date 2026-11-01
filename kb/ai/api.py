@@ -8,6 +8,7 @@ from typing import Literal, Optional
 from kb import __version__
 from kb.ai import Busy, NotReady, PluginSpec, Refused, Traits
 from kb.config import Secret, SecretError
+from kb.mask import mask
 
 TRAITS = Traits(check_budget=10.0, hedge_after=3.0, parallel=4, max_prompt_chars=600_000)
 AUTH_CODES = (401, 403)
@@ -160,13 +161,19 @@ class Google(_Http):
 
 def post(url, body, headers, timeout):
     """One JSON POST. HTTP and network failures become NotReady, Busy or Refused."""
-    request = urllib.request.Request(url, data=json.dumps(body).encode(), headers={**headers, "user-agent": USER_AGENT},
-                                     method="POST")
+    try:
+        request = urllib.request.Request(url, data=json.dumps(body).encode(),
+                                         headers={**headers, "user-agent": USER_AGENT}, method="POST")
+    except ValueError as e:
+        raise NotReady(f"{url} is not a usable address: {e}") from None
     try:
         with urllib.request.urlopen(request, timeout=timeout) as resp:
             return json.load(resp)
     except urllib.error.HTTPError as e:
-        detail = " ".join(e.read()[:600].decode(errors="replace").split())[:300]
+        body = e.read(65537)
+        # A body cut at the 65,536 bytes read could end in part of a secret mask() cannot know, so it is left out.
+        detail = ("(longer than 64 KB, left out)" if len(body) > 65536
+                  else " ".join(mask(body.decode(errors="replace")).split())[:300])
         message = f"HTTP {e.code} from {url}: {detail}"
         if e.code in SETUP_CODES:
             raise NotReady(message) from None
@@ -181,6 +188,8 @@ def post(url, body, headers, timeout):
         raise Busy(f"cannot reach {url}: {getattr(e, 'reason', e)}") from None
     except ValueError as e:
         raise Busy(f"{url} answered with something other than JSON: {e}") from None
+    except Exception as e:
+        raise Busy(f"{url} failed: {type(e).__name__}: {e}") from None
 
 
 PLUGINS = (

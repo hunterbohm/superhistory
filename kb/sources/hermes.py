@@ -19,7 +19,7 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
-from kb.mask import is_auth_noise
+from kb.mask import clip, is_auth_noise, mask, mask_all
 from kb.sources import Item, Progress, SourceType
 
 TOOL_CHARS = 300
@@ -54,8 +54,8 @@ class Options:
 
 
 def _clip(text, n):
-    text = " ".join(text.split())
-    return text if len(text) <= n else text[:n] + " …"
+    text = " ".join(mask(text).split())  # masked first: joining would break a secret around a U+2028 in two
+    return clip(text, n)
 
 
 def _iso(epoch):
@@ -86,7 +86,7 @@ def clean_text(text, role):
         if text.startswith(("[ASYNC DELEGATION BATCH", "## Script Output", "## Script Error")):
             text = _clip(text, BATCH_CHARS)
         elif len(text) > USER_CHARS:
-            text = text[:USER_CHARS] + " …"
+            text = clip(text, USER_CHARS)
     return "" if text.startswith(DROP_PREFIXES) else text
 
 
@@ -100,7 +100,7 @@ def _tool_input(args):
     for key in ("command", "path", "file_path", "query", "url", "pattern", "goal", "name", "message"):
         if key in args:
             return str(args[key])
-    return json.dumps(args, ensure_ascii=False)
+    return json.dumps(mask_all(args), ensure_ascii=False)  # masked by field, before JSON escapes them
 
 
 def _tool_calls(raw):
@@ -178,7 +178,7 @@ def render(db, profile, db_path, row, superseded=""):
         pass
     if source == "cron" and sid.startswith("cron_"):
         chat = chat or "job " + sid.split("_")[1]
-    first_line = first_prompt.replace("\n", " ")[:100]
+    first_line = mask(first_prompt.replace("\n", " "))[:100]
     title = clean_text(title, "user") or first_line
     head = f"Hermes {platform} session, profile {profile}" + (f", {chat}" if chat else "")
     return {

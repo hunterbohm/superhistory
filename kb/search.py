@@ -1,10 +1,12 @@
 import json
 import math
 import re
+import sqlite3
 from datetime import datetime, timezone
 
 from kb import store
-from kb.store import SUMMARY_KINDS
+from kb.mask import mask, mask_all
+from kb.store import SUMMARY_KINDS, TOKENIZE, current, item_names, secret_id, unversioned
 
 STOPWORDS = set("""a an and are as at be been but by can could did do does doing for from had has have
 how i if in into is it its just me my no not of on or our should so than that the their them then there
@@ -13,6 +15,14 @@ all also get got make made say said tell""".split())
 RRF_K = 60
 RAW_WEIGHT = 0.5
 CANDIDATES = 60
+# The longest passage FTS5's snippet() gives: the stretch of a record where its matching words cluster.
+EXCERPT_TOKENS = 64
+# The short snippet with its matches in brackets, then the excerpt with them marked for excerpt() to cut around.
+SNIPPETS = ("snippet({table}, {column}, '[', ']', ' … ', 24), "
+            "snippet({table}, {column}, char(2), char(3), ' … ', " + str(EXCERPT_TOKENS) + ")")
+EXCERPT_CHARS = 500
+SNIPPET_CHARS = 220
+MARK, END = "\x02", "\x03"
 
 
 def fts_terms(text):
@@ -109,12 +119,25 @@ def search(db, query, after=None, sources=(), limit=10, before=None, keep=None):
             best[(src, sid)] = hit
     for key, hit in best.items():
         hit["score"] = total[key]
-    hits = sorted((h for h in best.values() if keep is None or keep(h)), key=lambda h: -h["score"])[:limit]
+    fresh = current(db, [h["id"] for h in best.values()])
+    skipped = unversioned(db, [h["id"] for h in best.values()])  # an older kb's rows, which no reader shows
+    # A store from before ingest refused such ids can hold an item whose id or source looks like a secret.
+    allowed = (h for h in best.values() if h["id"] not in skipped and (h["id"] in fresh
+               or not secret_id(h["source"], h["source_id"], item_names(db, h["source"], h["source_id"]))))
+    hits = sorted((h for h in allowed if keep is None or keep(h)), key=lambda h: -h["score"])[:limit]
     for hit in hits:
-        snip = db.execute("SELECT snippet(docs_fts, 1, '[', ']', ' … ', 24) FROM docs_fts "
-                          "WHERE docs_fts MATCH ? AND rowid = ?", (match, hit["id"])).fetchone()
-        text = snip[0] if snip and "[" in snip[0] else hit["content"][:220]
-        hit["snippet"] = re.sub(r"\s+", " ", text).strip()
+        if hit["id"] in fresh:
+            own = hit["content"]
+            snip, marked = db.execute(f"SELECT {SNIPPETS.format(table='docs_fts', column=1)} FROM docs_fts "
+                                      "WHERE docs_fts MATCH ? AND rowid = ?", (match, hit["id"])).fetchone()
+        else:
+            # Older rows are masked whole before any cut, and the same passages are cut from the hit's own stretch of
+            # the masked text, so their cards read as a current row's would.
+            hit["title"], hit["meta"] = mask(hit["title"]), mask_all(hit["meta"])
+            hit["content"], own = _masked_item(db, hit)
+            snip, marked = _snippets(hit["title"], own, match)
+        hit["snippet"] = re.sub(r"\s+", " ", snip if "[" in snip else own[:SNIPPET_CHARS]).strip()
+        hit["excerpt"] = excerpt(marked if MARK in marked else own)
     return hits
 
 
@@ -128,10 +151,52 @@ def search_stores(stores, query, after=None, sources=(), limit=10, before=None, 
     return sorted(hits, key=lambda h: -h["score"])[:limit]
 
 
+def _masked_item(db, hit):
+    """The hit's item masked whole, and the hit's own stretch of it. A doc or summary row is its own item. A chunk's
+    item is its chunks joined in order, masked together so a secret across two chunks is still found. Its own stretch
+    is the chunk masked alone when the text before it, the chunk and the text after it, each masked alone, join up to
+    the whole masked item; otherwise a secret crosses its edge and the stretch is the whole item."""
+    if hit["kind"] != "raw":
+        whole = mask(hit["content"])
+        return whole, whole
+    rows = db.execute("SELECT content, json_extract(metadata, '$.chunk') FROM docs WHERE source=? AND source_id=? "
+                      "AND kind='raw' ORDER BY 2", (hit["source"], hit["source_id"])).fetchall()
+    parts = [content for content, _ in rows]
+    whole = mask("".join(parts))
+    at = [i for i, (_, chunk) in enumerate(rows) if chunk == hit["meta"].get("chunk")]
+    if len(at) != 1:
+        return whole, whole
+    before, own, after = (mask("".join(p)) for p in (parts[:at[0]], parts[at[0]:at[0] + 1], parts[at[0] + 1:]))
+    return whole, own if before + own + after == whole else whole
+
+
+def _snippets(title, text, match):
+    """The two passages search() cuts from a current row, cut by FTS5 itself from an index of just this title and
+    text, laid out as docs_fts is, so stemming matches, a match in the title alone counts, and the matching words
+    cluster as they do in the store."""
+    index = sqlite3.connect(":memory:")
+    try:
+        index.execute(f"CREATE VIRTUAL TABLE t USING fts5(title, content, tokenize='{TOKENIZE}')")
+        index.execute("INSERT INTO t(rowid, title, content) VALUES (1, ?, ?)", (title, text))
+        row = index.execute(f"SELECT {SNIPPETS.format(table='t', column=1)} FROM t WHERE t MATCH ?", (match,)).fetchone()
+        return row if row else ("", text)
+    finally:
+        index.close()
+
+
+def excerpt(marked, chars=EXCERPT_CHARS):
+    """The text cut to `chars` around its first marked word, so a long run of words before a match cannot push the
+    match out."""
+    text = re.sub(r"\s+", " ", marked).strip()
+    start = max(0, min(text.find(MARK) - chars // 3, len(text) - chars))
+    text = text[start:start + chars].replace(MARK, "").replace(END, "")
+    return ("… " + text.lstrip("… ") if start else text).strip()
+
+
 def pointer(meta, machine=None):
     """Where to open the original. A file path on another computer names that computer."""
     where = meta.get("url") or meta.get("path") or ""
     host = meta.get("host")
     if host and host != machine and meta.get("path") and where == meta.get("path"):
         where = f"{host}:{where}"
-    return where
+    return mask(where)

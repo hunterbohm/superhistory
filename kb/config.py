@@ -30,11 +30,19 @@ from typing import Any, Mapping, Optional, Tuple
 
 from kb.mask import mask
 
+from kb.mask import KEY_WORD, holds_secret, mask
+
+# Names go into every stored id and into the logs, so one that looks like a key is refused; the message is masked.
+SECRET_NAME = "{where}: this name looks like a secret; use a plain name"
+# A name that is a secret's word can be printed: it is the word itself, not a secret.
+KEY_WORD_NAME = ('{where}: "{name}" is a word for a secret, such as "password" or "token", so kb could not tell an id '
+                 'made from it from a secret. To fix it, {fix}.')
 NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,39}$")
 SOURCE_KEYS = {"type", "enabled", "exclude", "exclude_defaults", "summarize", "hosts"}
 MAX_CHECK_BUDGET = 25.0
 # Tables kb keeps as they are for the packages that read them: [sync] for the Sync client (kb/sync), [cloud] for Cloud.
 EXTENSION_TABLES = ("sync", "cloud")
+SECRET_TIMEOUT = 60.0
 
 
 class ConfigError(ValueError):
@@ -74,12 +82,19 @@ class Secret:
             except OSError as exc:
                 raise SecretError(f"cannot read {rest}: {exc.strerror}") from None
         else:
-            proc = subprocess.run(rest, shell=True, capture_output=True, text=True, timeout=60)
+            try:
+                proc = subprocess.run(rest, shell=True, capture_output=True, text=True, timeout=SECRET_TIMEOUT)
+            except subprocess.TimeoutExpired:
+                raise SecretError(f"`{rest}` gave no answer in {SECRET_TIMEOUT:g} s") from None
+            except (OSError, subprocess.SubprocessError) as exc:
+                raise SecretError(f"`{rest}` did not run: {type(exc).__name__}") from None
             if proc.returncode:
                 raise SecretError(f"`{rest}` exited {proc.returncode}")
             value = proc.stdout
-        value = value.strip()
-        if not value:
+        # An environment value is used as it is; a file or a command's output loses only its trailing line breaks.
+        if kind != "env":
+            value = value.rstrip("\r\n")
+        if not value.strip(" \t\r\n"):
             raise SecretError(f"{self.ref.split(':', 1)[0]}:{rest} is empty")
         return value
 
@@ -192,6 +207,8 @@ def load(path):
             text = fh.read()
     except FileNotFoundError:
         return Config()
+    except UnicodeDecodeError as exc:
+        raise ConfigError([f"not valid UTF-8: {exc.reason} at byte {exc.start}"]) from None
     return parse(text)
 
 
@@ -204,6 +221,13 @@ def parse(text):
     machine = raw.pop("machine", "local")
     if not isinstance(machine, str) or not NAME_RE.match(machine):
         problems.append("machine: use lowercase letters, digits, - and _, up to 40 characters")
+        machine = "local"
+    elif KEY_WORD.fullmatch(machine):
+        problems.append(KEY_WORD_NAME.format(where="machine", name=machine, fix="run `kb setup` and give this "
+                                             "computer another name, or change the machine line in this file"))
+        machine = "local"
+    elif holds_secret(machine):
+        problems.append(SECRET_NAME.format(where="machine"))
         machine = "local"
     tables = {key: raw.pop(key, {}) for key in ("ai", "check", "summarize", "schedule", "hosts", "sources")}
     extra = {key: raw.pop(key) for key in EXTENSION_TABLES if key in raw}
@@ -222,6 +246,11 @@ def parse(text):
     for name, table in tables["hosts"].items():
         if name == machine or not NAME_RE.match(name):
             problems.append(f"hosts.{name}: a host name differs from machine and uses lowercase letters, digits, - and _")
+        elif KEY_WORD.fullmatch(name):
+            problems.append(KEY_WORD_NAME.format(where=f"hosts.{name}", name=name, fix=f"rename the [hosts.{name}] "
+                                                 "table and that host in each source's hosts list"))
+        elif holds_secret(name):
+            problems.append(SECRET_NAME.format(where=f"hosts.{name}"))
         elif not isinstance(table, dict):
             problems.append(f"hosts.{name}: expected a table")
         else:
@@ -258,7 +287,18 @@ def _ai(table, problems):
         return None
     rest = {k: v for k, v in table.items() if k not in ("plugin", "allow_unconfirmed")}
     options = options_from(spec.Options, rest, "ai", problems)
-    return AISettings(plugin, options) if options is not None else None
+    if options is None:
+        return None
+    for name in secret_looking(options):
+        problems.append(f"ai.{name}: this looks like a secret; give a key as key = \"env:...\", file: or cmd:")
+    return AISettings(plugin, options)
+
+
+def secret_looking(options):
+    """The names of plain text settings that look like secrets. They go to the plug-in's provider as they are (a
+    model name in the request), so only `key`, a Secret reference, may hold one."""
+    return [f.name for f in dataclasses.fields(options)
+            if isinstance(getattr(options, f.name), str) and holds_secret(getattr(options, f.name))]
 
 
 def _source(name, table, machine, known_hosts, problems):
@@ -266,6 +306,9 @@ def _source(name, table, machine, known_hosts, problems):
     where = f"sources.{name}"
     if not NAME_RE.match(name):
         problems.append(f"{where}: a source name uses lowercase letters, digits, - and _, up to 40 characters")
+        return None
+    if holds_secret(name):
+        problems.append(SECRET_NAME.format(where=where))
         return None
     if not isinstance(table, dict):
         problems.append(f"{where}: expected a table")

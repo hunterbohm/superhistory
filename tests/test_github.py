@@ -5,6 +5,7 @@ import stat
 import sys
 import tempfile
 import time
+import types
 import unittest
 from datetime import datetime, timezone
 from unittest import mock
@@ -85,10 +86,11 @@ class GitHubCase(unittest.TestCase):
         self.gh = FakeGh(self.tmp)
         self.now = float(int(time.time()))
         self.sleeps = []
-        for patch in (mock.patch.object(github.time, "sleep", self.sleeps.append),
-                      mock.patch.object(github.time, "time", lambda: self.now)):
-            patch.start()
-            self.addCleanup(patch.stop)
+        # The source gets a clock of its own: patching the shared time module would also catch other threads' sleeps.
+        clock = types.SimpleNamespace(sleep=self.sleeps.append, time=lambda: self.now)
+        patcher = mock.patch.object(github, "time", clock)
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     def read(self, since=None, exclude=github.TYPE.exclude, **options):
         options.setdefault("gh", self.gh.path)
@@ -225,7 +227,7 @@ class GitHubSourceTest(GitHubCase):
         self.assertEqual(self.gh.views(), [])
 
     def test_a_missing_gh_binary_is_an_error(self):
-        with self.assertRaises(FileNotFoundError):
+        with self.assertRaisesRegex(RuntimeError, "gh did not run"):
             self.read(since=self.now - DAY, gh=os.path.join(self.tmp, "no-such-gh"))
 
 

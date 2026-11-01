@@ -90,6 +90,11 @@ class ReadingTest(CodexCase):
             self.assertNotIn(dropped, content)
         self.assertLess(len(content), 2500)
 
+    def test_a_line_separator_inside_a_message_is_read_whole(self):
+        lines = [json.dumps(json.loads(line), ensure_ascii=False, separators=(",", ":"))  # raw, as Codex may write it
+                 for line in conversation(prompt="Fix the zebra test\u2028then the\x85lint")]
+        self.assertIn("Fix the zebra test\u2028then the\x85lint", self.write_and_read(lines).content)
+
     def test_a_request_marker_in_the_first_prompt_gives_the_title_its_text(self):
         prompt = "Context the harness added\n## My request for Codex:\n\nRename the giraffe module\nthen test"
         self.assertEqual(self.write_and_read(conversation(prompt=prompt)).title, "Rename the giraffe module")
@@ -125,6 +130,16 @@ class ReadingTest(CodexCase):
         for expected in ("TOOL web_search: zebra stripe genetics", "TOOL apply_patch: {broken", "TOOL read: a.py",
                          "TOOL shell: ls -la", "RESULT: all good"):
             self.assertIn(expected, content)
+
+    def test_tool_arguments_written_as_json_show_no_secret(self):
+        # Arguments with no field kb shows are written as JSON, where a line break reads "\\n" and a quote \\".
+        body = 'deploy notes\nghp_' + "A1" * 12 + '\nconfig {"password": "walrus2wolfpack9"}'
+        content = self.write_and_read(conversation() + [
+            rec(3, "response_item", {"type": "function_call", "name": "notes", "arguments": json.dumps({"body": body})})
+        ]).content
+        self.assertNotIn("A1A1A1", content)
+        self.assertNotIn("walrus2wolfpack9", content)
+        self.assertIn('TOOL notes: {"body": "deploy notes\\n[masked]', content)
 
     def test_long_tool_input_and_output_are_clipped(self):
         lines = conversation() + [

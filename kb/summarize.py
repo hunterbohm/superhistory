@@ -8,7 +8,7 @@ from typing import NamedTuple, Optional
 
 from kb import ai, ids, store
 from kb.ai import BadAnswer, Prompt, Refused
-from kb.mask import mask
+from kb.mask import mask, masked_log
 
 MAX_INPUT_CHARS = 150_000
 SLICES = 8
@@ -134,19 +134,25 @@ def pending(db, scope, limit=None, owner=None):
           AND json_extract(previous, '$.of_hash') IS NOT h
           AND NOT EXISTS (SELECT 1 FROM ingest_state f WHERE f.source='{FAILED}'
                           AND f.key=r.source || '|' || r.source_id AND f.watermark=h)
+          AND NOT EXISTS (SELECT 1 FROM docs n WHERE n.source=r.source AND n.source_id=r.source_id AND n.masked IS NULL)
         ORDER BY r.ts DESC"""
     now = datetime.now(timezone.utc)
     items = (Item(src, sid, ts, title, h, json.loads(meta), chars, json.loads(previous) if previous else None)
              for src, sid, ts, title, h, meta, chars, previous in db.execute(sql, args))
+    # A store from before ingest refused such ids can hold an item whose id looks like a secret; remask deletes it.
     return list(itertools.islice((i for i in items if scope.covers(i.source, i.source_id)
+                                  and not store.secret_id(i.source, i.source_id,
+                                                          store.item_names(db, i.source, i.source_id))
                                   and not (waits(i.chars, i.previous, now) and extends(item_text(db, i), i.previous))),
                                  limit))
 
 
 def item_text(db, item):
-    rows = db.execute("SELECT content FROM docs WHERE source=? AND source_id=? AND kind='raw' "
-                      "ORDER BY json_extract(metadata, '$.chunk')", (item.source, item.source_id))
-    return "".join(r[0] for r in rows)
+    rows = db.execute("SELECT id, content FROM docs WHERE source=? AND source_id=? AND kind='raw' "
+                      "ORDER BY json_extract(metadata, '$.chunk')", (item.source, item.source_id)).fetchall()
+    if store.unversioned(db, [r[0] for r in rows]):
+        return ""  # an older kb's rows, which no reader shows
+    return mask("".join(r[1] for r in rows))  # masked whole, before any cut, in case rows are of another version
 
 
 def cap(text, limit=MAX_INPUT_CHARS, slices=SLICES):
@@ -214,10 +220,10 @@ def rows(item, span, segments, atoms):
     meta.update(span)
     meta["at"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     out = [{"kind": "segment", "ts": item.ts, "title": mask(title)[:200],
-            "content": mask(f"{question[:400]}\n{summary[:1500]}"), "metadata": meta}
+            "content": mask(f"{mask(question)[:400]}\n{mask(summary)[:1500]}"), "metadata": meta}
            for title, question, summary in segments]
     for kind, text in atoms:
-        text = mask(text[:2000])
+        text = mask(text)[:2000]
         label = re.sub(r"\s+", " ", text.splitlines()[0] if text.splitlines() else text)[:80]
         out.append({"kind": "atom", "ts": item.ts, "title": f"{kind}: {label}", "content": text,
                     "metadata": {**meta, "atom": kind}})
@@ -227,6 +233,7 @@ def rows(item, span, segments, atoms):
 def summarize(db, items, scope, model, log, timeout=300.0):
     """Model calls run on a thread pool; every database read and write stays on this thread. A NotReady error, or a
     Busy one after its retries, stops the run and leaves the remaining items pending."""
+    log = masked_log(log)
     done = failed = 0
     now = datetime.now(timezone.utc)
     limit = min(MAX_INPUT_CHARS, model.traits.max_prompt_chars)
@@ -243,7 +250,7 @@ def summarize(db, items, scope, model, log, timeout=300.0):
         log.warning("summarize %s %s: %s", item.source, item.source_id, reason)
 
     def ask(prompt):
-        return ai.with_retries(lambda: model.ask(prompt, timeout))
+        return ai.with_retries(lambda: model.ask(ai.masked(prompt), timeout))
 
     def fill():
         for item in queue:
@@ -286,6 +293,7 @@ def summarize(db, items, scope, model, log, timeout=300.0):
 
 def run(db, config, model, log, limit=None, only=None):
     """Summarize up to `limit` pending items (the config's per_run by default), newest first."""
+    log = masked_log(log)
     rules = scope(config, only)
     backlog = pending(db, rules, owner=config.owner)
     items = backlog[:config.summarize.per_run if limit is None else limit]

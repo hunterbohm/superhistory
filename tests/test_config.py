@@ -1,6 +1,7 @@
 import os
 import tempfile
 import unittest
+from unittest import mock
 
 from kb import config
 from kb.config import ConfigError, Secret, SecretError
@@ -131,6 +132,22 @@ class ExtensionTest(unittest.TestCase):
             config.parse("[sync]\n[sources.github]\n")
 
 
+class KeyWordHostTest(unittest.TestCase):
+    def test_a_machine_or_host_named_as_a_secrets_key_word_is_refused_with_how_to_fix_it(self):
+        for name in ("password", "token", "cookie", "api_key", "passcode"):
+            with self.subTest(name=name):
+                with self.assertRaises(config.ConfigError) as caught:
+                    config.parse(f'machine = "{name}"\n')
+                self.assertIn(f'machine: "{name}" is a word for a secret', str(caught.exception))
+                self.assertIn("run `kb setup` and give this computer another name", str(caught.exception))
+                with self.assertRaises(config.ConfigError) as caught:
+                    config.parse(f'[hosts.{name}]\nssh = "x"\n')
+                self.assertIn(f"rename the [hosts.{name}] table and that host in each source's hosts list",
+                              str(caught.exception))
+        for name in ("tokenbox", "secret-lab", "studio-pw", "passwordless", "desk"):
+            self.assertEqual(config.parse(f'machine = "{name}"\n').machine, name)
+
+
 class SecretTest(unittest.TestCase):
     def test_env_file_and_command(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -142,6 +159,15 @@ class SecretTest(unittest.TestCase):
             self.assertEqual(Secret("env:KB_TEST_SECRET").reveal(), "from-env")
             self.assertEqual(Secret(f"file:{path}").reveal(), "from-file")
             self.assertEqual(Secret("cmd:echo from-command").reveal(), "from-command")
+
+    def test_a_secret_keeps_a_line_separator_it_ends_with(self):
+        for separator in ("\u2028", "\u2029", "\x85"):
+            with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(os.environ, {"KB_TEST_SECRET": "pw" + separator}):
+                path = os.path.join(tmp, "key")
+                with open(path, "w", encoding="utf-8") as fh:
+                    fh.write("pw" + separator + "\n")
+                self.assertEqual(Secret("env:KB_TEST_SECRET").reveal(), "pw" + separator, repr(separator))
+                self.assertEqual(Secret(f"file:{path}").reveal(), "pw" + separator, repr(separator))
 
     def test_unreadable_or_empty_secrets_raise(self):
         for ref in ("env:KB_TEST_UNSET_SECRET", "file:/nonexistent/key", "cmd:exit 3", "cmd:true"):
