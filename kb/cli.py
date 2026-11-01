@@ -419,15 +419,49 @@ def _per_source(path, kept):
         raise Fail(f"could not count the items in {path} ({exc}), so {kept}") from None
 
 
-def _item_key(source_id, config):
-    """An item as (the install that read it, the host it was read on or None for this computer, the reader's id), so
-    an id an older kb wrote under the host's name, "<host>:<id>", is the same item as the one this install writes,
-    "<install>:<id>" or "<install>@<host>:<id>" (kb.ids)."""
-    head, _, rest = source_id.partition(":")
-    install, at, host = head.partition("@")
-    if ids.INSTALL_ID.fullmatch(install):
-        return install, host if at else None, rest
-    return config.install, None if head == config.machine else head, rest
+def _rebuilt_id(source, source_id, config):
+    """The one id this install's ingest writes for the item an old store holds under `source_id`, by the rule it
+    writes with (ids.prefix), or None when it writes none: an item another install read, or one an older kb read on a
+    host the source no longer reads. An older kb wrote "<host>:<id>", where host is the machine's name for this
+    computer; a host's name never equals the machine's, so each old id has one new id at most."""
+    head, colon, rest = source_id.partition(":")
+    if not colon:
+        return None
+    if ids.INSTALL_ID.fullmatch(head.partition("@")[0]):
+        return source_id if ids.owner(source_id) == config.install else None
+    if head not in source.hosts:
+        return None
+    return ids.prefix(config.install, None if head == config.machine else head) + rest
+
+
+def _lost(before, after, config):
+    """{source: how many of its items in the old store the fresh one lacks}. An old item counts as kept only when the
+    one id this install writes for it is in the fresh store and no other old item maps to that id too: two old items
+    the fresh store holds as one, as an older kb's copy and this install's, count as lost, and so does any id that
+    maps to none."""
+    sources = {s.name: s for s in config.sources}
+    lost = {}
+    for name, (found, _) in sorted(before.items()):
+        fresh = after.get(name, (set(),))[0]
+        mapped = {}
+        for source_id in found:
+            new = _rebuilt_id(sources[name], source_id, config) if name in sources else None
+            mapped.setdefault(new, []).append(source_id)
+        n = sum(len(old) for new, old in mapped.items() if new is None or new not in fresh or len(old) > 1)
+        if n:
+            lost[name] = n
+    return lost
+
+
+def _marks_in(path, kept):
+    """How many supersede marks the store at `path` holds, read as _per_source() reads it."""
+    if not os.path.exists(path):
+        return 0
+    try:
+        with contextlib.closing(store.peek(path)) as db:
+            return store.mark_count(db)
+    except sqlite3.Error as exc:
+        raise Fail(f"could not read {path} ({exc}), so {kept}") from None
 
 
 def _reading_back(config, before):
@@ -514,6 +548,7 @@ def cmd_rebuild(paths, config, args):
                        f"{'it' if len(aside) == 1 else 'them'}, then run `kb rebuild` again.")
         kept = f"{paths.db} is kept as it was"
         before = _per_source(target, kept)
+        marks = _marks_in(target, kept)
         _remove_store(fresh)
         try:
             db = store.connect(fresh)
@@ -534,10 +569,7 @@ def cmd_rebuild(paths, config, args):
                            f"{paths.log_dir}), so {kept}")
             after = _per_source(fresh, kept)
             # Which items, not how many: a source can have let some go and gained as many since.
-            keys = lambda found: {_item_key(source_id, config) for source_id in found}
-            lost = {source: len(keys(found) - keys(after.get(source, (set(),))[0]))
-                    for source, (found, _) in sorted(before.items())}
-            lost = {source: n for source, n in lost.items() if n}
+            lost = _lost(before, after, config)
             losses = ", ".join(f"{source}: {n:,} {'item' if n == 1 else 'items'}" for source, n in lost.items())
             if lost and not args.accept_loss:
                 raise Fail(f"the fresh knowledge base lacks items {paths.db} holds, from {losses}. A source that keeps "
@@ -560,8 +592,10 @@ def cmd_rebuild(paths, config, args):
             raise
         _remove_store(fresh)
         _remove_store(old)
-    print(f"Rebuilt {paths.db} from your sources: {items:,} items. The next ingest writes their summaries."
-          + (f" Lost, as --accept-loss allowed: {losses}." if lost else ""))
+    dropped = (f"; dropped {marks:,} supersede {'mark' if marks == 1 else 'marks'} (they aren't rebuilt from "
+               f"sources), and the old knowledge base is gone, so they can't come back" if marks else "")
+    print(f"Rebuilt {paths.db} from your sources: kept {items:,} {'item' if items == 1 else 'items'}{dropped}. "
+          f"The next ingest writes their summaries." + (f" Lost, as --accept-loss allowed: {losses}." if lost else ""))
 
 
 def _own(paths, config):

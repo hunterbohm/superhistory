@@ -28,6 +28,10 @@ STATE = "_kb"
 BUSY_MS = 30000
 TOKENIZE = "porter unicode61"
 
+SUPERSEDES = """CREATE TABLE IF NOT EXISTS supersedes(
+  source TEXT NOT NULL, source_id TEXT NOT NULL, marked_by TEXT NOT NULL,
+  new_source TEXT, new_source_id TEXT, at TEXT NOT NULL, v INTEGER,
+  PRIMARY KEY(source, source_id, marked_by))"""
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS docs(
   id INTEGER PRIMARY KEY,
@@ -54,10 +58,7 @@ CREATE TRIGGER IF NOT EXISTS docs_au AFTER UPDATE OF title, content ON docs BEGI
   INSERT INTO docs_fts(docs_fts, rowid, title, content) VALUES ('delete', old.id, old.title, old.content);
   INSERT INTO docs_fts(rowid, title, content) VALUES (new.id, new.title, new.content);
 END;
-CREATE TABLE IF NOT EXISTS supersedes(
-  source TEXT NOT NULL, source_id TEXT NOT NULL, marked_by TEXT NOT NULL,
-  new_source TEXT, new_source_id TEXT, at TEXT NOT NULL, v INTEGER,
-  PRIMARY KEY(source, source_id, marked_by));
+""" + SUPERSEDES + """;
 -- A change to a row's time, title, text or metadata clears its mask version. kb's own writers stamp it again once
 -- they have masked the row; an older kb, which does not, leaves the row to be masked again.
 CREATE TRIGGER IF NOT EXISTS docs_unmask AFTER UPDATE OF ts, title, content, metadata ON docs BEGIN
@@ -113,11 +114,11 @@ def connect(path, readonly=False):
         raise NeedsRebuild(REBUILD.format(path=path))
     if not readonly:
         db.execute("PRAGMA journal_mode=WAL")
+        _move_marks(db)  # before the schema, which would make the supersedes table without them
         db.executescript(SCHEMA)
         if not _versioned(db):
             db.execute("ALTER TABLE docs ADD COLUMN masked TEXT")  # an empty store from before rows recorded it
         db.execute("CREATE INDEX IF NOT EXISTS docs_masked ON docs(masked)")
-        _move_marks(db)
     return db
 
 
@@ -126,10 +127,14 @@ def connect(path, readonly=False):
 MOVED_MARK_BY = ""
 
 
+def _has_old_marks(db):
+    return any(column[1] == "superseded_by" for column in db.execute("PRAGMA table_info(docs)"))
+
+
 def _old_marks(db):
     """{item: the item that replaces it} as an older kb kept them: each in docs.superseded_by, the replacing row's
     id. Empty for a store with no such column."""
-    if not any(column[1] == "superseded_by" for column in db.execute("PRAGMA table_info(docs)")):
+    if not _has_old_marks(db):
         return {}
     marks = {}
     for src, sid, new_src, new_sid in db.execute(
@@ -140,14 +145,35 @@ def _old_marks(db):
 
 
 def _move_marks(db):
-    """Moves an older kb's supersede marks into the supersedes table, once: the column is emptied as they move."""
-    marks = _old_marks(db)
-    if marks:
-        db.executemany("INSERT OR IGNORE INTO supersedes(source, source_id, marked_by, new_source, new_source_id, at, "
-                       "v) VALUES (?,?,?,?,?,?,NULL)",
-                       [(*item, MOVED_MARK_BY, *new, now_iso()) for item, new in marks.items()])
+    """Moves an older kb's supersede marks into the supersedes table in one transaction, which makes the table too.
+    Should it stop partway, the store is as it was, its readers take the marks from docs.superseded_by as before, and
+    the error goes to the caller. The column is emptied as the marks move, so a second run moves nothing."""
+    if not _has_old_marks(db) or not db.execute("SELECT 1 FROM docs WHERE superseded_by IS NOT NULL LIMIT 1").fetchone():
+        return
+    db.execute("BEGIN IMMEDIATE")
+    try:
+        db.execute(SUPERSEDES)
+        db.executemany("INSERT INTO supersedes(source, source_id, marked_by, new_source, new_source_id, at, v) "
+                       "VALUES (?,?,?,?,?,?,NULL) ON CONFLICT(source, source_id, marked_by) DO UPDATE SET "
+                       "new_source=excluded.new_source, new_source_id=excluded.new_source_id, at=excluded.at",
+                       [(*item, MOVED_MARK_BY, *new, now_iso()) for item, new in _old_marks(db).items()])
         db.execute("UPDATE docs SET superseded_by = NULL WHERE superseded_by IS NOT NULL")
         db.commit()
+    except BaseException:
+        db.rollback()
+        raise
+
+
+def mark_count(db):
+    """How many supersede marks the store holds: rows of the supersedes table, a clear's too, and an older kb's marks
+    still in docs.superseded_by."""
+    count = 0
+    if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='supersedes'").fetchone():
+        count += db.execute("SELECT count(*) FROM supersedes").fetchone()[0]
+    if _has_old_marks(db):
+        count += db.execute("SELECT count(DISTINCT source || char(0) || source_id) FROM docs "
+                            "WHERE superseded_by IS NOT NULL").fetchone()[0]
+    return count
 
 
 def has_unversioned(db):
