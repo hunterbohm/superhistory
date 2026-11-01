@@ -547,6 +547,9 @@ class Mem0RateLimitTest(unittest.TestCase):
     def setUp(self):
         gateway.LIMITED.clear()
         self.addCleanup(gateway.LIMITED.clear)
+        key = mock.patch.dict(os.environ, {"BENCH_API_KEY": "test"})
+        key.start()
+        self.addCleanup(key.stop)
 
     def load(self, add):
         from tools import mem0
