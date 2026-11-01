@@ -415,6 +415,23 @@ class KeyShapeTest(unittest.TestCase):
                 if after.endswith("the next paragraph") and text[end:] in (after, after[1:]):
                     self.assertEqual(masked, "note [masked]" + text[end:], f"seq {seq}: {text!r}")
 
+    def test_encrypted_key_fields_cost_time_near_prose(self):
+        # An encrypted key's footer comes after one blank line, the one after its DEK-Info field, so a field's search
+        # for it stops at the next.
+        import time
+
+        def took(text):
+            started = time.process_time()
+            mask(text)
+            return time.process_time() - started
+
+        size = 1 << 18
+        prose = took("the walrus ledger notes plan\n\n" * (size // 30))
+        for unit in ("DEK-Info: AES-128-CBC,00112233\n\n", "Proc-Type: 4,ENCRYPTED\n\n", "[masked],ENCRYPTED\n\n",
+                     "DEK-Info: x\\n\\n"):
+            with self.subTest(unit=unit):
+                self.assertLess(took(unit * (size // len(unit))), 4 * max(prose, 0.01))
+
     def test_paragraphs_after_a_broken_key_stay(self):
         for key in ("-----BEGIN PRIVATE KEY-----\nMIIEvQIBADAN", "-----BEGIN RSA PRIVATE KEY-----\nProc-Type: 4,ENCRYPTED\n"
                     "DEK-Info: AES-256-CBC,0A1B\n\nMIIEvQIBADAN", "abc\n-----END PRIVATE KEY-----"):
