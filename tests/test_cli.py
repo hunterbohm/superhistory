@@ -214,6 +214,20 @@ class CliTest(TempHome):
         self.assertNotIn("characters remain", out)
         self.assertNotIn("superseded", out)
 
+    def test_supersede_refuses_an_item_whose_id_holds_a_secret_and_names_remask(self):
+        secret = "sk-ant-api03-" + "Q" * 40  # made up
+        self.add("plain", "walrus notes")
+        self.db.execute("INSERT INTO docs(kind, source, source_id, ts, title, content, metadata, masked) VALUES "
+                        "('doc', 's', ?, ?, 'old', 'walrus notes', '{}', 'older-mask')", (secret, iso()))
+        self.db.commit()
+        for args in (("1", "2"), ("2", "1"), ("2", "--clear")):
+            with self.subTest(args=args):
+                code, out, err = self.run_kb("supersede", *args)
+                self.assertEqual(code, 1, out)
+                self.assertIn("kb remask", err)
+                self.assertNotIn(secret, out + err)
+        self.assertEqual(self.db.execute("SELECT count(*) FROM supersedes").fetchone()[0], 0)
+
     def test_superseded_hit_names_its_replacement(self):
         self.add("old", "the launch is in October", title="Old plan")
         self.add("new", "the launch is in November", title="New plan")
@@ -338,6 +352,32 @@ class OlderStoreTest(TempHome):
                         (iso(), f"db_password: [masked] {self.SECRET} pelican"))
         self.db.commit()
 
+    def mine(self):
+        from kb import ids
+        from kb.paths import Paths
+        return ids.install_id(Paths.for_user())
+
+    def test_a_rebuild_after_an_ingest_loses_nothing_and_the_next_ingest_adds_nothing(self):
+        self.db.execute("DELETE FROM docs")  # a store this kb wrote, under this install's ids
+        self.db.commit()
+        self.db.close()
+        self.assertEqual(self.run_kb("ingest", "--no-summaries")[0], 0)
+        code, out, err = self.run_kb("rebuild")
+        self.assertEqual(code, 0, err)
+        self.assertNotIn("lacks", err)
+        self.assertEqual(self.run_kb("ingest", "--no-summaries")[0], 0)
+        with contextlib.closing(store.connect(self.path)) as db:
+            self.assertEqual([r[0] for r in db.execute("SELECT DISTINCT source_id FROM docs")], [f"{self.mine()}:plan.md"])
+
+    def test_an_item_an_older_kb_stored_under_its_hosts_name_is_the_same_item_under_this_installs_id(self):
+        config = config_mod.Config(machine="studio", install="c-aaaaaaaaaaaaa")
+        key = lambda sid: cli._item_key(sid, config)
+        self.assertEqual(key("studio:plan.md"), key("c-aaaaaaaaaaaaa:plan.md"))
+        self.assertEqual(key("desk:Area/plan.md"), key("c-aaaaaaaaaaaaa@desk:Area/plan.md"))
+        for other in ("c-bbbbbbbbbbbbb:plan.md", "desk:plan.md", "c-aaaaaaaaaaaaa@desk:plan.md", "studio:other.md"):
+            with self.subTest(other=other):
+                self.assertNotEqual(key("studio:plan.md"), key(other))
+
     def test_reading_commands_refuse_and_name_the_rebuild(self):
         for args in (("search", "pelican"), ("get", 1), ("stats",), ("ingest",)):
             with self.subTest(args=args):
@@ -369,7 +409,7 @@ class OlderStoreTest(TempHome):
             self.assertNotIn(self.SECRET.encode(), fh.read())
         db = store.connect(self.path)
         self.addCleanup(db.close)
-        self.assertEqual([r[0] for r in db.execute("SELECT source_id FROM docs")], ["studio:plan.md"])
+        self.assertEqual([r[0] for r in db.execute("SELECT source_id FROM docs")], [f"{self.mine()}:plan.md"])
         self.assertEqual(store.old_rows(db), 0)
         code, out, err = self.run_kb("search", "pelican")
         self.assertEqual(code, 0, err)
@@ -403,7 +443,7 @@ class OlderStoreTest(TempHome):
         self.assertIn("notes: 2 items", out)
         db = store.connect(self.path)
         self.addCleanup(db.close)
-        self.assertEqual([r[0] for r in db.execute("SELECT source_id FROM docs")], ["studio:plan.md"])
+        self.assertEqual([r[0] for r in db.execute("SELECT source_id FROM docs")], [f"{self.mine()}:plan.md"])
 
     def test_rebuild_keeps_the_old_store_when_a_source_fails(self):
         self.db.close()
@@ -520,7 +560,7 @@ class OlderStoreTest(TempHome):
         self.assertIn(self.path + ".old", err)
         db = store.connect(self.path)
         self.addCleanup(db.close)
-        self.assertEqual([r[0] for r in db.execute("SELECT source_id FROM docs")], ["studio:plan.md"])
+        self.assertEqual([r[0] for r in db.execute("SELECT source_id FROM docs")], [f"{self.mine()}:plan.md"])
 
     def test_a_swap_stopped_never_moves_the_old_store_over_one_another_program_put_at_the_path(self):
         from tests.support import store_files
@@ -657,7 +697,7 @@ class OlderStoreTest(TempHome):
             self.assertNotIn(self.SECRET.encode(), fh.read())
         db = store.connect(self.path)
         self.addCleanup(db.close)
-        self.assertEqual([r[0] for r in db.execute("SELECT source_id FROM docs")], ["studio:plan.md"])
+        self.assertEqual([r[0] for r in db.execute("SELECT source_id FROM docs")], [f"{self.mine()}:plan.md"])
 
     def add_mail(self, ages, **options):
         """A Gmail source with one thread for each age in days, and an old store holding each as an item."""
@@ -692,7 +732,7 @@ class OlderStoreTest(TempHome):
         self.add_mail((400, 2))
         code, out, err = self.run_kb("rebuild")
         self.assertEqual(code, 0, err)
-        self.assertEqual(self.mail_ids(), [f"studio:{t}" for t in self.threads])
+        self.assertEqual(self.mail_ids(), [f"{self.mine()}:{t}" for t in self.threads])
         # The next ingest goes on from the rebuild's place, rather than reading the source's window again.
         self.gmail.bodies_read.clear()
         code, out, err = self.run_kb("ingest", "--no-summaries")
@@ -703,7 +743,7 @@ class OlderStoreTest(TempHome):
         self.add_mail((3, 2, 1), run_cap=2)
         code, out, err = self.run_kb("rebuild")
         self.assertEqual(code, 0, err)
-        self.assertEqual(self.mail_ids(), [f"studio:{t}" for t in self.threads])
+        self.assertEqual(self.mail_ids(), [f"{self.mine()}:{t}" for t in self.threads])
 
 
 class LoginTest(unittest.TestCase):
