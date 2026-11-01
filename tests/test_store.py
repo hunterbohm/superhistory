@@ -24,6 +24,10 @@ def summary_row(kind, text):
     return {"kind": kind, "ts": iso(), "title": kind, "content": text, "metadata": {}}
 
 
+# The version an earlier mask() recorded on its rows.
+STALE = "0123456789abcdef"
+
+
 class TempDB(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -284,6 +288,17 @@ class MovedItemTest(TempDB):
         self.assertEqual([m["path"] for m in self.metas("doc")], ["/new/Notes/a.md"])
         self.assertFalse(self.add("a", "same words", meta={"path": "/new/Notes/a.md"}))
 
+    def test_a_moved_item_keeps_the_mask_version_of_each_row(self):
+        body = long_body("pelican")
+        self.add("a", body, meta={"path": "/old/a.md"})
+        store.replace_rows(self.db, "s", "a", [{"kind": "segment", "ts": iso(), "title": "seg", "content": "summary",
+                                                "metadata": {"path": "/old/a.md", "of_hash": "h1"}}], ())
+        self.db.execute("UPDATE docs SET masked='0123456789abcdef' WHERE kind='segment'")  # an earlier version's
+        self.db.commit()
+        self.assertTrue(self.add("a", body, meta={"path": "/new/a.md"}))
+        self.assertEqual(sorted({(k, v) for k, v in self.db.execute("SELECT kind, masked FROM docs")}),
+                         [("raw", store.VERSION), ("segment", "0123456789abcdef")])
+
     def test_a_moved_long_item_keeps_its_summaries_and_points_them_to_the_new_path(self):
         body = long_body("pelican")
         self.add("a", body, meta={"path": "/old/a.md", "url": "obsidian://old"})
@@ -361,10 +376,22 @@ class HealthTest(TempDB):
 
 
 class RemaskTest(TempDB):
+    def test_an_older_row_replaced_by_a_write_leaves_no_bytes_after_the_next_remask(self):
+        # An earlier version's mask kept the password; today's ingest writes the item again, masked.
+        self.db.execute("INSERT INTO docs(kind, source, source_id, ts, title, content, masked) VALUES "
+                        "('doc', 's', 'a', ?, 't', 'redis-cli -a Qx7RedisBytes2026zz ping', ?)", (iso(), STALE))
+        self.db.commit()
+        store.store_item(self.db, "s", "a", iso(), "t", "redis-cli -a Qx7RedisBytes2026zz ping", {})
+        self.db.commit()
+        self.assertTrue(store.rebuild_owed(self.db), "the old row's words may still sit in the index and the file")
+        store.remask(self.db)
+        with open(self.path, "rb") as fh:
+            self.assertNotIn(b"qx7redisbytes2026zz", fh.read().lower())
+
     def test_remask_removes_old_values_from_rows_and_index(self):
         leaked = "GITHUB_TOKEN=abcdef1234567890abcdef1234567890"
-        self.db.execute("INSERT INTO docs(kind, source, source_id, ts, title, content) VALUES "
-                        "('doc', 's', 'a', ?, 't', ?)", (iso(), f"deploy with {leaked} today"))
+        self.db.execute("INSERT INTO docs(kind, source, source_id, ts, title, content, masked) VALUES "
+                        "('doc', 's', 'a', ?, 't', ?, ?)", (iso(), f"deploy with {leaked} today", STALE))
         self.db.commit()
         self.assertEqual(self.fts_ids("abcdef1234567890abcdef1234567890"), [1])
         self.assertEqual(store.remask(self.db), (1, 0))
@@ -383,8 +410,10 @@ class ItemHashTest(TempDB):
     TEXT = "Office VPN\nuser: walrus\nvpn_pw: walrus2secret9\n"
 
     def older(self, sid, size=store.CHUNK, times=1):
-        """An item as an older kb stored it, whose mask missed the password, and the hash it recorded."""
+        """An item as an earlier version of the mask stored it, which missed the password, and the hash it recorded.
+        Its rows record that version: rows that record none are an older kb's, which remask leaves to kb rebuild."""
         legacy_store.store_item(self.db, "s", sid, iso(), "Office VPN", self.TEXT * times, {}, size)
+        self.db.execute("UPDATE docs SET masked=? WHERE source_id=?", (STALE, sid))
         self.db.commit()
         return self.hashes(sid).pop()
 
@@ -414,9 +443,10 @@ class ItemHashTest(TempDB):
         before = self.older("long", size=40, times=3)
         self.older("other", size=40, times=3)
         for of_hash, prefix in ((before, "1f2e3d4c5b6a7980"), ("0a1b2c3d4e5f6a7b", "0f1e2d3c4b5a6978")):
-            self.db.execute("INSERT INTO docs(kind, source, source_id, ts, title, content, metadata) "
-                            "VALUES ('segment', 's', 'long', ?, 'Part', 'summary', ?)",
-                            (iso(), json.dumps({"of_hash": of_hash, "from_chars": 0, "of_chars": 99, "prefix": prefix})))
+            self.db.execute("INSERT INTO docs(kind, source, source_id, ts, title, content, metadata, masked) "
+                            "VALUES ('segment', 's', 'long', ?, 'Part', 'summary', ?, ?)",
+                            (iso(), json.dumps({"of_hash": of_hash, "from_chars": 0, "of_chars": 99, "prefix": prefix}),
+                             STALE))
         store.set_watermark(self.db, store.SUMMARY_FAILED, "s|long", before)
         store.set_watermark(self.db, store.SUMMARY_FAILED, "s|other", "0a1b2c3d4e5f6a7b")
         self.db.commit()
@@ -452,10 +482,12 @@ class ItemHashTest(TempDB):
 
 class MaskVersionTest(TempDB):
     """A row records the mask() version it was masked with. Only a row of today's version, and for a chunk only if
-    every chunk of its item is, may be cut as it is stored; ingest and remask bring the rest up to date."""
+    every chunk of its item is, may be cut as it is stored; ingest and remask bring rows of an earlier version up to
+    date. old() writes a row of an earlier version."""
     TOKEN = "sk-ant-api03-version-" + "Q" * 24
 
     def old(self, sid, content, kind="doc", meta=None, version=None):
+        version = STALE if version is None else version
         self.db.execute("INSERT INTO docs(kind, source, source_id, ts, title, content, metadata, masked) "
                         "VALUES (?, 's', ?, ?, 't', ?, ?, ?)", (kind, sid, iso(), content, json.dumps(meta or {}),
                                                                  version))
@@ -474,12 +506,13 @@ class MaskVersionTest(TempDB):
         self.assertEqual(store.current(self.db, self.ids()), set(self.ids()))
         self.assertEqual(store.old_rows(self.db), 0)
 
-    def test_rows_of_no_version_or_another_are_old(self):
+    def test_rows_of_another_version_are_old_and_rows_of_none_are_not_remasked(self):
         self.add("a", "short note")
         self.old("b", "older note")
-        self.old("c", "older note", version="0123456789abcdef")
+        self.db.execute("INSERT INTO docs(kind, source, source_id, ts, title, content, metadata, masked) "
+                        "VALUES ('doc', 's', 'c', ?, 't', 'an older kb', '{}', NULL)", (iso(),))
         self.assertEqual(store.current(self.db, self.ids()), set(self.ids("a")))
-        self.assertEqual(store.old_rows(self.db), 2)
+        self.assertEqual(store.old_rows(self.db), 1, "a row of no version is the older kb's, which a rebuild replaces")
 
     def test_a_chunk_is_current_only_while_every_chunk_of_its_item_is(self):
         self.add("a", long_body("kumquat"))
@@ -495,23 +528,27 @@ class MaskVersionTest(TempDB):
             store.remask(self.db)
             self.assertEqual(store.current(self.db, self.ids()), set(self.ids()))
 
-    def test_a_store_from_before_versions_gains_the_column_with_every_row_old(self):
+    def test_a_store_from_before_versions_does_not_open_unless_it_is_empty(self):
         path = os.path.join(self.tmp.name, "old.sqlite")
         old = sqlite3.connect(path)
         old.executescript(store.SCHEMA.replace("  superseded_by INTEGER,\n  masked TEXT\n", "  superseded_by INTEGER\n"))
         self.assertNotIn("masked", [column[1] for column in old.execute("PRAGMA table_info(docs)")])
-        old.execute("INSERT INTO docs(kind, source, source_id, ts, title, content, metadata) "
-                    "VALUES ('doc','s','a',?,'t','x',?)", (iso(), json.dumps({"hash": store.item_hash("t", "x")})))
         old.commit()
         old.close()
-        reader = store.connect(path, readonly=True)
-        self.addCleanup(reader.close)
-        self.assertEqual((store.current(reader, [1]), store.old_rows(reader)), (set(), 1))
         writer = store.connect(path)
-        self.addCleanup(writer.close)
-        self.assertEqual((store.current(writer, [1]), store.old_rows(writer)), (set(), 1))
-        self.assertEqual(store.remask(writer), (0, 0))
-        self.assertEqual(store.current(writer, [1]), {1})
+        self.assertIn("masked", [column[1] for column in writer.execute("PRAGMA table_info(docs)")], "empty: it gains it")
+        writer.close()
+        old = sqlite3.connect(path)
+        old.execute("DROP TRIGGER docs_unmask")
+        old.execute("DROP INDEX docs_masked")
+        old.execute("ALTER TABLE docs DROP COLUMN masked")
+        old.execute("INSERT INTO docs(kind, source, source_id, ts, title, content) VALUES ('doc','s','a',?,'t','x')",
+                    (iso(),))
+        old.commit()
+        old.close()
+        for readonly in (True, False):
+            with self.subTest(readonly=readonly), self.assertRaises(store.NeedsRebuild):
+                store.connect(path, readonly=readonly)
 
     def test_replace_rows_refuses_an_id_or_source_that_looks_like_a_secret(self):
         row = {"kind": "doc", "ts": iso(), "title": "t", "content": "c", "metadata": {}}
@@ -620,8 +657,13 @@ class MaskVersionTest(TempDB):
                 self.db.execute("UPDATE docs SET masked=? WHERE id=?", (store.VERSION, rid))
                 self.db.execute(sql, args)
                 self.assertEqual(store.current(self.db, [rid]), set())
-        self.db.execute("UPDATE docs SET superseded_by=1 WHERE id=?", (rid,))
         store.remask(self.db)
+        self.assertEqual(store.current(self.db, [rid]), set(), "remask leaves an older kb's row")
+        self.db.commit()
+        with self.assertRaises(store.NeedsRebuild):
+            store.connect(self.path)
+        self.db.execute("UPDATE docs SET masked=? WHERE id=?", (store.VERSION, rid))
+        self.db.execute("UPDATE docs SET superseded_by=1 WHERE id=?", (rid,))
         self.assertEqual(store.current(self.db, [rid]), {rid})
         self.db.execute("UPDATE docs SET superseded_by=NULL WHERE id=?", (rid,))
         self.assertEqual(store.current(self.db, [rid]), {rid}, "a supersede mark is not the row's text")
@@ -659,21 +701,43 @@ class MaskVersionTest(TempDB):
             self.assertNotIn(self.TOKEN.encode(), fh.read())
 
     def test_remask_keeps_an_old_note_named_with_basic_or_bearer(self):
-        for n, name in enumerate(("Courses/Basic Statistics/lecture-01.md", "Wedding/Ring Bearer duties/plan-2026.md")):
+        for n, name in enumerate(("Courses/Basic Statistics/lecture-01.md", "Wedding/Ring Bearer duties/plan-2026.md",
+                                  "ML/sk-learn-pipeline-experiments.md")):
             self.old(f"desk:{name}", f"central limit theorem {n}", meta={"host": "desk"})
         store.remask(self.db)
-        self.assertEqual(len(self.ids()), 2)
-        self.assertEqual(len(search.search(self.db, "central limit theorem")), 2)
+        self.assertEqual(len(self.ids()), 3)
+        self.assertEqual(len(search.search(self.db, "central limit theorem")), 3)
 
     def test_remask_reads_a_profile_its_rows_record_apart_from_the_id_after_it(self):
         kept = "desk:secret-project:20261028_101500_a1b2c3"
         self.old(kept, "hermes session", meta={"host": "desk", "profile": "secret-project"})
-        for sid, profile in (("desk:password:walrus2secret9", "password"), ("desk:my-token:walrus2secret9", None),
-                             ("desk:my-token:walrus2secret9x", "other")):
+        for sid, profile in (("desk:my-token:walrus2secret9", None), ("desk:my-token:walrus2secret9x", "other")):
             self.old(sid, "hermes session", meta={"host": "desk", **({"profile": profile} if profile else {})})
         store.remask(self.db)
         self.assertEqual([r[0] for r in self.db.execute("SELECT DISTINCT source_id FROM docs")], [kept],
-                         "a name that is a secret's word alone, or one the rows do not record, is not split off")
+                         "a name the rows do not record is not split off")
+
+    def test_a_profile_named_exactly_as_a_secrets_word_keeps_its_sessions(self):
+        for profile in ("secret", "token", "credentials", "password"):
+            sid = f"desk:{profile}:20261028_101500_a1b2c3"
+            self.old(sid, "hermes session", meta={"host": "desk", "profile": profile, "session_id": "20261028_101500_a1b2c3"})
+        self.old("desk:password:walrus2secret9.md", "a note", meta={"host": "desk"})
+        store.remask(self.db)
+        self.assertEqual(sorted(r[0].split(":")[1] for r in self.db.execute("SELECT DISTINCT source_id FROM docs")),
+                         ["credentials", "password", "secret", "token"], "a note with no profile is read whole")
+
+    def test_an_items_names_come_from_its_own_rows_not_its_summaries(self):
+        # An older kb's summary rows copied only url, path and host, so they record no profile.
+        sid = "desk:secret-project:20261028_101500_a1b2c3"
+        item = {"host": "desk", "profile": "secret-project", "session_id": "20261028_101500_a1b2c3"}
+        for n in range(2):
+            self.old(sid, f"hermes session part {n}", kind="raw", meta={**item, "chunk": n, "chunks": 2})
+        self.old(sid, "Which plan?\nThe one in the notes.", kind="segment", meta={"host": "desk", "of_hash": "3f2a9c"})
+        store.remask(self.db)
+        self.assertEqual(len(self.ids(sid)), 3, "remask keeps the item and its summary")
+        summary = {"kind": "segment", "ts": iso(), "title": "t", "content": "Which?\nThat one.", "metadata": {"host": "desk"}}
+        store.replace_rows(self.db, "s", sid, [summary], store.SUMMARY_KINDS)
+        self.assertEqual(len(self.ids(sid)), 3, "a summary written alone takes the item's names")
 
     def test_remask_stopped_by_its_time_leaves_the_rest_old(self):
         for i in range(120):
@@ -690,13 +754,91 @@ class MaskVersionTest(TempDB):
         with open(self.path, "rb") as fh:
             self.assertNotIn(self.TOKEN.encode(), fh.read())
 
-    def test_new_metadata_for_unchanged_text_leaves_the_row_old_until_remask(self):
+    def test_new_metadata_for_unchanged_text_keeps_the_row_current(self):
+        # store_item masks the new metadata before it gives it to the rows.
         self.add("a", "same text", meta={"path": "/one"})
         self.add("a", "same text", meta={"path": "/two"})
         self.assertEqual(json.loads(self.rows()[0][5])["path"], "/two")
-        self.assertEqual(store.old_rows(self.db), 1)
-        store.remask(self.db)
         self.assertEqual(store.old_rows(self.db), 0)
+
+
+class UnversionedRowTest(TempDB):
+    """Rows that record no mask version came from an older kb. A store that holds one does not open, and a connection
+    already open, when an older writer clears a row's version, reads and masks no such row."""
+    SECRET = "Qx7RedisBytes2026zz"
+
+    def setUp(self):
+        super().setUp()
+        self.add("kept", "the pelican plan is current")
+        self.db.execute("INSERT INTO docs(kind, source, source_id, ts, title, content, metadata, masked) VALUES "
+                        "('doc', 's', 'older', ?, 'older', ?, '{}', NULL)", (iso(), f"pelican api_key: [masked] {self.SECRET}"))
+        self.db.commit()
+
+    def test_a_store_with_one_does_not_open(self):
+        for readonly in (True, False):
+            with self.subTest(readonly=readonly), self.assertRaises(store.NeedsRebuild) as raised:
+                store.connect(self.path, readonly=readonly)
+            self.assertIn("kb rebuild", str(raised.exception))
+
+    def test_a_store_whose_last_writer_left_rows_in_its_wal_is_refused_untouched(self):
+        from tests.support import commit_and_die, store_files
+        self.db.close()
+        commit_and_die(self.path, "INSERT INTO docs(kind, source, source_id, ts, title, content, metadata, masked) "
+                                  "VALUES ('doc', 's', 'in-wal', ?, 'w', 'an older row in the WAL', '{}', NULL)", iso())
+        folder = os.path.dirname(self.path)
+        before = store_files(folder)
+        self.assertGreater(before.get(os.path.basename(self.path) + "-wal", (0,))[0], 0, "the row is in the WAL")
+        for readonly in (True, False):
+            with self.subTest(readonly=readonly), self.assertRaises(store.NeedsRebuild):
+                store.connect(self.path, readonly=readonly)
+            self.assertEqual(store_files(folder), before, "neither the store nor its WAL changed")
+
+    def test_a_linked_store_whose_last_writer_left_rows_in_its_wal_is_refused_untouched(self):
+        from tests.support import commit_and_die, store_files
+        self.db.close()
+        commit_and_die(self.path, "INSERT INTO docs(kind, source, source_id, ts, title, content, metadata, masked) "
+                                  "VALUES ('doc', 's', 'in-wal', ?, 'w', 'an older row in the WAL', '{}', NULL)", iso())
+        folder = os.path.dirname(self.path)
+        before = store_files(folder)
+        link = os.path.join(tempfile.mkdtemp(dir=os.path.dirname(folder)), "kb.sqlite")
+        os.symlink(self.path, link)
+        for readonly in (True, False):
+            with self.subTest(readonly=readonly), self.assertRaises(store.NeedsRebuild):
+                store.connect(link, readonly=readonly)
+            self.assertEqual(store_files(folder), before)
+
+    def test_a_store_with_a_wal_and_no_wal_index_is_refused_untouched(self):
+        from tests.support import commit_and_die, store_files
+        self.db.close()
+        commit_and_die(self.path, "INSERT INTO docs(kind, source, source_id, ts, title, content, metadata, masked) "
+                                  "VALUES ('doc', 's', 'in-wal', ?, 'w', 'an older row in the WAL', '{}', NULL)", iso())
+        os.remove(self.path + "-shm")
+        folder = os.path.dirname(self.path)
+        before = store_files(folder)
+        for readonly in (True, False):
+            with self.subTest(readonly=readonly), self.assertRaises(store.NeedsRebuild):
+                store.connect(self.path, readonly=readonly)
+            self.assertEqual(store_files(folder), before)
+
+    def test_an_open_connection_reads_and_remasks_none(self):
+        self.assertEqual([h["source_id"] for h in search.search(self.db, "pelican")], ["kept"])
+        store.remask(self.db)
+        self.assertEqual(self.db.execute("SELECT content, masked FROM docs WHERE source_id='older'").fetchone(),
+                         (f"pelican api_key: [masked] {self.SECRET}", None), "left as it was, and not stamped")
+
+    def test_a_store_from_before_versions_does_not_open_and_is_left_as_it_was(self):
+        self.db.close()
+        old = sqlite3.connect(self.path)
+        old.executescript("DROP TRIGGER docs_unmask; DROP INDEX docs_masked; ALTER TABLE docs DROP COLUMN masked;")
+        old.commit()
+        old.close()
+        with open(self.path, "rb") as fh:
+            before = fh.read()
+        for readonly in (True, False):
+            with self.subTest(readonly=readonly), self.assertRaises(store.NeedsRebuild):
+                store.connect(self.path, readonly=readonly)
+        with open(self.path, "rb") as fh:
+            self.assertEqual(fh.read(), before, "kb wrote nothing to it, so the older kb still opens it as it was")
 
 
 class FtsTriggerTest(TempDB):

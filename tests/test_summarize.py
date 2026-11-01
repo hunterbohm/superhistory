@@ -91,6 +91,7 @@ class SummarizeTest(unittest.TestCase):
     def date_summary(self, hours_ago, sid="test:s1"):
         self.db.execute("UPDATE docs SET metadata=json_set(metadata, '$.at', ?) "
                         "WHERE source_id=? AND kind IN ('segment','atom')", (iso(hours_ago), sid))
+        self.db.execute("UPDATE docs SET masked=? WHERE masked IS NULL", (store.VERSION,))  # the test's edit, not an older kb's
         self.db.commit()
 
     def item_hash(self, sid="test:s1"):
@@ -245,6 +246,7 @@ class SummarizeTest(unittest.TestCase):
             with self.subTest(removed=removed):
                 self.db.execute(f"UPDATE docs SET metadata=json_remove(metadata, {','.join('?' * len(removed))}) "
                                 "WHERE kind IN ('segment','atom')", [f"$.{k}" for k in removed])
+                self.db.execute("UPDATE docs SET masked=? WHERE masked IS NULL", (store.VERSION,))
                 text = self.grow(text + f"one more line {n}\n")
                 self.assertEqual(self.pending_ids(), ["test:s1"])
                 sent, _ = self.run_titled(f"Full {n}")
@@ -255,6 +257,8 @@ class SummarizeTest(unittest.TestCase):
         text = long_text("gamma") + "vpn_pw: walrus2secret9\n"
         legacy_store.store_item(self.db, "sessions", "test:s2", "2026-10-18T10:00:00Z", "title test:s2", text,
                                 SESSION_META, store.CHUNK)
+        # As an earlier version of the mask stored it: rows that record no version are an older kb's, left to rebuild.
+        self.db.execute("UPDATE docs SET masked='0123456789abcdef' WHERE source_id='test:s2'")
         self.db.commit()
         self.run_once(FakeModel(summary_text()))
         older = self.item_hash("test:s2")

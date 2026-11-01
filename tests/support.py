@@ -1,4 +1,8 @@
+import hashlib
 import json
+import os
+import subprocess
+import sys
 import tempfile
 import threading
 
@@ -83,3 +87,26 @@ def open_db(test, paths):
 def add_item(db, source, source_id, content, title="t", meta=None, ts=STAMP):
     store.store_item(db, source, source_id, ts, title, content, meta or {"path": f"/archive/{source_id}"})
     db.commit()
+
+
+def commit_and_die(path, sql, *params):
+    """Commits `sql` to the store at `path` from another process that then exits without closing it, as a killed
+    writer does, so the rows stay in the store's WAL file."""
+    script = ("import os, sqlite3, sys\n"
+              "db = sqlite3.connect(sys.argv[1])\n"
+              "db.execute('PRAGMA journal_mode=WAL')\n"
+              "db.execute(sys.argv[2], tuple(sys.argv[3:]))\n"
+              "db.commit()\n"
+              "os._exit(0)\n")
+    subprocess.run([sys.executable, "-c", script, os.fspath(path), sql, *params], check=True)
+
+
+def store_files(folder):
+    """Each file in `folder` and a hash of its bytes, but for the lock and the WAL index (-shm), which every reader
+    writes."""
+    files = {}
+    for name in sorted(os.listdir(folder)):
+        if name != "kb.lock" and not name.endswith("-shm"):
+            with open(os.path.join(folder, name), "rb") as fh:
+                files[name] = (os.path.getsize(os.path.join(folder, name)), hashlib.sha256(fh.read()).hexdigest()[:16])
+    return files

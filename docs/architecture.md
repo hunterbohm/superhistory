@@ -39,8 +39,10 @@ The Sync client goes in `kb/sync/`. It meets the engine at two points.
   store that cut an item before masking it can split a secret in two that neither chunk shows, and so it writes
   an item's chunks all at once or not at all. It refuses a source or item id that holds a secret, as ingest does
   (`store.secret_id`: the host the rows' metadata names and the reader's id apart, then any name of the reader's own
-  that the metadata records, such as a Hermes profile, apart from the rest, and any other id whole). An id is read
-  more narrowly than text, so a note titled "Tokens: 2026 plan" or filed under "Ring Bearer duties/" is kept. It
+  that the metadata records, such as a Hermes profile, apart from the rest, and any other id whole). The names come
+  from the item's own rows, since an older kb's summary rows record only some of them. An id is read more narrowly
+  than text, so a note titled "Tokens: 2026 plan", filed under "Ring Bearer duties/" or named "sk-learn-notes.md" is
+  kept. It
   records on each row the version of `mask()` it used (`mask.VERSION`, which follows the patterns and `REVISION`). A database trigger clears that version when anything else changes a row's time, title,
   text or metadata, as an older kb would.
 - Out of kb: the kb command's stdout and stderr, every log line (through `masked_log`, whatever logger the caller
@@ -55,6 +57,21 @@ The Sync client goes in `kb/sync/`. It meets the engine at two points.
   sorter's lines are masked, so the plug-in, which can be another provider than the user's agent, never sees a
   secret's value. kb's own instructions in those prompts contain nothing mask() changes.
 
+Rows an older kb wrote record no mask version, as main's did, and the store's trigger clears the version on any row an
+older kb changes; kb's own writers stamp it again. An older kb's masking can leave a secret that no pattern finds
+afterwards, such as a value whose name its named-value rule took, so kb never reads such a row or masks it again in
+place. `store.connect()` refuses a store that holds one (`store.NeedsRebuild`), and a connection opened before an older
+writer changed a row shows it to no reader and leaves it to no remask (`store.unversioned`). `kb rebuild` ingests every
+source into a fresh file under the lock, a source with a window reaching back to its oldest item in the old file and one
+with a cap on a run reading past it, and records the configured settings so the next ingest goes on from there. It puts
+the fresh file in place of the old one, at a link's target, only once every source was read, every host reached, the
+file checks sound, no row lacks a version and no source lacks an item the old file holds, unless `--accept-loss`. Of the
+old file it reads only each source's ids and oldest time. A swap that stops puts the old file back, but never over a
+store at its path: then the old one stays aside, named, and the next rebuild waits until it is moved. Remask brings rows
+of an earlier version of today's mask() up to date. `tests/test_old_rows.py` generates both kinds of rows, an earlier
+version's and an older kb's with main's own mask (`tests/legacy_mask.py`), and checks remask over the first and the
+refusal over the second.
+
 Text is masked before it is cut, never after: a cut can keep part of a secret too short for mask() to know. A row of
 today's version, and for a chunk every chunk of its item, was masked whole, so `kb search` cuts it as stored
 (`store.current`). Any other row, from before versions or from an older `mask()`, is masked whole when read: search
@@ -62,13 +79,15 @@ masks the hit's whole item, its title and its metadata, finds the match again in
 matching, and leaves out an item whose id holds a secret. `kb get` and the summarizer always mask the whole item.
 
 `mask()` masks a private key by its structure, never line by line: from its header through its footer, or, with no
-footer, through the end of its paragraph (the next blank line, plain or escaped), an encrypted key's past the blank
-line after its DEK-Info field, and a PGP key's past the blank line after its armor headers. PEM, PGP and ssh.com's
-SSH2 keys work this way; a PuTTY key file masks from `Private-Lines:` through its paragraph, and an age secret key by
-its shape. A footer with no header masks its paragraph up to it. What an older kb's key pattern left after its
-placeholder masks through its footer or the end of its paragraph: base64 glued to it, or a line break and a key's
-body from its first line, which starts as every private key's does (DER's "MII", "MHcC" or "MC4C", or OpenSSH's
-"b3Bl"). Text after a broken key in its paragraph is masked with it; that is the cost.
+footer, through the end of its paragraph (the next blank line, plain or escaped), an encrypted key's past the blank line
+after its DEK-Info field, and a PGP key's past the blank line after its armor headers. PEM, PGP and ssh.com's SSH2 keys
+work this way; a PuTTY key file masks from `Private-Lines:` through its paragraph, and an age secret key by its shape. A
+Docker config written as base64 masks too, and so does Docker's "auth" field when it decodes to "user:password". A
+private key written as base64 is not masked yet. A footer with no header masks its paragraph up to it. What an older
+kb's key pattern left after its placeholder masks through its footer or the end of its paragraph: base64 glued to it, or
+a key's body from its first line, which starts as every private key's does (DER's "MII", "MHcC" or "MC4C", or OpenSSH's
+"b3Bl"), after what can stand before a line's text (line breaks plain or escaped at any depth, quotes, "#", ">", "+",
+<br> and spaces). Text after a broken key in its paragraph is masked with it; that is the cost.
 
 Text can arrive escaped. In JSON text a secret right after an escape such as "\n" is masked as at the start of a
 line, and a value ends where an escape starts the next "name=" or "name:", so that name keeps its own. A percent

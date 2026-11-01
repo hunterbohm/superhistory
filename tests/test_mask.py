@@ -122,6 +122,18 @@ class MaskTest(unittest.TestCase):
             with self.subTest(text):
                 self.assertEqual(mask(text), text)
 
+    def test_a_value_counts_as_a_pointer_only_in_a_pointers_whole_shape(self):
+        for text in ("password=$ecretP4ss99", "password=~Zx9Kq2Lm4Np", '"password": "Abc(123)xyzQ"',
+                     '"api_key": "*Gh7kL9mPq2Rs4Tv6"', "password=/Zx9Kq2Lm4Np"):
+            with self.subTest(text=text):
+                self.assertIn("[masked]", mask(text))
+        for value in ("$DB_PASSWORD", "${DB_PASSWORD}", "$(cat pw.txt)", "%APPDATA%", "%(password)s", "{{ secrets.db }}",
+                      "${{ secrets.TOKEN }}", "~/.secrets/db", "/run/secrets/db_password", "./secret.txt",
+                      "os.environ['X']", "process.env.TOKEN", "getpass()", "env:DB_PASSWORD", "****", "[REDACTED]",
+                      "config.db.password", "$api_key"):
+            with self.subTest(value=value):
+                self.assertNotIn("[masked]", mask(f"password={value}"))
+
     def test_keyed_mask_keeps_the_key_name(self):
         self.assertEqual(mask("password: sw0rdfish9"), "password: [masked]")
 
@@ -198,6 +210,20 @@ class OtherKeyFormatTest(unittest.TestCase):
                     self.assertNotIn("WalrusSsh2", masked)
                     self.assertEqual(masked, "first\n\n[masked]\n\nlast paragraph")
 
+    def test_a_registry_login_written_as_base64_is_masked(self):
+        import base64
+        import json
+        login = base64.b64encode(b"bob:walrus2secret9").decode()
+        config64 = base64.b64encode(json.dumps({"auths": {"registry.example.com": {"auth": login}}}).encode()).decode()
+        for text in (f".dockerconfigjson: {config64}", json.dumps({"auths": {"registry.example.com": {"auth": login}}}),
+                     json.dumps(json.dumps({"auths": {"registry.example.com": {"auth": login}}}))):
+            with self.subTest(text=text[:30]):
+                masked = mask(text)
+                self.assertNotIn(login, masked)
+                self.assertNotIn(config64[16:40], masked)
+        for text in ('{"auth": "required"}', '{"auth": "bearer"}', '"auth": "c29tZSBub3Rlcw=="'):
+            self.assertEqual(mask(text), text)
+
     def test_prose_about_those_formats_stays(self):
         for text in ("PGP keys are signed in a block", "Private-Lines counts the lines", "an AGE-SECRET-KEY-1 identity",
                      "-----BEGIN PGP PUBLIC KEY BLOCK-----\n\nmQENBGcW1aEBCAD\n-----END PGP PUBLIC KEY BLOCK-----"):
@@ -232,17 +258,35 @@ class HeadlessKeyTest(unittest.TestCase):
             text = f"notes [masked]\n{self.LINE}\n{self.LINE}{after}\n\nnext paragraph"
             self.assertEqual(mask(text), "notes [masked]\n\nnext paragraph")
 
-    def test_after_a_placeholder_and_a_line_break_a_keys_first_line_starts_the_rest_of_a_key(self):
-        # main's key pattern stops at a backslash, so in escaped text it masks a key's header and leaves its body from
-        # the first line, cut anywhere, which starts as a real key's DER or OpenSSH body does.
+    def test_after_a_placeholder_and_a_line_break_a_whole_key_line_starts_the_rest_of_a_key(self):
+        # An older kb's key pattern stopped at a backslash, so in escaped text it masked a key's header and left its
+        # body from its first line, which starts as a real key's DER or OpenSSH body does and is base64 to its end.
         for first in ("MIIEvQIBADANBgkqhkiG9w0BAQEFAASC", "MHcCAQEEIJQyFkwn", "MC4CAQAwBQYDK2Vw", "MIGkAgEBBDAqCr+V",
                       "MEcCAQAwBQYDK2Vx", "b3BlbnNzaC1rZXkt"):
+            line = (first + self.LINE)[:64]
             for brk in ("\\n", "\\r\\n", "\n", "\r\n"):
-                for rest in (first[:4] + " …", first[:13] + " password=walrus2secret9 harbor …",
-                             first + brk + self.LINE + brk + "-----END PRIVATE KEY-----"):
-                    with self.subTest(first=first, brk=brk, rest=rest[:20]):
+                for rest in (line + brk + self.LINE[:20] + " …", line + brk + self.LINE + brk + "-----END PRIVATE KEY-----"):
+                    with self.subTest(first=first, brk=brk, rest=rest[-12:]):
                         text = f"walrus ledger [masked]{brk}{rest}{brk}{brk}next paragraph"
                         self.assertEqual(mask(text), f"walrus ledger [masked]{brk}{brk}next paragraph")
+
+    def test_after_a_placeholder_lines_that_only_start_like_a_key_stay(self):
+        for text in ("DB_PASSWORD=[masked]\nMINIO_ENDPOINT=http://minio.internal:9000\nMINIO_BUCKET=walrus-uploads",
+                     "token=[masked] MINUTES of the meeting\nnext line", "[masked]\nMIGRATION plan for the walrus\nmore",
+                     "[masked]\n\"MILESTONE\" is done", "api_key: [masked]\n# MIGRATE the walrus-uploads bucket",
+                     "[masked]\nMIGRATION2026UseTheNewCustomerAccountTable is the example name.\nKeep this sentence.",
+                     "[masked]\\nMIGRATION2026UseTheNewCustomerAccountTable is the example name.\\nKeep this sentence.",
+                     "token: [masked] MIGRATION2026UseTheNewCustomerAccountTable, as named"):
+            with self.subTest(text=text[:30]):
+                self.assertEqual(mask(text), text)
+
+    def test_quotes_after_a_placeholder_cost_time_in_proportion(self):
+        import time
+        for quote in ('"', "'", "\"'"):
+            with self.subTest(quote=quote):
+                started = time.process_time()
+                mask("[masked]" + quote * (24 // len(quote)) + "MIGRATION plan")
+                self.assertLess(time.process_time() - started, 0.5)
 
     def test_after_a_placeholder_and_a_line_break_other_lines_stay(self):
         for brk in ("\\n", "\n"):
@@ -417,6 +461,157 @@ class EscapeTest(unittest.TestCase):
                      "next=https%3A%2F%2Fexample.com%3A8443%2Fpath%40v2"):
             self.assertEqual(mask(text), text)
 
+    def test_an_encoded_space_beside_a_separator_and_flags_after_an_escape_are_read(self):
+        for text in ("password%3A%20walrus2secret9", "aws_secret_access_key%20%3D%20walrus2secret9xyz",
+                     "q=%7B%22user%22%3A%20%22bob%22%2C%20%22password%22%3A%20%22walrus2secret9%22%7D",
+                     "password+%3D+walrus2secret9", "password%253A%2520walrus2secret9",
+                     "run it\\n--password walrus2secret9\\nAuthorization: Token walrus2secret9x\\ndone",
+                     "%0A--api-key%20walrus2secret9", "Authorization%3A%20Token%20walrus2secret9x", "https:\\/\\/bob:walrus2secret9@example.com/x",
+                     "next=https%3A//bob%3Awalrus2secret9%40example.com/x", "smb://CORP\\\\bob:walrus2secret9@files/x"):
+            with self.subTest(text=text):
+                self.assertNotIn("walrus2secret9", mask(text))
+        for text in ("hello%20world%3Dfine", "a + b = c", "x%20%3D%20y", "https:\\/\\/example.com\\/path"):
+            with self.subTest(text=text):
+                self.assertEqual(mask(text), text)
+
+    def test_a_long_run_of_a_secrets_word_costs_time_in_proportion(self):
+        # A secret's name was read around its key word, back over the run once for each key word in it.
+        import time
+        for unit in ("token", '"token', "password", "a.token.", "api_key_", "x-a-auth-", "x-auth-auth"):
+            with self.subTest(unit=unit):
+                took = {}
+                for size in (1 << 12, 1 << 15):
+                    text = unit * (size // len(unit))
+                    started = time.process_time()
+                    mask(text)
+                    took[size] = time.process_time() - started
+                self.assertLess(took[1 << 15], 24 * max(took[1 << 12], 0.01), took)
+
+    def test_a_long_run_of_letters_and_digits_costs_time_in_proportion(self):
+        # A link's scheme was read on from every letter of a run, as in contract bytecode or a hash's hex.
+        import time
+        for unit in ("0123456789abcdef", "abcdefghij", "a.b+c-d"):
+            with self.subTest(unit=unit):
+                took = {}
+                for size in (1 << 13, 1 << 17):
+                    text = unit * (size // len(unit))
+                    started = time.process_time()
+                    mask(text)
+                    took[size] = time.process_time() - started
+                self.assertLess(took[1 << 17], 40 * max(took[1 << 13], 0.01), took)
+
+    def test_a_json_value_with_an_escaped_quote_is_masked_whole(self):
+        for text in ('{"password": "ab\\"cdefgh9"}', '{"password": "walrus\\"2secret9", "user": "bob"}',
+                     '{"api_key":"walrus\\\\path\\"2secret9x"}', '{\n  "db_password": "a\\"b\\"c2secret9"\n}'):
+            with self.subTest(text=text):
+                masked = mask(text)
+                self.assertNotIn("cdefgh9", masked)
+                self.assertNotIn("2secret9", masked)
+                self.assertNotIn("c2secret", masked)
+        self.assertEqual(mask('{"password": "walrus\\"2secret9", "user": "bob"}'), '{"password": "[masked]", "user": "bob"}')
+
+    def test_a_name_with_no_value_does_not_take_the_next_lines_name(self):
+        # A YAML parent key named like a secret, or a key left empty, sits above the line that holds the secret.
+        for text in ("credentials:\n  token: Zq7wLm4Np8Rt2Kd9Vh3B", "secrets:\n  db_password: walrus2secret9",
+                     "api_key:\napi_key: Zq7wLm4Np8Rt2Kd9Vh3B", "password:\npassword: walrus2secret9",
+                     "STRIPE_KEY:\n  api_key: Zq7wLm4Np8Rt2Kd9Vh3B", "auth_token: \n\tsecret: walrus2secret9"):
+            with self.subTest(text=text):
+                masked = mask(text)
+                self.assertNotIn("walrus2secret9", masked)
+                self.assertNotIn("Zq7wLm4Np8Rt", masked)
+
+    def test_an_authorization_header_reads_its_own_line(self):
+        for text in ("Authorization: Toke\nAuthorization: Token Zq7wLm4Np8Rt2Kd9Vh3B",
+                     "Authorization: Token \nAuthorization: Token Zq7wLm4Np8Rt2Kd9Vh3B"):
+            with self.subTest(text=text):
+                self.assertNotIn("Zq7wLm4Np8Rt", mask(text))
+
+    def test_a_name_that_holds_a_secrets_word_after_another_on_its_line_is_read_too(self):
+        for text in ("secrets: db_password: Qx7RedisBytes2026zz", "credentials = api_key = Qx7RedisBytes2026zz",
+                     "TOKENS: GITHUB_TOKEN=Qx7RedisBytes2026zz", '"secrets": "password: Qx7RedisBytes2026zz"'):
+            with self.subTest(text=text):
+                self.assertNotIn("Qx7RedisBytes", mask(text))
+
+    def test_a_value_after_a_carriage_return_is_masked(self):
+        for text in ("password:\r\r\n  walrus2pw9", "password:\rwalrus2pw9", "password:\r \n  walrus2pw9",
+                     "API_KEY=\rabcd1234efgh5678", "Password is\rwalrus2!x", "db:\r\r\n  password:\r\r\n    walrus2pw9"):
+            with self.subTest(text=text):
+                self.assertNotIn("walrus2", mask(text))
+                self.assertNotIn("abcd1234", mask(text))
+
+    def test_values_left_as_they_were_cost_time_in_proportion(self):
+        import time
+        for unit in ("token=/a/", "next_token=https://a.example/cb?"):
+            with self.subTest(unit=unit):
+                took = {}
+                for size in (4_000, 32_000):
+                    started = time.process_time()
+                    mask(unit * (size // len(unit)))
+                    took[size] = time.process_time() - started
+                self.assertLess(took[32_000], 16 * max(took[4_000], 0.01))
+
+    def test_a_value_that_holds_a_secrets_word_is_still_a_value(self):
+        # A value is refused as the next line's name only when the space after its separator crossed a line break.
+        for text in ("the wifi password: SecretGarden99 is on the fridge", "DB_PASSWORD=Tokyo-Token-2026 is what I set",
+                     "password=secret:walrus2", "admin_password=SecretPass:42", "passcode: Token4471 is valid until Friday",
+                     "export MYSQL_PWD=Secret:Xq7z"):
+            with self.subTest(text=text):
+                self.assertIn("[masked]", mask(text))
+                self.assertNotIn("Garden99", mask(text))
+                self.assertNotIn("Token-2026", mask(text))
+                self.assertNotIn("walrus2", mask(text))
+
+    def test_an_authorization_credential_after_a_scheme_is_masked_and_prose_stays(self):
+        # The credential is the word after a known scheme. A first word with no scheme before it stays, as on main:
+        # prose such as "ISO-27001 compliance" reads like one.
+        for text in ("Authorization: SCRAM-SHA-256 Qx7pass2026zzQ9", "Proxy-Authorization: AWS4-HMAC-SHA256 Qx7pass2026zzQ9",
+                     "use Authorization: Token Qx7pass2026zzQ9 for the staging API", "Authorization=Bearer SecretGarden99x"):
+            with self.subTest(text=text):
+                masked = mask(text)
+                self.assertNotIn("Qx7pass2026", masked)
+                self.assertNotIn("Garden99x", masked)
+        # In escaped text a value reads on through "\\n"; the credential ends there, before what follows it.
+        for text, masked in (("Authorization: Token Zq03154022Wm4Np8Rt2Kd9\\n[masked]\\n[masked]",
+                              "Authorization: Token [masked]\\n[masked]\\n[masked]"),
+                             ("Authorization: Token Zq03154022Wm4Np8Rt2Kd9\\nnext line",
+                              "Authorization: Token [masked]\\nnext line")):
+            self.assertEqual(mask(text), masked)
+        for text in ("Authorization: pending review", "Authorization: Organization-level approval needed",
+                     "Authorization: Implementation-specific, see RFC 7235.", "Authorization: ISO-27001 compliance required.",
+                     "Authorization: CVE-2024-12345 review pending", "Authorization: v2.1 of the policy applies"):
+            self.assertEqual(mask(text), text)
+        aws = "Authorization: AWS4-HMAC-SHA256 Credential=" + "AKIA" + "QW3RTY7UIOPAS2DF" + "/20261101/us-east-1/s3/aws4_request"
+        self.assertEqual(mask(aws), "Authorization: AWS4-HMAC-SHA256 Credential=[masked]/20261101/us-east-1/s3/aws4_request")
+
+    def test_a_run_of_backslashes_in_an_authorization_value_costs_time_in_proportion(self):
+        import time
+        took = {}
+        for n in (2_000, 16_000):
+            started = time.process_time()
+            mask("Authorization: Token Qx7" + "\\" * n + "x")
+            took[n] = time.process_time() - started
+        self.assertLess(took[16_000], 16 * max(took[2_000], 0.01))
+
+    def test_a_value_ends_where_an_escape_starts_a_flag(self):
+        for text in ('{"command": "export API_TOKEN=abc123def456\\n--api-key s3cr3tV4lu3XYZ99"}',
+                     "password: walrus2secret1\\n--token s3cr3tV4lu3XYZ99", "--token=abc123def456ghi\\n--api-key s3cr3tV4lu3XYZ99"):
+            with self.subTest(text=text):
+                self.assertNotIn("V4lu3XYZ99", mask(text))
+
+    def test_a_name_with_no_value_does_not_take_a_symbol_name_on_the_next_line(self):
+        for text in ('secrets:\n:password => "walrus2secret9"', '{"private_key":\n:token => "Zq7wLm4Np8Rt2Kd9Vh3B"'):
+            with self.subTest(text=text):
+                masked = mask(text)
+                self.assertNotIn("walrus2secret9", masked)
+                self.assertNotIn("Zq7wLm4Np8Rt", masked)
+
+    def test_a_value_ends_where_an_escape_starts_a_symbol_name(self):
+        text = '{"body": "api_key: Zq7wLm4Np8Rt2Kd9Vh3B\\n:password => \\"walrus2secret9\\"\\n:token => \\"Zx9Kq2Lm4Np8Rt2Kd9\\""}'
+        masked = mask(text)
+        self.assertNotIn("walrus2secret9", masked)
+        self.assertNotIn("Zx9Kq2Lm4Np8", masked)
+        self.assertIn(":password => ", masked)
+
     def test_a_password_with_a_backslash_in_it_is_masked_whole(self):
         for password in ("Ab3\\nQz9kLm", "C:\\temp\\walrus9", "pa\\u00e4ss9word"):
             with self.subTest(password=password):
@@ -583,6 +778,19 @@ class KeyShapeTest(unittest.TestCase):
             with self.subTest(unit=unit):
                 self.assertLess(took(unit * (size // len(unit))), 4 * max(prose, 0.01))
 
+    def test_many_fields_on_one_line_cost_time_in_proportion(self):
+        # An email can be written to hold them; each was read on to the end of its line.
+        import time
+        for unit in ("DEK-Info:", "DEK-Info: x ", "Proc-Type: 4,ENCRYPTED DEK-Info: "):
+            with self.subTest(unit=unit):
+                took = {}
+                for size in (1 << 13, 1 << 16):
+                    text = unit * (size // len(unit))
+                    started = time.process_time()
+                    mask(text)
+                    took[size] = time.process_time() - started
+                self.assertLess(took[1 << 16], 24 * max(took[1 << 13], 0.01), took)
+
     def test_paragraphs_after_a_broken_key_stay(self):
         for key in ("-----BEGIN PRIVATE KEY-----\nMIIEvQIBADAN", "-----BEGIN RSA PRIVATE KEY-----\nProc-Type: 4,ENCRYPTED\n"
                     "DEK-Info: AES-256-CBC,0A1B\n\nMIIEvQIBADAN", "abc\n-----END PRIVATE KEY-----"):
@@ -663,6 +871,19 @@ class SecretInIdTest(unittest.TestCase):
                 self.assertFalse(secret_in_id(name))
         # A real Basic credential is "user:password" in base64.
         for name in ("curl Basic d2FscnVzOndhbHJ1czJzZWNyZXQ5.md", "h=Basic%20d2FscnVzOndhbHJ1czJzZWNyZXQ5"):
+            with self.subTest(name=name):
+                self.assertTrue(secret_in_id(name))
+
+    def test_a_name_starting_with_an_sk_slug_does_not(self):
+        for name in ("sk-proj-roadmap-and-quarterly-goals.md", "sk-admin-dashboard-redesign-notes.md",
+                     "sk-learn-pipeline-experiments.md", "Beauty/sk-ii-facial-treatment-essence-review.md",
+                     "i18n/sk-SK_translation-notes-2026.md", "sk-learn-tutorial-notebooks@" + "3f2a9c" * 6 + "e1d4",
+                     "acme/sk-planner-experiments-2026#12"):
+            with self.subTest(name=name):
+                self.assertFalse(secret_in_id(name))
+        for name in ("notes/sk-ant-api03-" + "Z" * 24 + ".md", "sk-proj-" + "Ab1" * 16, "sk-" + "Ab3dE" * 10,
+                     "sk-svcacct-" + "Ab1" * 16, "sk-or-v1-" + "a1" * 32, "keys/sk-" + "Ab3dE" * 10 + "-backup.txt",
+                     "keys/sk-" + "Ab3dE" * 10 + "_old.txt", "deepseek-sk-" + "a1b2" * 8 + "-2.md"):
             with self.subTest(name=name):
                 self.assertTrue(secret_in_id(name))
 

@@ -72,6 +72,7 @@ roots = ["~/code"]
 | `kb get ID` | Prints the stored text of a search hit, a page at a time. |
 | `kb ingest` | Reads every source now, then summarizes new long items. |
 | `kb stats` | Shows how many records each source has and which sources failed. |
+| `kb rebuild` | Reads every source into a fresh knowledge base and puts it in place of this one once it checks out. |
 | `kb schedule on`, `off`, `status` | Reads your sources in the background, with launchd on a Mac or a systemd user timer on Linux. |
 | `kb hooks install`, `uninstall`, `status` | Adds or removes the hook in each agent found here. |
 | `kb ai list`, `kb ai test` | Lists the AI plug-ins, or makes one tiny call and says which plug-in answered. |
@@ -171,9 +172,26 @@ Known limits:
 - A password of letters only, after "is" or after a flag and a space ("--password correcthorse"), reads as a word and
   is not masked, so "Use the --password flag" stays readable. With a digit or a symbol, or after "=" or ":", it is
   masked.
+- In JSON written inside other JSON text, a password with an escaped quote in it is masked only up to that quote, and
+  not at all when fewer than four characters come before it. In plain JSON, and in a tool's input that kb writes as
+  JSON itself, the whole value is masked.
+- An Authorization header's credential is masked after a scheme such as Bearer, Token or AWS4-HMAC-SHA256. One
+  with no scheme before it is masked only when it has a provider's token shape, since a word such as "ISO-27001"
+  reads the same.
+- A token right after a terminal color code, and a private key written percent-encoded or as base64 (as a Kubernetes
+  secret holds one), are not masked.
+- A few rare file names are refused as if they held a secret, such as one that names a command's password flag with a
+  value ("redis-cli -a auth2.md") or reads as a field ("Cookie: chocolate chip.md").
 - A private key is masked by its structure: from its header through its footer, or, if the footer is missing, through
   the end of its paragraph. So whatever follows a key cut off before its footer, up to the next blank line, is masked
   with it, and so is the paragraph before a footer with no header.
+- A knowledge base that an older kb wrote, before each row recorded how it was masked, does not open: an older kb's
+  masking can leave a secret that no pattern finds afterwards. kb says so and names `kb rebuild`, which reads your
+  sources into a fresh one, each as far back as its oldest item in the old one. When a source no longer has some of
+  the old one's items, such as sessions an agent has since deleted, the rebuild stops, keeps the old one and says how
+  many each source would lose; `kb rebuild --accept-loss` replaces it anyway and loses them for good.
+- A YAML list of secrets under a secret's name (`tokens:` followed by `- value` lines) is masked only where an item
+  holds a provider's token shape.
 
 ## Why there are no embeddings
 
