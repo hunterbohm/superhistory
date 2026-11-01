@@ -438,10 +438,11 @@ _LINE_REST = (rf"(?:(?!\[masked\]{_BEFORE_BODY}{{0,64}}{_KEY_BODY_START})"
 # the placeholder and the next value stayed after it, with no name; its separator could take a line break too.
 _PLACEHOLDER_LINE = re.compile(rf"((?:[:=]|=>|\bis)[ \t\r\n]*[\"']?\[masked\])({_LINE_REST})")
 # Its key pattern took everything after a header that is base64 or a space, so after a cut key it ate the next words,
-# a command's or a header's name included, up to the first punctuation, and its placeholder is glued to that. A key's
-# body after it is left to _KEY_REST.
-_EATEN = re.compile(rf"(\[masked\])((?=[^\sA-Za-z0-9+/=,.;)\]}}\"'`<>\\])(?!{_BEFORE_BODY}{{0,64}}{_KEY_BODY_START})"
-                    rf"{_LINE_REST})")
+# a command's or a header's name included, up to the first punctuation, and its placeholder is glued to that; and its
+# remask, over a chunk that ended after a header, left the next chunk's first word glued to it. A key's body after it,
+# or glued to it to the end of its line, is left to _KEY_REST.
+_EATEN = re.compile(rf"(\[masked\])((?=[^\s,.;)\]}}\"'`<>\\])(?![A-Za-z0-9+/=]+[ \t\r]*(?:\r?\n|\\(?:r\\)?n|\Z))"
+                    rf"(?!{_BEFORE_BODY}{{0,64}}{_KEY_BODY_START}){_LINE_REST})")
 # And its summarizer cut a field before masking it, which can leave a token's start too short to know at the end.
 _CUT_TOKEN = re.compile(_NB + r"(?:sk-|(?:sk|rk|pk)_(?:live|test)_|gh[pousr]_|github_pat_|xox[abprs]-|AKIA|ASIA|AIza|"
                         r"ya29\.|GOCSPX-|(?:hf|gsk|npm|ntn|sbp|lin_api)_|xai-|tskey-|glpat-|whsec_|eyJ)"
