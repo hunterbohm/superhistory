@@ -470,8 +470,8 @@ _READING_START = re.compile("|".join(_scoped(source) for source in (
     rf"(?i)(?:(?<![A-Za-z0-9_.-])|{_AFTER_ESCAPE})(?:" + "|".join(command for command, _, _ in COMMAND_FLAGS)
     + r")(?![A-Za-z0-9_.-])",
     r"(?<![A-Za-z0-9_-])-pass(?:in|out)?[ \t]+['\"]?pass:", "-----BEGIN ")))
-# Where one could start: a letter or "-" after anything but a letter or digit.
-_MAY_START = re.compile(r"(?<![A-Za-z0-9])(?=[A-Za-z-])")
+# Where one could start: a letter, a digit or "-" after anything but a letter or digit, as "7token is" starts a name.
+_MAY_START = re.compile(r"(?<![A-Za-z0-9])(?=[A-Za-z0-9-])")
 _INVISIBLE_RUN = re.compile(INVISIBLE.pattern + "+")
 # How far a token that starts right after a letter, where an invisible character stood, is read before it counts as a
 # longer one: each such start is read once, so repeated starts cost time in proportion to the text.
@@ -479,26 +479,48 @@ _GLUED_START_WINDOW = 512
 
 
 def _mask_once(text, rules=_TEXT_RULES):
-    """One pass of every pattern over the text as written, as main reads it, once each secret that only the text read
-    without its invisible characters holds is masked in place (_split_secrets). A text whose invisible characters
-    split no secret masks as main masks it, and keeps them all."""
-    if INVISIBLE.search(text):
-        spans = _split_secrets(text, rules)
-        if spans:
-            text = _replace(text, spans, "[masked]")
-    return _pass(text, rules)
+    """One pass of every pattern over the text as written, as main reads it, and with it each secret only the text read
+    without its invisible characters holds (_split_secrets). The pass reads the text as given, never what the view
+    masked, so what it hides stays hidden: the view only adds. Where it adds, the text is rebuilt from what either
+    hid, a placeholder for each run. A text whose invisible characters split no secret masks as main masks it."""
+    masked = _pass(text, rules)
+    if not INVISIBLE.search(text):
+        return masked
+    spans = _split_secrets(text, rules)
+    if not spans:
+        return masked
+    hidden = _hidden(text, masked)
+    if hidden is None:  # a pass that does not read as the text with stretches replaced: mask the view's first
+        return _pass(_replace(text, spans, "[masked]"), rules)
+    added = False
+    for start, end in spans:
+        for i in range(start, end):
+            if not hidden[i]:
+                hidden[i], added = 1, True
+    if not added:
+        return masked
+    out, last, i = [], 0, 0
+    while i < len(text):
+        if hidden[i]:
+            j = i
+            while j < len(text) and hidden[j]:
+                j += 1
+            out += [text[last:i], "[masked]"]
+            last = i = j
+        else:
+            i += 1
+    return "".join(out) + text[last:]
 
 
 def _split_secrets(text, rules):
     """Where in `text` a secret reads only across characters a reader does not see, as ordered (start, end) spans of
     the text as written: a token split or interleaved by them, even where its first part is a token by itself, the
     rest of one an older kb masked only up to them ("[masked]<ZWSP>rest"), or a secret's name split by them, whose
-    value is masked. The text read without them is the view. In it a token
-    may start right after a letter where one stood, as after a space, so one before a key glued to a word reads it
-    ("budget<ZWSP>s<ZWSP>k-..."). A run of them just before where a secret's reading starts stays in the view, as a
-    break. A split token ends before the last of them ahead of any reading the text as written starts inside it, such
-    as a link's scheme in the token's tail, and a split value ends where such a reading starts: those readings are the
-    pass's, which follows."""
+    value is masked. The text read without them is the view. In it a token may start right after a letter where one
+    stood, as after a space, so one before a key glued to a word reads it ("budget<ZWSP>s<ZWSP>k-..."). A run of them
+    just before where a secret's reading starts stays in the view, as a break. A split token ends before the last of
+    them ahead of any reading the text as written starts inside it, such as a link's scheme in the token's tail, and a
+    split value ends where such a reading starts: the pass over the text as given reads those."""
     gone = [i for run in _INVISIBLE_RUN.finditer(text) if not _READING_START.match(text, run.end())
             for i in range(run.start(), run.end())]
     if not gone:
@@ -539,20 +561,26 @@ def _split_secrets(text, rules):
     # What an older kb, masking only up to an invisible character, left of a token glued to its placeholder.
     rests = [(m.start(), m.end()) for m in _GLUED_RUN.finditer(view)]
     removed, spans = set(gone), []
+
+    def before_reading(start, end, first):
+        """[start, end) cut before the run of invisible characters last ahead of a reading the text as written starts
+        in it past `first`, which stays as a break; None when no such run lies inside."""
+        at = reading_inside(first, end)
+        if at is None:
+            return start, end
+        end = gone[bisect.bisect_left(gone, at) - 1] if bisect.bisect_left(gone, at) else start
+        while end - 1 in removed:
+            end -= 1
+        return (start, end) if start < end else None
+
     for start, end in found + glued + rests:
         if not split(start, end):
             continue
         start, end = raw(start, end)
-        at = reading_inside(gone[bisect.bisect_left(gone, start)] + 1, end)
-        if at is not None:
-            # Up to the run of invisible characters last before that reading, which stays with it, if the token is
-            # still split before it.
-            end = gone[bisect.bisect_left(gone, at) - 1]
-            while end - 1 in removed:
-                end -= 1
-            if bisect.bisect_left(gone, start) == bisect.bisect_left(gone, end):
-                continue
-        spans.append((start, end))
+        cut = before_reading(start, end, gone[bisect.bisect_left(gone, start)] + 1)
+        # Still split by one: the text as written reads its first part as main does.
+        if cut and bisect.bisect_left(gone, cut[0]) < bisect.bisect_left(gone, cut[1]):
+            spans.append(cut)
     for name_start, name_end, start, end in _named_spans(view, rules):
         # Only a split name: the text as written reads a value through invisible characters already.
         if not split(name_start, name_end + 1) or start >= end:
@@ -570,6 +598,40 @@ def _split_secrets(text, rules):
         else:
             merged.append((start, end))
     return merged
+
+
+def _hidden(text, masked):
+    """Which characters of `text` a pass that made `masked` from it hid, 1 or 0 for each, or None when `masked` does not
+    read as `text` with stretches replaced by placeholders. A character counts as hidden unless its pieces between
+    placeholders show it however they are placed, first places from the left and last from the right. A "]" right
+    after a placeholder is what a pattern left of one it cut into, and reads as part of it."""
+    if masked == text:
+        return bytearray(len(text))
+    pieces = masked.split("[masked]")
+    pieces = [pieces[0]] + [piece.lstrip("]") for piece in pieces[1:]]
+    if len(pieces) < 2 or not text.startswith(pieces[0]) or not text.endswith(pieces[-1]):
+        return None
+    tail = len(text) - len(pieces[-1])
+    left, at = bytearray(len(text)), len(pieces[0])
+    for piece in pieces[1:-1]:
+        i = text.find(piece, at)
+        if i < 0:
+            return None
+        left[i:i + len(piece)] = b"\x01" * len(piece)
+        at = i + len(piece)
+    if at > tail:
+        return None
+    right, at = bytearray(len(text)), tail
+    for piece in reversed(pieces[1:-1]):
+        i = text.rfind(piece, len(pieces[0]), at)
+        if i < 0:
+            return None
+        right[i:i + len(piece)] = b"\x01" * len(piece)
+        at = i
+    hidden = bytearray(len(text))
+    for i in range(len(pieces[0]), tail):
+        hidden[i] = 0 if left[i] and right[i] else 1
+    return hidden
 
 
 def _named_spans(view, rules):

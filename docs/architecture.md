@@ -97,14 +97,17 @@ they write it as JSON, and `mask_all()` masks a string under a secret's field na
 A secret reads through characters a reader does not see: NUL and the other C0 controls that are not whitespace, and
 Unicode's default ignorable code points, such as zero-width spaces and joiners, the word joiner, the soft hyphen and
 direction marks. The vertical tab, the form feed and the separators from 0x1c are whitespace and part words. Each pass
-first reads the text without the invisible ones, the view, for the secrets only it holds: a key split by them, or with
-one between every character, even where its first part is a key by itself, and a secret's name split by them, whose
-value goes with it. In the view a token may also start right after a letter where one stood, as after a space, so one
-before a key glued to a word reads it (`budget<ZWSP>s<ZWSP>k-...`). Each such secret is masked in place in the text as
-written, and the invisible characters inside it go with it. A split token ends before any reading the text as written
-starts inside it, such as a link's scheme, a command or a secret's name, and a run of invisibles just before one stays
-a break. Then the pass reads the text as written, as main does, where invisibles part words as a space does. So a text
-whose invisible characters split no secret masks as on main and keeps every one of them, an emoji's joiners too.
+reads the text as written, as main does, where invisibles part words as a space does. Beside it, the pass reads the
+text without the invisible ones, the view, for the secrets only the view holds: a key split by them, or with one
+between every character, even where its first part is a key by itself, the rest of one an older kb masked only up to
+one, and a secret's name split by them, whose value goes with it. In the view a token may also start right after a
+letter where one stood, as after a space, so one before a key glued to a word reads it (`budget<ZWSP>s<ZWSP>k-...`).
+A split token ends before any reading the text as written starts inside it, such as a link's scheme, a command or a
+secret's name, and a run of invisibles just before one stays a break. The reading as written never sees what the view
+masked, so the view can only add: where it does, the text is rebuilt from what either hid, a placeholder for each run,
+and the invisible characters inside a run go with it. A text whose invisible characters split no secret masks as on
+main and keeps every one of them, an emoji's joiners too. tests/test_mask_against_main.py holds this to a frozen copy
+of main's mask.
 
 kb masks no Sync recovery or pairing codes. The Sync client's egress masks them before anything leaves the computer.
 
