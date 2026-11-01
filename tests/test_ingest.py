@@ -401,6 +401,33 @@ class RunTest(IngestCase):
         self.assertEqual(len(built), 1)
 
 
+class NoInstallIdTest(unittest.TestCase):
+    """A Config built without an install id, as a caller of ingest.run may pass one, prefixes items by the machine."""
+
+    def test_an_ssh_session_in_a_profile_named_with_a_secrets_word_is_stored(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        parsed = config.parse('machine = "studio"\n[hosts.desk]\nssh = "unused"\n[sources.hermes]\nroot = "/unused"\n'
+                              'hosts = ["desk"]\n')
+        reader = types.SimpleNamespace(events=lambda *_: iter([Item("secret-project:20261028_101500_a1b2c3",
+                                                                     "2026-10-01", "Plan", "pelican plan",
+                                                                     {"profile": "secret-project"}, 1)]))
+        db = store.connect(os.path.join(tmp.name, "kb.sqlite"))
+        self.addCleanup(db.close)
+        with mock.patch.object(ingest, "SshReader", lambda _: reader):
+            self.assertEqual(ingest.run(db, parsed, logging.getLogger("kb-test-no-install"), with_summaries=False), 0)
+        self.assertEqual([r[0] for r in db.execute("SELECT source_id FROM docs")],
+                         ["studio@desk:secret-project:20261028_101500_a1b2c3"])
+
+    def test_the_machines_prefix_counts_only_with_the_host_the_rows_record(self):
+        sid = "studio@desk:secret-project:20261028_101500_a1b2c3"
+        self.assertFalse(store.secret_id("hermes", sid, ("desk", "secret-project")))
+        self.assertTrue(store.secret_id("hermes", sid, ("laptop", "secret-project")), "read whole, as any other id")
+        # A machine named like a secret's word is no prefix of kb's, so the id is read whole.
+        self.assertTrue(store.secret_id("hermes", "password@desk:secret-project:20261028_101500_a1b2c3",
+                                        ("desk", "secret-project")))
+
+
 class RemaskOnIngestTest(IngestCase):
     def test_ingest_masks_older_rows_again_and_the_header_says_so_until_it_has(self):
         token = "sk-ant-api03-ingest-" + "Q" * 24

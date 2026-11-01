@@ -428,6 +428,30 @@ class OlderStoreTest(TempHome):
         with contextlib.closing(store.connect(self.path)) as db:
             self.assertEqual([r[0] for r in db.execute("SELECT source_id FROM docs")], [f"{mine}@{mine}:plan.md"])
 
+    def test_a_rebuild_reads_an_items_host_only_when_every_row_records_it(self):
+        import types
+        from kb import ingest
+        mine = self.mine()
+        self.db.execute("DELETE FROM docs")
+        self.db.commit()
+        store.replace_rows(self.db, "notes", f"{mine}:plan.md",
+                           [{"kind": "raw", "ts": iso(), "title": "old", "content": text, "metadata": meta}
+                            for text, meta in (("ARCHIVE ", {"host": "studio", "chunk": 0, "chunks": 2}),
+                                               ("fragment", {"chunk": 1, "chunks": 2}))])
+        self.db.commit()
+        self.db.close()
+        with open(os.path.join(self.notes, "plan.md"), "w", encoding="utf-8") as fh:
+            fh.write("LOCAL replacement\n")
+        self.write_config(f'machine = "studio"\n[hosts.{mine}]\nssh = "unused"\n[sources.notes]\n'
+                          f'path = "{self.notes}"\nhosts = ["studio", "{mine}"]\n')
+        reader = types.SimpleNamespace(events=lambda *_: iter(()), live_ids=lambda *_: [])
+        with mock.patch.object(ingest, "SshReader", lambda _: reader):
+            code, out, err = self.run_kb("rebuild")
+        self.assertEqual(code, 1, out)
+        self.assertIn("notes: 1 item", err)
+        with contextlib.closing(store.connect(self.path)) as db:
+            self.assertTrue(any("ARCHIVE" in r[0] for r in db.execute("SELECT content FROM docs")), "kept as it was")
+
     def test_a_rebuild_stops_when_two_old_items_are_one_item_now(self):
         # An older kb's copy and this install's, as an ingest after an update without a rebuild leaves them.
         self.db.execute("INSERT INTO docs(kind, source, source_id, ts, title, content, metadata, masked) VALUES "
