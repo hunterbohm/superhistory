@@ -303,6 +303,77 @@ if __name__ == "__main__":
     unittest.main()
 
 
+class OlderStoreTest(TempHome):
+    """A store with rows an older kb wrote, which record no mask version, is not read or masked again in place: it is
+    rebuilt from its sources."""
+    SECRET = "Qx7RedisBytes2026zz"
+    run_kb = CliTest.run_kb
+
+    def setUp(self):
+        super().setUp()
+        env = mock.patch.dict(os.environ, {"KB_HOME": self.home})
+        env.start()
+        self.addCleanup(env.stop)
+        self.notes = os.path.join(self.tmp.name, "notes")
+        os.makedirs(self.notes)
+        with open(os.path.join(self.notes, "plan.md"), "w", encoding="utf-8") as fh:
+            fh.write("the pelican plan is in the harbor folder\n")
+        self.write_config(NOTES_CONFIG.format(path=self.notes))
+        # An older kb's row: what its masking left of a secret, and no mask version.
+        self.db.execute("INSERT INTO docs(kind, source, source_id, ts, title, content, metadata, masked) VALUES "
+                        "('doc', 'notes', 'studio:gone.md', ?, 'gone', ?, '{}', NULL)",
+                        (iso(), f"db_password: [masked] {self.SECRET} pelican"))
+        self.db.commit()
+
+    def test_reading_commands_refuse_and_name_the_rebuild(self):
+        for args in (("search", "pelican"), ("get", 1), ("stats",), ("ingest",)):
+            with self.subTest(args=args):
+                code, out, err = self.run_kb(*args)
+                self.assertEqual(code, 1)
+                self.assertIn("kb rebuild", err)
+                self.assertNotIn(self.SECRET, out + err)
+
+    def test_the_agents_check_stays_silent_and_logs_why(self):
+        import json
+        from kb import check
+        from kb.paths import Paths
+        from tests.support import parse_config, plan_and_pick
+        paths = Paths.for_user()
+        message = json.dumps({"message": "where is the pelican plan we wrote down?", "before": []})
+        self.assertEqual(check.answer(paths, parse_config(), message, "s1", plan_and_pick("pelican plan")), "")
+        with open(paths.log("check"), encoding="utf-8") as fh:
+            logged = fh.read()
+        self.assertIn("NeedsRebuild", logged)
+        self.assertNotIn(self.SECRET, logged)
+
+    def test_rebuild_reads_the_sources_into_a_fresh_store_and_drops_the_old_one(self):
+        self.db.close()
+        code, out, err = self.run_kb("rebuild")
+        self.assertEqual(code, 0, err)
+        self.assertIn("Rebuilt", out)
+        self.assertEqual(sorted(set(os.listdir(os.path.dirname(self.path))) - {"kb.lock"}), ["kb.sqlite"])
+        with open(self.path, "rb") as fh:
+            self.assertNotIn(self.SECRET.encode(), fh.read())
+        db = store.connect(self.path)
+        self.addCleanup(db.close)
+        self.assertEqual([r[0] for r in db.execute("SELECT source_id FROM docs")], ["studio:plan.md"])
+        self.assertEqual(store.old_rows(db), 0)
+        code, out, err = self.run_kb("search", "pelican")
+        self.assertEqual(code, 0, err)
+
+    def test_rebuild_keeps_the_old_store_when_a_source_fails(self):
+        self.db.close()
+        with open(self.path, "rb") as fh:
+            before = fh.read()
+        with mock.patch("kb.ingest.run_unit", side_effect=RuntimeError("disk gone")):
+            code, out, err = self.run_kb("rebuild")
+        self.assertEqual(code, 1)
+        self.assertIn("kept", err)
+        with open(self.path, "rb") as fh:
+            self.assertEqual(fh.read(), before)
+        self.assertEqual(sorted(set(os.listdir(os.path.dirname(self.path))) - {"kb.lock"}), ["kb.sqlite"])
+
+
 class LoginTest(unittest.TestCase):
     def setUp(self):
         tmp = tempfile.TemporaryDirectory()

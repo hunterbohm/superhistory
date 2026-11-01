@@ -668,6 +668,41 @@ class MaskVersionTest(TempDB):
         self.assertEqual(store.old_rows(self.db), 0)
 
 
+class UnversionedRowTest(TempDB):
+    """Rows that record no mask version came from an older kb. A store that holds one does not open, and a connection
+    already open, when an older writer clears a row's version, reads and masks no such row."""
+    SECRET = "Qx7RedisBytes2026zz"
+
+    def setUp(self):
+        super().setUp()
+        self.add("kept", "the pelican plan is current")
+        self.db.execute("INSERT INTO docs(kind, source, source_id, ts, title, content, metadata, masked) VALUES "
+                        "('doc', 's', 'older', ?, 'older', ?, '{}', NULL)", (iso(), f"pelican api_key: [masked] {self.SECRET}"))
+        self.db.commit()
+
+    def test_a_store_with_one_does_not_open(self):
+        for readonly in (True, False):
+            with self.subTest(readonly=readonly), self.assertRaises(store.NeedsRebuild) as raised:
+                store.connect(self.path, readonly=readonly)
+            self.assertIn("kb rebuild", str(raised.exception))
+
+    def test_an_open_connection_reads_and_remasks_none(self):
+        self.assertEqual([h["source_id"] for h in search.search(self.db, "pelican")], ["kept"])
+        store.remask(self.db)
+        self.assertEqual(self.db.execute("SELECT content, masked FROM docs WHERE source_id='older'").fetchone(),
+                         (f"pelican api_key: [masked] {self.SECRET}", None), "left as it was, and not stamped")
+
+    def test_a_store_from_before_versions_does_not_open(self):
+        self.db.execute("CREATE TABLE plain AS SELECT * FROM docs")
+        self.db.close()
+        old = sqlite3.connect(self.path)
+        old.executescript("DROP TRIGGER docs_unmask; DROP INDEX docs_masked; ALTER TABLE docs DROP COLUMN masked;")
+        old.commit()
+        old.close()
+        with self.assertRaises(store.NeedsRebuild):
+            store.connect(self.path, readonly=True)
+
+
 class FtsTriggerTest(TempDB):
     def test_insert_is_searchable(self):
         self.add("a", "kumquat marmalade")
