@@ -495,13 +495,13 @@ class EscapeTest(unittest.TestCase):
     def test_a_value_that_holds_a_secrets_word_is_still_a_value(self):
         # A value is refused as the next line's name only when the space after its separator crossed a line break.
         for text in ("the wifi password: SecretGarden99 is on the fridge", "DB_PASSWORD=Tokyo-Token-2026 is what I set",
-                     "password=secret:hunter2", "admin_password=SecretPass:42", "passcode: Token4471 is valid until Friday",
+                     "password=secret:walrus2", "admin_password=SecretPass:42", "passcode: Token4471 is valid until Friday",
                      "export MYSQL_PWD=Secret:Xq7z"):
             with self.subTest(text=text):
                 self.assertIn("[masked]", mask(text))
                 self.assertNotIn("Garden99", mask(text))
                 self.assertNotIn("Token-2026", mask(text))
-                self.assertNotIn("hunter2", mask(text))
+                self.assertNotIn("walrus2", mask(text))
 
     def test_an_authorization_value_with_no_scheme_word_is_masked(self):
         for text in ("use Authorization: Qx7pass2026zzQ9 for the staging API", "Authorization: Qx7pass2026zzQ9 (expires Friday)",
