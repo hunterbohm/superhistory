@@ -492,6 +492,15 @@ class InvisibleTest(unittest.TestCase):
             with self.subTest(seed=seed):
                 self.assertEqual(mask(text), as_written(text), ascii(text))
 
+    def test_the_rest_of_a_token_an_older_kb_masked_up_to_an_invisible_character_is_masked(self):
+        for mark in self.GATE_12:
+            with self.subTest(mark=hex(ord(mark))):
+                self.assertEqual(mask("note [masked]" + mark + "Q" * 20 + " end"), "note [masked] end")
+                # Token characters glued to it through one are its rest, but the rest ends before a reading the text as
+                # written starts in it, so the password after curl is masked.
+                self.assertEqual(mask("[masked]" + mark + "_co" + mark + "operate/curl -u sam:walrus2secret9 x"),
+                                 "[masked]" + mark + "operate/curl -u sam:[masked] x")
+
     def test_repeated_token_starts_between_invisible_characters_cost_time_in_proportion(self):
         import time
         took = {}
