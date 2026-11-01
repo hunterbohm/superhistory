@@ -302,6 +302,20 @@ class OtherKeyFormatTest(unittest.TestCase):
                     masked = mask("Notes\n" + "\n".join(lines) + after)
                     self.assertEqual(masked, "Notes\n[masked]" + after)
 
+    def test_words_between_two_base64_keys_stay(self):
+        import base64
+        import textwrap
+        one = "-----BEGIN PRIVATE KEY-----\nFakeKeyBody123456\n-----END PRIVATE KEY-----\n"
+        two = ("-----BEGIN PRIVATE KEY-----\n" + base64.b64encode(bytes(range(200))).decode()
+               + "\n-----END PRIVATE KEY-----\n")
+        for key in (one, two):
+            encoded = base64.b64encode(key.encode()).decode()
+            for width in (12, 64, 76, len(encoded)):
+                block = "\n".join(textwrap.wrap(encoded, width))
+                for between in ("\nThanks\nJohn\n", "\nNotes\n", "\nBest\nJohn\nNext key:\n"):
+                    with self.subTest(key=len(key), width=width, between=between):
+                        self.assertEqual(mask(block + between + block), "[masked]" + between + "[masked]")
+
     def test_prose_about_those_formats_stays(self):
         for text in ("PGP keys are signed in a block", "Private-Lines counts the lines", "an AGE-SECRET-KEY-1 identity",
                      "-----BEGIN PGP PUBLIC KEY BLOCK-----\n\nmQENBGcW1aEBCAD\n-----END PGP PUBLIC KEY BLOCK-----"):

@@ -447,21 +447,29 @@ class OlderStoreTest(TempHome):
         self.assertEqual(store_files(folder), before)
 
     def test_a_swap_that_is_stopped_puts_the_old_store_back(self):
-        from tests.support import store_files
+        from tests.support import commit_and_die, store_files
         self.db.close()
+        # Rows a killed writer left in the WAL, so the old store has a WAL file to move aside and back.
+        commit_and_die(self.path, "INSERT INTO docs(kind, source, source_id, ts, title, content, metadata, masked) "
+                                  "VALUES ('doc', 'notes', 'studio:wal.md', ?, 'w', 'an older row', '{}', NULL)", iso())
         folder = os.path.dirname(self.path)
         before = store_files(folder)
+        self.assertIn("kb.sqlite-wal", before)
         replace = os.replace
-
-        for stop in (KeyboardInterrupt, OSError("disk full")):
+        for stop, after in ((KeyboardInterrupt, ""), (OSError("disk full"), ""), (KeyboardInterrupt, "kb.sqlite"),
+                            (KeyboardInterrupt, "kb.sqlite-wal")):
             def stopped(src, dst):
-                if str(src).endswith(".rebuild"):
+                # Stops before the fresh store moves in, or just after the old store's file `after` moved aside.
+                if not after and str(src).endswith(".rebuild"):
                     raise stop
-                return replace(src, dst)
+                replace(src, dst)
+                if after and os.path.basename(str(src)) == after:
+                    raise stop
 
-            with self.subTest(stop=stop), mock.patch("os.replace", stopped), contextlib.suppress(KeyboardInterrupt):
-                self.run_kb("rebuild")
-            self.assertEqual(store_files(folder), before, "the old store is back where it was, and nothing else")
+            with self.subTest(stop=stop, after=after):
+                with mock.patch("os.replace", stopped), contextlib.suppress(KeyboardInterrupt):
+                    self.run_kb("rebuild", "--accept-loss")
+                self.assertEqual(store_files(folder), before, "the old store is back where it was, and nothing else")
 
     def test_rebuild_keeps_the_old_store_when_a_host_is_asleep(self):
         from kb.remote import HostAway
