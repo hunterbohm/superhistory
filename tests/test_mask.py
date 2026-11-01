@@ -188,6 +188,16 @@ class OtherKeyFormatTest(unittest.TestCase):
             with self.subTest(text=text[:20]):
                 self.assertNotIn("QYQSZQGPQYQS", mask(text))
 
+    def test_an_ssh2_key_file_is_masked(self):
+        body = "P2/56wAAAi4AAAA3aWYtbW9kbntzaWduWalrusSsh2BodyLine"
+        for kind in ("ENCRYPTED PRIVATE KEY", "PRIVATE KEY"):
+            block = f"---- BEGIN SSH2 {kind} ----\nComment: \"rsa-key\"\n{body}\n---- END SSH2 {kind} ----"
+            for text in (block, block[:block.index("\n---- END")]):
+                with self.subTest(kind=kind, cut=text is not block):
+                    masked = mask(f"first\n\n{text}\n\nlast paragraph")
+                    self.assertNotIn("WalrusSsh2", masked)
+                    self.assertEqual(masked, "first\n\n[masked]\n\nlast paragraph")
+
     def test_prose_about_those_formats_stays(self):
         for text in ("PGP keys are signed in a block", "Private-Lines counts the lines", "an AGE-SECRET-KEY-1 identity",
                      "-----BEGIN PGP PUBLIC KEY BLOCK-----\n\nmQENBGcW1aEBCAD\n-----END PGP PUBLIC KEY BLOCK-----"):
@@ -325,7 +335,13 @@ class EscapeTest(unittest.TestCase):
                 self.assertIn("[masked]", masked)
         self.assertEqual(mask('{\\"password\\": \\"walrus2secret9\\"}'), '{\\"password\\": \\"[masked]\\"}',
                          "the escaped quote after a value stays")
-        for text in ("hello%20world%3Dfine", "100%25 done%2C next", "a%2Fb%2Fc.md", "&quot;password&quot; is a word"):
+        for link in ("next=https%3A%2F%2Fbob%3Awalrus2secret9%40example.com%2Fx",
+                     "next=https%253A%252F%252Fbob%253Awalrus2secret9%2540example.com"):
+            with self.subTest(link=link):
+                self.assertNotIn("walrus2secret9", mask(link))
+                self.assertIn("example.com", mask(link))
+        for text in ("hello%20world%3Dfine", "100%25 done%2C next", "a%2Fb%2Fc.md", "&quot;password&quot; is a word",
+                     "next=https%3A%2F%2Fexample.com%3A8443%2Fpath%40v2"):
             self.assertEqual(mask(text), text)
 
     def test_a_password_with_a_backslash_in_it_is_masked_whole(self):
