@@ -232,6 +232,22 @@ class OtherKeyFormatTest(unittest.TestCase):
         for text in ('{"auth": "required"}', '{"auth": "bearer"}', '"auth": "c29tZSBub3Rlcw=="'):
             self.assertEqual(mask(text), text)
 
+    def test_a_base64_file_with_a_private_key_after_other_blocks_is_masked(self):
+        import base64
+        import textwrap
+        key = "-----BEGIN EC PRIVATE KEY-----\nMHcCAQEEIWalrusScalar2Secret9BodyPiecesXyzQ2FuYXJ5\n-----END EC PRIVATE KEY-----\n"
+        cert = "-----BEGIN CERTIFICATE-----\nMIIBszCCAVmgAwIBAgIUWalrusPublicCertBody\n-----END CERTIFICATE-----\n"
+        files = ("-----BEGIN EC PARAMETERS-----\nBggqhkjOPQMBBw==\n-----END EC PARAMETERS-----\n" + key,
+                 "Bag Attributes\n    localKeyID: 01 02 03\nKey Attributes: <No Attributes>\n" + key,
+                 cert + key, "x" + key, "xy" + key)
+        for text in files:
+            encoded = base64.b64encode(text.encode()).decode()
+            for form in (f"tls.key: {encoded}\n", "\n".join(textwrap.wrap(encoded, 76)), f'{{"key": "{encoded}"}}'):
+                with self.subTest(file=text[:12], form=form[:10]):
+                    self.assertNotIn(encoded[-40:-20], mask(form))
+        encoded = base64.b64encode(cert.encode()).decode()
+        self.assertEqual(mask(f"tls.crt: {encoded}"), f"tls.crt: {encoded}", "a certificate alone stays")
+
     def test_prose_about_those_formats_stays(self):
         for text in ("PGP keys are signed in a block", "Private-Lines counts the lines", "an AGE-SECRET-KEY-1 identity",
                      "-----BEGIN PGP PUBLIC KEY BLOCK-----\n\nmQENBGcW1aEBCAD\n-----END PGP PUBLIC KEY BLOCK-----"):
