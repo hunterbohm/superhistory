@@ -11,6 +11,7 @@ class Retrieved(NamedTuple):
     error: Optional[str] = None
     model_tokens: int = 0           # tokens the tool's own model calls used for this lookup
     query: Optional[str] = None
+    model_detail: Optional[dict] = None  # those tokens as input, output and thinking, and the models that answered
 
 
 class Tool:

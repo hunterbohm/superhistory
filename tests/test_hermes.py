@@ -130,6 +130,33 @@ class FullTest(HermesCase):
         self.assertIn("RESULT: Family Show S01", content)
         self.assertIn("ASSISTANT: Found it, queueing now.", content)
 
+    def test_tool_arguments_written_as_json_show_no_secret(self):
+        # Arguments with no field kb shows are written as JSON, where a line break reads "\\n" and a quote \\".
+        body = 'deploy notes\nghp_' + "A1" * 12 + '\nconfig {"password": "walrus2wolfpack9"}'
+        root = os.path.join(self.tmp.name, "json")
+        make_store(os.path.join(root, "state.db"), [("j", "cli", None, 1000.0, [
+            ("user", "save it", {}), ("assistant", "", {"calls": tool_call("notes", body=body)}), ("assistant", "done", {})])])
+        content = self.items(root=root)["default:j"].content
+        self.assertNotIn("A1A1A1", content)
+        self.assertNotIn("walrus2wolfpack9", content)
+        self.assertIn('TOOL notes: {"body": "deploy notes\\n[masked]', content)
+
+    def test_a_profile_named_with_a_secrets_word_keeps_its_sessions(self):
+        root = os.path.join(self.tmp.name, "named")
+        for profile in ("secret-project", "token-research", "work"):
+            make_store(os.path.join(root, "profiles", profile, "state.db"), [
+                (f"20261028_101500_{profile[:3]}", "cli", None, 1000.0, chat("where is the plan?", "In the notes."))])
+        db = store.connect(os.path.join(self.tmp.name, "kb.sqlite"))
+        self.addCleanup(db.close)
+        source = config.Source("hermes", "hermes", hermes.TYPE, hermes.Options(root), ("tool",), config.Summarize(False),
+                               ("desk",))
+        log = logging.getLogger("varve-test-hermes")
+        log.addHandler(logging.NullHandler())
+        ingest.run_unit(db, source, "desk", ingest.LocalReader(), log)
+        self.assertEqual(sorted(r[0] for r in db.execute("SELECT DISTINCT source_id FROM docs")),
+                         ["desk:secret-project:20261028_101500_sec", "desk:token-research:20261028_101500_tok",
+                          "desk:work:20261028_101500_wor"])
+
     def test_injections_and_noise_dropped(self):
         items = self.items()
         content = items["default:disc1"].content

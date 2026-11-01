@@ -1,18 +1,195 @@
 """Model calls for the benchmarks, through any endpoint that speaks Anthropic's Messages API.
 
 BENCH_BASE_URL defaults to a local CLIProxyAPI gateway; BENCH_API_KEY, or the gateway's key file, authenticates.
+
+The benchmarks share their model plans with other work, so a rate limit is never retried: the first HTTP 429, or a
+reply that says the model is cooling down, raises RateLimited and sets LIMITED, and the runners start no new question
+after that. Run the same command again once the limit has passed; it runs only the questions with no row.
 """
+import codecs
+import http.client
+import io
 import json
 import os
 import random
 import re
+import threading
 import time
 import urllib.error
 import urllib.request
+import urllib.response
 
 BASE_URL = os.environ.get("BENCH_BASE_URL", "http://127.0.0.1:8317").rstrip("/")
 KEY_FILE = os.path.expanduser("~/.config/cli-gateway/client.key")
 ATTEMPTS = 6
+# How much of a failed call's reply is read for a rate limit; the messages that quote it stay short.
+ERROR_BYTES = 1 << 16
+REPLY_BYTES = 1 << 24
+LIMITED = threading.Event()
+WAIT_MINUTES = 30
+# Standing order 22: at most two model calls at once in a run, kb's hedged copies and the summarizer's included. A
+# call waits here for a slot, so a run with more than one worker mostly waits, and a hedge copy can start late.
+SLOTS = threading.BoundedSemaphore(2)
+
+
+class RateLimited(RuntimeError):
+    """A model plan said no more for now. Nothing retries it."""
+
+
+def limited(detail):
+    """Record a rate limit and raise RateLimited."""
+    LIMITED.set()
+    raise RateLimited(f"rate limited ({detail.strip()[:200]}); start nothing new for {WAIT_MINUTES} minutes, then run "
+                      "the same command once to fill in the questions with no row")
+
+
+def check_limited():
+    """Raises RateLimited when this process has seen a rate limit, so a runner starts no new question."""
+    if LIMITED.is_set():
+        raise RateLimited(f"not started: this run hit a rate limit; run the same command again in {WAIT_MINUTES} "
+                          "minutes")
+
+
+# What a reply that is not a model's says when the plan is limited, in an error's type or its message.
+LIMIT_WORDS = ("rate_limit", "rate limit", "cooling down")
+
+
+def names_limit(text):
+    text = text.lower()
+    return any(word in text for word in LIMIT_WORDS)
+
+
+def is_rate_limit(code, detail):
+    return code == 429 or names_limit(detail)
+
+
+def limited_reply(response):
+    """Whether a reply that came back as JSON says the plan is rate limited, as some gateways do with status 200.
+    A message, a completion or a token count with no error in it is never read for it, so a model's own words never
+    count."""
+    if (isinstance(response, dict) and "error" not in response and response.get("type") != "error"
+            and (response.get("content") and isinstance(response["content"], list)
+                 or response.get("choices") and isinstance(response["choices"], list)
+                 or isinstance(response.get("input_tokens"), int))):
+        return False
+    return names_limit(json.dumps(response))
+
+
+# The longest phrase that names a limit, less one: how much of the text before a new piece is searched with it.
+OVERLAP = max(map(len, LIMIT_WORDS)) - 1
+
+
+class _Arriving:
+    """A reply's text as it arrives, each piece decoded and searched once."""
+
+    def __init__(self):
+        self.decode = codecs.getincrementaldecoder("utf-8")(errors="replace").decode
+        self.parts, self.recent, self.first = [], "", None
+
+    def add(self, chunk):
+        """The newest piece, with the end of the text before it so a phrase across the two is found."""
+        new = self.decode(chunk)
+        self.parts.append(new)
+        if self.first is None and new.strip():
+            self.first = new.lstrip()[0]
+        window = self.recent + new
+        self.recent = window[-OVERLAP:]
+        return window
+
+    def text(self):
+        return "".join(self.parts)
+
+
+def _read(reply, limit, watch):
+    """Up to `limit` bytes of a reply, and the error that cut it short, if any: what arrived before a read failed is
+    kept. `watch` sees each piece as it arrives, so a limit stops the run before the rest comes, or a hedge copy goes
+    out."""
+    raw, read = b"", getattr(reply, "read1", reply.read)
+    while len(raw) < limit:
+        try:
+            chunk = read(min(1 << 16, limit - len(raw)))
+        except (OSError, http.client.HTTPException) as exc:
+            return raw + getattr(exc, "partial", b""), exc
+        if not chunk:
+            break
+        raw += chunk
+        watch(chunk)
+    return raw, None
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """The gateway never redirects, so a redirect is raised as the HTTP error it is, its reply read like any other,
+    rather than followed with a second request."""
+
+    def redirect_request(self, *args, **kwargs):
+        return None
+
+
+_OPENER = urllib.request.build_opener(_NoRedirect)
+
+
+def _open(request, timeout):
+    return _OPENER.open(request, timeout=timeout)
+
+
+def urlopen(request, timeout):
+    """urllib's urlopen, except that it holds one of the run's two SLOTS until the reply is read, that every reply is
+    read for a rate limit before anything parses it or cuts it short for a message, and that no redirect is followed.
+    A reply that names no limit is handed on as urllib gave it, still readable; a failed read is raised as it was."""
+    with SLOTS:
+        # A limit seen while this call waited for its slot stops it before it sends.
+        check_limited()
+        return _urlopen(request, timeout)
+
+
+def _urlopen(request, timeout):
+    try:
+        reply = _open(request, timeout)
+    except urllib.error.HTTPError as e:
+        # A 429 is a limit before its reply is read, since a reply that stalls would make it look like a network error.
+        if e.code == 429:
+            limited(f"HTTP 429 from {request.full_url}")
+
+        error = _Arriving()
+
+        def watch(chunk):
+            if is_rate_limit(e.code, error.add(chunk)):
+                limited(f"HTTP {e.code} from {request.full_url}: {' '.join(error.text().split())}")
+        raw, _ = _read(e, ERROR_BYTES, watch)
+        raise urllib.error.HTTPError(e.url, e.code, e.msg, e.hdrs, io.BytesIO(raw)) from None
+
+    arriving = _Arriving()
+
+    def watch(chunk):
+        """A model's reply is a JSON object, so text that cannot start one is read by its words as it comes; an object
+        counts once it parses, tried only where it could end."""
+        window = arriving.add(chunk)
+        if arriving.first is None:
+            return
+        if arriving.first != "{":
+            said = is_rate_limit(0, window)
+        elif window.rstrip().endswith("}"):
+            try:
+                said = limited_reply(json.loads(arriving.text()))
+            except ValueError:
+                said = False
+        else:
+            said = False
+        if said:
+            limited(f"from {request.full_url}: {' '.join(arriving.text().split())}")
+    with reply:
+        raw, failed = _read(reply, REPLY_BYTES, watch)
+    text = raw.decode(errors="replace")
+    # An object that never parsed, because it was cut short, is read by its words at the end: a model's reply cut
+    # short that names a limit stops the run too, the safer way to be wrong.
+    if text.lstrip().startswith("{") and is_rate_limit(0, text):
+        try:
+            json.loads(text)
+        except ValueError:
+            limited(f"from {request.full_url}: {' '.join(text.split())}")
+    if failed:
+        raise failed
+    return urllib.response.addinfourl(io.BytesIO(raw), reply.headers, reply.url, reply.status)
 
 
 def _key():
@@ -27,14 +204,16 @@ def post(path, body, timeout=300):
                "authorization": "Bearer " + _key()}
     data = json.dumps(body).encode()
     for attempt in range(ATTEMPTS):
+        check_limited()
         last = attempt == ATTEMPTS - 1
         try:
             req = urllib.request.Request(BASE_URL + path, data=data, headers=headers, method="POST")
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
+            with urlopen(req, timeout=timeout) as resp:
                 return json.load(resp)
         except urllib.error.HTTPError as e:
-            if (e.code < 500 and e.code != 429) or last:
-                raise RuntimeError(f"HTTP {e.code} from {BASE_URL}{path}: {e.read()[:300].decode(errors='replace')}")
+            detail = e.read()[:300].decode(errors="replace")
+            if e.code < 500 or last:
+                raise RuntimeError(f"HTTP {e.code} from {BASE_URL}{path}: {detail}")
         except (urllib.error.URLError, TimeoutError, ConnectionError) as e:
             if last:
                 raise RuntimeError(f"cannot reach {BASE_URL}: {e}") from None

@@ -152,7 +152,7 @@ def main(argv=None):
     p.add_argument("--sample", type=int, help="run a random sample of N questions")
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--limit", type=int, help="run only the first N questions")
-    p.add_argument("--workers", type=int, default=8)
+    p.add_argument("--workers", type=int, default=1)
     p.add_argument("--fresh", action="store_true", help="drop earlier rows and rerun every question")
     p.add_argument("--count", action="store_true", help="print the model calls the run would make, and stop")
     p.add_argument("--table", action="store_true", help="print the table from the rows already written")

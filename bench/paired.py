@@ -1,0 +1,215 @@
+#!/usr/bin/env python3
+"""The final held-out pass: the final code and the baseline's code on each test half at the same time, in the same
+question order, so both share whatever the gateway and its models do meanwhile.
+
+    python3 bench/paired.py                        # every test half, one pair after another
+    python3 bench/paired.py --tests month
+    python3 bench/paired.py --dry-run              # every check, and the commands, with nothing logged or run
+
+The final code is this checkout, committed and pushed. The baseline runs from a second checkout of the same commit
+whose kb/ is the baseline's, so the harness, the answer loop and the judge are the same and only the check differs;
+its code id must equal the one the baseline's own held-out runs logged. Before either run starts, both are logged in
+bench/splits/heldout-runs.tsv and bench/splits/paired-freeze.json records both commits and code ids; a later start
+with other code refuses. A pair stopped by a rate limit is resumed by the same command, which fills in only the
+questions with no row. Then `python3 bench/compare.py final baseline-paired --split test --paired`.
+"""
+import argparse
+import csv
+import json
+import os
+import shutil
+import subprocess
+import sys
+from datetime import datetime, timezone
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.dirname(HERE)
+sys.path.insert(0, HERE)
+
+import splits  # noqa: E402
+
+OUT = os.path.join(HERE, "results", "hillclimb")
+FREEZE = os.path.join(splits.FOLDER, "paired-freeze.json")
+CHECKOUT = os.path.expanduser(os.environ.get("BENCH_PAIRED_BASELINE", "~/.cache/kb-bench/paired-baseline"))
+LOGS = os.path.expanduser(os.environ.get("BENCH_LOGS", "~/.cache/kb-bench/logs/hillclimb"))
+LABELS = ("final", "baseline-paired")
+# Per test half: the command, the run name it logs, and the results it writes, as each runner names them.
+TESTS = {
+    "month": (["run.py", "month", "--month", "b", "--tools", "check"], "b-{label}:check", ["month/b-{label}"]),
+    "longmemeval-s": (["public/longmemeval.py", "--set", "s", "--split", "test"], "s-without-summaries-test-{label}",
+                      [f"longmemeval/s-without-summaries-test-{{label}}{ext}" for ext in (".jsonl", ".md", ".run.json")]),
+    "locomo": (["public/locomo.py", "--split", "test"], "locomo10-with-summaries-test-{label}",
+               [f"locomo/locomo10-with-summaries-test-{{label}}{ext}" for ext in (".jsonl", ".md", ".run.json")]),
+}
+
+
+# What a run writes in a checkout: anything else that differs from the commit is code, and the pass refuses it.
+RUN_OUTPUT = ("bench/results/", "bench/splits/heldout-runs.tsv", "bench/splits/paired-freeze.json")
+
+
+def git(cwd, *args):
+    return subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True, check=True).stdout.strip()
+
+
+def code_id(cwd):
+    """The code id the checkout's own harness logs for its kb/."""
+    return subprocess.run([sys.executable, "-c", "import sys; sys.path[:0] = ['bench']; from tools import check; "
+                           "print(check.code_id())"], cwd=cwd, capture_output=True, text=True, check=True).stdout.strip()
+
+
+def differences(folder):
+    """(status, path) for every file that differs from the commit, untracked files included."""
+    lines = subprocess.run(["git", "status", "--porcelain", "--untracked-files=all"], cwd=folder, capture_output=True,
+                           text=True, check=True).stdout.splitlines()
+    return [(line[:2], line[3:].split(" -> ")[-1]) for line in lines]
+
+
+def code_changes(folder, kb_from_baseline=False):
+    """Paths that differ from the commit and are not what a run writes. In the baseline's checkout kb/ is the
+    baseline's: its files may differ or be gone, but none may be added."""
+    changed = []
+    for status, path in differences(folder):
+        if path.startswith(RUN_OUTPUT):
+            continue
+        if kb_from_baseline and path.startswith("kb/") and status != "??":
+            continue
+        changed.append(path)
+    return changed
+
+
+def logged_baseline():
+    """The code id and commit every baseline held-out run logged; they must agree."""
+    with open(splits.LOG, encoding="utf-8") as fh:
+        found = {(r["code"], r["commit"]) for r in csv.DictReader(fh, delimiter="\t") if r["label"] == "baseline"}
+    if len(found) != 1:
+        raise SystemExit(f"the baseline runs logged {len(found)} code ids or commits, not one: {sorted(found)}")
+    return found.pop()
+
+
+def baseline_checkout(folder, head, base, expected, code=code_id, repo=ROOT):
+    """A checkout of `head` whose kb/ is `base`'s, files `base` lacks removed. Reused when it is already that, and
+    refused when its kb/ does not hash to `expected`."""
+    if not os.path.exists(folder):
+        git(repo, "worktree", "add", "--detach", folder, head)
+        git(folder, "checkout", base, "--", "kb")
+        extra = set(git(folder, "ls-files", "kb").split()) - set(git(folder, "ls-tree", "-r", "--name-only", base,
+                                                                      "--", "kb").split())
+        if extra:
+            git(folder, "rm", "-q", "--", *sorted(extra))
+    if git(folder, "rev-parse", "HEAD") != head:
+        raise SystemExit(f"{folder} is at another commit; remove it and run again")
+    changed = code_changes(folder, kb_from_baseline=True)
+    if changed:
+        raise SystemExit(f"{folder} differs from {head[:7]} outside the baseline's kb/: {changed}")
+    # Every file under kb/, not only the Python the code id hashes, must be the baseline's.
+    differs = git(folder, "diff", "--name-only", base, "--", "kb").split()
+    if differs:
+        raise SystemExit(f"{folder}'s kb/ differs from {base[:7]}'s: {differs}")
+    for cache in (os.path.join(dirpath, d) for dirpath, dirs, _ in os.walk(os.path.join(folder, "kb"))
+                  for d in dirs if d == "__pycache__"):
+        shutil.rmtree(cache, ignore_errors=True)
+    found = code(folder)
+    if found != expected:
+        raise SystemExit(f"the baseline checkout's kb/ hashes to {found}, not the {expected} its runs logged")
+    return found
+
+
+def earlier_runs(tests, head, folders):
+    """Refuse when a label of the pair already ran from another commit, or left results with no logged run: a pass
+    resumes only its own rows, from its own frozen commit."""
+    with open(splits.LOG, encoding="utf-8") as fh:
+        rows = list(csv.DictReader(fh, delimiter="\t"))
+    for test in tests:
+        for label, folder in zip(LABELS, folders):
+            logged = [r for r in rows if r["test"] == test and r["label"] == label]
+            if any(r["commit"] != head for r in logged):
+                raise SystemExit(f"{test} {label} already ran from commit {logged[0]['commit'][:7]}; a paired pass "
+                                 "runs from one frozen commit")
+            found = [path.format(label=label) for path in TESTS[test][2]
+                     if os.path.exists(os.path.join(folder, "bench", "results", "hillclimb", path.format(label=label)))]
+            if found and not logged:
+                raise SystemExit(f"{test} {label} has results with no logged run ({', '.join(found)}); move them "
+                                 "away first")
+
+
+def freeze(head, final, base, baseline):
+    """Record both codes once; refuse a later start whose code differs."""
+    record = {"final_commit": head, "final_code": final, "baseline_kb_commit": base, "baseline_code": baseline,
+              "harness_commit": head, "labels": list(LABELS)}
+    if os.path.exists(FREEZE):
+        with open(FREEZE, encoding="utf-8") as fh:
+            earlier = json.load(fh)
+        if {k: v for k, v in earlier.items() if k != "date"} != record:
+            raise SystemExit(f"the code differs from the frozen code in {FREEZE}; nothing runs")
+        return
+    with open(FREEZE, "w", encoding="utf-8") as fh:
+        json.dump({"date": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"), **record}, fh, indent=1)
+        fh.write("\n")
+
+
+def main(argv=None):
+    p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument("--tests", default=",".join(TESTS))
+    # One question at a time: the run's two model-call slots then go to that question's calls and kb's hedge copy,
+    # as they would in use, rather than to another question's.
+    p.add_argument("--workers", type=int, default=1)
+    p.add_argument("--dry-run", action="store_true")
+    args = p.parse_args(argv)
+    tests = args.tests.split(",")
+    if set(tests) - set(TESTS):
+        raise SystemExit(f"tests are {', '.join(TESTS)}")
+    changed = code_changes(ROOT)
+    if changed:
+        raise SystemExit(f"commit the final code first: the checkout has changes ({', '.join(changed[:5])})")
+    head = git(ROOT, "rev-parse", "HEAD")
+    if not git(ROOT, "branch", "-r", "--contains", head):
+        raise SystemExit("push the final code first: no remote branch holds this commit")
+    expected, base = logged_baseline()
+    earlier_runs(tests, head, (ROOT, CHECKOUT))
+    baseline = baseline_checkout(CHECKOUT, head, base, expected)
+    final = code_id(ROOT)
+    python = os.environ.get("BENCH_PYTHON", sys.executable)
+    commands = {test: [(label, folder, [python, os.path.join(folder, "bench", TESTS[test][0][0]), *TESTS[test][0][1:],
+                                        "--label", label, "--workers", str(args.workers)])
+                       for label, folder in zip(LABELS, (ROOT, CHECKOUT))] for test in tests}
+    if args.dry_run:
+        print(f"final {final} at {head}; baseline-paired {baseline}, kb from {base}, in {CHECKOUT}")
+        for test in tests:
+            for label, folder, command in commands[test]:
+                print(f"{test} {label} logs {TESTS[test][1].format(label=label)}: {' '.join(command)}")
+        return 0
+    freeze(head, final, base, baseline)
+    for test in tests:
+        command, name, _ = TESTS[test]
+        for label, code in zip(LABELS, (final, baseline)):
+            splits.held_out_run(test, label, code, head, name.format(label=label), hold=False)
+    env = {**os.environ, "BENCH_HELDOUT_LOG": os.path.abspath(splits.LOG)}
+    os.makedirs(LOGS, exist_ok=True)
+    for test in tests:
+        results = TESTS[test][2]
+        runs = []
+        for label, folder, command in commands[test]:
+            log = open(os.path.join(LOGS, f"paired-{test}-{label}.log"), "a", encoding="utf-8")
+            runs.append((label, log, subprocess.Popen(command, cwd=folder, env=env, stdout=log,
+                                                      stderr=subprocess.STDOUT)))
+        failed = []
+        for label, log, proc in runs:
+            if proc.wait():
+                failed.append(label)
+            log.close()
+        for path in results:
+            source = os.path.join(CHECKOUT, "bench", "results", "hillclimb", path.format(label=LABELS[1]))
+            target = os.path.join(OUT, path.format(label=LABELS[1]))
+            if os.path.isdir(source):
+                shutil.copytree(source, target, dirs_exist_ok=True)
+            elif os.path.exists(source):
+                shutil.copy(source, target)
+        print(f"{test}: " + ("done" if not failed else f"{', '.join(failed)} stopped; see {LOGS}/paired-{test}-*.log "
+                             "and run the same command again once the cause has passed"))
+        if failed:
+            return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

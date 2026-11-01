@@ -1,0 +1,616 @@
+{
+ "runs": [
+  {
+   "started": "2026-10-27T18:45:07Z",
+   "seconds": 11265,
+   "tests": [
+    "implicit",
+    "op"
+   ],
+   "tools": [
+    "none",
+    "oracle",
+    "check",
+    "mem0",
+    "supermemory"
+   ],
+   "groups": [
+    "conv-26",
+    "conv-30",
+    "conv-41",
+    "conv-42",
+    "conv-43",
+    "conv-44",
+    "conv-47",
+    "conv-48",
+    "conv-49",
+    "conv-50"
+   ],
+   "answer_model": "claude-sonnet-5-5",
+   "judge_model": "gpt-6.1-sol",
+   "tool_turns": 4,
+   "check_code": "32456fbb48ad1e7d",
+   "workers": 2,
+   "parallel_model_calls": 2,
+   "rate_limits": {},
+   "stopped": null,
+   "data": {
+    "conv_jobs": {
+     "url": "https://raw.githubusercontent.com/MiuLab/LoCoMo-Conv/1925e924c36e632283ea91f2212157829f4e0e45/data/response_eval_full_ext.json",
+     "sha256": "bbf7d9a09d8becab0bb0600c04aabe047cf21084369a07a4f23aedcc63c53c89"
+    },
+    "conv_answer": {
+     "url": "https://raw.githubusercontent.com/MiuLab/LoCoMo-Conv/1925e924c36e632283ea91f2212157829f4e0e45/response_eval/run_response_eval.py",
+     "sha256": "e2358b6c2c1487766a6b597aeb6251bd66890f06f2a69a7ac08eacc8854d923e"
+    },
+    "conv_judge": {
+     "url": "https://raw.githubusercontent.com/MiuLab/LoCoMo-Conv/1925e924c36e632283ea91f2212157829f4e0e45/response_eval/score_fact_used_partial.py",
+     "sha256": "a9e7e89f7db2f1ba171485968ce7714e250a17868854b1f0339cee6018f8ad55"
+    },
+    "op_tasks": {
+     "url": "https://raw.githubusercontent.com/yulinlp/OP-Bench/44e7d0e526152997b04208218a8ad7362174dae4/data/locomo10_overpersonalized.json",
+     "sha256": "250f4005a57226eb80a13c345ed0b0a88db26dfbd0c9f3339f19f32cad690992"
+    },
+    "op_prompts": {
+     "url": "https://raw.githubusercontent.com/yulinlp/OP-Bench/44e7d0e526152997b04208218a8ad7362174dae4/src/opbench/prompts.py",
+     "sha256": "8301b9413a156b14974f6b8f7b16829573821ef5078562c5ee6295c226d4fbc1"
+    }
+   },
+   "conversations": {
+    "revision": "3eb6f2c585f5e1699204e3c3bdf7adc5c28cb376",
+    "sha256": "79fa87e90f04081343b8c8debecb80a9a6842b76a7aa537dc9fdf651ea698ff4"
+   },
+   "stores": {
+    "none": {
+     "conv-42": {
+      "items": 29,
+      "load_seconds": 0
+     },
+     "conv-43": {
+      "items": 29,
+      "load_seconds": 0
+     },
+     "conv-44": {
+      "items": 28,
+      "load_seconds": 0
+     },
+     "conv-47": {
+      "items": 31,
+      "load_seconds": 0
+     },
+     "conv-48": {
+      "items": 30,
+      "load_seconds": 0
+     },
+     "conv-49": {
+      "items": 25,
+      "load_seconds": 0
+     },
+     "conv-50": {
+      "items": 30,
+      "load_seconds": 0
+     }
+    },
+    "oracle": {
+     "conv-42": {
+      "items": 29,
+      "load_seconds": 0
+     },
+     "conv-43": {
+      "items": 29,
+      "load_seconds": 0
+     },
+     "conv-44": {
+      "items": 28,
+      "load_seconds": 0
+     },
+     "conv-47": {
+      "items": 31,
+      "load_seconds": 0
+     },
+     "conv-48": {
+      "items": 30,
+      "load_seconds": 0
+     },
+     "conv-49": {
+      "items": 25,
+      "load_seconds": 0
+     },
+     "conv-50": {
+      "items": 30,
+      "load_seconds": 0
+     }
+    },
+    "supermemory": {
+     "conv-42": {
+      "documents": 29,
+      "reused": true,
+      "unsettled": 0,
+      "seconds": 1,
+      "llm": "claude-haiku-5-5",
+      "items": 29,
+      "load_seconds": 1
+     },
+     "conv-43": {
+      "documents": 29,
+      "reused": true,
+      "unsettled": 0,
+      "seconds": 1,
+      "llm": "claude-haiku-5-5",
+      "items": 29,
+      "load_seconds": 1
+     },
+     "conv-44": {
+      "documents": 28,
+      "reused": true,
+      "unsettled": 0,
+      "seconds": 0,
+      "llm": "claude-haiku-5-5",
+      "items": 28,
+      "load_seconds": 0
+     },
+     "conv-47": {
+      "documents": 31,
+      "reused": true,
+      "unsettled": 0,
+      "seconds": 0,
+      "llm": "claude-haiku-5-5",
+      "items": 31,
+      "load_seconds": 0
+     },
+     "conv-48": {
+      "documents": 30,
+      "reused": true,
+      "unsettled": 0,
+      "seconds": 0,
+      "llm": "claude-haiku-5-5",
+      "items": 30,
+      "load_seconds": 0
+     },
+     "conv-49": {
+      "documents": 25,
+      "reused": true,
+      "unsettled": 0,
+      "seconds": 0,
+      "llm": "claude-haiku-5-5",
+      "items": 25,
+      "load_seconds": 0
+     },
+     "conv-50": {
+      "documents": 30,
+      "reused": true,
+      "unsettled": 0,
+      "seconds": 0,
+      "llm": "claude-haiku-5-5",
+      "items": 30,
+      "load_seconds": 0
+     }
+    },
+    "mem0": {
+     "conv-42": {
+      "version": "2.2.1",
+      "llm": "claude-haiku-5-5",
+      "embedder": "BAAI/bge-base-en-v1.5",
+      "memories": 777,
+      "add_failures": 0,
+      "seconds": 1260,
+      "users": [
+       "Joanna",
+       "Nate"
+      ],
+      "batch": 2,
+      "top_k": 10,
+      "extraction_parse_errors": 0,
+      "reused": true,
+      "items": 29,
+      "load_seconds": 6
+     },
+     "conv-43": {
+      "version": "2.2.1",
+      "llm": "claude-haiku-5-5",
+      "embedder": "BAAI/bge-base-en-v1.5",
+      "memories": 780,
+      "add_failures": 0,
+      "seconds": 1335,
+      "users": [
+       "Tim",
+       "John"
+      ],
+      "batch": 2,
+      "top_k": 10,
+      "extraction_parse_errors": 0,
+      "reused": true,
+      "items": 29,
+      "load_seconds": 1
+     },
+     "conv-44": {
+      "version": "2.2.1",
+      "llm": "claude-haiku-5-5",
+      "embedder": "BAAI/bge-base-en-v1.5",
+      "memories": 765,
+      "add_failures": 0,
+      "seconds": 1299,
+      "users": [
+       "Audrey",
+       "Andrew"
+      ],
+      "batch": 2,
+      "top_k": 10,
+      "extraction_parse_errors": 0,
+      "reused": true,
+      "items": 28,
+      "load_seconds": 1
+     },
+     "conv-47": {
+      "version": "2.2.1",
+      "llm": "claude-haiku-5-5",
+      "embedder": "BAAI/bge-base-en-v1.5",
+      "memories": 863,
+      "add_failures": 0,
+      "seconds": 1379,
+      "users": [
+       "James",
+       "John"
+      ],
+      "batch": 2,
+      "top_k": 10,
+      "extraction_parse_errors": 0,
+      "reused": true,
+      "items": 31,
+      "load_seconds": 1
+     },
+     "conv-48": {
+      "version": "2.2.1",
+      "llm": "claude-haiku-5-5",
+      "embedder": "BAAI/bge-base-en-v1.5",
+      "memories": 791,
+      "add_failures": 0,
+      "seconds": 1268,
+      "users": [
+       "Deborah",
+       "Jolene"
+      ],
+      "batch": 2,
+      "top_k": 10,
+      "extraction_parse_errors": 0,
+      "reused": true,
+      "items": 30,
+      "load_seconds": 1
+     },
+     "conv-49": {
+      "version": "2.2.1",
+      "llm": "claude-haiku-5-5",
+      "embedder": "BAAI/bge-base-en-v1.5",
+      "memories": 580,
+      "add_failures": 0,
+      "seconds": 914,
+      "users": [
+       "Evan",
+       "Sam"
+      ],
+      "batch": 2,
+      "top_k": 10,
+      "extraction_parse_errors": 0,
+      "reused": true,
+      "items": 25,
+      "load_seconds": 1
+     },
+     "conv-50": {
+      "version": "2.2.1",
+      "llm": "claude-haiku-5-5",
+      "embedder": "BAAI/bge-base-en-v1.5",
+      "memories": 655,
+      "add_failures": 0,
+      "seconds": 1036,
+      "users": [
+       "Calvin",
+       "Dave"
+      ],
+      "batch": 2,
+      "top_k": 10,
+      "extraction_parse_errors": 0,
+      "reused": true,
+      "items": 30,
+      "load_seconds": 1
+     }
+    },
+    "check": {
+     "conv-42": {
+      "store_seconds": 0.08,
+      "summarized": 3,
+      "summary_failures": 0,
+      "summarize_seconds": 10.1,
+      "rows": {
+       "atom": 8,
+       "doc": 26,
+       "raw": 6,
+       "segment": 15
+      },
+      "code": "32456fbb48ad1e7d",
+      "items": 29,
+      "load_seconds": 10
+     },
+     "conv-43": {
+      "store_seconds": 0.07,
+      "summarized": 10,
+      "summary_failures": 0,
+      "summarize_seconds": 23.9,
+      "rows": {
+       "atom": 20,
+       "doc": 19,
+       "raw": 20,
+       "segment": 46
+      },
+      "code": "32456fbb48ad1e7d",
+      "items": 29,
+      "load_seconds": 24
+     },
+     "conv-44": {
+      "store_seconds": 0.07,
+      "summarized": 8,
+      "summary_failures": 0,
+      "summarize_seconds": 19.3,
+      "rows": {
+       "atom": 18,
+       "doc": 20,
+       "raw": 16,
+       "segment": 32
+      },
+      "code": "32456fbb48ad1e7d",
+      "items": 28,
+      "load_seconds": 19
+     },
+     "conv-47": {
+      "store_seconds": 0.06,
+      "summarized": 6,
+      "summary_failures": 0,
+      "summarize_seconds": 13.5,
+      "rows": {
+       "atom": 15,
+       "doc": 25,
+       "raw": 12,
+       "segment": 29
+      },
+      "code": "32456fbb48ad1e7d",
+      "items": 31,
+      "load_seconds": 14
+     },
+     "conv-48": {
+      "store_seconds": 0.06,
+      "summarized": 5,
+      "summary_failures": 0,
+      "summarize_seconds": 12.9,
+      "rows": {
+       "atom": 11,
+       "doc": 25,
+       "raw": 10,
+       "segment": 26
+      },
+      "code": "32456fbb48ad1e7d",
+      "items": 30,
+      "load_seconds": 13
+     },
+     "conv-49": {
+      "store_seconds": 0.06,
+      "summarized": 2,
+      "summary_failures": 0,
+      "summarize_seconds": 4.0,
+      "rows": {
+       "atom": 5,
+       "doc": 23,
+       "raw": 4,
+       "segment": 7
+      },
+      "code": "32456fbb48ad1e7d",
+      "items": 25,
+      "load_seconds": 4
+     },
+     "conv-50": {
+      "store_seconds": 0.06,
+      "summarized": 5,
+      "summary_failures": 0,
+      "summarize_seconds": 15.1,
+      "rows": {
+       "atom": 11,
+       "doc": 25,
+       "raw": 10,
+       "segment": 21
+      },
+      "code": "32456fbb48ad1e7d",
+      "items": 30,
+      "load_seconds": 15
+     }
+    }
+   },
+   "failed": 11,
+   "failures": [
+    "check conv-49/116: RemoteDisconnected: Remote end closed connection without response",
+    "check conv-49/117: RemoteDisconnected: Remote end closed connection without response",
+    "check conv-49/132: RemoteDisconnected: Remote end closed connection without response",
+    "check conv-49/118: RemoteDisconnected: Remote end closed connection without response",
+    "check conv-49/135: RemoteDisconnected: Remote end closed connection without response",
+    "check conv-49/133: RemoteDisconnected: Remote end closed connection without response",
+    "check conv-49/141: RemoteDisconnected: Remote end closed connection without response",
+    "check conv-49/136: RemoteDisconnected: Remote end closed connection without response",
+    "check conv-49/145: RemoteDisconnected: Remote end closed connection without response",
+    "check conv-49/154: RemoteDisconnected: Remote end closed connection without response",
+    "check conv-49/Evan/sycophancy/14: RemoteDisconnected: Remote end closed connection without response"
+   ]
+  },
+  {
+   "started": "2026-10-27T21:53:38Z",
+   "seconds": 92,
+   "tests": [
+    "implicit",
+    "op"
+   ],
+   "tools": [
+    "none",
+    "oracle",
+    "check",
+    "mem0",
+    "supermemory"
+   ],
+   "groups": [
+    "conv-26",
+    "conv-30",
+    "conv-41",
+    "conv-42",
+    "conv-43",
+    "conv-44",
+    "conv-47",
+    "conv-48",
+    "conv-49",
+    "conv-50"
+   ],
+   "answer_model": "claude-sonnet-5-5",
+   "judge_model": "gpt-6.1-sol",
+   "tool_turns": 4,
+   "check_code": "32456fbb48ad1e7d",
+   "workers": 2,
+   "parallel_model_calls": 2,
+   "rate_limits": {},
+   "stopped": null,
+   "data": {
+    "conv_jobs": {
+     "url": "https://raw.githubusercontent.com/MiuLab/LoCoMo-Conv/1925e924c36e632283ea91f2212157829f4e0e45/data/response_eval_full_ext.json",
+     "sha256": "bbf7d9a09d8becab0bb0600c04aabe047cf21084369a07a4f23aedcc63c53c89"
+    },
+    "conv_answer": {
+     "url": "https://raw.githubusercontent.com/MiuLab/LoCoMo-Conv/1925e924c36e632283ea91f2212157829f4e0e45/response_eval/run_response_eval.py",
+     "sha256": "e2358b6c2c1487766a6b597aeb6251bd66890f06f2a69a7ac08eacc8854d923e"
+    },
+    "conv_judge": {
+     "url": "https://raw.githubusercontent.com/MiuLab/LoCoMo-Conv/1925e924c36e632283ea91f2212157829f4e0e45/response_eval/score_fact_used_partial.py",
+     "sha256": "a9e7e89f7db2f1ba171485968ce7714e250a17868854b1f0339cee6018f8ad55"
+    },
+    "op_tasks": {
+     "url": "https://raw.githubusercontent.com/yulinlp/OP-Bench/44e7d0e526152997b04208218a8ad7362174dae4/data/locomo10_overpersonalized.json",
+     "sha256": "250f4005a57226eb80a13c345ed0b0a88db26dfbd0c9f3339f19f32cad690992"
+    },
+    "op_prompts": {
+     "url": "https://raw.githubusercontent.com/yulinlp/OP-Bench/44e7d0e526152997b04208218a8ad7362174dae4/src/opbench/prompts.py",
+     "sha256": "8301b9413a156b14974f6b8f7b16829573821ef5078562c5ee6295c226d4fbc1"
+    }
+   },
+   "conversations": {
+    "revision": "3eb6f2c585f5e1699204e3c3bdf7adc5c28cb376",
+    "sha256": "79fa87e90f04081343b8c8debecb80a9a6842b76a7aa537dc9fdf651ea698ff4"
+   },
+   "stores": {
+    "check": {
+     "conv-49": {
+      "store_seconds": 0.04,
+      "summarized": 2,
+      "summary_failures": 0,
+      "summarize_seconds": 4.6,
+      "rows": {
+       "atom": 4,
+       "doc": 23,
+       "raw": 4,
+       "segment": 9
+      },
+      "code": "32456fbb48ad1e7d",
+      "items": 25,
+      "load_seconds": 5
+     }
+    }
+   },
+   "failed": 0,
+   "failures": []
+  },
+  {
+   "started": "2026-10-27T22:10:35Z",
+   "seconds": 103,
+   "tests": [
+    "implicit",
+    "op"
+   ],
+   "tools": [
+    "check"
+   ],
+   "groups": [
+    "conv-26",
+    "conv-30",
+    "conv-41",
+    "conv-42",
+    "conv-43",
+    "conv-44",
+    "conv-47",
+    "conv-48",
+    "conv-49",
+    "conv-50"
+   ],
+   "answer_model": "claude-sonnet-5-5",
+   "judge_model": "gpt-6.1-sol",
+   "tool_turns": 4,
+   "check_code": "32456fbb48ad1e7d",
+   "workers": 2,
+   "parallel_model_calls": 2,
+   "rate_limits": {},
+   "stopped": null,
+   "data": {
+    "conv_jobs": {
+     "url": "https://raw.githubusercontent.com/MiuLab/LoCoMo-Conv/1925e924c36e632283ea91f2212157829f4e0e45/data/response_eval_full_ext.json",
+     "sha256": "bbf7d9a09d8becab0bb0600c04aabe047cf21084369a07a4f23aedcc63c53c89"
+    },
+    "conv_answer": {
+     "url": "https://raw.githubusercontent.com/MiuLab/LoCoMo-Conv/1925e924c36e632283ea91f2212157829f4e0e45/response_eval/run_response_eval.py",
+     "sha256": "e2358b6c2c1487766a6b597aeb6251bd66890f06f2a69a7ac08eacc8854d923e"
+    },
+    "conv_judge": {
+     "url": "https://raw.githubusercontent.com/MiuLab/LoCoMo-Conv/1925e924c36e632283ea91f2212157829f4e0e45/response_eval/score_fact_used_partial.py",
+     "sha256": "a9e7e89f7db2f1ba171485968ce7714e250a17868854b1f0339cee6018f8ad55"
+    },
+    "op_tasks": {
+     "url": "https://raw.githubusercontent.com/yulinlp/OP-Bench/44e7d0e526152997b04208218a8ad7362174dae4/data/locomo10_overpersonalized.json",
+     "sha256": "250f4005a57226eb80a13c345ed0b0a88db26dfbd0c9f3339f19f32cad690992"
+    },
+    "op_prompts": {
+     "url": "https://raw.githubusercontent.com/yulinlp/OP-Bench/44e7d0e526152997b04208218a8ad7362174dae4/src/opbench/prompts.py",
+     "sha256": "8301b9413a156b14974f6b8f7b16829573821ef5078562c5ee6295c226d4fbc1"
+    }
+   },
+   "conversations": {
+    "revision": "3eb6f2c585f5e1699204e3c3bdf7adc5c28cb376",
+    "sha256": "79fa87e90f04081343b8c8debecb80a9a6842b76a7aa537dc9fdf651ea698ff4"
+   },
+   "stores": {
+    "check": {
+     "conv-49": {
+      "store_seconds": 0.05,
+      "summarized": 2,
+      "summary_failures": 0,
+      "summarize_seconds": 4.2,
+      "rows": {
+       "atom": 4,
+       "doc": 23,
+       "raw": 4,
+       "segment": 7
+      },
+      "code": "32456fbb48ad1e7d",
+      "items": 25,
+      "load_seconds": 4
+     },
+     "conv-50": {
+      "store_seconds": 0.06,
+      "summarized": 5,
+      "summary_failures": 0,
+      "summarize_seconds": 12.7,
+      "rows": {
+       "atom": 9,
+       "doc": 25,
+       "raw": 10,
+       "segment": 22
+      },
+      "code": "32456fbb48ad1e7d",
+      "items": 30,
+      "load_seconds": 13
+     }
+    }
+   },
+   "failed": 0,
+   "failures": []
+  }
+ ]
+}

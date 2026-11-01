@@ -5,7 +5,7 @@ import sqlite3
 from datetime import datetime, timezone
 
 from kb.mask import mask, mask_all
-from kb.store import SUMMARY_KINDS, TOKENIZE, current, item_host, secret_id
+from kb.store import SUMMARY_KINDS, TOKENIZE, current, item_names, secret_id, unversioned
 
 STOPWORDS = set("""a an and are as at be been but by can could did do does doing for from had has have
 how i if in into is it its just me my no not of on or our should so than that the their them then there
@@ -117,9 +117,10 @@ def search(db, query, after=None, sources=(), limit=10, before=None, keep=None):
     for key, hit in best.items():
         hit["score"] = total[key]
     fresh = current(db, [h["id"] for h in best.values()])
+    skipped = unversioned(db, [h["id"] for h in best.values()])  # an older kb's rows, which no reader shows
     # A store from before ingest refused such ids can hold an item whose id or source looks like a secret.
-    allowed = (h for h in best.values() if h["id"] in fresh
-               or not secret_id(h["source"], h["source_id"], item_host(db, h["source"], h["source_id"])))
+    allowed = (h for h in best.values() if h["id"] not in skipped and (h["id"] in fresh
+               or not secret_id(h["source"], h["source_id"], item_names(db, h["source"], h["source_id"]))))
     hits = sorted((h for h in allowed if keep is None or keep(h)), key=lambda h: -h["score"])[:limit]
     for hit in hits:
         if hit["id"] in fresh:

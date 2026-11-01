@@ -150,7 +150,7 @@ def in_split(test, cases, name, args):
 
 
 def log_held_out(test, args, name):
-    """Log run `name` on the held-out half just before it starts. Refuses past the three runs it gets."""
+    """Log run `name` on the held-out half just before it starts. Refuses past the four runs it gets."""
     if args.split in ("test", "all"):
         splits.held_out_run(test, args.label, check.code_id(), run.git_head(), name)
 
@@ -242,14 +242,16 @@ def answer(store, system, question, context):
 
 
 def run_case(stores, case, system, score):
+    gateway.check_limited()
     store, stats = stores.get(case.group)
     found = store.lookup(case.question)
     text, calls, shown, printed, empty = answer(store, system(case), case.question, found.context)
     return {"id": case.id, "group": case.group, "kind": case.kind, "question": case.question, "gold": case.gold,
             "today": case.today, "evidence": list(case.evidence), "store": stats, "query": found.query,
             "context": found.context, "context_items": found.items, "lookup_seconds": round(found.seconds, 3),
-            "lookup_error": found.error, "lookup_model_tokens": found.model_tokens, "tool_calls": calls,
-            "read_items": shown, "tool_chars": sum(map(len, printed)),
+            "lookup_error": found.error, "lookup_model_tokens": found.model_tokens,
+            "lookup_model_detail": found.model_detail, "tool_calls": calls, "read_items": shown,
+            "tool_chars": sum(map(len, printed)),
             "context_tokens": gateway.count_tokens(run.ANSWER_MODEL, found.context),
             "tool_tokens": sum(c["tokens"] for c in calls),
             "empty_replies": empty, "answer": text, **score(case, text)}

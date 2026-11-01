@@ -500,7 +500,7 @@ password = "cmd:echo {CANARY['cmdfail']} >&2; exit 3"
 
     def drive_stored_rows(self):
         """Rows that reach the store without store_item: an item another store sent, written as Sync and Cloud
-        write it, and an old store's rows from before kb masked what it stores. Search, get and summarize read
+        write it, and rows an earlier version of mask() stored, which today's changes. Search, get and summarize read
         both, and an old row's text is cut at a title, a snippet, a page, a summarizer slice and between two chunks,
         which remask has to join to mask."""
         db = store.connect(self.paths.db)
@@ -545,8 +545,8 @@ password = "cmd:echo {CANARY['cmdfail']} >&2; exit 3"
                  for i, part in enumerate(parts)]
         rows.append(("doc", f"desk:key-{CANARY['oldid']}.md", "zebra", "zebra quokka ledger", {"hash": "oldid"}))
         older = (NOW - timedelta(hours=3)).isoformat()
-        db.executemany("INSERT INTO docs(kind, source, source_id, ts, title, content, metadata) "
-                       "VALUES (?, 'notes', ?, ?, ?, ?, ?)",
+        db.executemany("INSERT INTO docs(kind, source, source_id, ts, title, content, metadata, masked) "
+                       "VALUES (?, 'notes', ?, ?, ?, ?, ?, '0123456789abcdef')",
                        [(kind, sid, older if sid == "old-pem.md" else old, title, text, json.dumps(meta))
                         for kind, sid, title, text, meta in rows])
         db.commit()
