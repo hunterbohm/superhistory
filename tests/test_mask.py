@@ -560,6 +560,19 @@ class KeyShapeTest(unittest.TestCase):
             with self.subTest(unit=unit):
                 self.assertLess(took(unit * (size // len(unit))), 4 * max(prose, 0.01))
 
+    def test_many_fields_on_one_line_cost_time_in_proportion(self):
+        # An email can be written to hold them; each was read on to the end of its line.
+        import time
+        for unit in ("DEK-Info:", "DEK-Info: x ", "Proc-Type: 4,ENCRYPTED DEK-Info: "):
+            with self.subTest(unit=unit):
+                took = {}
+                for size in (1 << 13, 1 << 16):
+                    text = unit * (size // len(unit))
+                    started = time.process_time()
+                    mask(text)
+                    took[size] = time.process_time() - started
+                self.assertLess(took[1 << 16], 24 * max(took[1 << 13], 0.01), took)
+
     def test_paragraphs_after_a_broken_key_stay(self):
         for key in ("-----BEGIN PRIVATE KEY-----\nMIIEvQIBADAN", "-----BEGIN RSA PRIVATE KEY-----\nProc-Type: 4,ENCRYPTED\n"
                     "DEK-Info: AES-256-CBC,0A1B\n\nMIIEvQIBADAN", "abc\n-----END PRIVATE KEY-----"):
