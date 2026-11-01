@@ -549,6 +549,19 @@ class SupersedeMarkTest(TempDB):
         self.db.commit()
         self.db.close()
 
+    def test_a_mark_main_kept_to_a_row_since_gone_still_marks_its_item(self):
+        # Main points a mark at the replacing row's id, which an ingest that refreshes that item deletes.
+        self.main_store()
+        raw = sqlite3.connect(self.path)
+        target = raw.execute("SELECT superseded_by FROM docs WHERE source_id='old'").fetchone()[0]
+        raw.execute("DELETE FROM docs WHERE source_id='new'")
+        raw.commit()
+        raw.close()
+        for readonly in (True, False, False):
+            with self.subTest(readonly=readonly), contextlib.closing(store.connect(self.path, readonly=readonly)) as db:
+                self.assertEqual(store.superseded_by(db, "s", "old"), ("", f"#{target}"))
+                self.assertTrue(search.search(db, "gecko")[0]["superseded_by"])
+
     def test_a_store_main_wrote_keeps_its_marks_when_read_and_once_written(self):
         self.main_store()
         with contextlib.closing(store.connect(self.path, readonly=True)) as db:

@@ -649,6 +649,14 @@ class RenderThreadTest(unittest.TestCase):
         self.assertEqual(item.title, "Q4 pricing")
         self.assertIn("From: Dana Field <dana@example.com>", item.content)
 
+    def test_a_thread_keeps_the_labels_of_a_message_whose_text_is_left_out(self):
+        thread = gmail.Thread("123", 0, (gmail.Message(1, 1, ("INBOX",), "a@example.com", "Plans"),
+                                         gmail.Message(2, 2, ("Client/Acme",), "b@example.com", "Re: Plans")))
+        item = gmail._render(ME, thread, {1: b"From: a@example.com\nSubject: Plans\n\nThe launch is approved.",
+                                          2: b"From: b@example.com\nSubject: Re: Plans\n\nYour verification code is 482913."})
+        self.assertEqual(item.meta["labels"], ["INBOX", "Client/Acme"])
+        self.assertNotIn("482913", item.content)
+
     def test_only_gmails_own_draft_trash_and_spam_labels_drop_a_message(self):
         for labels in (("\\Draft",), ("DRAFT",), ("\\Trash",), ("TRASH",), ("SPAM",), ("Spam",), ("Trash",), ("Drafts",)):
             with self.subTest(labels=labels):

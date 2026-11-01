@@ -214,6 +214,14 @@ class CliTest(TempHome):
         self.assertNotIn("characters remain", out)
         self.assertNotIn("superseded", out)
 
+    def test_get_names_the_row_a_mark_main_kept_named_once_that_row_is_gone(self):
+        self.add("old", "the gecko plan", title="old")
+        self.db.execute("DROP TABLE supersedes")
+        self.db.execute("ALTER TABLE docs ADD COLUMN superseded_by INTEGER")
+        self.db.execute("UPDATE docs SET superseded_by=7 WHERE source_id='old'")
+        self.db.commit()
+        self.assertIn("(superseded by #7)", self.get(1))
+
     def test_supersede_refuses_an_item_whose_id_holds_a_secret_and_names_remask(self):
         secret = "sk-ant-api03-" + "Q" * 40  # made up
         self.add("plain", "walrus notes")
@@ -383,6 +391,13 @@ class OlderStoreTest(TempHome):
                          ("plan.md", None)):
             with self.subTest(old=old):
                 self.assertEqual(cli._rebuilt_id(source, old, config), new)
+        # An install id's own name as a host: the item's recorded host says which it is, and with none it counts lost.
+        config = config_mod.Config(machine="studio", install="c-aaaaaaaaaaaaa")
+        source = types.SimpleNamespace(name="notes", hosts=("studio", "c-aaaaaaaaaaaaa"))
+        for host, new in (("c-aaaaaaaaaaaaa", "c-aaaaaaaaaaaaa@c-aaaaaaaaaaaaa:plan.md"),
+                          ("studio", "c-aaaaaaaaaaaaa:plan.md"), (None, None)):
+            with self.subTest(host=host):
+                self.assertEqual(cli._rebuilt_id(source, "c-aaaaaaaaaaaaa:plan.md", config, host), new)
         # A machine an older kb knew by a name shaped like an install id is still that machine.
         config = config_mod.Config(machine="c-aaaaaaaaaaaaa", install="c-bbbbbbbbbbbbb")
         source = types.SimpleNamespace(name="notes", hosts=("c-aaaaaaaaaaaaa", "desk"))
@@ -392,6 +407,26 @@ class OlderStoreTest(TempHome):
                          ("c-ccccccccccccc:plan.md", None), ("c-aaaaaaaaaaaaa@desk:plan.md", None)):
             with self.subTest(machine="install-shaped", old=old):
                 self.assertEqual(cli._rebuilt_id(source, old, config), new)
+
+    def test_a_rebuild_keeps_an_item_an_older_kb_read_on_a_host_named_like_this_installs_id(self):
+        import types
+        from kb import ingest
+        from kb.sources import Item
+        mine = self.mine()
+        self.db.execute("DELETE FROM docs")
+        self.db.commit()
+        store.store_item(self.db, "notes", f"{mine}:plan.md", iso(), "plan", "the pelican plan", {"host": mine})
+        self.db.commit()
+        self.db.close()
+        self.write_config(f'machine = "studio"\n[hosts.{mine}]\nssh = "unused"\n[sources.notes]\npath = "/unused"\n'
+                          f'hosts = ["{mine}"]\n')
+        reader = types.SimpleNamespace(events=lambda *_: iter([Item("plan.md", iso(), "plan", "the pelican plan", {}, 1)]),
+                                       live_ids=lambda *_: ["plan.md"])
+        with mock.patch.object(ingest, "SshReader", lambda _: reader):
+            code, out, err = self.run_kb("rebuild")
+        self.assertEqual(code, 0, err)
+        with contextlib.closing(store.connect(self.path)) as db:
+            self.assertEqual([r[0] for r in db.execute("SELECT source_id FROM docs")], [f"{mine}@{mine}:plan.md"])
 
     def test_a_rebuild_stops_when_two_old_items_are_one_item_now(self):
         # An older kb's copy and this install's, as an ingest after an update without a rebuild leaves them.
