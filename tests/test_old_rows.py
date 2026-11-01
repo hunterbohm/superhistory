@@ -136,8 +136,14 @@ def write(db, r, case):
         meta = {k: case.meta[k] for k in ("url", "path", "host") if k in case.meta}
         # The model's question and summary quote the item, and main cut each at its end before masking it.
         question, summary = case.text[:r.randint(20, 600)], case.text[:r.randint(20, 1800)]
-        rows = [("segment", "What shipped", older(f"{question[:400]}\n{summary[:1500]}")),
-                ("atom", "fact: what shipped", older(case.text[:2000]))]
+        if earlier:  # an earlier revision sent the model the item masked, and masked each field before it cut it
+            seen = older(case.text)
+            question, summary = seen[:len(question)], seen[:len(summary)]
+            rows = [("segment", "What shipped", f"{older(question)[:400]}\n{older(summary)[:1500]}"),
+                    ("atom", "fact: what shipped", older(seen)[:2000])]
+        else:
+            rows = [("segment", "What shipped", older(f"{question[:400]}\n{summary[:1500]}")),
+                    ("atom", "fact: what shipped", older(case.text[:2000]))]
         db.executemany("INSERT INTO docs(kind, source, source_id, ts, title, content, metadata) VALUES (?,?,?,?,?,?,?)",
                        [(kind, case.source, case.sid, TS, title, content, json.dumps({**meta, "of_hash": "3f"}))
                         for kind, title, content in rows])
