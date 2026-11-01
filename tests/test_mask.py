@@ -244,6 +244,30 @@ class HeadlessKeyTest(unittest.TestCase):
                         text = f"walrus ledger [masked]{brk}{rest}{brk}{brk}next paragraph"
                         self.assertEqual(mask(text), f"walrus ledger [masked]{brk}{brk}next paragraph")
 
+    def test_an_older_kbs_key_body_after_quotes_escapes_or_line_marks_is_masked(self):
+        # main's key pattern stops at the first character that is not base64 or a space, such as a backslash, a quote
+        # or a "#", so in these layouts it masked the header and left the body, cut before its footer.
+        import re
+        from tests.legacy_store import token_mask
+        lines = ("MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgWalrusScalar2Se",
+                 "cret9BodyPiecesXyzQ2FuYXJ5UHJpdmF0ZUtleUJvZHkxMjM0NTY3OA0123456")
+        head = "-----BEGIN PRIVATE KEY-----"
+        layouts = {
+            "json in json": '{\\"private_key\\":\\"' + head + "\\\\n" + "\\\\n".join(lines) + '\\\\n\\"}',
+            "one string a line": f'key = ("{head}\\n"\n    "' + '\\n"\n    "'.join(lines) + '\\n")',
+            "# comments": f"# {head}\n# " + "\n# ".join(lines) + "\n",
+            "> quotes": f"> {head}\n> " + "\n> ".join(lines) + "\n>",
+            "<br> breaks": f"{head}<br>" + "<br>".join(lines) + "<br>",
+        }
+        for name, text in layouts.items():
+            with self.subTest(layout=name):
+                older = token_mask(f"note\n{text}\n\nnext paragraph")
+                self.assertIn(lines[0][:24], older, "the older kb left the body")
+                readable = re.sub(r"[\s\\\\\"'#>/+]|<br>|\\n", "", mask(older))
+                self.assertEqual([p for line in lines for p in (line[i:i + 12] for i in range(0, 53, 4))
+                                  if p in readable], [])
+                self.assertTrue(mask(older).endswith("next paragraph"))
+
     def test_after_a_placeholder_and_a_line_break_other_lines_stay(self):
         for brk in ("\\n", "\n"):
             for line in ("/usr/local/bin/python3 deploy.py --env prod", "3f2a9c" + "0" * 34, "MCP server started",
