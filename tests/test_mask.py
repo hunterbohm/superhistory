@@ -403,6 +403,66 @@ class InvisibleTest(unittest.TestCase):
         self.assertEqual(mask(text), f"{family} {soft} then [masked] then {family}")
         self.assertEqual(mask(f"{family} {soft} plain"), f"{family} {soft} plain")
 
+    # Gate 12: NUL and the C0 controls but tab, LF and CR, the zero-width set, the word joiner and the soft hyphen.
+    GATE_12 = ("\x00", "\x01", "\x07", "\x08", "\x0b", "\x0c", "\x0e", "\x1b", "\x1f", "\u200b", "\u200c", "\u200d",
+               "\u2060", "\u00ad", "\ufeff")
+    KEYS = ("sk-proj-" + "a1" * 16, "ghp_" + "A1b2" * 9, "AKIA" + "QW3RTY7UIOPAS2DF", "sk-ant-api03-" + "Zq7wLm4N" * 4,
+            "glpat-" + "Ab3dE5fG7hJ9kL2mN4pQ", "xoxb-" + "1234567890-" + "a1B2c3D4e5F6g7H8")
+
+    def readable(self, text):
+        import re
+        return re.sub("[\x00-\x08\x0b\x0c\x0e-\x1f\u00ad\u200b-\u200d\u2060\ufeff]", "", text)
+
+    def assert_masked(self, secret, text):
+        masked = mask(text)
+        readable = self.readable(masked)
+        body = self.readable(secret)
+        leaked = [body[i:i + 8] for i in range(4, len(body) - 7) if body[i:i + 8] in readable]
+        self.assertEqual(leaked, [], repr(masked))
+        self.assertEqual(mask(masked), masked)
+        return readable
+
+    def test_gate_12_a_secret_reads_through_invisible_characters_and_one_before_it_parts_it_from_a_word(self):
+        for ch in self.GATE_12:
+            for key in self.KEYS:
+                cut = len(key) - 4  # the part before the cut is a key itself
+                shapes = {"glue": "budget" + ch + key, "interleaved": ch.join(key),
+                          "word then interleaved": "budget" + ch + ch.join(key),
+                          "split": key[:len(key) // 2] + ch + key[len(key) // 2:],
+                          "split, a key before the cut": key[:cut] + ch + key[cut:],
+                          "glue then split": "budget" + ch + key[:10] + ch + key[10:]}
+                for shape, secret in shapes.items():
+                    with self.subTest(ch=hex(ord(ch)), key=key[:6], shape=shape):
+                        readable = self.assert_masked(secret, f"{secret} paid")
+                        self.assertTrue(readable.endswith(" paid"), readable)
+                        if shape.startswith("glue") or shape.startswith("word"):
+                            self.assertTrue(readable.startswith("budget"), readable)
+            # Cloud's two: a key whose interior is a key, and a key whose tail runs past a whole key.
+            with self.subTest(ch=hex(ord(ch)), shape="a key inside a key"):
+                self.assert_masked("sk-proj-" + "a1" * 7 + "ghp_" + "a1" * 16,
+                                   "sk-proj-" + "a1" * 7 + ch + "ghp_" + "a1" * 16)
+            with self.subTest(ch=hex(ord(ch)), shape="a tail past a whole key"):
+                self.assert_masked("sk-proj-" + "a1" * 16 + "b2" * 8, "sk-proj-" + "a1" * 16 + ch + "b2" * 8)
+
+    def test_gate_12_a_named_value_glued_to_a_word_by_an_invisible_is_masked(self):
+        for ch in self.GATE_12:
+            with self.subTest(ch=hex(ord(ch))):
+                self.assertNotIn("walrus2secret9", mask("budget" + ch + "password=walrus2secret9 paid"))
+                self.assertNotIn("walrus2secret9", self.readable(mask("budget" + ch + "\x00".join("password=walrus2secret9"))))
+
+    def test_gate_12_text_read_as_utf16_masks_and_costs_time_in_proportion(self):
+        import time
+        line = "notes for the walrus team, token=" + "Zq7wLm4Np8Rt2Kd9Vh3B" + " and the plan\n"
+        took = {}
+        for times in (100, 800):
+            text = "\x00".join(line * times)
+            started = time.process_time()
+            masked = mask(text)
+            took[times] = time.process_time() - started
+            self.assertNotIn("Zq7wLm4N", self.readable(masked))
+            self.assertIn("walrus team", self.readable(masked))
+        self.assertLess(took[800], 16 * max(took[100], 0.01))
+
     def test_an_id_with_a_split_secret_counts_and_one_without_does_not(self):
         self.assertTrue(secret_in_id("key-sk-ant-\u200bapi03-" + "Q" * 24 + ".md"))
         self.assertTrue(secret_in_id("pass\u200bword=walrus2secret9.md"))
