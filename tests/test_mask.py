@@ -240,6 +240,8 @@ class OlderTextTest(unittest.TestCase):
                      "-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkq\nthe notes moved\nredis-cli -a Zq7wLm4Np8Rt2Kd9Vh3B",
                      "-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkq\nAuthorization: Token Zq7wLm4Np8Rt2Kd9Vh3B",
                      "-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkq\nmysql -u root -pZq7wLm4Np8Rt2Kd9Vh3B shop",
+                     # main's separator took a line break, so the next line's name became the value.
+                     ":password =\ndb_password: Zq7wLm4Np8Rt2Kd9Vh3B",
                      # main's key pattern masked the header, then its named-value rule ate "[masked" and left "]".
                      "api_key: walrus2secret1\\n-----BEGIN RSA PRIVATE KEY-----\\nMIIEpAIBAAKCAQEAZq7wLm4Np8Rt2Kd9Vh3B"):
             with self.subTest(text=text[:30]):
