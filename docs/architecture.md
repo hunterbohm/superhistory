@@ -82,12 +82,15 @@ matching, and leaves out an item whose id holds a secret. `kb get` and the summa
 footer, through the end of its paragraph (the next blank line, plain or escaped), an encrypted key's past the blank line
 after its DEK-Info field, and a PGP key's past the blank line after its armor headers. PEM, PGP and ssh.com's SSH2 keys
 work this way; a PuTTY key file masks from `Private-Lines:` through its paragraph, and an age secret key by its shape. A
-Docker config written as base64 masks too, and so does Docker's "auth" field when it decodes to "user:password". A
-private key written as base64 is not masked yet. A footer with no header masks its paragraph up to it. What an older
-kb's key pattern left after its placeholder masks through its footer or the end of its paragraph: base64 glued to it, or
-a key's body from its first line, which starts as every private key's does (DER's "MII", "MHcC" or "MC4C", or OpenSSH's
-"b3Bl"), after what can stand before a line's text (line breaks plain or escaped at any depth, quotes, "#", ">", "+",
-<br> and spaces). Text after a broken key in its paragraph is masked with it; that is the cost.
+PEM private key written as base64, as a Kubernetes secret holds one, masks through the lines that wrap it. They are
+found from where its encoded name sits: a line is the key's while the base64 through it still decodes to text, up to its
+footer, so a heading or a word between two keys stays however the lines are wrapped. A Docker config written as base64
+masks too, and so does Docker's "auth" field when it decodes to "user:password". A footer with no header masks its
+paragraph up to it. What an older kb's key pattern left after its placeholder masks through its footer or the end of its
+paragraph: base64 glued to it, or a key's body from its first line, which starts as every private key's does (DER's
+"MII", "MHcC" or "MC4C", or OpenSSH's "b3Bl"), after what can stand before a line's text (line breaks plain or escaped
+at any depth, quotes, "#", ">", "+", <br> and spaces). Text after a broken key in its paragraph is masked with it; that
+is the cost.
 
 Text can arrive escaped. In JSON text a secret right after an escape such as "\n" is masked as at the start of a
 line, and a value ends where an escape starts the next "name=" or "name:", so that name keeps its own. A percent
