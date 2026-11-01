@@ -442,6 +442,13 @@ class EscapeTest(unittest.TestCase):
             with self.subTest(text=text):
                 self.assertNotIn("V4lu3XYZ99", mask(text))
 
+    def test_a_value_ends_where_an_escape_starts_a_symbol_name(self):
+        text = '{"body": "api_key: Zq7wLm4Np8Rt2Kd9Vh3B\\n:password => \\"walrus2secret9\\"\\n:token => \\"Zx9Kq2Lm4Np8Rt2Kd9\\""}'
+        masked = mask(text)
+        self.assertNotIn("walrus2secret9", masked)
+        self.assertNotIn("Zx9Kq2Lm4Np8", masked)
+        self.assertIn(":password => ", masked)
+
     def test_a_password_with_a_backslash_in_it_is_masked_whole(self):
         for password in ("Ab3\\nQz9kLm", "C:\\temp\\walrus9", "pa\\u00e4ss9word"):
             with self.subTest(password=password):
