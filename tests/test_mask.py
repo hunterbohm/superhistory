@@ -488,10 +488,11 @@ class EscapeTest(unittest.TestCase):
                 self.assertNotIn("Token-2026", mask(text))
                 self.assertNotIn("walrus2", mask(text))
 
-    def test_an_authorization_value_with_no_scheme_word_is_masked(self):
-        for text in ("use Authorization: Qx7pass2026zzQ9 for the staging API", "Authorization: Qx7pass2026zzQ9 (expires Friday)",
-                     "Authorization=SecretGarden99x is on the fridge", "Authorization: SCRAM-SHA-256 Qx7pass2026zzQ9",
-                     "Proxy-Authorization: AWS4-HMAC-SHA256 Qx7pass2026zzQ9"):
+    def test_an_authorization_credential_after_a_scheme_is_masked_and_prose_stays(self):
+        # The credential is the word after a known scheme. A first word with no scheme before it stays, as on main:
+        # prose such as "ISO-27001 compliance" reads like one.
+        for text in ("Authorization: SCRAM-SHA-256 Qx7pass2026zzQ9", "Proxy-Authorization: AWS4-HMAC-SHA256 Qx7pass2026zzQ9",
+                     "use Authorization: Token Qx7pass2026zzQ9 for the staging API", "Authorization=Bearer SecretGarden99x"):
             with self.subTest(text=text):
                 masked = mask(text)
                 self.assertNotIn("Qx7pass2026", masked)
@@ -503,10 +504,20 @@ class EscapeTest(unittest.TestCase):
                               "Authorization: Token [masked]\\nnext line")):
             self.assertEqual(mask(text), masked)
         for text in ("Authorization: pending review", "Authorization: Organization-level approval needed",
-                     "Authorization: Implementation-specific, see RFC 7235."):
+                     "Authorization: Implementation-specific, see RFC 7235.", "Authorization: ISO-27001 compliance required.",
+                     "Authorization: CVE-2024-12345 review pending", "Authorization: v2.1 of the policy applies"):
             self.assertEqual(mask(text), text)
         aws = "Authorization: AWS4-HMAC-SHA256 Credential=" + "AKIA" + "QW3RTY7UIOPAS2DF" + "/20261101/us-east-1/s3/aws4_request"
         self.assertEqual(mask(aws), "Authorization: AWS4-HMAC-SHA256 Credential=[masked]/20261101/us-east-1/s3/aws4_request")
+
+    def test_a_run_of_backslashes_in_an_authorization_value_costs_time_in_proportion(self):
+        import time
+        took = {}
+        for n in (2_000, 16_000):
+            started = time.process_time()
+            mask("Authorization: Token Qx7" + "\\" * n + "x")
+            took[n] = time.process_time() - started
+        self.assertLess(took[16_000], 16 * max(took[2_000], 0.01))
 
     def test_a_value_ends_where_an_escape_starts_a_flag(self):
         for text in ('{"command": "export API_TOKEN=abc123def456\\n--api-key s3cr3tV4lu3XYZ99"}',
