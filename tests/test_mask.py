@@ -274,6 +274,19 @@ class OtherKeyFormatTest(unittest.TestCase):
                     self.assertEqual([line for line in key_lines if line in masked], [])
                     self.assertTrue(masked.startswith("the bundle:\n") and masked.endswith("\nThanks, Bob"), masked)
 
+    def test_a_base64_key_wrapped_at_any_width_is_masked(self):
+        import base64
+        import re
+        import textwrap
+        encoded = base64.b64encode(b"-----BEGIN PRIVATE KEY-----\nFakeKeyBody123456\n-----END PRIVATE KEY-----\n").decode()
+        body = encoded[40:60]  # the encoded "FakeKeyBody123456"
+        for width in (4, 8, 12, 16, 40, 64, 76):
+            for brk in ("\n", "\\n", "\n  "):
+                with self.subTest(width=width, brk=brk):
+                    masked = mask("key:\n" + brk.join(textwrap.wrap(encoded, width)) + "\nThanks, Bob")
+                    self.assertNotIn(body, re.sub(r"\s+|\\n", "", masked))
+                    self.assertTrue(masked.endswith("\nThanks, Bob"), masked)
+
     def test_prose_about_those_formats_stays(self):
         for text in ("PGP keys are signed in a block", "Private-Lines counts the lines", "an AGE-SECRET-KEY-1 identity",
                      "-----BEGIN PGP PUBLIC KEY BLOCK-----\n\nmQENBGcW1aEBCAD\n-----END PGP PUBLIC KEY BLOCK-----"):
@@ -323,7 +336,10 @@ class HeadlessKeyTest(unittest.TestCase):
     def test_after_a_placeholder_lines_that_only_start_like_a_key_stay(self):
         for text in ("DB_PASSWORD=[masked]\nMINIO_ENDPOINT=http://minio.internal:9000\nMINIO_BUCKET=walrus-uploads",
                      "token=[masked] MINUTES of the meeting\nnext line", "[masked]\nMIGRATION plan for the walrus\nmore",
-                     "[masked]\n\"MILESTONE\" is done", "api_key: [masked]\n# MIGRATE the walrus-uploads bucket"):
+                     "[masked]\n\"MILESTONE\" is done", "api_key: [masked]\n# MIGRATE the walrus-uploads bucket",
+                     "[masked]\nMIGRATION2026UseTheNewCustomerAccountTable is the example name.\nKeep this sentence.",
+                     "[masked]\\nMIGRATION2026UseTheNewCustomerAccountTable is the example name.\\nKeep this sentence.",
+                     "token: [masked] MIGRATION2026UseTheNewCustomerAccountTable, as named"):
             with self.subTest(text=text[:30]):
                 self.assertEqual(mask(text), text)
 
@@ -505,7 +521,8 @@ class EscapeTest(unittest.TestCase):
 
     def test_an_authorization_value_with_no_scheme_word_is_masked(self):
         for text in ("use Authorization: Qx7pass2026zzQ9 for the staging API", "Authorization: Qx7pass2026zzQ9 (expires Friday)",
-                     "Authorization=SecretGarden99x is on the fridge"):
+                     "Authorization=SecretGarden99x is on the fridge", "Authorization: SCRAM-SHA-256 Qx7pass2026zzQ9",
+                     "Proxy-Authorization: AWS4-HMAC-SHA256 Qx7pass2026zzQ9"):
             with self.subTest(text=text):
                 masked = mask(text)
                 self.assertNotIn("Qx7pass2026", masked)

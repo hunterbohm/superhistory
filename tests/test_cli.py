@@ -416,6 +416,19 @@ class OlderStoreTest(TempHome):
                     self.run_kb("rebuild")
                 self.assertEqual(set(os.listdir(folder)) - {"kb.lock"}, files)
 
+    def test_a_rebuild_that_stops_leaves_rows_in_the_old_stores_wal_where_they_are(self):
+        from tests.support import commit_and_die, store_files
+        self.db.close()
+        commit_and_die(self.path, "INSERT INTO docs(kind, source, source_id, ts, title, content, metadata, masked) "
+                                  "VALUES ('doc', 'notes', 'studio:wal.md', ?, 'w', 'an older row', '{}', NULL)", iso())
+        folder = os.path.dirname(self.path)
+        before = store_files(folder)
+        with mock.patch("kb.ingest.run_unit", side_effect=RuntimeError("disk gone")):
+            code, out, err = self.run_kb("rebuild")
+        self.assertEqual(code, 1)
+        self.assertIn("kept as it was", err)
+        self.assertEqual(store_files(folder), before)
+
     def test_rebuild_keeps_the_old_store_when_a_host_is_asleep(self):
         from kb.remote import HostAway
         self.db.close()
