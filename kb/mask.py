@@ -57,6 +57,9 @@ SECRET_PATTERNS = [
     # A PuTTY key file's private lines and its MAC, through the end of their paragraph.
     re.compile(rf"Private-Lines: *\d+{_IN_PARAGRAPH}*"),
     re.compile(_NB + r"AGE-SECRET-KEY-1[0-9A-Z]{20,}"),
+    # ssh.com's SSH2 key files, from the header through the footer, or through the end of the paragraph.
+    re.compile(rf"---- BEGIN SSH2 [A-Z ]*PRIVATE KEY ----(?:(?!---- BEGIN )[\s\S]){{0,16384}}?"
+               rf"---- END SSH2 [A-Z ]*PRIVATE KEY ----|---- BEGIN SSH2 [A-Z ]*PRIVATE KEY ----{_IN_PARAGRAPH}*"),
     # An encrypted key whose header an older kb's row-by-row remask took: from its fields, the same way, or from what
     # that remask left of them, "[masked],ENCRYPTED".
     re.compile(rf"(?:Proc-Type: *4,ENCRYPTED|\[masked\],ENCRYPTED|DEK-Info:)"
@@ -84,6 +87,9 @@ _BASIC_VALUE = re.compile(rf"(?i){_WORD}basic{_SCHEME_GAP}([A-Za-z0-9+/]{{12,}})
 PREFIXED_SECRETS = [
     re.compile(rf"(?i)({_WORD}(?:set-)?cookie{_QUOTE}?\s*(?::|%(?:25)?3[Aa])\s*{_QUOTE}?)(?:{_CLOSE}[^\"'\n]){{8,}}"),
     re.compile(r"([a-z][a-z0-9+.-]*://[^/ \t\n\r:@'\"]+:)[^/ \t\n\r@'\"]{3,}(?=@)"),
+    # The same link percent-encoded, once or twice, as a parameter of another link.
+    re.compile(r"(?i)([a-z][a-z0-9+.-]*%(?:25)?3A%(?:25)?2F%(?:25)?2F(?:(?!%(?:25)?(?:3A|2F|40))[^/ \t\n\r@'\"&])+"
+               r"%(?:25)?3A)(?:(?!%(?:25)?(?:2F|40))[^/ \t\n\r@'\"&]){3,}(?=%(?:25)?40)"),
     # openssl's "-passin pass:..." and "-passout pass:...".
     re.compile(rf"((?<![A-Za-z0-9_-])-pass(?:in|out)?[ \t]+['\"]?pass:)(?:(?!{_NEXT_NAME}){_CLOSE}[^ \t\n\r'\"])+"),
 ]
