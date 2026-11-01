@@ -422,6 +422,17 @@ class SecretInIdTest(unittest.TestCase):
         for name in ("Tokens: 2026Q4-plan.md", "Meeting - token: budget2026review.md"):
             self.assertNotEqual(mask(name), name, "in text the same words are still masked")
 
+    def test_a_name_with_basic_or_bearer_in_it_does_not(self):
+        for name in ("Courses/Basic Statistics/lecture-01.md", "Wedding/Ring Bearer duties/wedding-2026-plan.md",
+                     "Spanish/Basic Phrases/week1.md", "Basic Training/2025-06-01.md", "Basic Kubernetes101.md",
+                     "Ring Bearer instructions-for-the-wedding-2026.md", "Basic Statistics/Probability 101.md"):
+            with self.subTest(name=name):
+                self.assertFalse(secret_in_id(name))
+        # A real Basic credential is "user:password" in base64.
+        for name in ("curl Basic d2FscnVzOndhbHJ1czJzZWNyZXQ5.md", "h=Basic%20d2FscnVzOndhbHJ1czJzZWNyZXQ5"):
+            with self.subTest(name=name):
+                self.assertTrue(secret_in_id(name))
+
     def test_machine_made_ids_do_not(self):
         for name in ("acme/app@" + "3f2a9c" * 6 + "e1d4", "1781000000000000001", "<CAFx3k+Q2Fu_ZXJ5=@mail.gmail.com>",
                      "iMessage;-;+15555550123:2026-10-27", "I_kwDOAbCdEf5Ghij", "default:20260923_121000_71bf95",

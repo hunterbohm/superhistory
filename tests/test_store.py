@@ -563,6 +563,13 @@ class MaskVersionTest(TempDB):
         with open(self.path, "rb") as fh:
             self.assertNotIn(self.TOKEN.encode(), fh.read())
 
+    def test_remask_keeps_an_old_note_named_with_basic_or_bearer(self):
+        for n, name in enumerate(("Courses/Basic Statistics/lecture-01.md", "Wedding/Ring Bearer duties/plan-2026.md")):
+            self.old(f"desk:{name}", f"central limit theorem {n}", meta={"host": "desk"})
+        store.remask(self.db)
+        self.assertEqual(len(self.ids()), 2)
+        self.assertEqual(len(search.search(self.db, "central limit theorem")), 2)
+
     def test_remask_stopped_by_its_time_leaves_the_rest_old(self):
         for i in range(120):
             self.old(f"n{i}", f"note {i} with {self.TOKEN}")
