@@ -211,7 +211,7 @@ INVISIBLE = re.compile(r"[\x00-\x08\x0e-\x1b\u00ad\u034f\u061c\u115f\u1160\u17b4
 # Which mask() a stored row was masked with. A row of another version, or of none, is masked again when read and by
 # the next ingest. The patterns change it by themselves; bump REVISION when the code that applies them changes what
 # it masks.
-REVISION = 6
+REVISION = 7
 VERSION = hashlib.sha256(repr((REVISION, [p.pattern for p in SECRET_PATTERNS + PREFIXED_SECRETS], KEYED_SECRET.pattern,
                                 ENV_KEY_SECRET.pattern, JSON_SECRET.pattern, FLAG_SECRET.pattern, AUTH_SECRET.pattern,
                                 COMMAND_FLAGS, PASSWORD_NAME.pattern, sorted(PLACEHOLDERS), REFERENCE.pattern,
@@ -457,112 +457,136 @@ def _scoped(source):
     return f"(?i:{source[4:]})" if source.startswith("(?i)") else f"(?:{source})"
 
 
-# Where a secret's reading starts: a secret's name and what parts it from its value, a scheme word, a link's scheme, a
-# command a password follows, openssl's "-pass" and a key's header. Read through invisible characters before one, a
-# token before them would take the name as part of itself and leave the secret after it.
+# Where a secret's reading starts, as the patterns that read it start one, lookbehinds and all: a secret's name and
+# what parts it from its value, a scheme word, a link's scheme, a command a password follows, openssl's "-pass" and a
+# key's header.
 _READING_START = re.compile("|".join(_scoped(source) for source in (
     KEYED_SECRET.pattern[:-len(_VALUE)], ENV_KEY_SECRET.pattern[:-len(_VALUE)], FLAG_SECRET.pattern[:-len(_VALUE)],
     AUTH_SECRET.pattern[:AUTH_SECRET.pattern.index(_SCHEME_WORD)],
     PREFIXED_SECRETS[0].pattern[:PREFIXED_SECRETS[0].pattern.index(f"(?:{_CLOSE}")],
     _AUTH_FIELD.pattern[:_AUTH_FIELD.pattern.rindex("(")], rf"(?i){_WORD}(?:bearer|basic){_SCHEME_GAP}",
-    r"[a-z][a-z0-9+.-]{0,31}:(?:\\?/){2}", r"(?i)[a-z][a-z0-9+.-]{0,31}%(?:25)?3A(?:%(?:25)?2F|/){2}",
-    "(?i)(?:" + "|".join(command for command, _, _ in COMMAND_FLAGS) + r")(?![A-Za-z0-9_.-])",
-    r"-pass(?:in|out)?[ \t]+['\"]?pass:", "-----BEGIN ")))
+    rf"(?:(?<![A-Za-z0-9+.-])|{_AFTER_ESCAPE})[a-z][a-z0-9+.-]{{0,31}}:(?:\\?/){{2}}",
+    rf"(?i)(?:(?<![A-Za-z0-9+.-])|{_AFTER_ESCAPE})[a-z][a-z0-9+.-]{{0,31}}%(?:25)?3A(?:%(?:25)?2F|/){{2}}",
+    rf"(?i)(?:(?<![A-Za-z0-9_.-])|{_AFTER_ESCAPE})(?:" + "|".join(command for command, _, _ in COMMAND_FLAGS)
+    + r")(?![A-Za-z0-9_.-])",
+    r"(?<![A-Za-z0-9_-])-pass(?:in|out)?[ \t]+['\"]?pass:", "-----BEGIN ")))
+# Where one could start: a letter or "-" after anything but a letter or digit.
+_MAY_START = re.compile(r"(?<![A-Za-z0-9])(?=[A-Za-z-])")
 _INVISIBLE_RUN = re.compile(INVISIBLE.pattern + "+")
+# How far a token that starts right after a letter, where an invisible character stood, is read before it counts as a
+# longer one: each such start is read once, so repeated starts cost time in proportion to the text.
+_GLUED_START_WINDOW = 512
 
 
 def _mask_once(text, rules=_TEXT_RULES):
-    """One pass of every pattern. A secret reads through characters a reader does not see, so the pass matches the text
-    without them: a key split by them is one match. Where one stood, a token may start even after a letter, as after a
-    space, so one before a key parts it from the word before ("budget<ZWSP>sk-...") without gluing them. Each stretch
-    the pass changed there replaces the same stretch of the text as written, and the rest keeps them, so an emoji or a
-    script that joins with them reads as it did, even between two secrets. Then the text as written has a pass of its
-    own, where they part words as a space does, as for a name glued to a word by one. A run of them just before where
-    a secret's reading starts stays in the view as a break, so a token before it keeps to itself and the name after it
-    reads as on main ("ghp_...<ZWSP>Authorization: Token ...")."""
-    if not INVISIBLE.search(text):
-        return _pass(text, rules)
+    """One pass of every pattern over the text as written, as main reads it, once each secret that only the text read
+    without its invisible characters holds is masked in place (_split_secrets). A text whose invisible characters
+    split no secret masks as main masks it, and keeps them all."""
+    if INVISIBLE.search(text):
+        spans = _split_secrets(text, rules)
+        if spans:
+            text = _replace(text, spans, "[masked]")
+    return _pass(text, rules)
+
+
+def _split_secrets(text, rules):
+    """Where in `text` a secret reads only across characters a reader does not see, as ordered (start, end) spans of
+    the text as written: a token split or interleaved by them, even where its first part is a token by itself, or a
+    secret's name split by them, whose value is masked. The text read without them is the view. In it a token
+    may start right after a letter where one stood, as after a space, so one before a key glued to a word reads it
+    ("budget<ZWSP>s<ZWSP>k-..."). A run of them just before where a secret's reading starts stays in the view, as a
+    break. A split token ends before the last of them ahead of any reading the text as written starts inside it, such
+    as a link's scheme in the token's tail, and a split value ends where such a reading starts: those readings are the
+    pass's, which follows."""
     gone = [i for run in _INVISIBLE_RUN.finditer(text) if not _READING_START.match(text, run.end())
             for i in range(run.start(), run.end())]
     if not gone:
-        return _pass(text, rules)
+        return []
     view = "".join(text[a + 1:b] for a, b in zip([-1] + gone, gone + [len(text)]))
     # The view's i-th character sits after every removed character whose place in the view is i or before.
     places = [i - n for n, i in enumerate(gone)]
-    # A token found as the view reads runs through the places inside it; only a place outside every such token can
-    # start one after a letter.
+    where = sorted(set(places))
     tokens, after_a_break = _TOKENS[id(rules)]
     found = [(m.start(), m.end()) for m in tokens.finditer(view) if m.end() > m.start()]
-    spans, inside = [], 0
-    for place in sorted(set(places)):
+    glued, inside = [], 0
+    for place in where:
         while inside < len(found) and found[inside][1] <= place:
             inside += 1
         if inside < len(found) and found[inside][0] < place:
             continue
-        if 0 < place < len(view) and (not spans or place >= spans[-1][1]) and view[place - 1].isalnum():
-            token = after_a_break.match(view, place)
+        if 0 < place < len(view) and (not glued or place >= glued[-1][1]) and view[place - 1].isalnum():
+            stop = min(len(view), place + _GLUED_START_WINDOW)
+            token = after_a_break.match(view, place, stop)
+            if token and token.end() == stop < len(view):
+                token = after_a_break.match(view, place)
             if token and token.end() > place:
-                spans.append((place, token.end()))
-    masked = _pass(_replace(view, spans, "[masked]"), rules)
-    if masked != view:
-        edits = _edits(view, masked)
-        if edits is None:  # one stretch, from the first change to the last
-            head = len(os.path.commonprefix([view, masked]))
-            tail = len(os.path.commonprefix([view[head:][::-1], masked[head:][::-1]]))
-            edits = [(head, len(view) - tail, masked[head:len(masked) - tail])]
-        out, last = [], 0
-        for start, end, replacement in edits:
-            # The invisible characters just before and just after a changed stretch stay; those inside it go.
-            start, end = start + bisect.bisect_right(places, start), end + bisect.bisect_left(places, end)
-            out += [text[last:start], replacement]
-            last = max(start, end)
-        text = "".join(out) + text[last:]
-    return _pass(text, rules)
+                glued.append((place, token.end()))
+
+    def split(start, end):  # whether a place lies inside
+        n = bisect.bisect_right(where, start)
+        return n < len(where) and where[n] < end
+
+    def raw(start, end):  # the same stretch of the text as written, without the invisibles at either edge
+        return start + bisect.bisect_right(places, start), end + bisect.bisect_left(places, end)
+
+    def reading_inside(start, end):  # where in text[start:end] the text as written starts a reading, or None
+        for m in _MAY_START.finditer(text, start, end):
+            if _READING_START.match(text, m.start()):
+                return m.start()
+        return None
+
+    removed, spans = set(gone), []
+    for start, end in found + glued:
+        if not split(start, end):
+            continue
+        start, end = raw(start, end)
+        at = reading_inside(gone[bisect.bisect_left(gone, start)] + 1, end)
+        if at is not None:
+            # Up to the run of invisible characters last before that reading, which stays with it, if the token is
+            # still split before it.
+            end = gone[bisect.bisect_left(gone, at) - 1]
+            while end - 1 in removed:
+                end -= 1
+            if bisect.bisect_left(gone, start) == bisect.bisect_left(gone, end):
+                continue
+        spans.append((start, end))
+    for name_start, name_end, start, end in _named_spans(view, rules):
+        # Only a split name: the text as written reads a value through invisible characters already.
+        if not split(name_start, name_end + 1) or start >= end:
+            continue
+        start, end = raw(start, end)
+        at = reading_inside(start, end)
+        if at is not None:
+            end = at
+        if start < end:
+            spans.append((start, end))
+    merged = []
+    for start, end in sorted(spans):
+        if merged and start < merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+        else:
+            merged.append((start, end))
+    return merged
 
 
-def _same_run(a, i, b, j):
-    """How many characters a[i:] and b[j:] have in common at their start, compared a block at a time."""
-    n, block = 0, 4096
-    while True:
-        x, y = a[i + n:i + n + block], b[j + n:j + n + block]
-        if x != y or len(x) < block:
-            return n + len(os.path.commonprefix([x, y]))
-        n += block
-
-
-def _edits(view, masked):
-    """The stretches of `view` a pass replaced to make `masked`, as (start, end, what replaced it): each by a run of
-    placeholders side by side, as two secrets that meet are masked, or by nothing. One in the run may be one the view
-    held. None when they do not line up so, and the caller takes one stretch. Each stretch ends where what follows its
-    run in `masked`, up to 64 characters or the next placeholder, starts again in `view`; the stretches are checked to
-    make `masked` exactly, so a wrong end cannot leave a secret."""
-    edits, i, j, placeholder = [], 0, 0, "[masked]"
-    while True:
-        same = _same_run(view, i, masked, j)
-        i, j = i + same, j + same
-        if i == len(view) and j == len(masked):
-            break
-        # A placeholder whose first characters matched the view's, as "[m" can.
-        back = next((k for k in range(min(len(placeholder) - 1, same), 0, -1)
-                     if masked.startswith(placeholder, j - k)), 0)
-        i, j = i - back, j - back
-        replacement = ""
-        while masked.startswith(placeholder, j + len(replacement)):
-            replacement += placeholder
-        j += len(replacement)
-        # What follows the run, up to the next placeholder, which the view may not hold.
-        after = masked.find(placeholder, j)
-        rest = masked[j:j + 64 if after < 0 else min(j + 64, after)]
-        end = view.find(rest, i if replacement else i + 1) if rest else len(view)
-        if end < 0 or end <= i and not replacement:
-            return None
-        edits.append((i, end, replacement))
-        i = end
-    built, last = [], 0
-    for start, end, replacement in edits:
-        built += [view[last:start], replacement]
-        last = end
-    return edits if "".join(built) + view[last:] == masked else None
+def _named_spans(view, rules):
+    """The named values a pass would mask in `view`, as (name start, value start, masked start, masked end), each read
+    as _pass reads it (_sub_named for text, re.sub for an id), each pattern over the view by itself."""
+    _, keyed, reading = rules
+    spans = []
+    for pattern, masker in keyed:
+        m = pattern.search(view)
+        while m:
+            whole, masked = m.group(0), masker(m)
+            if masked != whole:
+                head = len(os.path.commonprefix([whole, masked]))
+                tail = len(os.path.commonprefix([whole[head:][::-1], masked[head:][::-1]]))
+                spans.append((m.start(), m.start(3), m.start() + head, m.end() - tail))
+                m = pattern.search(view, m.end())
+                continue
+            inner = pattern.match(view, m.start(3)) if reading == "named" else None
+            m = inner if inner else pattern.search(view, m.end())
+    return spans
 
 
 # How many passes mask() makes at most, and how often, in this process, a text still changed at the last one.
