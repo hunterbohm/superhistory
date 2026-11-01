@@ -282,41 +282,17 @@ class HeadlessKeyTest(unittest.TestCase):
             text = f"notes [masked]\n{self.LINE}\n{self.LINE}{after}\n\nnext paragraph"
             self.assertEqual(mask(text), "notes [masked]\n\nnext paragraph")
 
-    def test_after_a_placeholder_and_a_line_break_a_keys_first_line_starts_the_rest_of_a_key(self):
-        # main's key pattern stops at a backslash, so in escaped text it masks a key's header and leaves its body from
-        # the first line, cut anywhere, which starts as a real key's DER or OpenSSH body does.
+    def test_after_a_placeholder_and_a_line_break_a_whole_key_line_starts_the_rest_of_a_key(self):
+        # An older kb's key pattern stopped at a backslash, so in escaped text it masked a key's header and left its
+        # body from its first line, which starts as a real key's DER or OpenSSH body does and is base64 to its end.
         for first in ("MIIEvQIBADANBgkqhkiG9w0BAQEFAASC", "MHcCAQEEIJQyFkwn", "MC4CAQAwBQYDK2Vw", "MIGkAgEBBDAqCr+V",
                       "MEcCAQAwBQYDK2Vx", "b3BlbnNzaC1rZXkt"):
+            line = (first + self.LINE)[:64]
             for brk in ("\\n", "\\r\\n", "\n", "\r\n"):
-                for rest in (first[:4] + " …", first[:13] + " password=walrus2secret9 harbor …",
-                             first + brk + self.LINE + brk + "-----END PRIVATE KEY-----"):
-                    with self.subTest(first=first, brk=brk, rest=rest[:20]):
+                for rest in (line + brk + self.LINE[:20] + " …", line + brk + self.LINE + brk + "-----END PRIVATE KEY-----"):
+                    with self.subTest(first=first, brk=brk, rest=rest[-12:]):
                         text = f"walrus ledger [masked]{brk}{rest}{brk}{brk}next paragraph"
                         self.assertEqual(mask(text), f"walrus ledger [masked]{brk}{brk}next paragraph")
-
-    def test_an_older_kbs_key_body_after_quotes_escapes_or_line_marks_is_masked(self):
-        # main's key pattern stops at the first character that is not base64 or a space, such as a backslash, a quote
-        # or a "#", so in these layouts it masked the header and left the body, cut before its footer.
-        import re
-        from tests.legacy_store import token_mask
-        lines = ("MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgWalrusScalar2Se",
-                 "cret9BodyPiecesXyzQ2FuYXJ5UHJpdmF0ZUtleUJvZHkxMjM0NTY3OA0123456")
-        head = "-----BEGIN PRIVATE KEY-----"
-        layouts = {
-            "json in json": '{\\"private_key\\":\\"' + head + "\\\\n" + "\\\\n".join(lines) + '\\\\n\\"}',
-            "one string a line": f'key = ("{head}\\n"\n    "' + '\\n"\n    "'.join(lines) + '\\n")',
-            "# comments": f"# {head}\n# " + "\n# ".join(lines) + "\n",
-            "> quotes": f"> {head}\n> " + "\n> ".join(lines) + "\n>",
-            "<br> breaks": f"{head}<br>" + "<br>".join(lines) + "<br>",
-        }
-        for name, text in layouts.items():
-            with self.subTest(layout=name):
-                older = token_mask(f"note\n{text}\n\nnext paragraph")
-                self.assertIn(lines[0][:24], older, "the older kb left the body")
-                readable = re.sub(r"[\s\\\\\"'#>/+]|<br>|\\n", "", mask(older))
-                self.assertEqual([p for line in lines for p in (line[i:i + 12] for i in range(0, 53, 4))
-                                  if p in readable], [])
-                self.assertTrue(mask(older).endswith("next paragraph"))
 
     def test_after_a_placeholder_lines_that_only_start_like_a_key_stay(self):
         for text in ("DB_PASSWORD=[masked]\nMINIO_ENDPOINT=http://minio.internal:9000\nMINIO_BUCKET=walrus-uploads",

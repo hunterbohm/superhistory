@@ -48,10 +48,11 @@ _TO_KEY_END = rf"(?:(?!-----BEGIN )[\s\S]){{0,16384}}?{_KEY_END}"
 _FIELDS_TO_KEY_END = rf"{_IN_PARAGRAPH}{{0,16384}}?(?:{_BLANK}{_IN_PARAGRAPH}{{0,16384}}?)?{_KEY_END}"
 # An HTTP authorization scheme's word and its value are parted by spaces, or in a link by "%20" or "+".
 _SCHEME_GAP = r"(?:\s|%(?:25)?20|\+)+"
-# A provider's "sk-" key. In an item id, only one after a provider's own prefix, or a run of 32 or more letters and
-# digits, counts: "sk-learn-pipeline-experiments.md" names a note.
+# A provider's "sk-" key. In an item id, only one after a provider's own prefix with a capital or a digit in it, or a
+# run of 32 or more letters and digits, counts: "sk-learn-pipeline-experiments.md" and "sk-proj-roadmap.md" name notes.
 SK_TOKEN = re.compile(_NB + r"sk-(?:ant-|proj-|or-v1-)?[A-Za-z0-9_-]{20,}")
-_SK_ID = re.compile(_NB + r"sk-(?:(?:ant|proj|svcacct|admin|or-v1)-[A-Za-z0-9_-]{20,}|[A-Za-z0-9]{32,}(?![A-Za-z0-9]))")
+_SK_ID = re.compile(_NB + r"sk-(?:(?:ant|proj|svcacct|admin|or-v1)-(?=[A-Za-z0-9_-]*?[A-Z0-9])[A-Za-z0-9_-]{20,}"
+                    r"|[A-Za-z0-9]{32,}(?![A-Za-z0-9]))")
 BEARER = re.compile(rf"(?i){_WORD}bearer{_SCHEME_GAP}[A-Za-z0-9._~+/-]{{16,}}=*")
 BASIC = re.compile(rf"(?i){_WORD}basic{_SCHEME_GAP}(?=[A-Za-z0-9+/]*[0-9+/=])[A-Za-z0-9+/]{{12,}}={{0,2}}")
 # A secret's value ends at a space, tab or line break, and the space around its "=" is spaces, tabs and line breaks (a
@@ -117,16 +118,18 @@ _KEY_NAME = (
     r"(?:[A-Za-z0-9_.-]*\.)?(?=[A-Za-z0-9_-]*?(?:api[_-]?key|access[_-]?key|private[_-]?key|secret|token|"
     r"credentials?|passw(?:or)?d|passcode|session[_-]?(?:token|key|secret|cookie)|bw_session))[A-Za-z0-9_-]+"
     r"|[A-Za-z0-9]+(?:[_-][A-Za-z0-9]+)*[_-](?:pass|pwd|pw)"
-    r"|x-(?:[A-Za-z0-9]+-)*auth(?:-[A-Za-z0-9]+)*"
+    r"|x-(?=[A-Za-z0-9-]*?(?<=-)auth(?:-|(?![A-Za-z0-9_.-])))[A-Za-z0-9-]+"
     r")(?![A-Za-z0-9_.-])")
 _ENV_KEY_NAME = rf"(?:(?<![A-Za-z0-9_])|{_AFTER_ESCAPE})([A-Z][A-Z0-9_]*_KEY)(?![A-Za-z0-9_])"
 _VALUE = rf"((?:(?!{_NEXT_NAME}){_CLOSE}[^ \t\n\r\"'`,;<>)\]}}])+)"
-# A value never starts with another secret's name and its separator: under a YAML parent key named like a secret, or
-# a key left empty, the next line's name would be taken as the value, and the secret after it left.
+# Where the space after a separator crosses a line break, a value never starts with another secret's name and its
+# separator: under a YAML parent key named like a secret, or a key left empty, the next line's name would be taken as
+# the value, and the secret after it left. On one line it may: "password: SecretGarden99 is on the fridge".
 _NOT_A_NAME = (rf"(?!:?(?:{_KEY_NAME[4:].replace('(?<![A-Za-z0-9_.-])(', '(?<![A-Za-z0-9_.-])(?:', 1)}"
                rf"|{_ENV_KEY_NAME.replace('([A-Z]', '(?:[A-Z]', 1)}){_QUOTE}?[ \t]*(?:{_SEP}|\bis\b))")
-KEYED_SECRET = re.compile(_KEY_NAME + rf"({_QUOTE}?{_GAP}(?:{_SEP}|\bis\b){_GAP}{_QUOTE}?){_NOT_A_NAME}" + _VALUE)
-ENV_KEY_SECRET = re.compile(_ENV_KEY_NAME + rf"({_QUOTE}?{_GAP}{_SEP}{_GAP}{_QUOTE}?){_NOT_A_NAME}" + _VALUE)
+_AFTER_SEP = rf"(?:{_LINE_SPACE}*{_QUOTE}?|{_LINE_SPACE}*\r?\n{_GAP}{_QUOTE}?{_NOT_A_NAME})"
+KEYED_SECRET = re.compile(_KEY_NAME + rf"({_QUOTE}?{_GAP}(?:{_SEP}|\bis\b){_AFTER_SEP})" + _VALUE)
+ENV_KEY_SECRET = re.compile(_ENV_KEY_NAME + rf"({_QUOTE}?{_GAP}{_SEP}{_AFTER_SEP})" + _VALUE)
 # A JSON string value in plain quotes after a secret's name, read as JSON reads it: to the next quote no backslash
 # escapes, so a quote inside it is part of it. In JSON written inside JSON, whose quotes are escaped, a value ends at
 # the escaped quote, as KEYED_SECRET reads it.
@@ -136,11 +139,11 @@ JSON_SECRET = re.compile(r'(?i)(?<=")(?<!\\")' + _KEY_NAME[4:] + r'("[ \t]*:[ \t
 FLAG_SECRET = re.compile(rf"(?i)(?:(?<![A-Za-z0-9_.-])|{_AFTER_ESCAPE})(--" + _KEY_NAME[len(r"(?i)(?<![A-Za-z0-9_.-])("):]
                          + r"(?<!-stdin)(?<!-file)(?<!-env)(?<!-path)(?<!-name)(?<!-id)(?<!-cmd)(?<!-command)"
                          r"(?<!-helper)(?<!-length)(?<!-type)(?<!-url)((?:[ \t]|%(?:25)?20)+[\"']?)(?!-)" + _VALUE)
-# An HTTP Authorization header's credentials, after any scheme word: "Token ...", "Bot ...", "ApiKey ...".
+# An HTTP Authorization header's credentials: its first word, or after a scheme word ("Token ...", "Bot ...",
+# "ApiKey ..."), the next. _mask_authorization() reads which is the secret.
 AUTH_SECRET = re.compile(rf"(?i)((?:(?<![A-Za-z0-9_.-])|{_AFTER_ESCAPE})(?:proxy-)?authorization)"
-                         rf"({_QUOTE}?{_LINE_SPACE}*(?::|=|%(?:25)?3[ADad]){_LINE_SPACE}*{_QUOTE}?"
-                         rf"(?:[A-Za-z][A-Za-z0-9_-]*{_LINE_SPACE}+)?)"
-                         + _VALUE)
+                         rf"({_QUOTE}?{_LINE_SPACE}*(?::|=|%(?:25)?3[ADad]){_LINE_SPACE}*{_QUOTE}?)"
+                         + _VALUE + rf"(?:({_LINE_SPACE}+)" + _VALUE + ")?")
 # Commands that take a password after a short flag, which counts only on that command's line: from its first word to a
 # pipe, ";" or a line break, plain or escaped. Each row: the command, the flag and what parts it from the password, and
 # whether any value counts; otherwise a value of letters only after a space is a word, as after "is" ("docker login -p
@@ -288,6 +291,17 @@ def _mask_keyed(m):
     return f"{name}{sep}[masked]" if _looks_secret(name, sep, value) else m.group(0)
 
 
+def _mask_authorization(m):
+    """An Authorization header with its first word masked when that is the secret, or else the word after it, which
+    follows a scheme word."""
+    name, sep, first, gap, second = m.groups()
+    if _looks_secret(name, sep, first):
+        return f"{name}{sep}[masked]{gap or ''}{second or ''}"
+    if second and _looks_secret(name, sep, second):
+        return f"{name}{sep}{first}{gap}[masked]"
+    return m.group(0)
+
+
 KEY_FOOTER = re.compile(_KEY_END)
 _BLANK_LINE = re.compile(_BLANK)
 # Characters glued to a placeholder are the rest of a secret an older kb masked a chunk at a time, or what its key
@@ -306,7 +320,7 @@ _KEY_BODY_START = r"(?:MI[E-P][A-Za-z0-9+/]|M[A-H][A-Za-z0-9+/][Cw]|b3Bl)"
 # leaves exactly that. Masked through its footer, or through the end of its paragraph.
 _BEFORE_BODY = rf"(?:\\{{1,7}}[nrt]|{_QUOTE}|<br\s*/?>|[\s\"'#>+,;|*\]])"
 _KEY_REST = re.compile(rf"\[masked\]((?:[A-Za-z0-9+/=]+[ \t\r]*(?=\n|\\(?:r\\)?n)"
-                       rf"|(?={_BEFORE_BODY}{{0,64}}{_KEY_BODY_START}))"
+                       rf"|(?={_BEFORE_BODY}{{0,64}}{_KEY_BODY_START}[A-Za-z0-9+/=]{{36,}}))"
                        rf"(?:(?!{_KEY_END}){_IN_PARAGRAPH})*(?:{_KEY_END})?)")
 
 
@@ -345,8 +359,9 @@ def _mask_once(text):
     for pattern in PREFIXED_SECRETS:
         text = pattern.sub(lambda m: m.group(1) + "[masked]", text)
     text = _command_passwords(text)
-    for pattern in (JSON_SECRET, KEYED_SECRET, ENV_KEY_SECRET, FLAG_SECRET, AUTH_SECRET):
-        text = pattern.sub(_mask_keyed, text)
+    for pattern, masker in ((JSON_SECRET, _mask_keyed), (KEYED_SECRET, _mask_keyed), (ENV_KEY_SECRET, _mask_keyed),
+                            (FLAG_SECRET, _mask_keyed), (AUTH_SECRET, _mask_authorization)):
+        text = pattern.sub(masker, text)
     return text
 
 
