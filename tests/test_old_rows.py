@@ -21,7 +21,7 @@ import tempfile
 import unittest
 
 from kb import store
-from kb.mask import VERSION
+from kb.mask import VERSION, mask
 from tests import legacy_mask, legacy_store
 from tests.test_write_fuzz import BASE64, KEY_STARTS
 
@@ -122,9 +122,11 @@ class Case:
 
 
 def write(db, r, case):
-    """The case's rows as an older kb wrote them."""
+    """The case's rows as an older kb wrote them, or as an earlier revision of today's mask did."""
     pick = r.random()
-    older = legacy_mask.mask if pick < 0.6 else legacy_store.token_mask if pick < 0.85 else (lambda text: text)
+    earlier = pick >= 0.9
+    older = (legacy_mask.mask if pick < 0.55 else legacy_store.token_mask if pick < 0.8 else mask if earlier
+             else (lambda text: text))
     text = case.text
     if r.random() < 0.4:  # a tool's input as main's readers wrote it: JSON, cut to 300 characters before masking
         text = json.dumps({"body": text}, ensure_ascii=False)
@@ -132,14 +134,14 @@ def write(db, r, case):
     legacy_store.store_item(db, case.source, case.sid, TS, f"title {case.n}", text, case.meta, CHUNK, older)
     if r.random() < 0.4:  # summaries as main's summarizer wrote them: cut, then masked, with url, path and host only
         meta = {k: case.meta[k] for k in ("url", "path", "host") if k in case.meta}
-        start = r.randint(0, max(len(case.text) - 1, 0))
-        question, summary = case.text[start:start + r.randint(20, 600)], case.text[:r.randint(20, 1800)]
+        # The model's question and summary quote the item, and main cut each at its end before masking it.
+        question, summary = case.text[:r.randint(20, 600)], case.text[:r.randint(20, 1800)]
         rows = [("segment", "What shipped", older(f"{question[:400]}\n{summary[:1500]}")),
-                ("atom", "fact: what shipped", older(case.text[start:][:2000]))]
+                ("atom", "fact: what shipped", older(case.text[:2000]))]
         db.executemany("INSERT INTO docs(kind, source, source_id, ts, title, content, metadata) VALUES (?,?,?,?,?,?,?)",
                        [(kind, case.source, case.sid, TS, title, content, json.dumps({**meta, "of_hash": "3f"}))
                         for kind, title, content in rows])
-    if r.random() < 0.15:  # stamped by an earlier revision of today's mask
+    if earlier:  # an earlier revision's rows hold its own mask's output and record its version
         db.execute("UPDATE docs SET masked='0123456789abcdef' WHERE source=? AND source_id=?", (case.source, case.sid))
 
 
