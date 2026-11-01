@@ -363,15 +363,16 @@ class OlderStoreTest(TempHome):
 
     def test_rebuild_keeps_the_old_store_when_a_source_fails(self):
         self.db.close()
+        folder = os.path.dirname(self.path)
         with open(self.path, "rb") as fh:
-            before = fh.read()
+            before, files = fh.read(), set(os.listdir(folder)) - {"kb.lock"}  # macOS's SQLite keeps -wal and -shm
         with mock.patch("kb.ingest.run_unit", side_effect=RuntimeError("disk gone")):
             code, out, err = self.run_kb("rebuild")
         self.assertEqual(code, 1)
         self.assertIn("kept", err)
         with open(self.path, "rb") as fh:
             self.assertEqual(fh.read(), before)
-        self.assertEqual(sorted(set(os.listdir(os.path.dirname(self.path))) - {"kb.lock"}), ["kb.sqlite"])
+        self.assertEqual(set(os.listdir(folder)) - {"kb.lock"}, files, "the folder is as it was")
 
 
 class LoginTest(unittest.TestCase):
