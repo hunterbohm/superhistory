@@ -170,9 +170,13 @@ PLACEHOLDERS = {"string", "str", "none", "null", "nil", "true", "false", "undefi
                 "xxx", "xxxx", "****", "...", "redacted", "<redacted>", "secret", "password", "token"}
 # A pointer to a secret, not a secret: a variable, a path, a call, or one of kb's own env:, file: and cmd: references
 # (a token written inside a cmd: is still caught by SECRET_PATTERNS).
-REFERENCE = re.compile(r"^(?:[$%{<(\[*/~]|\.\.?/|os\.|process\.|env\.|getenv|secrets\.|vars\.|self\.|this\.|[a-z]+://|"
-                       r"(?:env|file|cmd):)|"
-                       r"^[A-Za-z_]+(?:\.[A-Za-z_]+)+$|^[A-Z][A-Z_]{2,}$|^[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+$|\(")
+# A value, as _VALUE cuts it, is a pointer only in a pointer's whole shape: a variable in one case ("$DB_PASSWORD",
+# "$api_key"), a substitution or a template ("${...}", "$(...)", "{{...}}", "%(name)s"), a Windows variable, a path of
+# two parts or more, a call, stars alone, a placeholder in brackets, a dotted name or a name in capitals.
+REFERENCE = re.compile(r"^(?:\$(?:[{(]|[A-Z_][A-Z0-9_]*$|[a-z_][a-z0-9_]*$|env:)|%(?:[A-Za-z_][A-Za-z0-9_]*%$|\()|[{\[<]|"
+                       r"\*{2,}|~/|\.\.?/|/[^/\s]+/|/[A-Za-z_.-]+$|os\.|process\.|env\.|getenv|secrets\.|vars\.|self\.|this\.|"
+                       r"[a-z]+://|(?:env|file|cmd):|[a-z_][\w.]*\()|"
+                       r"^[A-Za-z_]+(?:\.[A-Za-z_]+)+$|^[A-Z][A-Z_]{2,}$|^[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+$")
 
 # A PEM written as base64, as a Kubernetes secret holds a TLS key: "-----BEGIN" is "LS0tLS1CRUdJTi". It runs on through
 # the whole base64 lines that wrap it, and counts when its header says it is a private key.
