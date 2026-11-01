@@ -395,7 +395,7 @@ class SyncCodeTest(unittest.TestCase):
         self.assertEqual(mask("sk-ant-api03-ab-VP1" + "A" * 30), "[masked]")
         self.assertEqual(mask("passcode: VP1 0123 4567 89AB CDEF GHJK MNPQ RW"), "passcode: [masked]")
         self.assertEqual(mask("secret=ab-VP1-0123-4567-89AB-CDEF-GHJK-MNPQ-RW x"), "secret=[masked] x")
-        self.assertEqual(mask("api_key=prefix-sk-ant-api03-" + "Z" * 24), "api_key=[masked]")
+        self.assertEqual(mask("api_key=prefix-sk-ant-api03-" + "Z" * 24), "api_key=prefix-[masked]")  # as on main
 
     def test_an_id_with_a_code_counts(self):
         self.assertTrue(secret_in_id("VRC1-0123-4567-89AB-CDEF-GHJK-MNPQ-RSTV-WXYZ.md"))
@@ -423,9 +423,52 @@ class InvisibleTest(unittest.TestCase):
         family = "\U0001f468\u200d\U0001f469"
         for text, masked in (("ghp_" + "A1" * 12 + f" family {family} then ghp_" + "B2" * 12, f"[masked] family {family} then [masked]"),
                              ("sk-proj-" + "a1" * 8 + "\u200b" + "a1" * 8 + f" co\u00adoperate {family} AKIA" + "QW3RTY7UIOPAS2DF",
-                              f"[masked] co\u00adoperate {family} [masked]")):
+                              f"[masked] co\u00adoperate {family} [masked]"),
+                             ("ghp_" + "A1" * 12 + f" family {family} ghp_" + "B2" * 12 + "[masked]",
+                              f"[masked] family {family} [masked][masked]"),
+                             (f"[masked][masked] {family} ghp_" + "B2" * 12 + f" {family} [masked] [masked]",
+                              f"[masked][masked] {family} [masked] {family} [masked] [masked]")):
             with self.subTest(text=text[:12]):
                 self.assertEqual(mask(text), masked)
+
+    # What follows a token and an invisible character, and how main masks it there with the character kept.
+    READINGS = (("Authorization: Token walrus2secret9", "Authorization: Token [masked]"),
+                ("Proxy-Authorization: Bearer walrus2secret9abcdef", "Proxy-Authorization: [masked]"),
+                ("password=walrus2secret9", "password=[masked]"), ("API_KEY=walrus2secret9", "API_KEY=[masked]"),
+                ("--api-key walrus2secret9", "--api-key [masked]"), ("token is walrus2secret9", "token is [masked]"),
+                ("Cookie: sid=walrus2secret9abc", "Cookie: [masked]"), ("Bearer walrus2secret9abcdef", "[masked]"),
+                ("Basic c2FtOndhbHJ1czJzZWNyZXQ5", "[masked]"),
+                ("https://sam:walrus2secret9@example.com", "https://sam:[masked]@example.com"),
+                ("https%3A%2F%2Fsam%3Awalrus2secret9%40example.com", "https%3A%2F%2Fsam%3A[masked]%40example.com"),
+                ("curl -u sam:walrus2secret9 x", "curl -u sam:[masked] x"), ("mysql -pwalrus2secret9 shop", "mysql -p[masked] shop"),
+                ("sshpass -p walrus2secret9 ssh x", "sshpass -p [masked] ssh x"),
+                ("-passin pass:walrus2secret9", "-passin pass:[masked]"),
+                ('auth: "c2FtOndhbHJ1czJzZWNyZXQ5"', 'auth: "[masked]"'),
+                ("-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASC\n-----END PRIVATE KEY-----", "[masked]"))
+
+    def test_an_invisible_character_before_a_secrets_name_parts_it_from_a_token(self):
+        for token in ("ghp_" + "A1" * 12, "sk-ant-api03-" + "Z" * 24, "xoxb-" + "1234567890-" * 2 + "abcdefABCDEF1234"):
+            for mark in self.INVISIBLE + ("\x00", "\x1b"):
+                for text, masked in self.READINGS:
+                    with self.subTest(token=token[:4], mark=hex(ord(mark)), text=text[:12]):
+                        self.assertEqual(mask(token + mark + text), "[masked]" + mark + masked)
+
+    def test_names_after_invisible_characters_cost_time_in_proportion(self):
+        import time
+        took = {}
+        for times in (500, 4000):
+            text = ("ghp_" + "A1" * 12 + "\u200b" + "\u200b".join(("password", "x-api-auth", "curl")) + " ") * times
+            started = time.process_time()
+            mask(text)
+            took[times] = time.process_time() - started
+        self.assertLess(took[4000], 16 * max(took[500], 0.01))
+
+    def test_whitespace_among_the_c0_controls_parts_words_as_a_line_break_does(self):
+        for space in ("\x0b", "\x0c", "\x1c", "\x1d", "\x1e", "\x1f"):
+            with self.subTest(space=hex(ord(space))):
+                text = f"Authorization: ISO-27001{space}compliant"
+                self.assertEqual(mask(text), text)
+                self.assertEqual(mask("ghp_" + "A1" * 12 + space + "next page"), "[masked]" + space + "next page")
 
     def test_the_rest_of_the_text_keeps_its_invisible_characters(self):
         family, soft = "\U0001f468\u200d\U0001f469", "co\u00adoperate"
@@ -433,15 +476,16 @@ class InvisibleTest(unittest.TestCase):
         self.assertEqual(mask(text), f"{family} {soft} then [masked] then {family}")
         self.assertEqual(mask(f"{family} {soft} plain"), f"{family} {soft} plain")
 
-    # Gate 12: NUL and the C0 controls but tab, LF and CR, the zero-width set, the word joiner and the soft hyphen.
-    GATE_12 = ("\x00", "\x01", "\x07", "\x08", "\x0b", "\x0c", "\x0e", "\x1b", "\x1f", "\u200b", "\u200c", "\u200d",
+    # Gate 12: NUL and the C0 controls that are not whitespace, the zero-width set, the word joiner and the soft hyphen.
+    # Tab, LF, CR, the vertical tab, the form feed and the four separators from 0x1c are whitespace, as str.split reads them.
+    GATE_12 = ("\x00", "\x01", "\x07", "\x08", "\x0e", "\x1a", "\x1b", "\u200b", "\u200c", "\u200d",
                "\u2060", "\u00ad", "\ufeff")
     KEYS = ("sk-proj-" + "a1" * 16, "ghp_" + "A1b2" * 9, "AKIA" + "QW3RTY7UIOPAS2DF", "sk-ant-api03-" + "Zq7wLm4N" * 4,
             "glpat-" + "Ab3dE5fG7hJ9kL2mN4pQ", "xoxb-" + "1234567890-" + "a1B2c3D4e5F6g7H8")
 
     def readable(self, text):
         import re
-        return re.sub("[\x00-\x08\x0b\x0c\x0e-\x1f\u00ad\u200b-\u200d\u2060\ufeff]", "", text)
+        return re.sub("[\x00-\x08\x0e-\x1b\u00ad\u200b-\u200d\u2060\ufeff]", "", text)
 
     def assert_masked(self, secret, text):
         masked = mask(text)
@@ -804,6 +848,17 @@ class EscapeTest(unittest.TestCase):
 class RepeatTest(unittest.TestCase):
     """mask() repeats until a pass changes nothing, so masked text masks to itself, and stops: no pattern matches a
     placeholder alone, and a text still changing at the pass limit has its changing part masked whole."""
+
+    def test_a_value_that_holds_a_placeholder_leaves_the_next_header_to_its_own_reading(self):
+        for text, masked in (("Authorization: Token [masked]|Authorization: Token walrus2secret9",
+                              "Authorization: Token [masked]|Authorization: Token [masked]"),
+                             ("password: [masked]|Authorization: Token walrus2secret9",
+                              "password: [masked]|Authorization: Token [masked]"),
+                             ("Authorization: [masked]|Authorization: Token walrus2secret9",
+                              "Authorization: [masked]|Authorization: Token [masked]"),
+                             ("password: [masked]|password=walrus2secret9", "password: [masked]|password=[masked]")):
+            with self.subTest(text=text):
+                self.assertEqual(mask(text), masked)
 
     def test_no_pattern_matches_a_placeholder_alone(self):
         from kb import mask as mask_module
