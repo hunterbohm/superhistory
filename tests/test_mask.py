@@ -934,6 +934,15 @@ class SecretInIdTest(unittest.TestCase):
             with self.subTest(name=name):
                 self.assertTrue(secret_in_id(name))
 
+    def test_an_id_of_sk_slugs_costs_time_in_proportion(self):
+        import time
+        took = {}
+        for size in (4_000, 32_000):
+            started = time.process_time()
+            secret_in_id("sk-proj-" * (size // 8))
+            took[size] = time.process_time() - started
+        self.assertLess(took[32_000], 16 * max(took[4_000], 0.005))
+
     def test_a_name_starting_with_an_sk_slug_does_not(self):
         for name in ("sk-proj-roadmap-and-quarterly-goals.md", "sk-admin-dashboard-redesign-notes.md",
                      "sk-learn-pipeline-experiments.md", "Beauty/sk-ii-facial-treatment-essence-review.md",
