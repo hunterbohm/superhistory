@@ -57,6 +57,15 @@ The Sync client goes in `kb/sync/`. It meets the engine at two points.
   sorter's lines are masked, so the plug-in, which can be another provider than the user's agent, never sees a
   secret's value. kb's own instructions in those prompts contain nothing mask() changes.
 
+Rows an older kb wrote record no mask version (`store.older`), as main's did, and the store's trigger clears the version
+on any row an older kb changes. Remask and every reader of such a row use `mask.mask_older()`: mask() plus rules for
+what main's masking left that no pattern can read from the text alone. After a value's placeholder, and after a
+placeholder glued to where main's key pattern stopped, the rest of the line is masked, since main's named-value rule
+took the next line's name and its key pattern took the next words. A token's start cut short at a field's end is
+masked, since main's summarizer cut before it masked. Rows of any version never get these rules, so a later version
+does not wear a store down. `tests/test_old_rows.py` generates such rows with main's own mask (`tests/legacy_mask.py`)
+and checks that remask keeps every item with no secret in its id and stamps no row current with a secret in it.
+
 Text is masked before it is cut, never after: a cut can keep part of a secret too short for mask() to know. A row of
 today's version, and for a chunk every chunk of its item, was masked whole, so `kb search` cuts it as stored
 (`store.current`). Any other row, from before versions or from an older `mask()`, is masked whole when read: search

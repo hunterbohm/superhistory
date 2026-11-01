@@ -180,6 +180,11 @@ Known limits:
 - A private key is masked by its structure: from its header through its footer, or, if the footer is missing, through
   the end of its paragraph. So whatever follows a key cut off before its footer, up to the next blank line, is masked
   with it, and so is the paragraph before a footer with no header.
+- A store an older kb wrote is read with rules for what its masking missed: after a value it masked, the rest of that
+  line is masked too, and so is the rest of a line where its key pattern ate into the text after a key. Such a row loses
+  that text when it is masked again. A row written by today's kb never gets these rules.
+- A YAML list of secrets under a secret's name (`tokens:` followed by `- value` lines) is masked only where an item
+  holds a provider's token shape.
 
 ## Why there are no embeddings
 
