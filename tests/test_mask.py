@@ -286,6 +286,15 @@ class OlderTextTest(unittest.TestCase):
                 self.assertNotIn("Zq7wLm4Np8Rt", mask_older(text))
                 self.assertNotIn("walrus2secret9", mask_older(text))
 
+    def test_a_key_body_glued_to_a_placeholder_later_on_an_eaten_line_is_masked_through_its_paragraph(self):
+        line = "d3xQ9JpieZuSexV8k5+wfgNBVTbKnX+VpiuwNF3Alr+EL453G+4mQSEq7pbWJpUL"
+        for brk in ("\n", "\r\n", "\\n"):
+            text = f"[masked]-cli walrus ledger [masked]{line}{brk}Xj8nl7LKtNJ4Da+q+IGmchmiDpXf3rm1{brk}{brk}next"
+            with self.subTest(brk=brk):
+                masked = mask_older(text)
+                self.assertNotIn("LKtNJ4Da", masked)
+                self.assertTrue(masked.endswith("next"))
+
     def test_text_after_a_tokens_placeholder_stays(self):
         for text in ("token [masked] ordinary words walrus deployment", "see [masked], then the plan", "[masked]) and more"):
             self.assertEqual(mask_older(text), text)
