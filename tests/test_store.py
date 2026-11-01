@@ -660,12 +660,11 @@ class MaskVersionTest(TempDB):
         with open(self.path, "rb") as fh:
             self.assertNotIn(self.TOKEN.encode(), fh.read())
 
-    def test_new_metadata_for_unchanged_text_leaves_the_row_old_until_remask(self):
+    def test_new_metadata_for_unchanged_text_keeps_the_row_current(self):
+        # store_item masks the new metadata before it gives it to the rows.
         self.add("a", "same text", meta={"path": "/one"})
         self.add("a", "same text", meta={"path": "/two"})
         self.assertEqual(json.loads(self.rows()[0][5])["path"], "/two")
-        self.assertEqual(store.old_rows(self.db), 1)
-        store.remask(self.db)
         self.assertEqual(store.old_rows(self.db), 0)
 
 

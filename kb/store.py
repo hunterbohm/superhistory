@@ -264,9 +264,10 @@ def store_item(db, source, source_id, ts, title, content, meta):
 
 
 def _repoint(db, source, source_id, meta):
-    """Give an item's rows new metadata without touching their text, so its summaries stay current."""
-    for rid, kind, old in db.execute("SELECT id, kind, metadata FROM docs WHERE source=? AND source_id=?",
-                                     (source, source_id)).fetchall():
+    """Give an item's rows new metadata, already masked, without touching their text, so its summaries stay current.
+    Each row keeps the mask version it had, which the store's trigger clears on the update."""
+    for rid, kind, old, version in db.execute(
+            "SELECT id, kind, metadata, masked FROM docs WHERE source=? AND source_id=?", (source, source_id)).fetchall():
         old = json.loads(old)
         if kind in ITEM_KINDS:
             new = {**meta, **{k: old[k] for k in CHUNK_KEYS if k in old}}
@@ -274,6 +275,7 @@ def _repoint(db, source, source_id, meta):
             new = {k: v for k, v in old.items() if k not in POINTER_KEYS}
             new.update((k, meta[k]) for k in POINTER_KEYS if k in meta)
         db.execute("UPDATE docs SET metadata=? WHERE id=?", (json.dumps(new), rid))
+        db.execute("UPDATE docs SET masked=? WHERE id=?", (version, rid))
 
 
 def item_rows(db, rid):
