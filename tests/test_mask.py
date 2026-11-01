@@ -155,6 +155,46 @@ class MaskTest(unittest.TestCase):
         self.assertEqual(out, "key [masked] and more words")
 
 
+class OtherKeyFormatTest(unittest.TestCase):
+    """Private keys that are not PEM's "PRIVATE KEY": PGP's armored blocks, PuTTY's key files and age's secret keys."""
+    PGP_BODY = ("lQOYBGcW1aEBCADTkzY3c2VjcmV0cGdwYm9keWxpbmUxMjM0NTY3ODkw", "WalrusPgpBodySecond2Line3456789abcdefghij")
+
+    def test_a_pgp_block_is_masked_whole_cut_or_footer_alone(self):
+        body = "\n".join(self.PGP_BODY)
+        for kind in ("PRIVATE", "SECRET"):
+            for brk in ("\n", "\r\n", "\\n"):
+                block = (f"-----BEGIN PGP {kind} KEY BLOCK-----\nVersion: GnuPG v2\n\n{body}\n=Ab3D\n"
+                         f"-----END PGP {kind} KEY BLOCK-----").replace("\n", brk)
+                for text in (block, block[:block.index("=Ab3D")], block[block.index(self.PGP_BODY[0]):]):
+                    with self.subTest(kind=kind, brk=brk, text=text[:20]):
+                        masked = mask(f"first{brk}{brk}{text}{brk}{brk}last paragraph")
+                        self.assertNotIn("Walrus", masked)
+                        self.assertNotIn("lQOYBGcW", masked)
+                        self.assertTrue(masked.endswith(f"{brk}{brk}last paragraph"), masked)
+
+    def test_a_putty_key_files_private_lines_are_masked(self):
+        text = ("PuTTY-User-Key-File-3: ssh-ed25519\nEncryption: none\nComment: eddsa-key\nPublic-Lines: 2\n"
+                "AAAAC3NzaC1lZDI1NTE5AAAAIHB1YmxpY3B1YmxpYw==\nPrivate-Lines: 1\n"
+                "AAAAIFdhbHJ1c1B1dHR5UHJpdmF0ZUJvZHlTZWNyZXQ5\nPrivate-MAC: 3f2a9c00112233445566778899aabbcc")
+        for brk in ("\n", "\\n"):
+            masked = mask(text.replace("\n", brk) + f"{brk}{brk}last paragraph")
+            self.assertNotIn("AAAAIFdhbHJ1", masked)
+            self.assertIn("Public-Lines: 2", masked)
+            self.assertTrue(masked.endswith("last paragraph"))
+
+    def test_an_age_secret_key_is_masked(self):
+        key = "AGE-SECRET-KEY-1QYQSZQGPQYQSZQGPQYQSZQGPQYQSZQGPQYQSZQGPQYQSZQGPQYQSZQGP0ABCDE"
+        for text in (key, f"# created\n{key}\n", f"identity\\n{key}", key[:40]):
+            with self.subTest(text=text[:20]):
+                self.assertNotIn("QYQSZQGPQYQS", mask(text))
+
+    def test_prose_about_those_formats_stays(self):
+        for text in ("PGP keys are signed in a block", "Private-Lines counts the lines", "an AGE-SECRET-KEY-1 identity",
+                     "-----BEGIN PGP PUBLIC KEY BLOCK-----\n\nmQENBGcW1aEBCAD\n-----END PGP PUBLIC KEY BLOCK-----"):
+            with self.subTest(text=text[:20]):
+                self.assertEqual(mask(text), text)
+
+
 class HeadlessKeyTest(unittest.TestCase):
     """A key's body without its header, as an older kb's row-by-row remask leaves the chunk after the header's."""
     LINE = "MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7"
