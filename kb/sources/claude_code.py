@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from typing import Tuple
 
 from kb.ai.cli import WORKDIR_PREFIX
-from kb.mask import clip, is_auth_code, mask
+from kb.mask import clip, is_auth_code, mask, mask_all
 from kb.sources import Gone, Item, Progress, SourceType, home_key
 
 TOOL_CHARS = 300
@@ -38,7 +38,7 @@ def _tool_input(inp):
     for key in ("command", "file_path", "path", "pattern", "url", "query", "description", "prompt"):
         if key in inp:
             return str(inp[key])
-    return json.dumps(inp, ensure_ascii=False)
+    return json.dumps(mask_all(inp), ensure_ascii=False)  # masked by field, before JSON escapes them
 
 
 def _result_text(part):

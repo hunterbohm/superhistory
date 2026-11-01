@@ -19,7 +19,7 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
-from kb.mask import clip, is_auth_noise, mask
+from kb.mask import clip, is_auth_noise, mask, mask_all
 from kb.sources import Item, Progress, SourceType
 
 TOOL_CHARS = 300
@@ -100,7 +100,7 @@ def _tool_input(args):
     for key in ("command", "path", "file_path", "query", "url", "pattern", "goal", "name", "message"):
         if key in args:
             return str(args[key])
-    return json.dumps(args, ensure_ascii=False)
+    return json.dumps(mask_all(args), ensure_ascii=False)  # masked by field, before JSON escapes them
 
 
 def _tool_calls(raw):

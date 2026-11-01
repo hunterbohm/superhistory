@@ -283,7 +283,8 @@ class EscapeTest(unittest.TestCase):
 
     def test_a_long_run_of_escapes_after_a_value_costs_time_in_proportion(self):
         import time
-        for head, unit in (("password=", "\\r\\n"), ("token=x", "\\n"), ("", "\\ncookie: ")):
+        for head, unit in (("password=", "\\r\\n"), ("token=x", "\\n"), ("", "\\ncookie: "), ("password=", "\\"),
+                           ('{\\"cookie\\": \\"', "\\"), ("x", "&#0")):
             with self.subTest(unit=unit):
                 took = {}
                 for size in (1 << 16, 1 << 20):

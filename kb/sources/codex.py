@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from typing import Tuple
 
 from kb.ai.cli import WORKDIR_PREFIX
-from kb.mask import clip, is_auth_code, mask
+from kb.mask import clip, is_auth_code, mask, mask_all
 from kb.sources import Gone, Item, Progress, SourceType, home_key
 
 
@@ -76,7 +76,7 @@ def _call_args(arguments):
         if key in args:
             value = args[key]
             return " ".join(map(str, value)) if isinstance(value, list) else str(value)
-    return json.dumps(args, ensure_ascii=False)
+    return json.dumps(mask_all(args), ensure_ascii=False)  # masked by field, before JSON escapes them
 
 
 def _output_line(output):

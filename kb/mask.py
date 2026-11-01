@@ -6,13 +6,22 @@ import re
 import sys
 import traceback
 
-# JSON text escapes a line break as "\n" and other characters likewise. A secret right after an escape reads as glued
-# to its letter, and a value ends at an escape that starts the next "name=" or "name:", as at the line's end the
-# escape stands for, so that name keeps its own value. At most four escapes before the name: a longer run read back
-# one escape at a time from every backslash in it would cost time in the square of its length.
-_AFTER_ESCAPE = r"(?<=\\[nrtbf])|(?<=\\u[0-9A-Fa-f]{4})"
+# JSON text escapes a line break as "\n" and other characters likewise, and a link as "%0A", once or, encoded twice,
+# as "%250A". A secret right after an escape reads as glued to its letter, and a value ends at an escape that starts
+# the next "name=" or "name:", as at the line's end the escape stands for, so that name keeps its own value. At most
+# four escapes before the name: a longer run read back one escape at a time from every backslash in it would cost
+# time in the square of its length.
+_AFTER_ESCAPE = r"(?<=\\[nrtbf])|(?<=\\u[0-9A-Fa-f]{4})|(?<=%[0-9A-Fa-f]{2})|(?<=%25[0-9A-Fa-f]{2})"
 _NEXT_NAME = r"(?:\\(?:[nrtbf]|u[0-9A-Fa-f]{4})){1,4}[A-Za-z0-9_.-]+[\"']?[ \t]*(?:[:=]|=>)"
 _NB = rf"(?:(?<![A-Za-z0-9])|{_AFTER_ESCAPE})"
+# A quote around a name or a value as text writes it: plain, escaped as JSON writes it, once or as JSON inside JSON
+# does, percent-encoded as in a link, or as an HTML entity. And "=" or ":" between them, plain or encoded the same ways.
+_QUOTE = r"(?:\\{0,7}[\"']|\\{1,7}u00(?:22|27)|%(?:25)?2[27]|&(?:quot|apos|#0{0,3}3[49]|#[xX]0{0,3}2[27]);)"
+_SEP = r"(?:[:=]|=>|%(?:25)?3[ADad]|\\{1,7}u003[AaDd])"
+# A value stops before a quote escaped to close it, so the escape stays with the quote. At most seven backslashes, as
+# JSON three times inside JSON writes one: an unbounded run read ahead from every backslash would cost time in the
+# square of its length.
+_CLOSE = r"(?!\\{1,7}[\"']|&(?:quot|apos|#0{0,3}3[49]|#[xX]0{0,3}2[27]);)"
 _WORD = rf"(?:\b|{_AFTER_ESCAPE})"
 # A blank line ends a paragraph: an empty line, with any spaces, its breaks plain or escaped as in JSON.
 _BLANK = r"(?:\r?\n[ \t]*\r?\n|\\(?:r\\)?n[ \t]*\\(?:r\\)?n)"
@@ -49,11 +58,11 @@ SECRET_PATTERNS = [
     re.compile(r"https://(?:[\w-]+\.)?discord(?:app)?\.com/api/webhooks/\d+/[\w-]+"),
     re.compile(r"https://hooks\.slack\.com/(?:services|workflows|triggers)/[\w/-]+"),
     re.compile(_NB + r"eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}"),
-    re.compile(rf"(?i){_WORD}bearer\s+[A-Za-z0-9._~+/-]{{16,}}=*"),
-    re.compile(rf"(?i){_WORD}basic\s+(?=[A-Za-z0-9+/]*[0-9+/=])[A-Za-z0-9+/]{{12,}}={{0,2}}"),
+    re.compile(rf"(?i){_WORD}bearer(?:\s|%(?:25)?20|\+)+[A-Za-z0-9._~+/-]{{16,}}=*"),
+    re.compile(rf"(?i){_WORD}basic(?:\s|%(?:25)?20|\+)+(?=[A-Za-z0-9+/]*[0-9+/=])[A-Za-z0-9+/]{{12,}}={{0,2}}"),
 ]
 PREFIXED_SECRETS = [
-    re.compile(rf"(?i)({_WORD}(?:set-)?cookie[\"']?\s*:\s*)[^\"'\n]{{8,}}"),
+    re.compile(rf"(?i)({_WORD}(?:set-)?cookie{_QUOTE}?\s*(?::|%(?:25)?3[Aa])\s*{_QUOTE}?)(?:{_CLOSE}[^\"'\n]){{8,}}"),
     re.compile(r"([a-z][a-z0-9+.-]*://[^/ \t\n\r:@'\"]+:)[^/ \t\n\r@'\"]{3,}(?=@)"),
     re.compile(rf"({_WORD}curl\b[^\n|;]*?\s(?:-u|--user)\s+['\"]?[^ \t\n\r:'\"]+:)(?:(?!{_NEXT_NAME})[^ \t\n\r'\"])+"),
 ]
@@ -64,9 +73,11 @@ _KEY_NAME = (
     r"|[A-Za-z0-9]+(?:[_-][A-Za-z0-9]+)*[_-](?:pass|pwd|pw)"
     r")(?![A-Za-z0-9_.-])")
 _ENV_KEY_NAME = rf"(?:(?<![A-Za-z0-9_])|{_AFTER_ESCAPE})([A-Z][A-Z0-9_]*_KEY)(?![A-Za-z0-9_])"
-_VALUE = rf"((?:(?!{_NEXT_NAME})[^ \t\n\r\"'`,;<>)\]}}])+)"
-KEYED_SECRET = re.compile(_KEY_NAME + r"((?:[\"'])?[ \t\r\n]*(?:[:=]|=>|\bis\b)[ \t\r\n]*[\"']?)" + _VALUE)
-ENV_KEY_SECRET = re.compile(_ENV_KEY_NAME + r"((?:[\"'])?[ \t\r\n]*[:=][ \t\r\n]*[\"']?)" + _VALUE)
+_VALUE = rf"((?:(?!{_NEXT_NAME}){_CLOSE}[^ \t\n\r\"'`,;<>)\]}}])+)"
+KEYED_SECRET = re.compile(_KEY_NAME + rf"({_QUOTE}?[ \t\r\n]*(?:{_SEP}|\bis\b)[ \t\r\n]*{_QUOTE}?)" + _VALUE)
+ENV_KEY_SECRET = re.compile(_ENV_KEY_NAME + rf"({_QUOTE}?[ \t\r\n]*{_SEP}[ \t\r\n]*{_QUOTE}?)" + _VALUE)
+# A field name that by itself names a secret, as a dict's key does.
+_SECRET_FIELD = re.compile(rf"(?:{_KEY_NAME[4:]}|{_ENV_KEY_NAME})$", re.I)
 # In an item id, a value counts by its key's name only in assignment form, "token=...", "token=>..." or "token:...",
 # with no space.
 KEYED_ID = re.compile(_KEY_NAME + r"((?:[\"'])?(?:=>|[:=])[\"']?)" + _VALUE)
@@ -94,17 +105,21 @@ VERSION = hashlib.sha256(repr((REVISION, [p.pattern for p in SECRET_PATTERNS + P
                                 REFERENCE.pattern)).encode()).hexdigest()[:16]
 
 
-def _mask_keyed(m):
-    name, sep, value = m.groups()
+def _looks_secret(name, sep, value):
+    """Whether `value`, after a secret's name `name` and the separator `sep`, is a secret and not a word, a placeholder
+    or a pointer to one."""
     if value.lower() in PLACEHOLDERS or REFERENCE.search(value):
-        return m.group(0)
+        return False
     if PASSWORD_NAME.search(name):
         word = value.rstrip(".!?")
-        looks_secret = len(value) >= 4 and ("is" not in sep.lower() or re.search(r"[^A-Za-z]", word))
-    else:
-        mixed = re.search(r"\d", value) and re.search(r"[A-Za-z]", value)
-        looks_secret = (len(value) >= 16 and not value.isdigit()) or (len(value) >= 8 and mixed)
-    return f"{name}{sep}[masked]" if looks_secret else m.group(0)
+        return len(value) >= 4 and ("is" not in sep.lower() or bool(re.search(r"[^A-Za-z]", word)))
+    mixed = re.search(r"\d", value) and re.search(r"[A-Za-z]", value)
+    return (len(value) >= 16 and not value.isdigit()) or bool(len(value) >= 8 and mixed)
+
+
+def _mask_keyed(m):
+    name, sep, value = m.groups()
+    return f"{name}{sep}[masked]" if _looks_secret(name, sep, value) else m.group(0)
 
 
 KEY_FOOTER = re.compile(_KEY_END)
@@ -217,6 +232,8 @@ def mask_all(value, key=None):
     if isinstance(value, str):
         if key is None:
             return mask(value)
+        if _SECRET_FIELD.match(key) and _looks_secret(key, "=", value.strip()):
+            return "[masked]"  # the whole value, which may hold a space or a quote that would end it in text
         masked = mask(f"{key}={value}")
         head = mask(key) + "="
         return masked[len(head):] if masked.startswith(head) else mask(value)
