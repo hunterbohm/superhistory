@@ -18,7 +18,9 @@ _NB = rf"(?:(?<![A-Za-z0-9])|{_AFTER_ESCAPE})"
 # A quote around a name or a value as text writes it: plain, escaped as JSON writes it, once or as JSON inside JSON
 # does, percent-encoded as in a link, or as an HTML entity. And "=" or ":" between them, plain or encoded the same ways.
 _QUOTE = r"(?:\\{0,7}[\"']|\\{1,7}u00(?:22|27)|%(?:25)?2[27]|&(?:quot|apos|#0{0,3}3[49]|#[xX]0{0,3}2[27]);)"
-_SEP = r"(?:[:=]|=>|%(?:25)?3[ADad]|\\{1,7}u003[AaDd])"
+_SEP = r"(?:[:=\uff1a\uff1d]|=>|%(?:25)?3[ADad]|\\{1,7}u003[AaDd])"
+# The space around a separator: spaces, tabs, line breaks, and no-break and full-width spaces.
+_GAP = r"[ \t\r\n\u00a0\u3000]*"
 # A value stops before a quote escaped to close it, so the escape stays with the quote. At most seven backslashes, as
 # JSON three times inside JSON writes one: an unbounded run read ahead from every backslash would cost time in the
 # square of its length.
@@ -73,18 +75,45 @@ _BASIC_VALUE = re.compile(rf"(?i){_WORD}basic{_SCHEME_GAP}([A-Za-z0-9+/]{{12,}})
 PREFIXED_SECRETS = [
     re.compile(rf"(?i)({_WORD}(?:set-)?cookie{_QUOTE}?\s*(?::|%(?:25)?3[Aa])\s*{_QUOTE}?)(?:{_CLOSE}[^\"'\n]){{8,}}"),
     re.compile(r"([a-z][a-z0-9+.-]*://[^/ \t\n\r:@'\"]+:)[^/ \t\n\r@'\"]{3,}(?=@)"),
-    re.compile(rf"({_WORD}curl\b[^\n|;]*?\s(?:-u|--user)\s+['\"]?[^ \t\n\r:'\"]+:)(?:(?!{_NEXT_NAME})[^ \t\n\r'\"])+"),
+    # openssl's "-passin pass:..." and "-passout pass:...".
+    re.compile(rf"((?<![A-Za-z0-9_-])-pass(?:in|out)?[ \t]+['\"]?pass:)(?:(?!{_NEXT_NAME}){_CLOSE}[^ \t\n\r'\"])+"),
 ]
 _KEY_NAME = (
     r"(?i)(?<![A-Za-z0-9_.-])("
     r"[A-Za-z0-9_.-]*?(?:api[_-]?key|access[_-]?key|private[_-]?key|secret|token|credentials?|passw(?:or)?d|passcode|"
     r"session[_-]?(?:token|key|secret|cookie)|bw_session)[A-Za-z0-9_-]*?"
     r"|[A-Za-z0-9]+(?:[_-][A-Za-z0-9]+)*[_-](?:pass|pwd|pw)"
+    r"|x-(?:[A-Za-z0-9]+-)*auth(?:-[A-Za-z0-9]+)*"
     r")(?![A-Za-z0-9_.-])")
 _ENV_KEY_NAME = rf"(?:(?<![A-Za-z0-9_])|{_AFTER_ESCAPE})([A-Z][A-Z0-9_]*_KEY)(?![A-Za-z0-9_])"
 _VALUE = rf"((?:(?!{_NEXT_NAME}){_CLOSE}[^ \t\n\r\"'`,;<>)\]}}])+)"
-KEYED_SECRET = re.compile(_KEY_NAME + rf"({_QUOTE}?[ \t\r\n]*(?:{_SEP}|\bis\b)[ \t\r\n]*{_QUOTE}?)" + _VALUE)
-ENV_KEY_SECRET = re.compile(_ENV_KEY_NAME + rf"({_QUOTE}?[ \t\r\n]*{_SEP}[ \t\r\n]*{_QUOTE}?)" + _VALUE)
+KEYED_SECRET = re.compile(_KEY_NAME + rf"({_QUOTE}?{_GAP}(?:{_SEP}|\bis\b){_GAP}{_QUOTE}?)" + _VALUE)
+ENV_KEY_SECRET = re.compile(_ENV_KEY_NAME + rf"({_QUOTE}?{_GAP}{_SEP}{_GAP}{_QUOTE}?)" + _VALUE)
+# A long flag named for a secret, and its value after a space or a quote: "--api-key ...". A flag that names where the
+# secret is, such as "--token-file" or "--password-stdin", takes none, and a value never starts with "-".
+FLAG_SECRET = re.compile(r"(?i)(?<![A-Za-z0-9_.-])(--" + _KEY_NAME[len(r"(?i)(?<![A-Za-z0-9_.-])("):]
+                         + r"(?<!-stdin)(?<!-file)(?<!-env)(?<!-path)(?<!-name)(?<!-id)(?<!-cmd)(?<!-command)"
+                         r"(?<!-helper)(?<!-length)(?<!-type)(?<!-url)([ \t]+[\"']?)(?!-)" + _VALUE)
+# An HTTP Authorization header's credentials, after any scheme word: "Token ...", "Bot ...", "ApiKey ...".
+AUTH_SECRET = re.compile(rf"(?i)((?<![A-Za-z0-9_.-])(?:proxy-)?authorization)"
+                         rf"({_QUOTE}?[ \t]*(?::|=|%(?:25)?3[ADad])[ \t]*{_QUOTE}?(?:[A-Za-z][A-Za-z0-9_-]*[ \t]+)?)"
+                         + _VALUE)
+# Commands that take a password after a short flag, which counts only on that command's line: from its first word to a
+# pipe, ";" or a line break, plain or escaped. Each row: the command, the flag and what parts it from the password, and
+# whether any value counts; otherwise a value of letters only after a space is a word, as after "is" ("docker login -p
+# is deprecated"). curl's -u takes "user:password", and mysql's -p takes its password glued, since "-p shop" names a
+# database.
+COMMAND_FLAGS = (
+    (r"curl", r"\s(?:-u|--user)\s*['\"]?[^ \t\n\r:'\"]+:", True),
+    (r"mysql|mysqldump|mysqladmin|mariadb|mariadb-dump", r"\s-p(?=[^ \t\n\r'\"])", True),
+    (r"sshpass", r"\s-p[ \t]*['\"]?", False),
+    (r"(?:docker|podman|nerdctl|buildah|skopeo|oras)\s+login|helm\s+registry\s+login", r"\s-p[ \t]+['\"]?", False),
+    (r"redis-cli", r"\s-a[ \t]+['\"]?", False),
+)
+_COMMANDS = [(re.compile(rf"(?i)(?:(?<![A-Za-z0-9_.-])|{_AFTER_ESCAPE})(?:{command})(?![A-Za-z0-9_.-])"
+                         r"(?:[^\n|;\\]|\\(?![nr]))*"),
+              re.compile(rf"({flag})((?:{_CLOSE}[^ \t\n\r'\"])+)"), always) for command, flag, always in COMMAND_FLAGS]
+_ANY_COMMAND = re.compile(r"(?i)curl|mysql|mariadb|sshpass|login|redis-cli")
 # A field name that by itself names a secret, as a dict's key does.
 _SECRET_FIELD = re.compile(rf"(?:{_KEY_NAME[4:]}|{_ENV_KEY_NAME})$", re.I)
 # In an item id, a value counts by its key's name only in assignment form, "token=...", "token=>..." or "token:...",
@@ -110,8 +139,8 @@ REFERENCE = re.compile(r"^(?:[$%{<(\[*/~]|\.\.?/|os\.|process\.|env\.|getenv|sec
 # it masks.
 REVISION = 2
 VERSION = hashlib.sha256(repr((REVISION, [p.pattern for p in SECRET_PATTERNS + PREFIXED_SECRETS], KEYED_SECRET.pattern,
-                                ENV_KEY_SECRET.pattern, PASSWORD_NAME.pattern, sorted(PLACEHOLDERS),
-                                REFERENCE.pattern)).encode()).hexdigest()[:16]
+                                ENV_KEY_SECRET.pattern, FLAG_SECRET.pattern, AUTH_SECRET.pattern, COMMAND_FLAGS,
+                                PASSWORD_NAME.pattern, sorted(PLACEHOLDERS), REFERENCE.pattern)).encode()).hexdigest()[:16]
 
 
 def _looks_secret(name, sep, value):
@@ -121,9 +150,31 @@ def _looks_secret(name, sep, value):
         return False
     if PASSWORD_NAME.search(name):
         word = value.rstrip(".!?")
-        return len(value) >= 4 and ("is" not in sep.lower() or bool(re.search(r"[^A-Za-z]", word)))
+        return len(value) >= 4 and (not _prose(sep) or bool(re.search(r"[^A-Za-z]", word)))
     mixed = re.search(r"\d", value) and re.search(r"[A-Za-z]", value)
     return (len(value) >= 16 and not value.isdigit()) or bool(len(value) >= 8 and mixed)
+
+
+_SEP_CHARACTER = re.compile(r"[:=\uff1a\uff1d]|%(?:25)?3[ADad]|u003[AaDd]")
+
+
+def _prose(sep):
+    """Whether a separator reads as prose does, "is" or a space with no "=" or ":" in it, after which a value of
+    letters only is a word and not a password."""
+    return not _SEP_CHARACTER.search(sep) and ("is" in sep.lower() or sep[-1:].isspace())
+
+
+def _command_passwords(text):
+    """`text` with each password COMMAND_FLAGS finds masked. A command's line is read once from its first word, so a
+    line that names the command again and again costs time in proportion to its length."""
+    if not _ANY_COMMAND.search(text):
+        return text
+    for line_pattern, flag, always in _COMMANDS:
+        spans = [(m.start(2), m.end(2)) for line in line_pattern.finditer(text)
+                 for m in flag.finditer(text, line.start(), line.end())
+                 if always or _looks_secret("password", m.group(1), m.group(2))]
+        text = _replace(text, spans, "[masked]")
+    return text
 
 
 def _mask_keyed(m):
@@ -181,7 +232,10 @@ def _mask_once(text):
     text = _GLUED_RUN.sub("[masked]", _headless_keys(_key_rest(text)))
     for pattern in PREFIXED_SECRETS:
         text = pattern.sub(lambda m: m.group(1) + "[masked]", text)
-    return ENV_KEY_SECRET.sub(_mask_keyed, KEYED_SECRET.sub(_mask_keyed, text))
+    text = _command_passwords(text)
+    for pattern in (KEYED_SECRET, ENV_KEY_SECRET, FLAG_SECRET, AUTH_SECRET):
+        text = pattern.sub(_mask_keyed, text)
+    return text
 
 
 # How many passes mask() makes at most, and how often, in this process, a text still changed at the last one.
@@ -259,6 +313,7 @@ def secret_in_id(text, names=()):
     masked = _GLUED_RUN.sub("[masked]", _headless_keys(_key_rest(masked)))
     for pattern in PREFIXED_SECRETS:
         masked = pattern.sub(lambda m: m.group(1) + "[masked]", masked)
+    masked = _command_passwords(masked)
     return ENV_KEY_ID.sub(_mask_keyed, KEYED_ID.sub(_mask_keyed, masked)) != text
 
 
