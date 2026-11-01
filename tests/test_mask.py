@@ -430,6 +430,19 @@ class EscapeTest(unittest.TestCase):
             with self.subTest(text=text):
                 self.assertEqual(mask(text), text)
 
+    def test_a_long_run_of_a_secrets_word_costs_time_in_proportion(self):
+        # A secret's name was read around its key word, back over the run once for each key word in it.
+        import time
+        for unit in ("token", '"token', "password", "a.token.", "api_key_"):
+            with self.subTest(unit=unit):
+                took = {}
+                for size in (1 << 12, 1 << 15):
+                    text = unit * (size // len(unit))
+                    started = time.process_time()
+                    mask(text)
+                    took[size] = time.process_time() - started
+                self.assertLess(took[1 << 15], 24 * max(took[1 << 12], 0.01), took)
+
     def test_a_long_run_of_letters_and_digits_costs_time_in_proportion(self):
         # A link's scheme was read on from every letter of a run, as in contract bytecode or a hash's hex.
         import time
