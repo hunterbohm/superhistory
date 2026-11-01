@@ -61,6 +61,7 @@ END;
 """ + SUPERSEDES + """;
 -- A change to a row's time, title, text or metadata clears its mask version. kb's own writers stamp it again once
 -- they have masked the row; an older kb, which does not, leaves the row to be masked again.
+CREATE INDEX IF NOT EXISTS supersedes_new ON supersedes(new_source, new_source_id);
 CREATE TRIGGER IF NOT EXISTS docs_unmask AFTER UPDATE OF ts, title, content, metadata ON docs BEGIN
   UPDATE docs SET masked = NULL WHERE id = new.id;
 END;
@@ -351,8 +352,14 @@ def replace_rows(db, source, source_id, rows, kinds=ITEM_KINDS):
 
 def delete_item(db, source, source_id):
     """Removes the item's rows. Returns the number of rows removed. Supersede marks on it stay, so a store reaches the
-    same marks whether Sync delivers a mark before or after the item's deletion."""
-    return db.execute("DELETE FROM docs WHERE source=? AND source_id=?", (source, source_id)).rowcount
+    same marks whether Sync delivers a mark before or after the item's deletion; but when its id holds a secret, read
+    while its rows still name it, the marks on and to it go too, or they would keep the id."""
+    secret = _secret_item(db, source, source_id)
+    removed = db.execute("DELETE FROM docs WHERE source=? AND source_id=?", (source, source_id)).rowcount
+    if secret:
+        db.execute("DELETE FROM supersedes WHERE source=? AND source_id=? OR new_source=? AND new_source_id=?",
+                   (source, source_id, source, source_id))
+    return removed
 
 
 def _refuse_secret_ids(db, *items):
@@ -362,6 +369,11 @@ def _refuse_secret_ids(db, *items):
 
 
 def _secret_item(db, source, source_id):
+    """Whether the item's id holds a secret, read with the names its rows here record (item_names). An item with no
+    rows here is not judged: without its names an id such as a Hermes profile's reads as a secret it is not, and a
+    mark to an item deleted for now, or one Sync sent before the item, would be lost."""
+    if not db.execute("SELECT 1 FROM docs WHERE source=? AND source_id=? LIMIT 1", (source, source_id)).fetchone():
+        return False
     return secret_id(source, source_id, item_names(db, source, source_id))
 
 
@@ -409,8 +421,13 @@ def superseded(db, items):
             rank = (v is None, v or 0, by)
             if (src, sid) not in marks or rank > marks[(src, sid)][0]:
                 marks[(src, sid)] = (rank, (new_src, new_sid))
-    # A mark that names an id holding a secret, synced or written before kb refused one, names no replacement.
-    return {item: new for item, (_, new) in marks.items() if new[0] is not None and not _secret_item(db, *new)}
+    # A mark that names an id holding a secret, synced or written before kb refused one, names no replacement. Each
+    # replacement is read once, however many marks name it.
+    secret = {}
+    for _, new in marks.values():
+        if new[0] is not None and new not in secret:
+            secret[new] = _secret_item(db, *new)
+    return {item: new for item, (_, new) in marks.items() if new[0] is not None and not secret[new]}
 
 
 def store_item(db, source, source_id, ts, title, content, meta):
@@ -563,22 +580,10 @@ def remask(db, seconds=None, log=None):
             db.commit()
             if seconds is not None and time.monotonic() - started > seconds:
                 break
-    if _drop_secret_marks(db):
-        set_watermark(db, STATE, "remask", "rebuild")
-        db.commit()
     left = old_rows(db)
     if not left and (seconds is None or rebuild_owed(db)):
         _rebuild(db)
     return changed, left
-
-
-def _drop_secret_marks(db):
-    """Deletes every supersede mark on or to an item whose id holds a secret. Returns how many."""
-    doomed = [(src, sid, by) for src, sid, by, new_src, new_sid in db.execute(
-        "SELECT source, source_id, marked_by, new_source, new_source_id FROM supersedes").fetchall()
-        if _secret_item(db, src, sid) or new_src is not None and _secret_item(db, new_src, new_sid)]
-    db.executemany("DELETE FROM supersedes WHERE source=? AND source_id=? AND marked_by=?", doomed)
-    return len(doomed)
 
 
 def rebuild_owed(db):

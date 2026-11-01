@@ -563,6 +563,18 @@ def _clean_body(body):
     return mask.clip(text, BODY_CHARS)
 
 
+# Gmail's own labels that drop a message, as Takeout names them. Gmail keeps these names from any label a user makes.
+TAKEOUT_SKIP_LABELS = {"Drafts", "Trash", "Spam"}
+
+
+def _drops(label):
+    """Whether a message's label is Gmail's own draft, trash or spam label: as IMAP's decoded names and Gmail's API
+    give it ("DRAFT"), as a raw IMAP flag ("\\Draft"), or as Takeout names it ("Trash"). A label the user made never
+    is, whatever its case or backslashes, as main's IMAP reader has it."""
+    return (label in SKIP_MESSAGE_LABELS or label in TAKEOUT_SKIP_LABELS
+            or label.startswith("\\") and label[1:].upper() in SKIP_MESSAGE_LABELS)
+
+
 def render_thread(account, thread_id, messages, mark=0):
     """One Gmail thread as an Item, from its messages as `email.message` objects, each with its Gmail labels and its
     time in epoch seconds: [(message, labels, epoch), ...]. A message from the `mailbox` module works too. Drafts,
@@ -570,7 +582,7 @@ def render_thread(account, thread_id, messages, mark=0):
     `thread_id` is the item's source_id; a decimal X-GM-THRID also gives the item its Gmail link."""
     blocks, people, labels_seen, subject, last = [], [], [], None, None
     for msg, labels, epoch in sorted(messages, key=lambda m: m[2]):
-        if SKIP_MESSAGE_LABELS & {str(label).strip("\\").upper() for label in labels}:
+        if any(_drops(str(label)) for label in labels):
             continue
         if not isinstance(msg, EmailMessage):
             msg = email.message_from_bytes(msg.as_bytes(), policy=policy.default)

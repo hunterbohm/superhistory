@@ -427,11 +427,13 @@ def _rebuilt_id(source, source_id, config):
     head, colon, rest = source_id.partition(":")
     if not colon:
         return None
-    if ids.INSTALL_ID.fullmatch(head.partition("@")[0]):
-        return source_id if ids.owner(source_id) == config.install else None
-    if head not in source.hosts:
-        return None
-    return ids.prefix(config.install, None if head == config.machine else head) + rest
+    if ids.owner(source_id) == config.install:
+        return source_id
+    # An older kb's "<host>:<id>", read before an install's id: a host is a name config allows, so it holds no "@",
+    # and one shaped like an install id is still that host.
+    if head in source.hosts:
+        return ids.prefix(config.install, None if head == config.machine else head) + rest
+    return None
 
 
 def _lost(before, after, config):
