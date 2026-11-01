@@ -426,6 +426,22 @@ class EscapeTest(unittest.TestCase):
                 self.assertNotIn("c2secret", masked)
         self.assertEqual(mask('{"password": "walrus\\"2secret9", "user": "bob"}'), '{"password": "[masked]", "user": "bob"}')
 
+    def test_a_name_with_no_value_does_not_take_the_next_lines_name(self):
+        # A YAML parent key named like a secret, or a key left empty, sits above the line that holds the secret.
+        for text in ("credentials:\n  token: Zq7wLm4Np8Rt2Kd9Vh3B", "secrets:\n  db_password: walrus2secret9",
+                     "api_key:\napi_key: Zq7wLm4Np8Rt2Kd9Vh3B", "password:\npassword: walrus2secret9",
+                     "STRIPE_KEY:\n  api_key: Zq7wLm4Np8Rt2Kd9Vh3B", "auth_token: \n\tsecret: walrus2secret9"):
+            with self.subTest(text=text):
+                masked = mask(text)
+                self.assertNotIn("walrus2secret9", masked)
+                self.assertNotIn("Zq7wLm4Np8Rt", masked)
+
+    def test_a_value_ends_where_an_escape_starts_a_flag(self):
+        for text in ('{"command": "export API_TOKEN=abc123def456\\n--api-key s3cr3tV4lu3XYZ99"}',
+                     "password: walrus2secret1\\n--token s3cr3tV4lu3XYZ99", "--token=abc123def456ghi\\n--api-key s3cr3tV4lu3XYZ99"):
+            with self.subTest(text=text):
+                self.assertNotIn("V4lu3XYZ99", mask(text))
+
     def test_a_password_with_a_backslash_in_it_is_masked_whole(self):
         for password in ("Ab3\\nQz9kLm", "C:\\temp\\walrus9", "pa\\u00e4ss9word"):
             with self.subTest(password=password):
