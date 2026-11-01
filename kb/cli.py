@@ -396,20 +396,24 @@ def _remove_store(path):
 
 
 def _per_source(path, kept):
-    """Each source's item ids and its oldest item's time in the store at `path`, read from ids and times alone: the
-    text of an older kb's rows is never read. When the store cannot be read, as when another program holds it locked,
-    no loss could be seen, so the rebuild stops with `kept` ending its message."""
+    """Each source's item ids, its oldest item's time and the host each item's rows record, in the store at `path`,
+    read from ids, times and that one field alone: the text of an older kb's rows is never read. When the store cannot
+    be read, as when another program holds it locked, no loss could be seen, so the rebuild stops with `kept` ending
+    its message."""
     if not os.path.exists(path):
         return {}
     try:
         db = store.peek(path)
         try:
             found = {}
-            for source, source_id, ts in db.execute("SELECT source, source_id, min(ts) FROM docs WHERE kind IN "
-                                                    "('doc', 'raw') GROUP BY source, source_id"):
-                ids, oldest = found.get(source, (set(), ts))
+            host = "CASE WHEN json_valid(metadata) THEN json_extract(metadata, '$.host') END"
+            for source, source_id, ts, low, high in db.execute(
+                    f"SELECT source, source_id, min(ts), min({host}), max({host}) FROM docs WHERE kind IN "
+                    "('doc', 'raw') GROUP BY source, source_id"):
+                ids, oldest, hosts = found.get(source, (set(), ts, {}))
                 ids.add(source_id)
-                found[source] = (ids, min(oldest, ts))
+                hosts[source_id] = low if low == high else None
+                found[source] = (ids, min(oldest, ts), hosts)
             return found
         finally:
             db.close()
@@ -419,21 +423,25 @@ def _per_source(path, kept):
         raise Fail(f"could not count the items in {path} ({exc}), so {kept}") from None
 
 
-def _rebuilt_id(source, source_id, config):
+def _rebuilt_id(source, source_id, config, host=None):
     """The one id this install's ingest writes for the item an old store holds under `source_id`, by the rule it
-    writes with (ids.prefix), or None when it writes none: an item another install read, or one an older kb read on a
-    host the source no longer reads. An older kb wrote "<host>:<id>", where host is the machine's name for this
-    computer; a host's name never equals the machine's, so each old id has one new id at most."""
+    writes with (ids.prefix), or None when it writes none or the id could be either of two: an item another install
+    read, one an older kb read on a host the source no longer reads, or an id an older kb wrote as "<host>:<id>" for a
+    host named like this install's id. That last is told apart by `host`, the host the item's rows record."""
     head, colon, rest = source_id.partition(":")
     if not colon:
         return None
-    if ids.owner(source_id) == config.install:
-        return source_id
+    ours = {source_id} if ids.owner(source_id) == config.install else set()
     # An older kb's "<host>:<id>", read before an install's id: a host is a name config allows, so it holds no "@",
     # and one shaped like an install id is still that host.
-    if head in source.hosts:
-        return ids.prefix(config.install, None if head == config.machine else head) + rest
-    return None
+    older = ({ids.prefix(config.install, None if head == config.machine else head) + rest}
+             if head in source.hosts else set())
+    if ours and older and ours != older:
+        if host == head and head != config.machine:
+            return older.pop()
+        return source_id if host is not None and host == config.machine else None
+    found = ours | older
+    return found.pop() if len(found) == 1 else None
 
 
 def _lost(before, after, config):
@@ -443,11 +451,11 @@ def _lost(before, after, config):
     maps to none."""
     sources = {s.name: s for s in config.sources}
     lost = {}
-    for name, (found, _) in sorted(before.items()):
+    for name, (found, _, hosts) in sorted(before.items()):
         fresh = after.get(name, (set(),))[0]
         mapped = {}
         for source_id in found:
-            new = _rebuilt_id(sources[name], source_id, config) if name in sources else None
+            new = _rebuilt_id(sources[name], source_id, config, hosts.get(source_id)) if name in sources else None
             mapped.setdefault(new, []).append(source_id)
         n = sum(len(old) for new, old in mapped.items() if new is None or new not in fresh or len(old) > 1)
         if n:
@@ -638,6 +646,8 @@ def cmd_forget(paths, config, args):
 
 
 def _item_name(db, item):
+    if not item[0]:
+        return item[1]  # the row an older kb's mark named, "#<id>", since gone
     row = db.execute("SELECT id FROM docs WHERE source=? AND source_id=? ORDER BY id LIMIT 1", tuple(item)).fetchone()
     return f"#{row[0]}" if row else f"{item[0]} {item[1]}"
 

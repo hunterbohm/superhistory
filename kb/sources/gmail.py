@@ -580,7 +580,12 @@ def render_thread(account, thread_id, messages, mark=0):
     time in epoch seconds: [(message, labels, epoch), ...]. A message from the `mailbox` module works too. Drafts,
     trash, spam and sign-in or reset codes are dropped one message at a time; returns None when none is left.
     `thread_id` is the item's source_id; a decimal X-GM-THRID also gives the item its Gmail link."""
-    blocks, people, labels_seen, subject, last = [], [], [], None, None
+    messages = list(messages)
+    # The thread's labels, as Gmail's thread holds them: every message's but a draft's, trash's or spam's, even one
+    # whose text is left out.
+    labels_seen = list(dict.fromkeys(label for _, labels, _ in messages if not any(_drops(str(x)) for x in labels)
+                                     for label in labels))
+    blocks, people, subject, last = [], [], None, None
     for msg, labels, epoch in sorted(messages, key=lambda m: m[2]):
         if any(_drops(str(label)) for label in labels):
             continue
@@ -593,7 +598,6 @@ def render_thread(account, thread_id, messages, mark=0):
             continue
         subject = msg_subject if subject is None else subject
         last = epoch
-        labels_seen += [label for label in labels if label not in labels_seen]
         head = {key: _header(msg, key) for key in ("from", "to", "cc")}
         lines = [f"From: {head['from']}"]
         lines += [f"{label}: {head[key]}" for label, key in (("To", "to"), ("Cc", "cc")) if head[key]]

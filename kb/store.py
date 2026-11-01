@@ -134,14 +134,15 @@ def _has_old_marks(db):
 
 def _old_marks(db):
     """{item: the item that replaces it} as an older kb kept them: each in docs.superseded_by, the replacing row's
-    id. Empty for a store with no such column."""
+    id. A row since gone, as an ingest that refreshed the replacing item leaves it, is named ("", "#<id>"): the item
+    is still superseded, as the older kb read it. Empty for a store with no such column."""
     if not _has_old_marks(db):
         return {}
     marks = {}
-    for src, sid, new_src, new_sid in db.execute(
-            "SELECT o.source, o.source_id, n.source, n.source_id FROM docs o JOIN docs n ON n.id = o.superseded_by "
-            "ORDER BY o.id"):
-        marks[(src, sid)] = (new_src, new_sid)
+    for src, sid, new_src, new_sid, rid in db.execute(
+            "SELECT o.source, o.source_id, n.source, n.source_id, o.superseded_by FROM docs o "
+            "LEFT JOIN docs n ON n.id = o.superseded_by WHERE o.superseded_by IS NOT NULL ORDER BY o.id"):
+        marks[(src, sid)] = (new_src, new_sid) if new_src is not None else ("", f"#{rid}")
     return marks
 
 
