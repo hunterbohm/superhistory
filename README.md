@@ -166,7 +166,11 @@ items to it. With no plug-in, kb still searches but adds nothing to your prompts
 Known limits:
 
 - A secret typed into a file name in a form like "password: X" or "password is X" stays in the item's id. The file's
-  text is still masked.
+  text is still masked. A bearer token in a file name is caught only by a provider's shape, such as a GitHub token,
+  since "Bearer" is a word in names like "Ring Bearer duties".
+- A password of letters only, after "is" or after a flag and a space ("--password correcthorse"), reads as a word and
+  is not masked, so "Use the --password flag" stays readable. With a digit or a symbol, or after "=" or ":", it is
+  masked.
 - A private key is masked by its structure: from its header through its footer, or, if the footer is missing, through
   the end of its paragraph. So whatever follows a key cut off before its footer, up to the next blank line, is masked
   with it, and so is the paragraph before a footer with no header.
