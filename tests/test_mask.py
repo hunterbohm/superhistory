@@ -402,6 +402,51 @@ class KeyShapeTest(unittest.TestCase):
                 self.assertEqual(mask(f"{key}{brk}the next paragraph"), f"[masked]{brk}the next paragraph")
 
 
+class CommandLineTest(unittest.TestCase):
+    """A password given on a command line: after a long flag named for it, or after a short flag of the command that
+    takes it."""
+    PW = "walrus2wolfpack9"
+
+    def test_a_password_a_command_line_gives_is_masked(self):
+        pw = self.PW
+        for text in (f"docker login -u bob --password {pw}", f"docker login -p {pw} registry.example.com",
+                     f"podman login --username bob -p {pw} quay.example.com", f"mysql -u root -p{pw} shop",
+                     "mysql -u root -proot shop", f"mysqldump -p{pw} shop > shop.sql", f"redis-cli -h cache -a {pw} ping",
+                     f"sshpass -p {pw} ssh deploy@build", f"sshpass -p{pw} scp a b",
+                     f"openssl rsa -in k.pem -passin pass:{pw}", f"openssl pkcs12 -export -passout pass:{pw}",
+                     f"tool --api-key {pw}", f"tool --token {pw}", f"tool --secret '{pw}'", f"tool --passwd {pw}",
+                     f"tool --client-secret {pw}", f"curl -H 'Authorization: Token {pw}' https://api.example.com",
+                     f"X-Auth: {pw}", f"X-Auth-Key: {pw}", f"password\u00a0=\u00a0{pw}", f"password\uff1a{pw}",
+                     f"password\uff1d{pw}", f"curl -s -X POST https://api.example.com/v1/items -u bob:{pw} -d x",
+                     f"run\\ncurl -u bob:{pw}\\nnext"):
+            with self.subTest(text=text):
+                masked = mask(text)
+                self.assertNotIn(pw, masked)
+                self.assertNotIn("-proot", masked)
+
+    def test_prose_about_those_flags_stays(self):
+        for text in ("Use the --password flag to set it.", "mysql -p dbname", "docker login -p is deprecated",
+                     "pass --token instead", "the --secret-name flag", "redis-cli -a is unsafe",
+                     "docker run -u 1000:1000 alpine", "git push -u origin main", "Authorization: pending review",
+                     "docker login --password-stdin registry.example.com", "tool --token-file ~/.config/token",
+                     "tool --api-key $API_KEY", "X-Authenticated: true"):
+            with self.subTest(text=text):
+                self.assertEqual(mask(text), text)
+
+    def test_a_long_run_of_command_words_costs_time_in_proportion(self):
+        import time
+        for unit in ("curl ", "mysql ", "sshpass ", "docker login ", "redis-cli ", "--password ", "curl -u ",
+                     "Authorization: ", "curl\\n"):
+            with self.subTest(unit=unit):
+                took = {}
+                for size in (1 << 14, 1 << 18):
+                    text = unit * (size // len(unit))
+                    started = time.process_time()
+                    mask(text)
+                    took[size] = time.process_time() - started
+                self.assertLess(took[1 << 18], 40 * max(took[1 << 14], 0.01), took)
+
+
 class SecretInIdTest(unittest.TestCase):
     """An item id is a name someone chose, read more narrowly than text so a real item is not dropped."""
 
