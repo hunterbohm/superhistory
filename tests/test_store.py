@@ -409,6 +409,18 @@ class ItemHashTest(TempDB):
     with the masked text beside it, such a hash would confirm a guess at the secret."""
     TEXT = "Office VPN\nuser: walrus\nvpn_pw: walrus2secret9\n"
 
+
+    def test_an_item_and_its_summary_stored_together_keep_one_hash_when_the_mask_changes_the_text(self):
+        import hashlib
+        text = "VP1-0123-4567-89AB-CDEF-GHJK-MNPQ-RW"  # a code a mask before this one left as it was
+        sent = hashlib.sha1(("title\0" + text).encode()).hexdigest()[:16]
+        rows = [{"kind": kind, "ts": iso(), "title": "title", "content": text if kind == "doc" else "summary",
+                 "metadata": {field: sent, **({"prefix": "0f1e2d3c4b5a6978"} if kind == "segment" else {})}}
+                for kind, field in (("doc", "hash"), ("segment", "of_hash"))]
+        store.replace_rows(self.db, "s", "id", rows, store.ITEM_KINDS + store.SUMMARY_KINDS)
+        item, summary = [json.loads(m) for (m,) in self.db.execute("SELECT metadata FROM docs ORDER BY id")]
+        self.assertNotEqual(item["hash"], sent)
+        self.assertEqual(summary, {"of_hash": item["hash"]}, "the summary follows its item; its prefix hash goes")
     def older(self, sid, size=store.CHUNK, times=1):
         """An item as an earlier version of the mask stored it, which missed the password, and the hash it recorded.
         Its rows record that version: rows that record none are an older kb's, which remask leaves to kb rebuild."""

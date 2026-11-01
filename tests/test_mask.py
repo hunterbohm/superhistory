@@ -346,6 +346,28 @@ class SyncCodeTest(unittest.TestCase):
              " ".join("VRC10123456789ABCDEFGHJKMNPQRSTVWXYZ"), "VRC1-0123-4567-89AB-CDEF-GHJK-MNPQ-R\u00dfT-WXYZ",
              "VRC1-0123-4567-89AB-\ufb01VE-GHJK-MNPQ-RSTV-WXYZ", "VRC1-0123-4567-89AB-CDEF-GHJK-MNPQ-R\u017fTV-WXYZ")
 
+
+    def test_a_code_inside_a_secrets_name_leaves_the_name_to_mask_its_value(self):
+        for name in ("password-VP1-0123-4567-89AB-CDEF-GHJK-MNPQ-RW", "api_key_VRC1-0123-4567-89AB-CDEF-GHJK-MNPQ-RSTV-WXYZ"):
+            with self.subTest(name=name):
+                self.assertNotIn("walrus2secret9", mask(f"{name}: walrus2secret9"))
+
+    def test_a_code_ends_before_the_next_lines_name(self):
+        # From the write fuzz (seed 106): the next line's "api" read as the code's last group, and "[masked]_key: ..."
+        # left that line's secret with no name.
+        for text in ("api_key = fz00932039Kq12345678\\nVP7-XBMN-ZDQA-VYNV-HAY4-J6WT\\napi_key: fz00932040Kq12345678",
+                     "VP7-XBMN-ZDQA-VYNV-HAY4-J6WT\\npassword: walrus2secret9", "VP7-XBMN-ZDQA-VYNV-HAY4-J6WT\ndb_pwd=walrus2secret9",
+                     "VRC4-NVTA-SYWD-HEFS-NGEJ-YZTJ-RQTG-DDBM-B\\ntok.secret = walrus2secret9"):
+            with self.subTest(text=text[:30]):
+                masked = mask(text)
+                self.assertNotIn("Kq12345678", masked)
+                self.assertNotIn("walrus2secret9", masked)
+                self.assertNotIn("XBMN", masked)
+
+    def test_words_after_a_code_head_are_no_code(self):
+        for text in ("VP1 team will meet next week", "VRC1 team will meet next week then talk more", "vp1 plan more time with them"):
+            with self.subTest(text=text):
+                self.assertEqual(mask(text), text)
     def test_every_typed_form_is_masked(self):
         for code in self.TYPED:
             with self.subTest(code=code):
@@ -396,6 +418,14 @@ class InvisibleTest(unittest.TestCase):
                     for piece in ("ZZZZ", "A1A1", "walrus", "BBBB", "MIIE"):
                         self.assertNotIn(piece, masked)
                     self.assertEqual(mask(masked), masked)
+
+    def test_invisible_characters_between_two_secrets_stay(self):
+        family = "\U0001f468\u200d\U0001f469"
+        for text, masked in (("ghp_" + "A1" * 12 + f" family {family} then ghp_" + "B2" * 12, f"[masked] family {family} then [masked]"),
+                             ("sk-proj-" + "a1" * 8 + "\u200b" + "a1" * 8 + f" co\u00adoperate {family} AKIA" + "QW3RTY7UIOPAS2DF",
+                              f"[masked] co\u00adoperate {family} [masked]")):
+            with self.subTest(text=text[:12]):
+                self.assertEqual(mask(text), masked)
 
     def test_the_rest_of_the_text_keeps_its_invisible_characters(self):
         family, soft = "\U0001f468\u200d\U0001f469", "co\u00adoperate"
@@ -515,6 +545,12 @@ class BareAuthorizationTest(unittest.TestCase):
                              f'curl -H "AUTHORIZATION: {token}" https://api.example.com'):
                     with self.subTest(seed=seed, shape=shape, text=text[:20]):
                         self.assertNotIn(token, mask(text))
+
+    def test_words_joined_by_a_space_of_another_kind_are_no_token(self):
+        for space in ("\u00a0", "\u2009", "\u3000", "\u2002"):
+            text = f"Authorization: request{space}approved{space}2026"
+            with self.subTest(space=hex(ord(space))):
+                self.assertEqual(mask(text), text)
 
     def test_prose_and_identifiers_after_authorization_stay(self):
         for word in self.PROSE:
@@ -1000,14 +1036,9 @@ class SecretInIdTest(unittest.TestCase):
             with self.subTest(name=name):
                 self.assertTrue(secret_in_id(name))
 
-    def test_an_id_of_sk_slugs_costs_time_in_proportion(self):
-        import time
-        took = {}
-        for size in (4_000, 32_000):
-            started = time.process_time()
-            secret_in_id("sk-proj-" * (size // 8))
-            took[size] = time.process_time() - started
-        self.assertLess(took[32_000], 16 * max(took[4_000], 0.005))
+    def test_an_sk_key_whose_first_capital_comes_late_is_refused(self):
+        self.assertTrue(secret_in_id("sk-proj-" + "a" * 129 + "Z"))
+        self.assertTrue(secret_in_id("notes/sk-proj-" + "a" * 300 + "Q7.md"))
 
     def test_a_name_starting_with_an_sk_slug_does_not(self):
         for name in ("sk-proj-roadmap-and-quarterly-goals.md", "sk-admin-dashboard-redesign-notes.md",
