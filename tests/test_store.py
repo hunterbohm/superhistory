@@ -324,6 +324,26 @@ class HealthTest(TempDB):
         store.record_ok(self.db, "a@laptop")
         self.assertEqual([unit for unit, _ in store.failing(self.db)], ["b@laptop"])
 
+    def test_state_an_older_kb_wrote_shows_no_secret_and_goes_at_the_next_failure(self):
+        token = "ghp_" + "Zq7Lm2Xc9Vb4Nn8Rt1Yw" + "Kd5Hs3Pf"
+        # An older kb cut a failure line to 200 characters before masking it, and kept positions read from any id.
+        self.db.executemany("INSERT INTO ingest_state(source, key, watermark) VALUES (?, ?, ?)", [
+            (store.STATE, "fail:notes@desk", "2026-10-28T10:00:00Z " + "r" * 170 + " and " + token[:19]),
+            ("_summarize_failed", "notes|desk:token=walrus2secret9.md", "3f2a9c"),
+            ("notes", "desk", json.dumps({"key-" + token + ".md": 1.0}))])
+        self.db.commit()
+        [(unit, line)] = store.failing(self.db)
+        self.assertEqual(unit, "notes@desk")
+        self.assertTrue(line.startswith("2026-10-28T10:00:00Z"), "when it failed still shows")
+        self.assertNotIn(token[4:15], line)
+        store.record_failure(self.db, "gmail@desk", RuntimeError("sign-in failed"))
+        [(unit, line)] = store.failing(self.db)
+        self.assertEqual(unit, "gmail@desk", "the older line is gone")
+        self.assertIn("sign-in failed", line)
+        state = json.dumps(self.db.execute("SELECT * FROM ingest_state").fetchall())
+        self.assertNotIn(token[4:15], state)
+        self.assertNotIn("walrus2secret9", state)
+
     def test_away_keeps_the_first_miss_and_clears(self):
         store.record_away(self.db, "laptop")
         first = store.away(self.db)
