@@ -248,6 +248,32 @@ class OtherKeyFormatTest(unittest.TestCase):
         encoded = base64.b64encode(cert.encode()).decode()
         self.assertEqual(mask(f"tls.crt: {encoded}"), f"tls.crt: {encoded}", "a certificate alone stays")
 
+    def test_a_wrapped_base64_key_is_masked_wherever_its_lines_break(self):
+        # Wrapping can split the encoded "PRIVATE KEY" across a line break in both the header and the footer.
+        import base64
+        import json
+        import random
+        import textwrap
+        r = random.Random(7)
+
+        def body(lines):
+            return "\n".join(base64.b64encode(bytes(r.randrange(256) for _ in range(48))).decode() for _ in range(lines))
+
+        cert = f"-----BEGIN CERTIFICATE-----\n{body(8)}\n-----END CERTIFICATE-----\n"
+        key = f"-----BEGIN PRIVATE KEY-----\n{body(12)}\n-----END PRIVATE KEY-----\n"
+        for pad in range(0, 76, 4):
+            before = "#" * pad + cert
+            lines = textwrap.wrap(base64.b64encode((before + key).encode()).decode(), 76)
+            key_lines = lines[len(before) * 4 // 3 // 76 + 1:]  # the lines that hold the key's bytes alone
+            forms = {"lines": "\n".join(lines), "escaped lines": "\\n".join(lines),
+                     "YAML": "tls.key: |\n  " + "\n  ".join(lines), "JSON": json.dumps({"tls.key": "\n".join(lines)}),
+                     "indented JSON": json.dumps({"tls.key": "\n    ".join(lines)})}
+            for form, text in forms.items():
+                with self.subTest(pad=pad, form=form):
+                    masked = mask(f"the bundle:\n{text}\nThanks, Bob")
+                    self.assertEqual([line for line in key_lines if line in masked], [])
+                    self.assertTrue(masked.startswith("the bundle:\n") and masked.endswith("\nThanks, Bob"), masked)
+
     def test_prose_about_those_formats_stays(self):
         for text in ("PGP keys are signed in a block", "Private-Lines counts the lines", "an AGE-SECRET-KEY-1 identity",
                      "-----BEGIN PGP PUBLIC KEY BLOCK-----\n\nmQENBGcW1aEBCAD\n-----END PGP PUBLIC KEY BLOCK-----"):
