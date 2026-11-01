@@ -383,6 +383,15 @@ class OlderStoreTest(TempHome):
                          ("plan.md", None)):
             with self.subTest(old=old):
                 self.assertEqual(cli._rebuilt_id(source, old, config), new)
+        # A machine an older kb knew by a name shaped like an install id is still that machine.
+        config = config_mod.Config(machine="c-aaaaaaaaaaaaa", install="c-bbbbbbbbbbbbb")
+        source = types.SimpleNamespace(name="notes", hosts=("c-aaaaaaaaaaaaa", "desk"))
+        for old, new in (("c-aaaaaaaaaaaaa:plan.md", "c-bbbbbbbbbbbbb:plan.md"),
+                         ("desk:plan.md", "c-bbbbbbbbbbbbb@desk:plan.md"),
+                         ("c-bbbbbbbbbbbbb:plan.md", "c-bbbbbbbbbbbbb:plan.md"),
+                         ("c-ccccccccccccc:plan.md", None), ("c-aaaaaaaaaaaaa@desk:plan.md", None)):
+            with self.subTest(machine="install-shaped", old=old):
+                self.assertEqual(cli._rebuilt_id(source, old, config), new)
 
     def test_a_rebuild_stops_when_two_old_items_are_one_item_now(self):
         # An older kb's copy and this install's, as an ingest after an update without a rebuild leaves them.

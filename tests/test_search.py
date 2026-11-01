@@ -494,6 +494,50 @@ class SupersedeMarkTest(TempDB):
         self.assertNotIn(self.SECRET, repr(search.search(self.db, "walrus")))
         self.assertIsNone(store.superseded_by(self.db, "s", "plain"))
 
+    PROFILE_ID = "m1:secret-project:20261028_101500_a1b2c3"  # a Hermes session in a profile named so
+    PROFILE_META = {"host": "m1", "profile": "secret-project"}
+
+    def test_a_mark_to_an_item_that_is_gone_for_now_stays_through_remask(self):
+        store.store_item(self.db, "hermes", "m1:old", iso(), "old", "walrus", {"host": "m1"})
+        store.store_item(self.db, "hermes", self.PROFILE_ID, iso(), "new", "replacement", self.PROFILE_META)
+        store.mark_superseded(self.db, "hermes", "m1:old", ("hermes", self.PROFILE_ID), MINE)
+        self.db.commit()
+        store.delete_item(self.db, "hermes", self.PROFILE_ID)
+        store.remask(self.db)
+        self.assertEqual(store.superseded_by(self.db, "hermes", "m1:old"), ("hermes", self.PROFILE_ID),
+                         "a mark to a deleted item stays, as main's does")
+        store.store_item(self.db, "hermes", self.PROFILE_ID, iso(), "new", "replacement", self.PROFILE_META)
+        self.assertEqual(search.search(self.db, "walrus")[0]["superseded_by"], ("hermes", self.PROFILE_ID))
+
+    def test_a_mark_that_arrives_before_its_item_is_kept(self):
+        # Sync can deliver a mark before the items it names, as a batch with marks after items does not.
+        store.mark_superseded(self.db, "hermes", "m1:old", ("hermes", self.PROFILE_ID), THEIRS, "2026-10-01", v=1)
+        store.store_item(self.db, "hermes", "m1:old", iso(), "old", "walrus", {"host": "m1"})
+        store.store_item(self.db, "hermes", self.PROFILE_ID, iso(), "new", "replacement", self.PROFILE_META)
+        self.assertEqual(store.superseded_by(self.db, "hermes", "m1:old"), ("hermes", self.PROFILE_ID))
+
+    def test_marks_to_one_long_item_cost_remask_and_search_time_in_proportion(self):
+        import json
+        import time
+        took = {}
+        for n in (200, 800):
+            db = store.connect(os.path.join(self.tmp.name, f"many-{n}.sqlite"))
+            self.addCleanup(db.close)
+            db.executemany("INSERT INTO docs(kind, source, source_id, ts, title, content, metadata, masked) "
+                           "VALUES (?,?,?,?,?,?,?,?)",
+                           [("doc", "s", f"old-{i}", iso(), "old", "walrus notes", "{}", "older-mask") for i in range(n)]
+                           + [("raw", "s", "latest", iso(), "latest", "ordinary facts\n" * 40,
+                               json.dumps({"chunk": i, "chunks": n}), store.VERSION) for i in range(n)])
+            db.executemany("INSERT INTO supersedes VALUES ('s', ?, ?, 's', 'latest', '2026-10-01', NULL)",
+                           [(f"old-{i}", MINE) for i in range(n)])
+            db.commit()
+            started = time.process_time()
+            store.remask(db)
+            search.search(db, "walrus", limit=n)
+            took[n] = time.process_time() - started
+            self.assertEqual(db.execute("SELECT count(*) FROM supersedes").fetchone()[0], n)
+        self.assertLess(took[800], 8 * max(took[200], 0.02))
+
     def main_store(self):
         """A store main wrote: each mark is the replacing row's id in docs.superseded_by, and there is no supersedes
         table."""

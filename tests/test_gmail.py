@@ -340,6 +340,12 @@ class ReadingTest(GmailCase):
                        labels=("\\Inbox", "Clientes/A&APE-o"))
         self.assertEqual(self.items(self.extract())[OTHER].meta["labels"], ["INBOX", "Clientes/Año"])
 
+    def test_a_user_label_ending_in_a_backslash_keeps_its_thread(self):
+        self.gmail.add(PRICING, ago(1), "Sam <sam@example.com>", "walrus launch", subject="Quarterly plan",
+                       labels=("draft\\\\",))  # IMAP's quoted form of the label "draft\\"
+        self.assertEqual(gmail._labels(b'X-GM-LABELS ("draft\\\\")'), ("draft\\",))
+        self.assertIn(PRICING, self.items(self.extract(sort=False)))
+
 
 class SortingTest(GmailCase):
     def test_the_model_sees_one_line_per_thread_and_the_about_line(self):
@@ -642,6 +648,15 @@ class RenderThreadTest(unittest.TestCase):
         item = gmail._render(ME, thread, {})
         self.assertEqual(item.title, "Q4 pricing")
         self.assertIn("From: Dana Field <dana@example.com>", item.content)
+
+    def test_only_gmails_own_draft_trash_and_spam_labels_drop_a_message(self):
+        for labels in (("\\Draft",), ("DRAFT",), ("\\Trash",), ("TRASH",), ("SPAM",), ("Spam",), ("Trash",), ("Drafts",)):
+            with self.subTest(labels=labels):
+                self.assertIsNone(gmail.render_thread(ME, "x", [(self.message("A <a@example.com>", "hi"), labels, 1.0)]))
+        # A label the user made keeps its message, whatever its case or its backslashes.
+        for labels in (("draft\\",), ("Draft",), ("draft",), ("\\\\Draft",), ("spam\\",), ("Trash ideas",)):
+            with self.subTest(labels=labels):
+                self.assertIsNotNone(gmail.render_thread(ME, "x", [(self.message("A <a@example.com>", "hi"), labels, 1.0)]))
 
     def test_a_thread_with_nothing_left_is_none_and_a_non_gmail_id_has_no_link(self):
         self.assertIsNone(gmail.render_thread(ME, "x", [(self.message("A <a@example.com>", "hi"), ("Trash",), 1.0)]))
