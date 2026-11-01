@@ -485,8 +485,9 @@ class InvisibleTest(unittest.TestCase):
             words = (lambda: "co" + inv() + "operate", lambda: "\U0001f468\u200d\U0001f469",
                      lambda: r.choice(("plain_", "the", "x-", "notes/", "budget")) + inv() + r.choice(("plan", "ok", "")))
             pieces = [(kind, r.choice(kind)()) for kind in (r.choice((secrets, words)) for _ in range(r.randint(2, 10)))]
-            # Invisibles only after a word: one right after a secret makes what follows part of it (gate 12).
-            text = "".join(piece + (inv() if kind is words and r.random() < 0.5 else r.choice((" ", "/", "_", "|")))
+            # Invisibles only after a word, and a separator no token runs on through: past one right after a secret,
+            # or a "_" that glues a word to it, the token a reader sees runs on (gate 12).
+            text = "".join(piece + (inv() if kind is words and r.random() < 0.5 else r.choice((" ", "|", ", ")))
                            for kind, piece in pieces)
             with self.subTest(seed=seed):
                 self.assertEqual(mask(text), as_written(text), ascii(text))
