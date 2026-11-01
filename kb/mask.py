@@ -193,9 +193,13 @@ def _base64_of(word):
 
 
 _ENCODED_KEY = re.compile("|".join(map(re.escape, _base64_of(b"PRIVATE KEY"))))
-_BASE64 = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=")
-_LINE_BREAK = re.compile(r"\r?\n|\\r\\n|\\n")
-_BREAK_BEFORE = re.compile(r"(?:\r?\n|\\r\\n|\\n)\Z")
+_WRAP = r"[ \t\r]*(?:\r?\n|\\r\\n|\\n)[ \t]*"
+# A run of base64, with each line after it that it wraps onto: a line that is base64 from its indentation to its end.
+# A run can start just after a backslash, so the letter of an escape such as \n can lead it.
+_WRAPPED_BASE64 = re.compile(rf"(?<![A-Za-z0-9+/])[A-Za-z0-9+/]{{16,}}={{0,2}}"
+                             rf"(?:{_WRAP}[A-Za-z0-9+/]{{4,}}={{0,2}}(?=[ \t\r]*(?:\r?\n|\\r\\n|\\n|\\?[\"'<]|\Z)))*")
+_UNWRAP = re.compile(_WRAP)
+_ESCAPE_LETTER = re.compile(r"(?<=\\)(?:[nrt]|u[0-9A-Fa-f]{4})")
 # Docker's config holds a registry login in an "auth" field, base64 of "user:password".
 _AUTH_FIELD = re.compile(rf"(?i)((?:(?<![A-Za-z0-9_.-])|{_AFTER_ESCAPE})auth{_QUOTE}?{_GAP}[:=]{_GAP}{_QUOTE}?)"
                          r"([A-Za-z0-9+/]{4,}={0,2})")
@@ -209,7 +213,7 @@ VERSION = hashlib.sha256(repr((REVISION, [p.pattern for p in SECRET_PATTERNS + P
                                 ENV_KEY_SECRET.pattern, JSON_SECRET.pattern, FLAG_SECRET.pattern, AUTH_SECRET.pattern,
                                 COMMAND_FLAGS,
                                 PASSWORD_NAME.pattern, sorted(PLACEHOLDERS), REFERENCE.pattern, _ENCODED_KEY.pattern,
-                                _AUTH_FIELD.pattern)).encode()).hexdigest()[:16]
+                                _WRAPPED_BASE64.pattern, _AUTH_FIELD.pattern)).encode()).hexdigest()[:16]
 
 
 def _looks_secret(name, sep, value):
@@ -233,42 +237,14 @@ def _prose(sep):
     return not _SEP_CHARACTER.search(sep) and ("is" in sep.lower() or sep[-1:].isspace())
 
 
-def _base64_block(text, start, end):
-    """The run of base64 around text[start:end], through the base64 lines that wrap it: on each side the next line's
-    run counts when it meets the line break, and below, when it fills its line."""
-    while start and text[start - 1] in _BASE64:
-        start -= 1
-    while True:
-        brk = _BREAK_BEFORE.search(text, max(start - 4, 0), start)
-        if not brk:
-            break
-        first = brk.start()
-        while first and text[first - 1] in _BASE64:
-            first -= 1
-        if brk.start() - first < 16:
-            break
-        start = first
-    while end < len(text) and text[end] in _BASE64:
-        end += 1
-    while True:
-        brk = _LINE_BREAK.match(text, end)
-        if not brk:
-            break
-        last = brk.end()
-        while last < len(text) and text[last] in _BASE64:
-            last += 1
-        if last == brk.end() or not (last == len(text) or _LINE_BREAK.match(text, last) or text[last] in "\"'"):
-            break
-        end = last
-    return start, end
-
-
 def _encoded_secrets(text):
-    """`text` with each private key in a file written as base64 masked, and each Docker "auth" login."""
+    """`text` with each private key in a file written as base64 masked, whole with the lines it wraps onto, and each
+    Docker "auth" login."""
     spans = []
-    for m in _ENCODED_KEY.finditer(text):
-        if not spans or m.start() >= spans[-1][1]:
-            spans.append(_base64_block(text, m.start(), m.end()))
+    for m in _WRAPPED_BASE64.finditer(text):
+        if _ENCODED_KEY.search(_UNWRAP.sub("", m.group())):
+            escape = _ESCAPE_LETTER.match(text, m.start())
+            spans.append((escape.end() if escape else m.start(), m.end()))
     text = _replace(text, spans, "[masked]")
     return _AUTH_FIELD.sub(lambda m: m.group(1) + "[masked]" if _basic_credential(m.group(2)) else m.group(0), text)
 
