@@ -1,6 +1,7 @@
 import base64
 import bisect
 import hashlib
+import itertools
 import logging
 import os
 import re
@@ -255,61 +256,64 @@ def _wrapped_lines(text, start, end):
     return lines + [(at, end)]
 
 
-def _holds_key(text, lines):
-    return bool(_ENCODED_KEY.search("".join(text[a:b] for a, b in lines)))
-
-
 _WHOLE_FILE_END = re.compile(rb"-----END [A-Z0-9 ]+-----\s*\Z")
 
 
-def _ends_file(text, lines, total):
-    """Whether the base64 on `lines`, `total` characters, decodes to a file that ends with a key's or certificate's
-    footer. Only its last 64 characters are read: they hold the longest footer."""
+def _ends_file(text, lines, top, bottom, total):
+    """Whether the base64 on lines[top:bottom + 1], `total` characters, decodes to a file that ends with a key's or
+    certificate's footer. Only its last 64 characters are read: they hold the longest footer."""
     if total % 4:
         return False
     tail, need = [], 64
-    for a, b in reversed(lines):
+    while bottom >= top and need > 0:
+        a, b = lines[bottom]
         tail.append(text[max(a, b - need):b])
         need -= len(tail[-1])
-        if need <= 0:
-            break
+        bottom -= 1
     try:
         return bool(_WHOLE_FILE_END.search(base64.b64decode("".join(reversed(tail)), validate=True)))
     except ValueError:
         return False
 
 
-def _key_lines(text, lines):
-    """The lines of a base64 block that hold its first key, without a heading above it or words below it. Wrapped
-    lines are all as wide as the first full one but the last, which may be narrower. The block ends where its base64
-    decodes to a whole file, at a line wider than the wrap, or at a short line that leaves the base64 at a length no
-    encoder writes: a tail that short holds no more than the key's footer. A line of its own narrower than the line
-    under it, or of another width than two equal lines under it, is a heading such as "Notes". A line kept out still
-    counts when the key is not found without it."""
-    widths = [b - a for a, b in lines]
-    if len(lines) > 1 and _starts_line(text, lines[0][0]) and (
-            widths[0] < widths[1] or len(lines) > 2 and widths[0] != widths[1] == widths[2]):
-        if _holds_key(text, lines[1:]):
-            lines, widths = lines[1:], widths[1:]
-    wrap = max(widths[:2])
-    kept, total = lines[:1], widths[0]
-    for line, width in zip(lines[1:], widths[1:]):
-        if width > wrap or _ends_file(text, kept, total) or width < wrap and (total + width) % 4 and width < 24:
+def _key_range(text, lines, widths, top, name_end, floor):
+    """The first and last of the lines of a base64 block that hold a key whose encoded "PRIVATE KEY" runs from line
+    `top` to line `name_end`, none above line `floor`. Wrapped lines are all as wide as the wrap but the first, which
+    may follow words on its line such as "tls.key: ", and the last, which may be narrower. Above, the key's lines run
+    up through lines of the wrap's width and such a first line, so a heading such as "Notes" or a word between two
+    keys stays. Below, they run past the encoded name, to where the base64 decodes to a file ending in a footer, a
+    line wider than the wrap, or a short line that leaves the base64 at a length no encoder writes: a tail that short
+    holds no more than the footer."""
+    wrap = max(widths[top:top + 2])
+    while top > floor and widths[top - 1] == wrap:
+        top -= 1
+    if top > floor and widths[top - 1] < wrap and not _starts_line(text, lines[top - 1][0]):
+        top -= 1
+    bottom, total = name_end, sum(widths[top:name_end + 1])
+    for width in widths[name_end + 1:]:
+        if (width > wrap or _ends_file(text, lines, top, bottom, total)
+                or width < wrap and (total + width) % 4 and width < 24):
             break
-        kept.append(line)
+        bottom += 1
         total += width
         if width < wrap:
             break
-    return kept if _holds_key(text, kept) else lines
+    return top, bottom
 
 
 def _key_spans(text, lines):
-    """The spans to mask in a base64 block: each run of its lines that holds a key."""
-    spans = []
-    while lines and _holds_key(text, lines):
-        kept = _key_lines(text, lines)
-        spans.append((kept[0][0], kept[-1][1]))
-        lines = lines[lines.index(kept[-1]) + 1:]
+    """The spans to mask in a base64 block: for each encoded "PRIVATE KEY" outside the spans before it, its key's
+    lines."""
+    widths = [b - a for a, b in lines]
+    ends = list(itertools.accumulate(widths))
+    spans, floor = [], 0
+    for found in _ENCODED_KEY.finditer("".join(text[a:b] for a, b in lines)):
+        top = bisect.bisect_right(ends, found.start())
+        if top < floor:
+            continue
+        top, bottom = _key_range(text, lines, widths, top, bisect.bisect_left(ends, found.end()), floor)
+        spans.append((lines[top][0], lines[bottom][1]))
+        floor = bottom + 1
     return spans
 
 

@@ -483,16 +483,15 @@ def cmd_rebuild(paths, config, args):
             _remove_store(fresh)
             raise
         _remove_store(old)
-        moved = []
         try:
             for suffix in ("", "-wal", "-shm"):  # the old WAL files go too, or SQLite would read them into the new one
                 if os.path.exists(f"{target}{suffix}"):
                     os.replace(f"{target}{suffix}", f"{old}{suffix}")
-                    moved.append(suffix)
             os.replace(fresh, target)
-        except BaseException:  # whatever stops the swap puts the old store back as it was
-            for suffix in moved:
-                os.replace(f"{old}{suffix}", f"{target}{suffix}")
+        except BaseException:  # whatever stops the swap, even between a move and the next line, puts the old one back
+            for suffix in ("", "-wal", "-shm"):
+                if os.path.exists(f"{old}{suffix}"):
+                    os.replace(f"{old}{suffix}", f"{target}{suffix}")
             _remove_store(fresh)
             raise
         _remove_store(fresh)
