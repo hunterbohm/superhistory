@@ -316,6 +316,46 @@ class OtherKeyFormatTest(unittest.TestCase):
                     with self.subTest(key=len(key), width=width, between=between):
                         self.assertEqual(mask(block + between + block), "[masked]" + between + "[masked]")
 
+    def test_a_base64_key_wrapped_unevenly_is_masked_whole(self):
+        import base64
+        import random
+        import re
+        import textwrap
+        r = random.Random(11)
+        for case in range(300):
+            body = base64.b64encode(bytes(r.randrange(256) for _ in range(r.randrange(40, 300)))).decode()
+            key = "-----BEGIN PRIVATE KEY-----\n" + "\n".join(textwrap.wrap(body, 64)) + "\n-----END PRIVATE KEY-----\n"
+            before = r.choice(["", "-----BEGIN CERTIFICATE-----\nMIIBszCCAVmgAwIBAgIU\n-----END CERTIFICATE-----\n"])
+            encoded = base64.b64encode((before + key).encode()).decode()
+            lines, at = [], 0
+            while at < len(encoded):
+                width = r.choice([1, 2, 3, 4, 7, 8, 12, 40, 64, 76, 90])
+                lines.append(encoded[at:at + width])
+                at += width
+            brk = r.choice(["\n", "\\n", "\n  "])
+            after = r.choice(["", "\nThanks\nJohn", "\n\nnext paragraph"])
+            masked = mask("Notes\n" + brk.join(lines) + after)
+            # Every 12 characters of the key's own base64 that hold body bytes stay out of the output.
+            first = len(before + "-----BEGIN PRIVATE KEY-----\n") * 4 // 3 + 4
+            last = len(before + key) * 4 // 3 - len("-----END PRIVATE KEY-----\n") * 4 // 3 - 4
+            readable = re.sub(r"\s+|\\n", "", masked)
+            leaked = [encoded[i:i + 12] for i in range(first, last - 12, 6) if encoded[i:i + 12] in readable]
+            with self.subTest(case=case):
+                self.assertEqual(leaked, [])
+                self.assertTrue(masked.startswith("Notes\n") and masked.endswith(after), masked)
+
+    def test_many_keys_in_one_block_cost_time_in_proportion(self):
+        import base64
+        import time
+        key = base64.b64encode(b"-----BEGIN PRIVATE KEY-----\nFakeKeyBody123456\n-----END PRIVATE KEY-----\n").decode()
+        took = {}
+        for n in (2000, 8000):
+            started = time.process_time()
+            masked = mask((key + "\nThanks\nJohn\n") * n)
+            took[n] = time.process_time() - started
+            self.assertEqual((masked.count("[masked]"), masked.count("Thanks")), (n, n))
+        self.assertLess(took[8000], 6 * max(took[2000], 0.02))
+
     def test_prose_about_those_formats_stays(self):
         for text in ("PGP keys are signed in a block", "Private-Lines counts the lines", "an AGE-SECRET-KEY-1 identity",
                      "-----BEGIN PGP PUBLIC KEY BLOCK-----\n\nmQENBGcW1aEBCAD\n-----END PGP PUBLIC KEY BLOCK-----"):

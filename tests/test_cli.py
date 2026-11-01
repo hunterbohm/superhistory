@@ -543,6 +543,43 @@ class OlderStoreTest(TempHome):
         self.assertIn(self.path + ".old", err)
         self.assertEqual(store_files(folder), before)
 
+    def test_putting_back_never_moves_the_old_store_over_one_another_program_just_made(self):
+        aside = self.path + ".old"
+        self.db.close()
+        os.replace(self.path, aside)
+        link, err = os.link, io.StringIO()
+
+        def another_program_first(src, dst):
+            other = sqlite3.connect(dst)
+            other.execute("CREATE TABLE other(x)")
+            other.commit()
+            other.close()
+            return link(src, dst)
+
+        with mock.patch("os.link", another_program_first), mock.patch("os.replace", side_effect=AssertionError), \
+                contextlib.redirect_stderr(err):
+            cli._put_back(self.path, aside)
+        other = sqlite3.connect(self.path)
+        self.addCleanup(other.close)
+        self.assertEqual(other.execute("SELECT name FROM sqlite_master").fetchall(), [("other",)])
+        self.assertTrue(os.path.exists(aside))
+        self.assertIn(aside, err.getvalue())
+
+    def test_putting_back_never_puts_the_old_store_beside_another_programs_wal(self):
+        from tests.support import commit_and_die
+        aside = self.path + ".old"
+        self.db.close()
+        os.replace(self.path, aside)
+        foreign = os.path.join(self.tmp.name, "foreign.sqlite")
+        commit_and_die(foreign, "CREATE TABLE other(x)")
+        os.replace(foreign + "-wal", self.path + "-wal")
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            cli._put_back(self.path, aside)
+        self.assertFalse(os.path.exists(self.path))
+        self.assertTrue(os.path.exists(aside))
+        self.assertIn(aside, err.getvalue())
+
     def test_rebuild_keeps_the_old_store_when_a_host_is_asleep(self):
         from kb.remote import HostAway
         self.db.close()
