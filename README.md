@@ -183,7 +183,9 @@ Known limits:
   with it, and so is the paragraph before a footer with no header.
 - A knowledge base that an older kb wrote, before each row recorded how it was masked, does not open: an older kb's
   masking can leave a secret that no pattern finds afterwards. kb says so and names `kb rebuild`, which reads your
-  sources into a fresh one. Items whose source is gone, such as sessions an agent has since deleted, are not in it.
+  sources into a fresh one, each as far back as its oldest item in the old one. When a source no longer has some of
+  the old one's items, such as sessions an agent has since deleted, the rebuild stops, keeps the old one and says how
+  many each source would lose; `kb rebuild --accept-loss` replaces it anyway and loses them for good.
 - A YAML list of secrets under a secret's name (`tokens:` followed by `- value` lines) is masked only where an item
   holds a provider's token shape.
 

@@ -62,8 +62,12 @@ older kb changes; kb's own writers stamp it again. An older kb's masking can lea
 afterwards, such as a value whose name its named-value rule took, so kb never reads such a row or masks it again in
 place. `store.connect()` refuses a store that holds one (`store.NeedsRebuild`), and a connection opened before an older
 writer changed a row shows it to no reader and leaves it to no remask (`store.unversioned`). `kb rebuild` ingests every
-source into a fresh file under the lock and puts it in place of the old one only once every source was read, the file
-checks sound and no row lacks a version. Remask brings rows of an earlier version of today's mask() up to date.
+source into a fresh file under the lock, a source with a window reaching back to its oldest item in the old file and
+one with a cap on a run reading past it, and records the configured settings so the next ingest goes on from there. It
+puts the fresh file in place of the old one, at a link's target, only once every source was read, every host reached,
+the file checks sound, no row lacks a version and no source has fewer items than in the old file, unless
+`--accept-loss`. Of the old file it reads only each source's ids and oldest time. Remask brings rows of an earlier
+version of today's mask() up to date.
 `tests/test_old_rows.py` generates both kinds of rows, an earlier version's and an older kb's with main's own mask
 (`tests/legacy_mask.py`), and checks remask over the first and the refusal over the second.
 

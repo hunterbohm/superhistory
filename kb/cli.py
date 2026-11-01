@@ -1,5 +1,6 @@
 import argparse
 import contextlib
+import dataclasses
 import functools
 import json
 import logging
@@ -386,49 +387,91 @@ def _remove_store(path):
             os.remove(f"{path}{suffix}")
 
 
-def _items_per_source(path):
-    """How many items each source has in the store at `path`, read from its ids alone: the text of an older kb's
-    rows is never read."""
+def _per_source(path):
+    """Each source's item count and its oldest item's time in the store at `path`, read from ids and times alone: the
+    text of an older kb's rows is never read."""
     if not os.path.exists(path):
         return {}
     # Not opened read-only: in WAL mode that leaves -wal and -shm files beside the store. This only counts.
     db = sqlite3.connect(path)
     try:
-        return dict(db.execute("SELECT source, count(DISTINCT source_id) FROM docs WHERE kind IN ('doc', 'raw') "
-                               "GROUP BY source"))
+        return {source: (items, oldest) for source, items, oldest in db.execute(
+            "SELECT source, count(DISTINCT source_id), min(ts) FROM docs WHERE kind IN ('doc', 'raw') GROUP BY source")}
     except sqlite3.OperationalError:  # no docs table: nothing to lose
         return {}
     finally:
         db.close()
 
 
+def _reading_back(config, before):
+    """`config` with each source's window reaching back to its oldest item in `before`, the old store's per-source
+    counts, and no cap on one run, so a single pass reads all of the old store's items that the source still has."""
+    today = datetime.now(timezone.utc).date()
+    sources = []
+    for source in config.sources:
+        options = source.options
+        names = {f.name for f in dataclasses.fields(options)} if dataclasses.is_dataclass(options) else set()
+        changes = {}
+        if "window_days" in names and source.name in before:
+            with contextlib.suppress(TypeError, ValueError):  # a time kb cannot read leaves the window as it is
+                oldest = datetime.strptime(before[source.name][1][:10], "%Y-%m-%d").date()
+                changes["window_days"] = max(options.window_days, (today - oldest).days + 2)
+        if "run_cap" in names:
+            changes["run_cap"] = sys.maxsize
+        sources.append(dataclasses.replace(source, options=dataclasses.replace(options, **changes)) if changes
+                       else source)
+    return dataclasses.replace(config, sources=tuple(sources))
+
+
+def _as_configured(db, config):
+    """Record each source as read under its configured settings. The rebuild read all those settings cover and more,
+    so the next ingest goes on from the rebuild's place rather than starting the source over."""
+    for source in config.sources:
+        for host in source.hosts:
+            if store.get_watermark(db, source.name, f"{host}:settings") is not None:
+                store.set_watermark(db, source.name, f"{host}:settings", ingest.settings_digest(source))
+    db.commit()
+
+
 def cmd_rebuild(paths, config, args):
     """Read every source into a fresh knowledge base, and put it in place of the old one once it checks out: every
-    source read, the file sound, no row of no mask version, and no source with fewer items than the old one has,
-    unless --accept-loss. Otherwise the old one stays as it was, and no copy of either is kept: the old one may hold
-    an older kb's secrets."""
+    source read, each back to its oldest item in the old one, every host reached, the file sound, no row of no mask
+    version, and no source with fewer items than the old one has, unless --accept-loss. Otherwise the old one stays as
+    it was, and no copy of either is kept: the old one may hold an older kb's secrets."""
     if not config.sources:
         raise Fail(f"No sources in {paths.config_file}, so there is nothing to rebuild from.")
     log = _logger(paths)
-    fresh, old = f"{paths.db}.rebuild", f"{paths.db}.old"
+    target = os.path.realpath(paths.db)  # a linked store is replaced where it is, so the old one's bytes go
+    fresh, old = f"{target}.rebuild", f"{target}.old"
     with store.exclusive(paths.lock) as held:
         if not held:
             raise Fail("an ingest is running; try again when it finishes")
+        before = _per_source(target)
         _remove_store(fresh)
         db = store.connect(fresh)
         try:
-            failures = ingest.run(db, config, log, with_summaries=False)
+            failures = ingest.run(db, _reading_back(config, before), log, with_summaries=False)
+            _as_configured(db, config)
+            away = [host for host, _ in store.away(db)]
             sound = db.execute("PRAGMA integrity_check").fetchone()[0] == "ok" and not store.has_unversioned(db)
             items = db.execute("SELECT count(*) FROM (SELECT DISTINCT source, source_id FROM docs)").fetchone()[0]
             db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-        finally:
+        except BaseException:  # an error or Ctrl-C mid-read leaves no half-built store behind
             db.close()
+            _remove_store(fresh)
+            raise
+        db.close()
+        if away:
+            _remove_store(fresh)
+            raise Fail(f"{', '.join(away)} could not be reached, so {paths.db} is kept as it was. Run `kb rebuild` "
+                       f"again once {'it is' if len(away) == 1 else 'they are'} awake.")
         if failures or not sound:
             _remove_store(fresh)
             raise Fail(f"the fresh knowledge base did not check out ({failures} sources failed; see {paths.log_dir}), "
                        f"so {paths.db} is kept as it was")
-        before, after = _items_per_source(paths.db), _items_per_source(fresh)
-        lost = {source: n - after.get(source, 0) for source, n in sorted(before.items()) if after.get(source, 0) < n}
+        after = _per_source(fresh)
+        lost = {source: n - after.get(source, (0,))[0] for source, (n, _) in sorted(before.items())
+                if after.get(source, (0,))[0] < n}
         losses = ", ".join(f"{source}: {n:,} fewer items" for source, n in lost.items())
         if lost and not args.accept_loss:
             _remove_store(fresh)
@@ -438,9 +481,9 @@ def cmd_rebuild(paths, config, args):
                        f"for good, run `kb rebuild --accept-loss`.")
         _remove_store(old)
         for suffix in ("", "-wal", "-shm"):
-            if os.path.exists(f"{paths.db}{suffix}"):
-                os.replace(f"{paths.db}{suffix}", f"{old}{suffix}")
-        os.replace(fresh, paths.db)
+            if os.path.exists(f"{target}{suffix}"):
+                os.replace(f"{target}{suffix}", f"{old}{suffix}")
+        os.replace(fresh, target)
         _remove_store(fresh)
         _remove_store(old)
     print(f"Rebuilt {paths.db} from your sources: {items:,} items. The next ingest writes their summaries."

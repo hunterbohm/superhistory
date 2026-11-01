@@ -69,7 +69,8 @@ class NeedsRebuild(Exception):
 REBUILD = ("{path} holds rows an older kb wrote, before each row recorded how it was masked. kb no longer reads such rows "
            "or masks them again in place, because an older kb's masking can leave a secret that no pattern finds. Run "
            "`kb rebuild` to read your sources into a fresh knowledge base; it takes this one's place once it checks out. "
-           "Items whose source is gone, such as sessions an agent has since deleted, are not in it.")
+           "If a source no longer has some of this one's items, such as sessions an agent has since deleted, it stops "
+           "and says how many.")
 
 
 def connect(path, readonly=False):
@@ -80,22 +81,25 @@ def connect(path, readonly=False):
     else:
         os.makedirs(os.path.dirname(path), exist_ok=True)
         db = sqlite3.connect(path)
-        db.execute("PRAGMA journal_mode=WAL")
-        db.executescript(SCHEMA)
-        if not _versioned(db) and not has_unversioned(db):
-            db.execute("ALTER TABLE docs ADD COLUMN masked TEXT")  # an empty store from before rows recorded it
     db.execute("PRAGMA busy_timeout=30000")
-    if has_unversioned(db):
+    if has_unversioned(db):  # before kb writes anything, so an older kb still opens its store as it was
         db.close()
         raise NeedsRebuild(REBUILD.format(path=path))
     if not readonly:
+        db.execute("PRAGMA journal_mode=WAL")
+        db.executescript(SCHEMA)
+        if not _versioned(db):
+            db.execute("ALTER TABLE docs ADD COLUMN masked TEXT")  # an empty store from before rows recorded it
         db.execute("CREATE INDEX IF NOT EXISTS docs_masked ON docs(masked)")
     return db
 
 
 def has_unversioned(db):
     """Whether the store holds a row that records no mask version: one an older kb wrote or changed."""
-    if not _versioned(db):
+    columns = {column[1] for column in db.execute("PRAGMA table_info(docs)")}
+    if not columns:
+        return False  # a new store
+    if "masked" not in columns:
         return db.execute("SELECT 1 FROM docs LIMIT 1").fetchone() is not None
     return db.execute("SELECT 1 FROM docs WHERE masked IS NULL LIMIT 1").fetchone() is not None
 
