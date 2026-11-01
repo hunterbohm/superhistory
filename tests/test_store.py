@@ -23,6 +23,10 @@ def summary_row(kind, text):
     return {"kind": kind, "ts": iso(), "title": kind, "content": text, "metadata": {}}
 
 
+# The version an earlier mask() recorded on its rows.
+STALE = "0123456789abcdef"
+
+
 class TempDB(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -372,9 +376,9 @@ class HealthTest(TempDB):
 
 class RemaskTest(TempDB):
     def test_an_older_row_replaced_by_a_write_leaves_no_bytes_after_the_next_remask(self):
-        # main stored the note with its password; today's ingest writes the item again, masked.
-        self.db.execute("INSERT INTO docs(kind, source, source_id, ts, title, content) VALUES "
-                        "('doc', 's', 'a', ?, 't', 'redis-cli -a Qx7RedisBytes2026zz ping')", (iso(),))
+        # An earlier version's mask kept the password; today's ingest writes the item again, masked.
+        self.db.execute("INSERT INTO docs(kind, source, source_id, ts, title, content, masked) VALUES "
+                        "('doc', 's', 'a', ?, 't', 'redis-cli -a Qx7RedisBytes2026zz ping', ?)", (iso(), STALE))
         self.db.commit()
         store.store_item(self.db, "s", "a", iso(), "t", "redis-cli -a Qx7RedisBytes2026zz ping", {})
         self.db.commit()
@@ -385,8 +389,8 @@ class RemaskTest(TempDB):
 
     def test_remask_removes_old_values_from_rows_and_index(self):
         leaked = "GITHUB_TOKEN=abcdef1234567890abcdef1234567890"
-        self.db.execute("INSERT INTO docs(kind, source, source_id, ts, title, content) VALUES "
-                        "('doc', 's', 'a', ?, 't', ?)", (iso(), f"deploy with {leaked} today"))
+        self.db.execute("INSERT INTO docs(kind, source, source_id, ts, title, content, masked) VALUES "
+                        "('doc', 's', 'a', ?, 't', ?, ?)", (iso(), f"deploy with {leaked} today", STALE))
         self.db.commit()
         self.assertEqual(self.fts_ids("abcdef1234567890abcdef1234567890"), [1])
         self.assertEqual(store.remask(self.db), (1, 0))
@@ -400,10 +404,12 @@ class RemaskTest(TempDB):
 
 class MaskVersionTest(TempDB):
     """A row records the mask() version it was masked with. Only a row of today's version, and for a chunk only if
-    every chunk of its item is, may be cut as it is stored; ingest and remask bring the rest up to date."""
+    every chunk of its item is, may be cut as it is stored; ingest and remask bring rows of an earlier version up to
+    date. old() writes a row of an earlier version."""
     TOKEN = "sk-ant-api03-version-" + "Q" * 24
 
     def old(self, sid, content, kind="doc", meta=None, version=None):
+        version = STALE if version is None else version
         self.db.execute("INSERT INTO docs(kind, source, source_id, ts, title, content, metadata, masked) "
                         "VALUES (?, 's', ?, ?, 't', ?, ?, ?)", (kind, sid, iso(), content, json.dumps(meta or {}),
                                                                  version))
@@ -422,12 +428,13 @@ class MaskVersionTest(TempDB):
         self.assertEqual(store.current(self.db, self.ids()), set(self.ids()))
         self.assertEqual(store.old_rows(self.db), 0)
 
-    def test_rows_of_no_version_or_another_are_old(self):
+    def test_rows_of_another_version_are_old_and_rows_of_none_are_not_remasked(self):
         self.add("a", "short note")
         self.old("b", "older note")
-        self.old("c", "older note", version="0123456789abcdef")
+        self.db.execute("INSERT INTO docs(kind, source, source_id, ts, title, content, metadata, masked) "
+                        "VALUES ('doc', 's', 'c', ?, 't', 'an older kb', '{}', NULL)", (iso(),))
         self.assertEqual(store.current(self.db, self.ids()), set(self.ids("a")))
-        self.assertEqual(store.old_rows(self.db), 2)
+        self.assertEqual(store.old_rows(self.db), 1, "a row of no version is the older kb's, which a rebuild replaces")
 
     def test_a_chunk_is_current_only_while_every_chunk_of_its_item_is(self):
         self.add("a", long_body("kumquat"))
@@ -443,23 +450,27 @@ class MaskVersionTest(TempDB):
             store.remask(self.db)
             self.assertEqual(store.current(self.db, self.ids()), set(self.ids()))
 
-    def test_a_store_from_before_versions_gains_the_column_with_every_row_old(self):
+    def test_a_store_from_before_versions_does_not_open_unless_it_is_empty(self):
         path = os.path.join(self.tmp.name, "old.sqlite")
         old = sqlite3.connect(path)
         old.executescript(store.SCHEMA.replace("  superseded_by INTEGER,\n  masked TEXT\n", "  superseded_by INTEGER\n"))
         self.assertNotIn("masked", [column[1] for column in old.execute("PRAGMA table_info(docs)")])
+        old.commit()
+        old.close()
+        writer = store.connect(path)
+        self.assertIn("masked", [column[1] for column in writer.execute("PRAGMA table_info(docs)")], "empty: it gains it")
+        writer.close()
+        old = sqlite3.connect(path)
+        old.execute("DROP TRIGGER docs_unmask")
+        old.execute("DROP INDEX docs_masked")
+        old.execute("ALTER TABLE docs DROP COLUMN masked")
         old.execute("INSERT INTO docs(kind, source, source_id, ts, title, content) VALUES ('doc','s','a',?,'t','x')",
                     (iso(),))
         old.commit()
         old.close()
-        reader = store.connect(path, readonly=True)
-        self.addCleanup(reader.close)
-        self.assertEqual((store.current(reader, [1]), store.old_rows(reader)), (set(), 1))
-        writer = store.connect(path)
-        self.addCleanup(writer.close)
-        self.assertEqual((store.current(writer, [1]), store.old_rows(writer)), (set(), 1))
-        self.assertEqual(store.remask(writer), (0, 0))
-        self.assertEqual(store.current(writer, [1]), {1})
+        for readonly in (True, False):
+            with self.subTest(readonly=readonly), self.assertRaises(store.NeedsRebuild):
+                store.connect(path, readonly=readonly)
 
     def test_replace_rows_refuses_an_id_or_source_that_looks_like_a_secret(self):
         row = {"kind": "doc", "ts": iso(), "title": "t", "content": "c", "metadata": {}}
@@ -568,8 +579,13 @@ class MaskVersionTest(TempDB):
                 self.db.execute("UPDATE docs SET masked=? WHERE id=?", (store.VERSION, rid))
                 self.db.execute(sql, args)
                 self.assertEqual(store.current(self.db, [rid]), set())
-        self.db.execute("UPDATE docs SET superseded_by=1 WHERE id=?", (rid,))
         store.remask(self.db)
+        self.assertEqual(store.current(self.db, [rid]), set(), "remask leaves an older kb's row")
+        self.db.commit()
+        with self.assertRaises(store.NeedsRebuild):
+            store.connect(self.path)
+        self.db.execute("UPDATE docs SET masked=? WHERE id=?", (store.VERSION, rid))
+        self.db.execute("UPDATE docs SET superseded_by=1 WHERE id=?", (rid,))
         self.assertEqual(store.current(self.db, [rid]), {rid})
         self.db.execute("UPDATE docs SET superseded_by=NULL WHERE id=?", (rid,))
         self.assertEqual(store.current(self.db, [rid]), {rid}, "a supersede mark is not the row's text")

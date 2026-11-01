@@ -14,7 +14,7 @@ import time
 from datetime import datetime, timezone
 
 from .config import NAME_RE
-from .mask import ID_NAMES, KEY_WORD, VERSION, clean, holds_secret, mask, mask_all, mask_older, masked_log, secret_in_id
+from .mask import ID_NAMES, KEY_WORD, VERSION, clean, holds_secret, mask, mask_all, masked_log, secret_in_id
 
 CHUNK = 4000
 ITEM_KINDS = ("doc", "raw")
@@ -62,7 +62,18 @@ CREATE TABLE IF NOT EXISTS ingest_state(
 """
 
 
+class NeedsRebuild(Exception):
+    """A store holds rows an older kb wrote, which kb neither reads nor masks again in place."""
+
+
+REBUILD = ("{path} holds rows an older kb wrote, before each row recorded how it was masked. kb no longer reads such rows "
+           "or masks them again in place, because an older kb's masking can leave a secret that no pattern finds. Run "
+           "`kb rebuild` to read your sources into a fresh knowledge base; it takes this one's place once it checks out. "
+           "Items whose source is gone, such as sessions an agent has since deleted, are not in it.")
+
+
 def connect(path, readonly=False):
+    """The store at `path`, made if it is new. Raises NeedsRebuild for a store with rows an older kb wrote."""
     path = os.fspath(path)
     if readonly:
         db = sqlite3.connect(pathlib.Path(path).as_uri() + "?mode=ro", uri=True)
@@ -71,20 +82,32 @@ def connect(path, readonly=False):
         db = sqlite3.connect(path)
         db.execute("PRAGMA journal_mode=WAL")
         db.executescript(SCHEMA)
-        if not _versioned(db):
-            db.execute("ALTER TABLE docs ADD COLUMN masked TEXT")  # a store from before rows recorded it: all old
-        db.execute("CREATE INDEX IF NOT EXISTS docs_masked ON docs(masked)")
+        if not _versioned(db) and not has_unversioned(db):
+            db.execute("ALTER TABLE docs ADD COLUMN masked TEXT")  # an empty store from before rows recorded it
     db.execute("PRAGMA busy_timeout=30000")
+    if has_unversioned(db):
+        db.close()
+        raise NeedsRebuild(REBUILD.format(path=path))
+    if not readonly:
+        db.execute("CREATE INDEX IF NOT EXISTS docs_masked ON docs(masked)")
     return db
+
+
+def has_unversioned(db):
+    """Whether the store holds a row that records no mask version: one an older kb wrote or changed."""
+    if not _versioned(db):
+        return db.execute("SELECT 1 FROM docs LIMIT 1").fetchone() is not None
+    return db.execute("SELECT 1 FROM docs WHERE masked IS NULL LIMIT 1").fetchone() is not None
 
 
 def _versioned(db):
     return any(column[1] == "masked" for column in db.execute("PRAGMA table_info(docs)"))
 
 
-def older(db, ids):
-    """The ids among `ids` that an older kb wrote or touched, before rows recorded a mask version: the row records
-    none, and for a chunk so does any chunk of its item. These are read with mask.mask_older()."""
+def unversioned(db, ids):
+    """The ids among `ids` that an older kb wrote or changed, which record no mask version, and for a chunk the ids
+    of an item any of whose chunks records none. A connection opened before an older writer changed a row can meet
+    one; no reader shows it and remask leaves it as it is."""
     if not ids:
         return set()
     if not _versioned(db):
@@ -108,10 +131,11 @@ def current(db, ids):
 
 
 def old_rows(db):
-    """How many rows were masked with another version of mask(), or before rows recorded one."""
+    """How many rows were masked with another version of mask(), which remask brings up to date. Rows that record no
+    version are not among them: an older kb wrote them, and the store is rebuilt instead."""
     if not _versioned(db):
-        return db.execute("SELECT count(*) FROM docs").fetchone()[0]
-    return db.execute("SELECT count(*) FROM docs WHERE masked IS NOT ?", (VERSION,)).fetchone()[0]
+        return 0
+    return db.execute("SELECT count(*) FROM docs WHERE masked IS NOT NULL AND masked != ?", (VERSION,)).fetchone()[0]
 
 
 @contextlib.contextmanager
@@ -151,12 +175,12 @@ def chunk(text, size=CHUNK):
     return chunks
 
 
-def _whole(rows, masker=mask):
+def _whole(rows):
     """`rows` with any raw chunks masked as one text and cut again where it changed: a store that cut an item before
     masking it, as an older kb did and another store may, can split a secret in two that neither chunk shows."""
     raw = sorted((r for r in rows if r["kind"] == "raw"), key=lambda r: r["metadata"].get("chunk", 0))
     text = "".join(r["content"] for r in raw)
-    masked = masker(text)
+    masked = mask(text)
     if masked == text:
         return rows
     parts = chunk(masked)
@@ -360,14 +384,18 @@ def last_ingest(db):
 
 
 def remask(db, seconds=None, log=None):
-    """Mask every row whose version is not today's again, a long item's chunks as one text, and record the version.
-    An item whose source or id looks like a secret is deleted, as ingest would not store it, and named masked on
+    """Mask every row of another version again, a long item's chunks as one text, and record today's version. An item
+    with a row that records no version is left as it is: an older kb wrote it, and the store is rebuilt instead. An
+    item whose source or id looks like a secret is deleted, as ingest would not store it, and named masked on
     `log`. With `seconds`, stops at the first item past that time and leaves the rest old. Returns (rows changed,
     rows left). Once none are left, rebuilds the file so the old values leave no bytes behind."""
     db.execute("PRAGMA secure_delete=ON")
     log = masked_log(log) if log else None
     started, changed = time.monotonic(), 0
-    items = db.execute("SELECT DISTINCT source, source_id FROM docs WHERE masked IS NOT ?", (VERSION,)).fetchall()
+    items = db.execute(
+        "SELECT DISTINCT r.source, r.source_id FROM docs r WHERE r.masked IS NOT NULL AND r.masked != ? AND NOT EXISTS "
+        "(SELECT 1 FROM docs n WHERE n.source = r.source AND n.source_id = r.source_id AND n.masked IS NULL)",
+        (VERSION,)).fetchall()
     for n, (source, source_id) in enumerate(items, 1):
         if secret_id(source, source_id, item_names(db, source, source_id)):
             changed += delete_item(db, source, source_id)
@@ -414,10 +442,9 @@ def _remask_item(db, source, source_id):
                "SELECT ts, title, content, metadata, masked FROM docs WHERE source=? AND source_id=? AND kind='raw'",
                (source, source_id))]
     if any(r["masked"] != VERSION for r in raw):
-        masker = mask_older if any(r["masked"] is None for r in raw) else mask
-        whole = _whole(raw, masker)
-        new = [{**r, "ts": masker(str(r["ts"])), "title": masker(r["title"]),
-                "metadata": mask_all(r["metadata"], masker=masker)} for r in whole]
+        whole = _whole(raw)
+        new = [{**r, "ts": mask(str(r["ts"])), "title": mask(r["title"]), "metadata": mask_all(r["metadata"])}
+               for r in whole]
         if whole is raw and all((n["ts"], n["title"], n["metadata"]) == (r["ts"], r["title"], r["metadata"])
                                 for n, r in zip(new, raw)):
             db.execute("UPDATE docs SET masked=? WHERE source=? AND source_id=? AND kind='raw'",
@@ -425,11 +452,10 @@ def _remask_item(db, source, source_id):
         else:
             replace_rows(db, source, source_id, new, ("raw",))
             changed += len(raw)
-    for rid, ts, title, content, meta, version in db.execute(
-            "SELECT id, ts, title, content, metadata, masked FROM docs WHERE source=? AND source_id=? AND kind != 'raw' "
+    for rid, ts, title, content, meta in db.execute(
+            "SELECT id, ts, title, content, metadata FROM docs WHERE source=? AND source_id=? AND kind != 'raw' "
             "AND masked IS NOT ?", (source, source_id, VERSION)).fetchall():
-        masker = mask_older if version is None else mask
-        new = (masker(ts), masker(title), masker(content), json.dumps(mask_all(json.loads(meta), masker=masker)))
+        new = (mask(ts), mask(title), mask(content), json.dumps(mask_all(json.loads(meta))))
         if new[:3] == (ts, title, content) and json.loads(new[3]) == json.loads(meta):
             db.execute("UPDATE docs SET masked=? WHERE id=?", (VERSION, rid))
         else:

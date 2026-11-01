@@ -403,8 +403,8 @@ class RunTest(IngestCase):
 class RemaskOnIngestTest(IngestCase):
     def test_ingest_masks_older_rows_again_and_the_header_says_so_until_it_has(self):
         token = "sk-ant-api03-ingest-" + "Q" * 24
-        self.db.execute("INSERT INTO docs(kind, source, source_id, ts, title, content) VALUES "
-                        "('doc', 'old', 'a', ?, 't', ?)", (store.now_iso(), f"note with {token}"))
+        self.db.execute("INSERT INTO docs(kind, source, source_id, ts, title, content, masked) VALUES "
+                        "('doc', 'old', 'a', ?, 't', ?, '0123456789abcdef')", (store.now_iso(), f"note with {token}"))
         self.db.commit()
         cfg = make_config(Script("good", events=[item("g1")]))
         store.set_watermark(self.db, store.STATE, "last_ingest", store.now_iso())
@@ -416,8 +416,8 @@ class RemaskOnIngestTest(IngestCase):
 
     def test_ingest_finishes_a_rebuild_a_remask_left_owed(self):
         token = "sk-ant-api03-rebuild-" + "Q" * 24
-        self.db.execute("INSERT INTO docs(kind, source, source_id, ts, title, content) VALUES "
-                        "('doc', 'old', 'a', ?, 't', ?)", (store.now_iso(), f"note with {token}"))
+        self.db.execute("INSERT INTO docs(kind, source, source_id, ts, title, content, masked) VALUES "
+                        "('doc', 'old', 'a', ?, 't', ?, '0123456789abcdef')", (store.now_iso(), f"note with {token}"))
         self.db.commit()
         with mock.patch.object(store, "_rebuild", side_effect=RuntimeError("interrupted")):
             with self.assertRaises(RuntimeError):
@@ -431,8 +431,8 @@ class RemaskOnIngestTest(IngestCase):
 
     def test_a_remask_cut_short_by_its_time_finishes_on_later_ingests(self):
         for i in range(60):
-            self.db.execute("INSERT INTO docs(kind, source, source_id, ts, title, content) VALUES "
-                            "('doc', 'old', ?, ?, 't', 'x')", (f"a{i}", store.now_iso()))
+            self.db.execute("INSERT INTO docs(kind, source, source_id, ts, title, content, masked) VALUES "
+                            "('doc', 'old', ?, ?, 't', 'x', '0123456789abcdef')", (f"a{i}", store.now_iso()))
         self.db.commit()
         cfg = make_config(Script("good", events=[]))
         with mock.patch.object(ingest, "REMASK_SECONDS", 0):

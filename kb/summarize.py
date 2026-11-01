@@ -8,7 +8,7 @@ from typing import NamedTuple, Optional
 
 from kb import ai, store
 from kb.ai import BadAnswer, Prompt, Refused
-from kb.mask import mask, mask_older, masked_log
+from kb.mask import mask, masked_log
 
 MAX_INPUT_CHARS = 150_000
 SLICES = 8
@@ -127,6 +127,7 @@ def pending(db, scope, limit=None):
           AND json_extract(previous, '$.of_hash') IS NOT h
           AND NOT EXISTS (SELECT 1 FROM ingest_state f WHERE f.source='{FAILED}'
                           AND f.key=r.source || '|' || r.source_id AND f.watermark=h)
+          AND NOT EXISTS (SELECT 1 FROM docs n WHERE n.source=r.source AND n.source_id=r.source_id AND n.masked IS NULL)
         ORDER BY r.ts DESC"""
     now = datetime.now(timezone.utc)
     items = (Item(src, sid, ts, title, h, json.loads(meta), chars, json.loads(previous) if previous else None)
@@ -142,9 +143,9 @@ def pending(db, scope, limit=None):
 def item_text(db, item):
     rows = db.execute("SELECT id, content FROM docs WHERE source=? AND source_id=? AND kind='raw' "
                       "ORDER BY json_extract(metadata, '$.chunk')", (item.source, item.source_id)).fetchall()
-    # Masked whole, before any cut, in case rows predate masking, with an older kb's rules when one wrote them.
-    masker = mask_older if store.older(db, [r[0] for r in rows]) else mask
-    return masker("".join(r[1] for r in rows))
+    if store.unversioned(db, [r[0] for r in rows]):
+        return ""  # an older kb's rows, which no reader shows
+    return mask("".join(r[1] for r in rows))  # masked whole, before any cut, in case rows are of another version
 
 
 def cap(text, limit=MAX_INPUT_CHARS, slices=SLICES):

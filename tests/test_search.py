@@ -30,11 +30,11 @@ class TempDB(unittest.TestCase):
 
 
 class OldRowTest(TempDB):
-    """Rows an older kb stored, which today's mask() changes, so a reader masks them before cutting them."""
+    """Rows an earlier version of mask() stored, which today's changes, so a reader masks them before cutting them."""
 
     def old(self, sid, content, kind="doc", meta='{}'):
-        self.db.execute("INSERT INTO docs(kind, source, source_id, ts, title, content, metadata) "
-                        "VALUES (?, 's', ?, ?, 't', ?, ?)", (kind, sid, iso(), content, meta))
+        self.db.execute("INSERT INTO docs(kind, source, source_id, ts, title, content, metadata, masked) "
+                        "VALUES (?, 's', ?, ?, 't', ?, ?, '0123456789abcdef')", (kind, sid, iso(), content, meta))
         self.db.commit()
 
     def test_a_match_far_from_a_masked_secret_stays_in_the_passage(self):
@@ -232,6 +232,7 @@ class SearchTest(TempDB):
         self.add("fresh", "ibis", title="fresh", ts=iso())
         fresh = search.search(self.db, "ibis")[0]["score"]
         self.db.execute("UPDATE docs SET ts=?", (iso(timedelta(days=36500)),))
+        self.db.execute("UPDATE docs SET masked=?", (store.VERSION,))  # the test's edit, not an older kb's
         old = search.search(self.db, "ibis")[0]["score"]
         self.assertAlmostEqual(fresh / old, 2.0, places=2)
 

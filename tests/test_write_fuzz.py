@@ -279,7 +279,7 @@ def shown(db, path):
     paths, config = types.SimpleNamespace(db=pathlib.Path(path)), types.SimpleNamespace(machine="desk")
     for (rid,) in db.execute("SELECT min(id) FROM docs GROUP BY source, source_id, kind"):
         printed = io.StringIO()
-        with contextlib.redirect_stdout(printed), contextlib.suppress(cli.Fail):
+        with contextlib.redirect_stdout(printed), contextlib.suppress(cli.Fail, store.NeedsRebuild):
             cli.cmd_get(paths, config, types.SimpleNamespace(id=rid, offset=None))
         out.append(printed.getvalue())
     for source, sid, title in db.execute("SELECT source, source_id, max(title) FROM docs WHERE kind='raw' "
@@ -309,6 +309,12 @@ def run_sequence(seq, root, ops=None):
                 done[-1] += " (stopped)"
                 db.rollback()
         problems = not_masked_whole(db)
+        if store.has_unversioned(db):  # an older kb wrote or changed a row: the store must not open again
+            try:
+                store.connect(path).close()
+                problems.append("a store with a row of no mask version opened")
+            except store.NeedsRebuild:
+                pass
         text = "\n".join(shown(db, path))
         problems += [f"a reader shows {piece!r}" for piece in sorted(planted.pieces) if piece in text]
         squeezed = re.sub(r"\s+|\\[nr]", "", text)  # a key's body read through its line breaks
