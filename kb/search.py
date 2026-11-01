@@ -4,8 +4,8 @@ import re
 import sqlite3
 from datetime import datetime, timezone
 
-from kb.mask import mask, mask_all
-from kb.store import SUMMARY_KINDS, TOKENIZE, current, item_names, secret_id
+from kb.mask import mask, mask_all, mask_older
+from kb.store import SUMMARY_KINDS, TOKENIZE, current, item_names, older, secret_id
 
 STOPWORDS = set("""a an and are as at be been but by can could did do does doing for from had has have
 how i if in into is it its just me my no not of on or our should so than that the their them then there
@@ -127,18 +127,20 @@ def search(db, query, after=None, sources=(), limit=10, before=None, keep=None):
             hit["excerpt"] = excerpt(marked if MARK in marked else hit["content"])
         else:
             # Older rows are masked whole before any cut, and the match is found again in the masked text.
-            hit["title"], hit["content"], hit["meta"] = mask(hit["title"]), _masked_item(db, hit), mask_all(hit["meta"])
+            masker = mask_older if hit["id"] in older(db, [hit["id"]]) else mask
+            hit["title"], hit["meta"] = masker(hit["title"]), mask_all(hit["meta"], masker=masker)
+            hit["content"] = _masked_item(db, hit, masker)
             marked = _marked(hit["content"], match)
             hit["snippet"] = excerpt(marked.replace(MARK, MARK + "[").replace(END, "]" + END), SNIPPET_CHARS)
             hit["excerpt"] = excerpt(marked)
     return hits
 
 
-def _masked_item(db, hit):
+def _masked_item(db, hit, masker):
     """The hit's text masked whole: a doc or summary row by itself, a chunk as its item's chunks joined in order."""
     if hit["kind"] != "raw":
-        return mask(hit["content"])
-    return mask("".join(r[0] for r in db.execute(
+        return masker(hit["content"])
+    return masker("".join(r[0] for r in db.execute(
         "SELECT content FROM docs WHERE source=? AND source_id=? AND kind='raw' "
         "ORDER BY json_extract(metadata, '$.chunk')", (hit["source"], hit["source_id"]))))
 

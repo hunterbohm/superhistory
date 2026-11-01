@@ -14,7 +14,7 @@ import time
 from datetime import datetime, timezone
 
 from .config import NAME_RE
-from .mask import ID_NAMES, KEY_WORD, VERSION, clean, holds_secret, mask, mask_all, masked_log, secret_in_id
+from .mask import ID_NAMES, KEY_WORD, VERSION, clean, holds_secret, mask, mask_all, mask_older, masked_log, secret_in_id
 
 CHUNK = 4000
 ITEM_KINDS = ("doc", "raw")
@@ -82,6 +82,19 @@ def _versioned(db):
     return any(column[1] == "masked" for column in db.execute("PRAGMA table_info(docs)"))
 
 
+def older(db, ids):
+    """The ids among `ids` that an older kb wrote or touched, before rows recorded a mask version: the row records
+    none, and for a chunk so does any chunk of its item. These are read with mask.mask_older()."""
+    if not ids:
+        return set()
+    if not _versioned(db):
+        return set(ids)
+    return {rid for (rid,) in db.execute(
+        f"SELECT r.id FROM docs r WHERE r.id IN ({','.join('?' * len(ids))}) AND (r.masked IS NULL OR (r.kind = 'raw' "
+        f"AND EXISTS (SELECT 1 FROM docs c WHERE c.source = r.source AND c.source_id = r.source_id AND c.kind = 'raw' "
+        f"AND c.masked IS NULL)))", ids)}
+
+
 def current(db, ids):
     """The ids among `ids` whose text was masked whole with today's mask(): the row records mask.VERSION, and for a
     chunk so does every chunk of its item, since a secret could run from one chunk into the next. Only these may be
@@ -138,12 +151,12 @@ def chunk(text, size=CHUNK):
     return chunks
 
 
-def _whole(rows):
+def _whole(rows, masker=mask):
     """`rows` with any raw chunks masked as one text and cut again where it changed: a store that cut an item before
     masking it, as an older kb did and another store may, can split a secret in two that neither chunk shows."""
     raw = sorted((r for r in rows if r["kind"] == "raw"), key=lambda r: r["metadata"].get("chunk", 0))
     text = "".join(r["content"] for r in raw)
-    masked = mask(text)
+    masked = masker(text)
     if masked == text:
         return rows
     parts = chunk(masked)
@@ -394,19 +407,22 @@ def _remask_item(db, source, source_id):
                "SELECT ts, title, content, metadata, masked FROM docs WHERE source=? AND source_id=? AND kind='raw'",
                (source, source_id))]
     if any(r["masked"] != VERSION for r in raw):
-        same = _whole(raw) is raw and all(
-            (mask(str(r["ts"])), mask(r["title"]), mask(r["content"]), mask_all(r["metadata"]))
-            == (r["ts"], r["title"], r["content"], r["metadata"]) for r in raw)
-        if same:
+        masker = mask_older if any(r["masked"] is None for r in raw) else mask
+        whole = _whole(raw, masker)
+        new = [{**r, "ts": masker(str(r["ts"])), "title": masker(r["title"]),
+                "metadata": mask_all(r["metadata"], masker=masker)} for r in whole]
+        if whole is raw and all((n["ts"], n["title"], n["metadata"]) == (r["ts"], r["title"], r["metadata"])
+                                for n, r in zip(new, raw)):
             db.execute("UPDATE docs SET masked=? WHERE source=? AND source_id=? AND kind='raw'",
                        (VERSION, source, source_id))
         else:
-            replace_rows(db, source, source_id, raw, ("raw",))
+            replace_rows(db, source, source_id, new, ("raw",))
             changed += len(raw)
-    for rid, ts, title, content, meta in db.execute(
-            "SELECT id, ts, title, content, metadata FROM docs WHERE source=? AND source_id=? AND kind != 'raw' "
+    for rid, ts, title, content, meta, version in db.execute(
+            "SELECT id, ts, title, content, metadata, masked FROM docs WHERE source=? AND source_id=? AND kind != 'raw' "
             "AND masked IS NOT ?", (source, source_id, VERSION)).fetchall():
-        new = (mask(ts), mask(title), mask(content), json.dumps(mask_all(json.loads(meta))))
+        masker = mask_older if version is None else mask
+        new = (masker(ts), masker(title), masker(content), json.dumps(mask_all(json.loads(meta), masker=masker)))
         if new[:3] == (ts, title, content) and json.loads(new[3]) == json.loads(meta):
             db.execute("UPDATE docs SET masked=? WHERE id=?", (VERSION, rid))
         else:

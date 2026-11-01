@@ -253,7 +253,7 @@ _KEY_BODY_START = r"(?:MI[E-P][A-Za-z0-9+/]|M[A-H][A-Za-z0-9+/][Cw]|b3Bl)"
 # spaces. main's pattern stops at the first character that is not base64 or a space, so in escaped text, in code with
 # a string a line, behind comment or quote marks and where a chunk ended between a header and its line break, it
 # leaves exactly that. Masked through its footer, or through the end of its paragraph.
-_BEFORE_BODY = r"(?:\\{1,7}[nrt]|<br\s*/?>|[\s\"'#>+,;|*])"
+_BEFORE_BODY = rf"(?:\\{{1,7}}[nrt]|{_QUOTE}|<br\s*/?>|[\s\"'#>+,;|*])"
 _KEY_REST = re.compile(rf"\[masked\]((?:[A-Za-z0-9+/=]+[ \t\r]*(?=\n|\\(?:r\\)?n)"
                        rf"|(?={_BEFORE_BODY}{{0,64}}{_KEY_BODY_START}))"
                        rf"(?:(?!{_KEY_END}){_IN_PARAGRAPH})*(?:{_KEY_END})?)")
@@ -378,25 +378,46 @@ def secret_in_id(text, names=()):
     return ENV_KEY_ID.sub(_mask_keyed, KEYED_ID.sub(_mask_keyed, masked)) != text
 
 
-def mask_all(value, key=None):
+# What an older kb's mask left that today's patterns cannot read, in text written before rows recorded a mask version.
+# Its named-value rule read a value on through an escaped line break into the next line's name, so that name went into
+# the placeholder and the next value stayed after it, with no name. And its summarizer cut a field before masking it,
+# which can leave the start of a token too short to know at the field's end.
+_PLACEHOLDER_LINE = re.compile(r"((?:[:=]|=>|\bis)[ \t]*[\"']?\[masked\])((?:[^\r\n\\]|\\(?!\\*[nr]))+)")
+_CUT_TOKEN = re.compile(_NB + r"(?:sk-|(?:sk|rk|pk)_(?:live|test)_|gh[pousr]_|github_pat_|xox[abprs]-|AKIA|ASIA|AIza|"
+                        r"ya29\.|GOCSPX-|(?:hf|gsk|npm|ntn|sbp|lin_api)_|xai-|tskey-|glpat-|whsec_|eyJ)"
+                        r"[A-Za-z0-9_.+/=-]*(?=[ \t]*(?:\r?\n|\Z| …))")
+
+
+def mask_older(text):
+    """mask() for text an older kb wrote: also the rest of the line after a value's placeholder, one that follows a
+    separator, plain or escaped, when it holds a word, and a token's start at the end of a field, cut short. More of such text is masked than of today's, which is
+    the cost; rows that record today's version never get these rules, so a later version leaves them as they are."""
+    text = _CUT_TOKEN.sub("[masked]", mask(text))
+    text = _PLACEHOLDER_LINE.sub(
+        lambda m: m.group(1) + (" [masked]" if re.search(r"[A-Za-z0-9]{3}", m.group(2)) else m.group(2)), text)
+    return mask(text)
+
+
+def mask_all(value, key=None, masker=mask):
     """mask() over every string in a value of dicts, lists and strings, such as an item's metadata. Only the
     secret-looking parts change, so a link or a path still points where it did. A value is masked with its key in
-    front, as "key=value", so {"password": "..."} is caught by its field name as it would be in text."""
+    front, as "key=value", so {"password": "..."} is caught by its field name as it would be in text. `masker` is
+    mask() or, for what an older kb wrote, mask_older()."""
     if isinstance(value, str):
         if key is None:
-            return mask(value)
+            return masker(value)
         if _SECRET_FIELD.match(key) and _looks_secret(key, "=", value.strip()):
             return "[masked]"  # the whole value, which may hold a space or a quote that would end it in text
-        masked = mask(f"{key}={value}")
-        head = mask(key) + "="
-        return masked[len(head):] if masked.startswith(head) else mask(value)
+        masked = masker(f"{key}={value}")
+        head = masker(key) + "="
+        return masked[len(head):] if masked.startswith(head) else masker(value)
     if isinstance(value, dict):
-        return {mask(k) if isinstance(k, str) else k: mask_all(v, k if isinstance(k, str) else None)
+        return {masker(k) if isinstance(k, str) else k: mask_all(v, k if isinstance(k, str) else None, masker)
                 for k, v in value.items()}
     if isinstance(value, (list, tuple)):
-        return [mask_all(v, key) for v in value]
+        return [mask_all(v, key, masker) for v in value]
     if key is not None and isinstance(value, (int, float)) and not isinstance(value, bool) \
-            and mask(f"{key}={value}") != f"{mask(key)}={value}":
+            and masker(f"{key}={value}") != f"{masker(key)}={value}":
         return "[masked]"  # a number its field name marks as secret, such as a numeric passcode
     return value
 

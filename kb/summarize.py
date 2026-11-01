@@ -8,7 +8,7 @@ from typing import NamedTuple, Optional
 
 from kb import ai, store
 from kb.ai import BadAnswer, Prompt, Refused
-from kb.mask import mask, masked_log
+from kb.mask import mask, mask_older, masked_log
 
 MAX_INPUT_CHARS = 150_000
 SLICES = 8
@@ -140,9 +140,11 @@ def pending(db, scope, limit=None):
 
 
 def item_text(db, item):
-    rows = db.execute("SELECT content FROM docs WHERE source=? AND source_id=? AND kind='raw' "
-                      "ORDER BY json_extract(metadata, '$.chunk')", (item.source, item.source_id))
-    return mask("".join(r[0] for r in rows))  # masked whole, before any cut, in case rows predate masking
+    rows = db.execute("SELECT id, content FROM docs WHERE source=? AND source_id=? AND kind='raw' "
+                      "ORDER BY json_extract(metadata, '$.chunk')", (item.source, item.source_id)).fetchall()
+    # Masked whole, before any cut, in case rows predate masking, with an older kb's rules when one wrote them.
+    masker = mask_older if store.older(db, [r[0] for r in rows]) else mask
+    return masker("".join(r[1] for r in rows))
 
 
 def cap(text, limit=MAX_INPUT_CHARS, slices=SLICES):
