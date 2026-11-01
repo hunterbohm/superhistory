@@ -189,12 +189,16 @@ _BLANK_LINE = re.compile(_BLANK)
 # they never leave one glued. Such a name keeps its value masked with it.
 _GLUED_RUN = re.compile(r"\[masked\](?:[A-Za-z0-9_.-]+[ \t]*(?:[:=]|=>)[ \t]*[\"']?" + _VALUE[1:-1]
                         + r"|[A-Za-z0-9_+/=-]+)")
-# The rest of a key after an older kb's placeholder: base64 glued to it and running to a line break; or, where main's
-# key pattern stopped at a backslash, an escaped line break right after it and a key line, 16 characters of base64 or
-# more as real keys' are; or, where a chunk ended between a key's header and its line break, a line break and a line
-# of nothing but base64, 16 characters or more. Masked through its footer, or through the end of its paragraph.
+# How every private key's body starts: DER, a SEQUENCE in long form ("MII...", "MIG...") or in short form before an
+# INTEGER or a SEQUENCE ("MHcC...", "MC4C..."), or OpenSSH's "openssh-key-v1" ("b3Bl...").
+_KEY_BODY_START = r"(?:MI[E-P][A-Za-z0-9+/]|M[A-H][A-Za-z0-9+/][Cw]|b3Bl)"
+# The rest of a key after an older kb's placeholder: base64 glued to it and running to a line break, as main's key
+# pattern leaves when it took the line break too; or a line break, plain or escaped, and a key's body from its first
+# line, cut anywhere, as main's pattern leaves in escaped text, where it stops at the backslash after the header, or
+# where a chunk ended between a header and its line break. Masked through its footer, or through the end of its
+# paragraph.
 _KEY_REST = re.compile(rf"\[masked\]((?:[A-Za-z0-9+/=]+[ \t\r]*(?=\n|\\(?:r\\)?n)"
-                       rf"|(?=\\(?:r\\)?n[A-Za-z0-9+/=]{{16}})|(?=\r?\n[A-Za-z0-9+/=]{{16,}}[ \t\r]*(?:\n|\Z)))"
+                       rf"|(?=(?:\r?\n|\\(?:r\\)?n){_KEY_BODY_START}))"
                        rf"(?:(?!{_KEY_END}){_IN_PARAGRAPH})*(?:{_KEY_END})?)")
 
 
