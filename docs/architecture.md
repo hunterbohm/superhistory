@@ -66,8 +66,9 @@ source into a fresh file under the lock, a source with a window reaching back to
 one with a cap on a run reading past it, and records the configured settings so the next ingest goes on from there. It
 puts the fresh file in place of the old one, at a link's target, only once every source was read, every host reached,
 the file checks sound, no row lacks a version and no source has fewer items than in the old file, unless
-`--accept-loss`. Of the old file it reads only each source's ids and oldest time. Remask brings rows of an earlier
-version of today's mask() up to date.
+`--accept-loss`. Of the old file it reads only each source's ids and oldest time. A swap that stops puts the old file
+back, but never over a store at its path: then the old one stays aside, named, and the next rebuild waits until it is
+moved. Remask brings rows of an earlier version of today's mask() up to date.
 `tests/test_old_rows.py` generates both kinds of rows, an earlier version's and an older kb's with main's own mask
 (`tests/legacy_mask.py`), and checks remask over the first and the refusal over the second.
 

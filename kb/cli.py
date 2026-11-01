@@ -437,11 +437,27 @@ def _as_configured(db, config):
     db.commit()
 
 
+def _put_back(target, old):
+    """Moves the store a stopped swap set aside at `old` back to `target`, each WAL file with it, but never over a
+    file there: when a store is at `target` again, the old one stays aside and kb says where."""
+    if not os.path.exists(old):
+        return
+    if os.path.exists(target):
+        print(f"kb: the rebuild stopped while {target} held a knowledge base again, so the old one stays at {old}, "
+              f"with any of its -wal and -shm files.", file=sys.stderr)
+        return
+    for suffix in ("", "-wal", "-shm"):
+        if os.path.exists(f"{old}{suffix}") and not os.path.exists(f"{target}{suffix}"):
+            os.replace(f"{old}{suffix}", f"{target}{suffix}")
+
+
 def cmd_rebuild(paths, config, args):
     """Read every source into a fresh knowledge base, and put it in place of the old one once it checks out: every
     source read, each back to its oldest item in the old one, every host reached, the file sound, no row of no mask
     version, and no source with fewer items than the old one has, unless --accept-loss. Otherwise the old one stays as
-    it was, and no copy of either is kept: the old one may hold an older kb's secrets."""
+    it was, and no copy of either is kept: the old one may hold an older kb's secrets. A swap that stops puts the old
+    one back, but never over a store at its path: then it stays aside, named, and the next rebuild waits for it to be
+    moved."""
     if not config.sources:
         raise Fail(f"No sources in {paths.config_file}, so there is nothing to rebuild from.")
     log = _logger(paths)
@@ -450,6 +466,9 @@ def cmd_rebuild(paths, config, args):
     with store.exclusive(paths.lock) as held:
         if not held:
             raise Fail("an ingest is running; try again when it finishes")
+        if any(os.path.exists(f"{old}{suffix}") for suffix in ("", "-wal", "-shm")):
+            raise Fail(f"{old} holds a knowledge base an earlier rebuild set aside and could not put back. Move it "
+                       f"somewhere safe or remove it, then run `kb rebuild` again.")
         kept = f"{paths.db} is kept as it was"
         before = _per_source(target, kept)
         _remove_store(fresh)
@@ -482,16 +501,13 @@ def cmd_rebuild(paths, config, args):
         except BaseException:  # any stop, an error or Ctrl-C leaves no fresh store behind
             _remove_store(fresh)
             raise
-        _remove_store(old)
         try:
             for suffix in ("", "-wal", "-shm"):  # the old WAL files go too, or SQLite would read them into the new one
                 if os.path.exists(f"{target}{suffix}"):
                     os.replace(f"{target}{suffix}", f"{old}{suffix}")
             os.replace(fresh, target)
-        except BaseException:  # whatever stops the swap, even between a move and the next line, puts the old one back
-            for suffix in ("", "-wal", "-shm"):
-                if os.path.exists(f"{old}{suffix}"):
-                    os.replace(f"{old}{suffix}", f"{target}{suffix}")
+        except BaseException:  # whatever stops the swap, even between a move and the next line
+            _put_back(target, old)
             _remove_store(fresh)
             raise
         _remove_store(fresh)
