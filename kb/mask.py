@@ -1,3 +1,4 @@
+import base64
 import bisect
 import hashlib
 import logging
@@ -33,6 +34,10 @@ _IN_PARAGRAPH = rf"(?:(?!{_BLANK})(?!-----BEGIN )[\s\S])"
 _KEY_PARAGRAPH = rf"(?:{_IN_PARAGRAPH}*?DEK-Info:[^\r\n\\]*{_BLANK})?{_IN_PARAGRAPH}*"
 # A key's footer, looked for in the next 16 KB and before any other header.
 _TO_KEY_END = rf"(?:(?!-----BEGIN )[\s\S]){{0,16384}}?{_KEY_END}"
+# An HTTP authorization scheme's word and its value are parted by spaces, or in a link by "%20" or "+".
+_SCHEME_GAP = r"(?:\s|%(?:25)?20|\+)+"
+BEARER = re.compile(rf"(?i){_WORD}bearer{_SCHEME_GAP}[A-Za-z0-9._~+/-]{{16,}}=*")
+BASIC = re.compile(rf"(?i){_WORD}basic{_SCHEME_GAP}(?=[A-Za-z0-9+/]*[0-9+/=])[A-Za-z0-9+/]{{12,}}={{0,2}}")
 # A secret's value ends at a space, tab or line break, and the space around its "=" is spaces, tabs and line breaks (a
 # JSON or YAML value can sit on the next line): \s would also take U+2028, U+2029, U+0085, a vertical tab or a form
 # feed, which end a value early or make "password=\u2028password" look like a placeholder.
@@ -58,9 +63,13 @@ SECRET_PATTERNS = [
     re.compile(r"https://(?:[\w-]+\.)?discord(?:app)?\.com/api/webhooks/\d+/[\w-]+"),
     re.compile(r"https://hooks\.slack\.com/(?:services|workflows|triggers)/[\w/-]+"),
     re.compile(_NB + r"eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}"),
-    re.compile(rf"(?i){_WORD}bearer(?:\s|%(?:25)?20|\+)+[A-Za-z0-9._~+/-]{{16,}}=*"),
-    re.compile(rf"(?i){_WORD}basic(?:\s|%(?:25)?20|\+)+(?=[A-Za-z0-9+/]*[0-9+/=])[A-Za-z0-9+/]{{12,}}={{0,2}}"),
+    BEARER,
+    BASIC,
 ]
+# In an item id, "Bearer" and "Basic" are words: "Ring Bearer duties/plan.md" names a note. A Basic credential still
+# counts there by what it is, "user:password" in base64; a bearer token counts only by a provider's shape above.
+_ID_PATTERNS = [p for p in SECRET_PATTERNS if p not in (BEARER, BASIC)]
+_BASIC_VALUE = re.compile(rf"(?i){_WORD}basic{_SCHEME_GAP}([A-Za-z0-9+/]{{12,}})")
 PREFIXED_SECRETS = [
     re.compile(rf"(?i)({_WORD}(?:set-)?cookie{_QUOTE}?\s*(?::|%(?:25)?3[Aa])\s*{_QUOTE}?)(?:{_CLOSE}[^\"'\n]){{8,}}"),
     re.compile(r"([a-z][a-z0-9+.-]*://[^/ \t\n\r:@'\"]+:)[^/ \t\n\r@'\"]{3,}(?=@)"),
@@ -211,13 +220,25 @@ def holds_secret(text):
     return mask(text) != text
 
 
+def _basic_credential(value):
+    """Whether base64 decodes to "user:password" text, as a Basic credential does."""
+    try:
+        decoded = base64.b64decode(value[:len(value) // 4 * 4], validate=True).decode("utf-8")
+    except ValueError:  # not base64, or not text
+        return False
+    return ":" in decoded and decoded.isprintable()
+
+
 def secret_in_id(text):
     """Whether an item id holds a secret, so that kb does not store the item: a masked id could stand for two items.
     An id is a name someone chose, so it is read more narrowly than text: a provider's token shape or a credential in
-    a link still counts, but a value its key names counts only in assignment form. A title such as "Tokens: 2026Q4
-    plan" or "the password is changed" is a name, which mask() would mask in text."""
+    a link still counts, but a value its key names counts only in assignment form, and a Basic value only as base64
+    of "user:password". A title such as "Tokens: 2026Q4 plan" or "the password is changed" is a name, which mask()
+    would mask in text."""
+    if any(_basic_credential(m.group(1)) for m in _BASIC_VALUE.finditer(text)):
+        return True
     masked = text
-    for pattern in SECRET_PATTERNS:
+    for pattern in _ID_PATTERNS:
         masked = pattern.sub("[masked]", masked)
     masked = _GLUED_RUN.sub("[masked]", _headless_keys(_key_rest(masked)))
     for pattern in PREFIXED_SECRETS:
