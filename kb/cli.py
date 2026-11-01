@@ -407,12 +407,13 @@ def _per_source(path, kept):
         try:
             found = {}
             host = "CASE WHEN json_valid(metadata) THEN json_extract(metadata, '$.host') END"
-            for source, source_id, ts, low, high in db.execute(
-                    f"SELECT source, source_id, min(ts), min({host}), max({host}) FROM docs WHERE kind IN "
-                    "('doc', 'raw') GROUP BY source, source_id"):
+            # A host counts only when every row records it and they agree: min and max pass over a row with none.
+            for source, source_id, ts, rows, recorded, low, high in db.execute(
+                    f"SELECT source, source_id, min(ts), count(*), count({host}), min({host}), max({host}) FROM docs "
+                    "WHERE kind IN ('doc', 'raw') GROUP BY source, source_id"):
                 ids, oldest, hosts = found.get(source, (set(), ts, {}))
                 ids.add(source_id)
-                hosts[source_id] = low if low == high else None
+                hosts[source_id] = low if rows == recorded and low == high else None
                 found[source] = (ids, min(oldest, ts), hosts)
             return found
         finally:

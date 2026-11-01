@@ -286,16 +286,20 @@ ID_FIELDS = ("host",) + ID_NAMES
 def secret_id(source, source_id, names=()):
     """Whether kb refuses an item under this source and stored id. kb stores "<install>:<reader's id>", or for an item
     read over SSH "<install>@<host>:<reader's id>" (kb.ids): that prefix is kb's own and is checked apart, its host as
-    a name config allows. An id from before the prefix is "<host>:<reader's id>", with the host in the item's
+    a name config allows. A Config with no install id writes "<machine>:" and "<machine>@<host>:" instead. An id from before the prefix is "<host>:<reader's id>", with the host in the item's
     metadata. `names` are the values the item's rows agree on for ID_FIELDS, the host first. Given
     that host, with the name config allows a host and the id starting with it, the id is checked as the host and the
     reader's id apart, since joined by kb's colon a host such as "tokenbox" would read as the name of a secret; the
     reader's id is read with the reader's names (mask.secret_in_id). Any other id is checked whole, so
     "password:...", "token2:..." or a link with a password in it is refused."""
-    # The install's prefix, "<install>:" or "<install>@<host>:" (kb.ids), is kb's own, with a host config allows.
+    # The install's prefix, "<install>:" or "<install>@<host>:" (kb.ids), is kb's own, with a host config allows. A
+    # Config with no install id prefixes by the machine instead, "<machine>@<host>:", read so where the item's rows
+    # record that host and the machine is a name config allows (its "<machine>:" is the host branch below).
     head, colon, rest = source_id.partition(":")
     install, at, ssh_host = head.partition("@")
-    if (colon and ids.INSTALL_ID.fullmatch(install) and not rest.startswith("//")
+    machine = (at and NAME_RE.match(install) and not KEY_WORD.fullmatch(install) and not holds_secret(install)
+               and names and names[0] == ssh_host)
+    if (colon and (ids.INSTALL_ID.fullmatch(install) or machine) and not rest.startswith("//")
             and (not at or NAME_RE.match(ssh_host) and not KEY_WORD.fullmatch(ssh_host))):
         return holds_secret(source) or holds_secret(ssh_host) or secret_in_id(rest, names[1:])
     host = names[0] if names else None
