@@ -383,23 +383,36 @@ def secret_in_id(text, names=()):
 
 
 # What an older kb's mask left that today's patterns cannot read, in text written before rows recorded a mask version.
+# The rest of a line, plain or escaped, is read up to a placeholder a key's body follows, which _KEY_REST masks through
+# its paragraph.
+_LINE_REST = (rf"(?:(?!\[masked\]{_BEFORE_BODY}{{0,64}}{_KEY_BODY_START})"
+              r"(?:[^\r\n\\]|\\(?!\\*[nr])))+")
 # Its named-value rule read a value on through an escaped line break into the next line's name, so that name went into
-# the placeholder and the next value stayed after it, with no name. And its summarizer cut a field before masking it,
-# which can leave the start of a token too short to know at the field's end.
-_PLACEHOLDER_LINE = re.compile(r"((?:[:=]|=>|\bis)[ \t]*[\"']?\[masked\])((?:[^\r\n\\]|\\(?!\\*[nr]))+)")
+# the placeholder and the next value stayed after it, with no name.
+_PLACEHOLDER_LINE = re.compile(rf"((?:[:=]|=>|\bis)[ \t]*[\"']?\[masked\])({_LINE_REST})")
+# Its key pattern took everything after a header that is base64 or a space, so after a cut key it ate the next words,
+# a command's or a header's name included, up to the first punctuation, and its placeholder is glued to that. A key's
+# body after it is left to _KEY_REST.
+_EATEN = re.compile(rf"(\[masked\])((?=[^\sA-Za-z0-9+/=,.;)\]}}\"'`<>\\])(?!{_BEFORE_BODY}{{0,64}}{_KEY_BODY_START})"
+                    rf"{_LINE_REST})")
+# And its summarizer cut a field before masking it, which can leave a token's start too short to know at the end.
 _CUT_TOKEN = re.compile(_NB + r"(?:sk-|(?:sk|rk|pk)_(?:live|test)_|gh[pousr]_|github_pat_|xox[abprs]-|AKIA|ASIA|AIza|"
                         r"ya29\.|GOCSPX-|(?:hf|gsk|npm|ntn|sbp|lin_api)_|xai-|tskey-|glpat-|whsec_|eyJ)"
                         r"[A-Za-z0-9_.+/=-]*(?=[ \t]*(?:\r?\n|\Z| …))")
 
 
+def _rest_masked(m):
+    """A placeholder's match with the rest of its line masked, when that rest holds a word."""
+    return m.group(1) + (" [masked]" if re.search(r"[A-Za-z0-9]{3}", m.group(2)) else m.group(2))
+
+
 def mask_older(text):
     """mask() for text an older kb wrote: also the rest of the line after a value's placeholder, one that follows a
-    separator, plain or escaped, when it holds a word, and a token's start at the end of a field, cut short. More of such text is masked than of today's, which is
+    separator, or after a placeholder glued to what main's key pattern stopped at, plain or escaped, when it holds a
+    word; and a token's start at the end of a field, cut short. More of such text is masked than of today's, which is
     the cost; rows that record today's version never get these rules, so a later version leaves them as they are."""
-    text = _CUT_TOKEN.sub("[masked]", mask(text))
-    text = _PLACEHOLDER_LINE.sub(
-        lambda m: m.group(1) + (" [masked]" if re.search(r"[A-Za-z0-9]{3}", m.group(2)) else m.group(2)), text)
-    return mask(text)
+    text = _CUT_TOKEN.sub("[masked]", mask(_EATEN.sub(_rest_masked, text)))
+    return mask(_PLACEHOLDER_LINE.sub(_rest_masked, text))
 
 
 def mask_all(value, key=None, masker=mask):
