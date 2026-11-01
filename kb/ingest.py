@@ -135,6 +135,8 @@ def run(db, config, log, only=(), with_summaries=True, model_factory=None):
     log = masked_log(log)
     capped = mask_module.capped
     model_factory = model_factory or (lambda: ai.load(config.ai))
+    store.clean_state(db)
+    db.commit()
     local = LocalReader(model_factory)
     remote = {h.name: SshReader(h) for h in config.hosts}
     away = set()

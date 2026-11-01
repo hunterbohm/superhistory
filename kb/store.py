@@ -279,8 +279,23 @@ def record_ok(db, unit):
     db.execute("DELETE FROM ingest_state WHERE source=? AND key=?", (STATE, f"fail:{unit}"))
 
 
+def clean_state(db):
+    """Drop what ingest_state holds from before today's mask(), once for each version: every failure line, since an
+    older kb cut one before masking it and the next failing run writes it again, and every row whose source, key or
+    value holds a secret, such as a position an older kb read from an id it now refuses. A source whose position goes
+    reads from the start again."""
+    if get_watermark(db, STATE, "state_masked") == VERSION:
+        return
+    db.execute("DELETE FROM ingest_state WHERE source=? AND key GLOB 'fail:*'", (STATE,))
+    db.executemany("DELETE FROM ingest_state WHERE source=? AND key=?", [
+        (source, key) for source, key, value in db.execute("SELECT source, key, watermark FROM ingest_state")
+        if holds_secret(source) or holds_secret(key) or holds_secret(str(value))])
+    set_watermark(db, STATE, "state_masked", VERSION)
+
+
 def record_failure(db, unit, exc):
     db.rollback()
+    clean_state(db)
     line = mask(str(exc).splitlines()[0])[:200] if str(exc) else type(exc).__name__
     set_watermark(db, STATE, f"fail:{unit}", f"{now_iso()} {line}")
     db.commit()
@@ -305,8 +320,12 @@ def succeeded(db):
 
 
 def failing(db):
-    """(unit, "<when> <error line>") for units whose last run failed."""
-    return _state(db, "fail:")
+    """(unit, "<when> <error line>") for units whose last run failed. Until clean_state() has run under today's
+    mask(), a line may be an older kb's, which can hold a piece of a secret too short to mask, so only its time shows."""
+    if get_watermark(db, STATE, "state_masked") != VERSION:
+        return [(unit, line.split(" ", 1)[0] + " (recorded before kb was updated; the next run records the error)")
+                for unit, line in _state(db, "fail:")]
+    return [(unit, mask(line)) for unit, line in _state(db, "fail:")]
 
 
 def away(db):
