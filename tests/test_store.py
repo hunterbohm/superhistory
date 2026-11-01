@@ -729,6 +729,19 @@ class UnversionedRowTest(TempDB):
                 store.connect(link, readonly=readonly)
             self.assertEqual(store_files(folder), before)
 
+    def test_a_store_with_a_wal_and_no_wal_index_is_refused_untouched(self):
+        from tests.support import commit_and_die, store_files
+        self.db.close()
+        commit_and_die(self.path, "INSERT INTO docs(kind, source, source_id, ts, title, content, metadata, masked) "
+                                  "VALUES ('doc', 's', 'in-wal', ?, 'w', 'an older row in the WAL', '{}', NULL)", iso())
+        os.remove(self.path + "-shm")
+        folder = os.path.dirname(self.path)
+        before = store_files(folder)
+        for readonly in (True, False):
+            with self.subTest(readonly=readonly), self.assertRaises(store.NeedsRebuild):
+                store.connect(self.path, readonly=readonly)
+            self.assertEqual(store_files(folder), before)
+
     def test_an_open_connection_reads_and_remasks_none(self):
         self.assertEqual([h["source_id"] for h in search.search(self.db, "pelican")], ["kept"])
         store.remask(self.db)

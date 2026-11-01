@@ -446,6 +446,23 @@ class OlderStoreTest(TempHome):
         self.assertIn("kept as it was", err)
         self.assertEqual(store_files(folder), before)
 
+    def test_a_swap_that_is_stopped_puts_the_old_store_back(self):
+        from tests.support import store_files
+        self.db.close()
+        folder = os.path.dirname(self.path)
+        before = store_files(folder)
+        replace = os.replace
+
+        for stop in (KeyboardInterrupt, OSError("disk full")):
+            def stopped(src, dst):
+                if str(src).endswith(".rebuild"):
+                    raise stop
+                return replace(src, dst)
+
+            with self.subTest(stop=stop), mock.patch("os.replace", stopped), contextlib.suppress(KeyboardInterrupt):
+                self.run_kb("rebuild")
+            self.assertEqual(store_files(folder), before, "the old store is back where it was, and nothing else")
+
     def test_rebuild_keeps_the_old_store_when_a_host_is_asleep(self):
         from kb.remote import HostAway
         self.db.close()

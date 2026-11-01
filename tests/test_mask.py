@@ -296,7 +296,8 @@ class OtherKeyFormatTest(unittest.TestCase):
         encoded = base64.b64encode(key.encode()).decode()
         for width in (12, 64, 76, len(encoded)):
             lines = textwrap.wrap(encoded, width)
-            for after in ("\nThanks\nAlbert", "\nCheers", "\nThanks\nAlbert\n\nnext paragraph"):
+            for after in ("\nThanks\nAlbert", "\nCheers", "\nThanks\nAlbert\n\nnext paragraph", "\nJohn",
+                          "\nBest\nJohn"):
                 with self.subTest(width=width, after=after):
                     masked = mask("Notes\n" + "\n".join(lines) + after)
                     self.assertEqual(masked, "Notes\n[masked]" + after)
@@ -529,6 +530,12 @@ class EscapeTest(unittest.TestCase):
                      "Authorization: Token \nAuthorization: Token Zq7wLm4Np8Rt2Kd9Vh3B"):
             with self.subTest(text=text):
                 self.assertNotIn("Zq7wLm4Np8Rt", mask(text))
+
+    def test_a_name_that_holds_a_secrets_word_after_another_on_its_line_is_read_too(self):
+        for text in ("secrets: db_password: Qx7RedisBytes2026zz", "credentials = api_key = Qx7RedisBytes2026zz",
+                     "TOKENS: GITHUB_TOKEN=Qx7RedisBytes2026zz", '"secrets": "password: Qx7RedisBytes2026zz"'):
+            with self.subTest(text=text):
+                self.assertNotIn("Qx7RedisBytes", mask(text))
 
     def test_a_value_that_holds_a_secrets_word_is_still_a_value(self):
         # A value is refused as the next line's name only when the space after its separator crossed a line break.
