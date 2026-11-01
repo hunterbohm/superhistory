@@ -68,7 +68,7 @@ _KEY_NAME = (
     r"|[A-Za-z0-9]+(?:[_-][A-Za-z0-9]+)*[_-](?:pass|pwd|pw)"
     r")(?![A-Za-z0-9_.-])")
 _ENV_KEY_NAME = rf"(?:(?<![A-Za-z0-9_])|{_AFTER_ESCAPE})([A-Z][A-Z0-9_]*_KEY)(?![A-Za-z0-9_])"
-_VALUE = rf"((?:(?!{_NEXT_NAME})[^ \t\n\r\"'`,;<>)\]}}])+)"
+_VALUE = rf"((?:\[masked\]|(?!{_NEXT_NAME})[^ \t\n\r\"'`,;<>)\]}}])+)"
 KEYED_SECRET = re.compile(_KEY_NAME + r"((?:[\"'])?[ \t\r\n]*(?:[:=]|=>|\bis\b)[ \t\r\n]*[\"']?)" + _VALUE)
 ENV_KEY_SECRET = re.compile(_ENV_KEY_NAME + r"((?:[\"'])?[ \t\r\n]*[:=][ \t\r\n]*[\"']?)" + _VALUE)
 # In an item id, a value counts by its key's name only in assignment form, "token=...", "token=>..." or "token:...",
@@ -89,6 +89,59 @@ REFERENCE = re.compile(r"^(?:[$%{<(\[*/~]|\.\.?/|os\.|process\.|env\.|getenv|sec
                        r"(?:env|file|cmd):)|"
                        r"^[A-Za-z_]+(?:\.[A-Za-z_]+)+$|^[A-Z][A-Z_]{2,}$|^[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+$|\(")
 
+# The sync client's recovery and pairing codes: "VRC" or "VP" and a version digit, then Crockford base32, 32
+# characters for a recovery code and 26 for a pairing code, written in groups of four. Its parser upper-cases a code as
+# Python does, so "ı" reads as I and "ß" as SS, reads I and L as 1 and O as 0 after the head, and drops dashes and
+# spaces anywhere. A code counts here as that parser reads it, in groups of four, a character at a time or unbroken,
+# with at least 20 characters after its head, so one cut short counts too; prose after "VP1" in words of other
+# lengths does not. A line break, plain or escaped, parts groups as a space does, since a code wraps.
+CODE_GAP = re.compile(r"(?:[- \r\n]|\\[nr])*")
+CODE_HEAD = re.compile(rf"{_NB}[Vv]{CODE_GAP.pattern}(?:[Rr]{CODE_GAP.pattern}[Cc]|[Pp]){CODE_GAP.pattern}[0-9]")
+# Crockford's characters with I, L and O, in either case, and the characters Python upper-cases into them.
+CODE_RUN = re.compile(r"[0-9A-TV-Za-tv-z\u00df\u0131\u017f\ufb00-\ufb06]+")
+CODE_LENGTH = {"recovery": 32, "pairing": 26}
+MIN_CODE = 20
+
+
+def _code_end(text, head, inner=False):
+    """Where the code whose head is `head` ends, and the length of its body as the parser reads it. It ends before a
+    run that starts another code, so that code keeps its head; a run that only looks like a head goes on."""
+    limit = CODE_LENGTH["recovery" if "r" in head.group().lower() else "pairing"]
+    end, total, shape = head.end(), 0, None
+    while True:
+        start = CODE_GAP.match(text, end).end()
+        run = CODE_RUN.match(text, start)
+        size = len(run.group().upper()) if run else 0
+        if not inner:
+            other = CODE_HEAD.match(text, start)
+            if other and _code_end(text, other, inner=True)[1] >= MIN_CODE:
+                break
+        if shape is None:
+            if size >= MIN_CODE:  # unbroken
+                return run.end(), size
+            if size not in (1, 4):
+                break
+            shape = size
+        if not size or size > shape or (size < shape and shape == 1) or total + size > limit:
+            break
+        end, total = run.end(), total + size
+        if size < shape:  # a last, shorter group
+            break
+    return end, total
+
+
+def _code_spans(text):
+    """Where the sync client's codes are, as (start, end) spans."""
+    spans = []
+    for head in CODE_HEAD.finditer(text):
+        if spans and head.start() < spans[-1][1]:
+            continue
+        end, total = _code_end(text, head)
+        if total >= MIN_CODE:
+            spans.append((head.start(), end))
+    return spans
+
+
 # Characters a reader does not see, Unicode's default ignorable code points: zero-width spaces and joiners, direction
 # marks and isolates, the soft hyphen, the byte order mark, variation selectors, fillers and tag characters. A secret
 # split by them reads whole, so each pass matches the text without them.
@@ -102,11 +155,14 @@ INVISIBLE = re.compile(r"[\u00ad\u034f\u061c\u115f\u1160\u17b4\u17b5\u180b-\u180
 REVISION = 3
 VERSION = hashlib.sha256(repr((REVISION, [p.pattern for p in SECRET_PATTERNS + PREFIXED_SECRETS], KEYED_SECRET.pattern,
                                 ENV_KEY_SECRET.pattern, PASSWORD_NAME.pattern, sorted(PLACEHOLDERS),
-                                REFERENCE.pattern, INVISIBLE.pattern)).encode()).hexdigest()[:16]
+                                REFERENCE.pattern, INVISIBLE.pattern, CODE_HEAD.pattern, CODE_RUN.pattern,
+                                sorted(CODE_LENGTH.items()), MIN_CODE)).encode()).hexdigest()[:16]
 
 
 def _mask_keyed(m):
     name, sep, value = m.groups()
+    if "[masked]" in value and value != "[masked]":  # the rest of a value a token or a code in it was masked out of
+        return f"{name}{sep}[masked]"
     if value.lower() in PLACEHOLDERS or REFERENCE.search(value):
         return m.group(0)
     if PASSWORD_NAME.search(name):
@@ -169,6 +225,9 @@ def _pass(text, names):
     for pattern in SECRET_PATTERNS:
         text = pattern.sub("[masked]", text)
     text = _GLUED_RUN.sub("[masked]", _headless_keys(_key_rest(text)))
+    # Codes after the tokens, since a token can hold a run that reads as one and would be cut apart, and before the
+    # names, since "passcode: VP1 ..." would take the head as its value and leave the rest headless.
+    text = _replace(text, _code_spans(text), "[masked]")
     for pattern in PREFIXED_SECRETS:
         text = pattern.sub(lambda m: m.group(1) + "[masked]", text)
     for pattern in names:
