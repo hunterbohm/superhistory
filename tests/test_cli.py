@@ -471,6 +471,78 @@ class OlderStoreTest(TempHome):
                     self.run_kb("rebuild", "--accept-loss")
                 self.assertEqual(store_files(folder), before, "the old store is back where it was, and nothing else")
 
+    def stop_swap(self, stop, before_raising=lambda: None):
+        """Runs a rebuild whose move of the fresh store into place is stopped by `stop`, just after it, or for an
+        exception, in place of it, after `before_raising`. Returns what it printed on stderr."""
+        replace, err = os.replace, io.StringIO()
+
+        def stopped(src, dst):
+            if str(src).endswith(".rebuild"):
+                if isinstance(stop, Exception):
+                    before_raising()
+                    raise stop
+                replace(src, dst)
+                raise stop
+            return replace(src, dst)
+
+        with mock.patch("os.replace", stopped), contextlib.redirect_stdout(io.StringIO()), \
+                contextlib.redirect_stderr(err), contextlib.suppress(KeyboardInterrupt):
+            cli.main(["rebuild", "--accept-loss"])
+        return err.getvalue()
+
+    def old_store_with_a_wal(self):
+        from tests.support import commit_and_die, store_files
+        self.db.close()
+        commit_and_die(self.path, "INSERT INTO docs(kind, source, source_id, ts, title, content, metadata, masked) "
+                                  "VALUES ('doc', 'notes', 'studio:wal.md', ?, 'w', 'an older row', '{}', NULL)", iso())
+        return store_files(os.path.dirname(self.path))
+
+    def test_a_swap_stopped_once_the_fresh_store_is_in_place_leaves_the_old_one_aside_and_says_where(self):
+        from tests.support import store_files
+        before = self.old_store_with_a_wal()
+        err = self.stop_swap(KeyboardInterrupt)
+        after = store_files(os.path.dirname(self.path))
+        self.assertEqual((after["kb.sqlite.old"], after["kb.sqlite.old-wal"]),
+                         (before["kb.sqlite"], before["kb.sqlite-wal"]), "the old store, aside as it was")
+        self.assertNotIn("kb.sqlite-wal", after, "and its WAL is not put beside the fresh one")
+        self.assertIn(self.path + ".old", err)
+        db = store.connect(self.path)
+        self.addCleanup(db.close)
+        self.assertEqual([r[0] for r in db.execute("SELECT source_id FROM docs")], ["studio:plan.md"])
+
+    def test_a_swap_stopped_never_moves_the_old_store_over_one_another_program_put_at_the_path(self):
+        from tests.support import store_files
+        before = self.old_store_with_a_wal()
+
+        def another_program():
+            other = sqlite3.connect(self.path)
+            other.execute("CREATE TABLE other(x)")
+            other.commit()
+            other.close()
+
+        err = self.stop_swap(OSError("disk full"), another_program)
+        after = store_files(os.path.dirname(self.path))
+        self.assertEqual((after["kb.sqlite.old"], after["kb.sqlite.old-wal"]),
+                         (before["kb.sqlite"], before["kb.sqlite-wal"]))
+        other = sqlite3.connect(self.path)
+        self.addCleanup(other.close)
+        self.assertEqual(other.execute("SELECT name FROM sqlite_master").fetchall(), [("other",)])
+        self.assertIn(self.path + ".old", err)
+
+    def test_a_rebuild_stops_before_reading_when_an_earlier_one_left_a_store_aside(self):
+        from tests.support import store_files
+        self.db.close()
+        with open(self.path + ".old", "wb") as fh:
+            fh.write(b"a store an earlier rebuild set aside")
+        folder = os.path.dirname(self.path)
+        before = store_files(folder)
+        with mock.patch("kb.ingest.run") as run:
+            code, out, err = self.run_kb("rebuild", "--accept-loss")
+        self.assertEqual(code, 1)
+        run.assert_not_called()
+        self.assertIn(self.path + ".old", err)
+        self.assertEqual(store_files(folder), before)
+
     def test_rebuild_keeps_the_old_store_when_a_host_is_asleep(self):
         from kb.remote import HostAway
         self.db.close()
