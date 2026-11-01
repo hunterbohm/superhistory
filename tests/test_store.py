@@ -432,9 +432,9 @@ class MaskVersionTest(TempDB):
                     "token2:walrus2secret9", "my-password:walrus2secret9"):
             with self.subTest(sid=sid):
                 self.assertTrue(store.secret_id("notes", sid), "with no host given")
-                self.assertTrue(store.secret_id("notes", f"desk:{sid}", host="desk"), "under a host")
+                self.assertTrue(store.secret_id("notes", f"desk:{sid}", names=("desk",)), "under a host")
                 if not sid.startswith(("token2", "my-password")):  # these two can be hosts, if a row says so
-                    self.assertTrue(store.secret_id("notes", sid, host=sid.partition(":")[0]), "no host is named so")
+                    self.assertTrue(store.secret_id("notes", sid, names=(sid.partition(":")[0],)), "no host is named so")
                 with self.assertRaises(ValueError):
                     store.replace_rows(self.db, "notes", sid, [{"kind": "doc", "ts": iso(), "title": "t",
                                                                 "content": "c", "metadata": {}}])
@@ -446,10 +446,10 @@ class MaskVersionTest(TempDB):
     def test_the_host_and_the_readers_id_are_checked_apart(self):
         for host in ("desk", "tokenbox", "secret-lab", "studio-pw", "passwordless", "token2"):
             with self.subTest(host=host):
-                self.assertFalse(store.secret_id("notes", f"{host}:Areas/notes-2026-10-27.md", host=host))
-                self.assertTrue(store.secret_id("notes", f"{host}:key-{self.TOKEN}.md", host=host))
-        self.assertTrue(store.secret_id("notes", f"{self.TOKEN}:a.md", host=self.TOKEN), "a host that is a token")
-        self.assertTrue(store.secret_id(self.TOKEN, "desk:a.md", host="desk"), "a source that is a token")
+                self.assertFalse(store.secret_id("notes", f"{host}:Areas/notes-2026-10-27.md", names=(host,)))
+                self.assertTrue(store.secret_id("notes", f"{host}:key-{self.TOKEN}.md", names=(host,)))
+        self.assertTrue(store.secret_id("notes", f"{self.TOKEN}:a.md", names=(self.TOKEN,)), "a host that is a token")
+        self.assertTrue(store.secret_id(self.TOKEN, "desk:a.md", names=("desk",)), "a source that is a token")
         self.assertTrue(store.secret_id("notes", "tokenbox:walrus2secret9.md"), "with no host given, read whole")
         row = {"kind": "doc", "ts": iso(), "title": "t", "content": "c", "metadata": {"host": "tokenbox"}}
         store.replace_rows(self.db, "notes", "tokenbox:Areas/notes-2026-10-27.md", [row])

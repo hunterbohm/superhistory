@@ -8,7 +8,7 @@ import sys
 import time
 
 from kb import ai, mask as mask_module, store, summarize
-from kb.mask import holds_secret, mask, masked_log, secret_in_id
+from kb.mask import holds_secret, id_names, mask, masked_log, secret_in_id
 from kb.remote import HostAway, SshReader
 from kb.sources import Excludes, Gone, Item, Progress, Run
 
@@ -52,7 +52,7 @@ def apply(db, source, host, event):
     when rows changed."""
     if holds_secret(source) or holds_secret(host):
         raise ValueError("a source or host name that looks like a secret is not stored")
-    if isinstance(event, Progress) or secret_in_id(event.source_id):
+    if isinstance(event, Progress) or secret_in_id(event.source_id, id_names(getattr(event, "meta", None))):
         return False
     sid = f"{host}:{event.source_id}"
     if isinstance(event, Gone):
@@ -99,7 +99,8 @@ def run_unit(db, source, host, reader, log):
         try:
             if not isinstance(event, (Item, Gone)):
                 raise TypeError(f"not an event: a {type(event).__name__}")
-            if not isinstance(event, Progress) and secret_in_id(event.source_id):
+            if not isinstance(event, Progress) and secret_in_id(event.source_id,
+                                                                 id_names(getattr(event, "meta", None))):
                 log.warning("%s@%s: skipped %s, whose name looks like it holds a secret; rename it to index it",
                             source.name, host, mask(event.source_id))
             changed += apply(db, source.name, host, event)

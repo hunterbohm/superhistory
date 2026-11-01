@@ -229,12 +229,28 @@ def _basic_credential(value):
     return ":" in decoded and decoded.isprintable()
 
 
-def secret_in_id(text):
+# Fields of an item's metadata that name where its reader read it, and that its reader's id starts with, joined by a
+# colon: a Hermes profile, as in "secret-project:20261028_101500_a1b2c3", which would read as a secret's name and value.
+ID_NAMES = ("profile",)
+
+
+def id_names(meta):
+    """The values an item's metadata records for ID_NAMES, in order."""
+    return tuple(meta.get(field) for field in ID_NAMES) if isinstance(meta, dict) else ()
+
+
+def secret_in_id(text, names=()):
     """Whether an item id holds a secret, so that kb does not store the item: a masked id could stand for two items.
     An id is a name someone chose, so it is read more narrowly than text: a provider's token shape or a credential in
     a link still counts, but a value its key names counts only in assignment form, and a Basic value only as base64
     of "user:password". A title such as "Tokens: 2026Q4 plan" or "the password is changed" is a name, which mask()
-    would mask in text."""
+    would mask in text. `names` are what the id starts with, each joined by a colon, as the item's metadata records
+    them (id_names): each is read by itself and the rest of the id apart from it. A name that is a secret's word by
+    itself, such as "password", is not read apart, so "password:..." still counts."""
+    name = names[0] if names else None
+    if (isinstance(name, str) and name and text.startswith(f"{name}:") and not KEY_WORD.fullmatch(name)
+            and not text.startswith("//", len(name) + 1)):
+        return secret_in_id(name) or secret_in_id(text[len(name) + 1:], names[1:])
     if any(_basic_credential(m.group(1)) for m in _BASIC_VALUE.finditer(text)):
         return True
     masked = text
