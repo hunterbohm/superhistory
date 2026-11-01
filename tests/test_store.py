@@ -601,6 +601,15 @@ class MaskVersionTest(TempDB):
         self.assertEqual([r[0] for r in self.db.execute("SELECT DISTINCT source_id FROM docs")], [kept],
                          "a name that is a secret's word alone, or one the rows do not record, is not split off")
 
+    def test_a_profile_named_exactly_as_a_secrets_word_keeps_its_sessions(self):
+        for profile in ("secret", "token", "credentials", "password"):
+            sid = f"desk:{profile}:20261028_101500_a1b2c3"
+            self.old(sid, "hermes session", meta={"host": "desk", "profile": profile, "session_id": "20261028_101500_a1b2c3"})
+        self.old("desk:password:walrus2secret9.md", "a note", meta={"host": "desk"})
+        store.remask(self.db)
+        self.assertEqual(sorted(r[0].split(":")[1] for r in self.db.execute("SELECT DISTINCT source_id FROM docs")),
+                         ["credentials", "password", "secret", "token"], "a note with no profile is read whole")
+
     def test_an_items_names_come_from_its_own_rows_not_its_summaries(self):
         # An older kb's summary rows copied only url, path and host, so they record no profile.
         sid = "desk:secret-project:20261028_101500_a1b2c3"

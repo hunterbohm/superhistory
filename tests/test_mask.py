@@ -422,7 +422,7 @@ class EscapeTest(unittest.TestCase):
                      "q=%7B%22user%22%3A%20%22bob%22%2C%20%22password%22%3A%20%22walrus2secret9%22%7D",
                      "password+%3D+walrus2secret9", "password%253A%2520walrus2secret9",
                      "run it\\n--password walrus2secret9\\nAuthorization: Token walrus2secret9x\\ndone",
-                     "%0A--api-key%20walrus2secret9", "https:\\/\\/bob:walrus2secret9@example.com/x",
+                     "%0A--api-key%20walrus2secret9", "Authorization%3A%20Token%20walrus2secret9x", "https:\\/\\/bob:walrus2secret9@example.com/x",
                      "next=https%3A//bob%3Awalrus2secret9%40example.com/x", "smb://CORP\\\\bob:walrus2secret9@files/x"):
             with self.subTest(text=text):
                 self.assertNotIn("walrus2secret9", mask(text))
@@ -730,7 +730,8 @@ class SecretInIdTest(unittest.TestCase):
             with self.subTest(name=name):
                 self.assertFalse(secret_in_id(name))
         for name in ("notes/sk-ant-api03-" + "Z" * 24 + ".md", "sk-proj-" + "Ab1" * 16, "sk-" + "Ab3dE" * 10,
-                     "sk-svcacct-" + "Ab1" * 16, "sk-or-v1-" + "a1" * 32):
+                     "sk-svcacct-" + "Ab1" * 16, "sk-or-v1-" + "a1" * 32, "keys/sk-" + "Ab3dE" * 10 + "-backup.txt",
+                     "keys/sk-" + "Ab3dE" * 10 + "_old.txt", "deepseek-sk-" + "a1b2" * 8 + "-2.md"):
             with self.subTest(name=name):
                 self.assertTrue(secret_in_id(name))
 
