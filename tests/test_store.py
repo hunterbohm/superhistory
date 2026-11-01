@@ -570,6 +570,16 @@ class MaskVersionTest(TempDB):
         self.assertEqual(len(self.ids()), 2)
         self.assertEqual(len(search.search(self.db, "central limit theorem")), 2)
 
+    def test_remask_reads_a_profile_its_rows_record_apart_from_the_id_after_it(self):
+        kept = "desk:secret-project:20261028_101500_a1b2c3"
+        self.old(kept, "hermes session", meta={"host": "desk", "profile": "secret-project"})
+        for sid, profile in (("desk:password:walrus2secret9", "password"), ("desk:my-token:walrus2secret9", None),
+                             ("desk:my-token:walrus2secret9x", "other")):
+            self.old(sid, "hermes session", meta={"host": "desk", **({"profile": profile} if profile else {})})
+        store.remask(self.db)
+        self.assertEqual([r[0] for r in self.db.execute("SELECT DISTINCT source_id FROM docs")], [kept],
+                         "a name that is a secret's word alone, or one the rows do not record, is not split off")
+
     def test_remask_stopped_by_its_time_leaves_the_rest_old(self):
         for i in range(120):
             self.old(f"n{i}", f"note {i} with {self.TOKEN}")
