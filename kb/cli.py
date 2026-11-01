@@ -387,19 +387,24 @@ def _remove_store(path):
             os.remove(f"{path}{suffix}")
 
 
-def _per_source(path):
+def _per_source(path, kept):
     """Each source's item count and its oldest item's time in the store at `path`, read from ids and times alone: the
-    text of an older kb's rows is never read."""
+    text of an older kb's rows is never read. When the store cannot be read, as when another program holds it locked,
+    no loss could be seen, so the rebuild stops with `kept` ending its message."""
     if not os.path.exists(path):
         return {}
-    db = store.peek(path)
     try:
-        return {source: (items, oldest) for source, items, oldest in db.execute(
-            "SELECT source, count(DISTINCT source_id), min(ts) FROM docs WHERE kind IN ('doc', 'raw') GROUP BY source")}
-    except sqlite3.OperationalError:  # no docs table: nothing to lose
-        return {}
-    finally:
-        db.close()
+        db = store.peek(path)
+        try:
+            return {source: (items, oldest) for source, items, oldest in db.execute(
+                "SELECT source, count(DISTINCT source_id), min(ts) FROM docs WHERE kind IN ('doc', 'raw') "
+                "GROUP BY source")}
+        finally:
+            db.close()
+    except sqlite3.DatabaseError as exc:
+        if str(exc).startswith("no such table"):
+            return {}  # a store with no items yet: nothing to lose
+        raise Fail(f"could not count the items in {path} ({exc}), so {kept}") from None
 
 
 def _reading_back(config, before):
@@ -445,39 +450,38 @@ def cmd_rebuild(paths, config, args):
     with store.exclusive(paths.lock) as held:
         if not held:
             raise Fail("an ingest is running; try again when it finishes")
-        before = _per_source(target)
+        kept = f"{paths.db} is kept as it was"
+        before = _per_source(target, kept)
         _remove_store(fresh)
-        db = store.connect(fresh)
         try:
-            failures = ingest.run(db, _reading_back(config, before), log, with_summaries=False)
-            _as_configured(db, config)
-            away = [host for host, _ in store.away(db)]
-            sound = db.execute("PRAGMA integrity_check").fetchone()[0] == "ok" and not store.has_unversioned(db)
-            items = db.execute("SELECT count(*) FROM (SELECT DISTINCT source, source_id FROM docs)").fetchone()[0]
-            db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-        except BaseException:  # an error or Ctrl-C mid-read leaves no half-built store behind
-            db.close()
+            db = store.connect(fresh)
+            try:
+                failures = ingest.run(db, _reading_back(config, before), log, with_summaries=False)
+                _as_configured(db, config)
+                away = [host for host, _ in store.away(db)]
+                sound = db.execute("PRAGMA integrity_check").fetchone()[0] == "ok" and not store.has_unversioned(db)
+                items = db.execute("SELECT count(*) FROM (SELECT DISTINCT source, source_id FROM docs)").fetchone()[0]
+                db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            finally:
+                db.close()
+            if away:
+                raise Fail(f"{', '.join(away)} could not be reached, so {kept}. Run `kb rebuild` again once "
+                           f"{'it is' if len(away) == 1 else 'they are'} awake.")
+            if failures or not sound:
+                raise Fail(f"the fresh knowledge base did not check out ({failures} sources failed; see "
+                           f"{paths.log_dir}), so {kept}")
+            after = _per_source(fresh, kept)
+            lost = {source: n - after.get(source, (0,))[0] for source, (n, _) in sorted(before.items())
+                    if after.get(source, (0,))[0] < n}
+            losses = ", ".join(f"{source}: {n:,} fewer items" for source, n in lost.items())
+            if lost and not args.accept_loss:
+                raise Fail(f"the fresh knowledge base has fewer items than {paths.db} for {losses}. A source that keeps "
+                           f"only recent history, as Claude Code deletes sessions after 30 days, has let them go, and "
+                           f"no source can give them again. The old one is kept as it was. To replace it anyway and "
+                           f"lose those items for good, run `kb rebuild --accept-loss`.")
+        except BaseException:  # any stop, an error or Ctrl-C leaves no fresh store behind
             _remove_store(fresh)
             raise
-        db.close()
-        if away:
-            _remove_store(fresh)
-            raise Fail(f"{', '.join(away)} could not be reached, so {paths.db} is kept as it was. Run `kb rebuild` "
-                       f"again once {'it is' if len(away) == 1 else 'they are'} awake.")
-        if failures or not sound:
-            _remove_store(fresh)
-            raise Fail(f"the fresh knowledge base did not check out ({failures} sources failed; see {paths.log_dir}), "
-                       f"so {paths.db} is kept as it was")
-        after = _per_source(fresh)
-        lost = {source: n - after.get(source, (0,))[0] for source, (n, _) in sorted(before.items())
-                if after.get(source, (0,))[0] < n}
-        losses = ", ".join(f"{source}: {n:,} fewer items" for source, n in lost.items())
-        if lost and not args.accept_loss:
-            _remove_store(fresh)
-            raise Fail(f"the fresh knowledge base has fewer items than {paths.db} for {losses}. A source that keeps only "
-                       f"recent history, as Claude Code deletes sessions after 30 days, has let them go, and no source "
-                       f"can give them again. The old one is kept as it was. To replace it anyway and lose those items "
-                       f"for good, run `kb rebuild --accept-loss`.")
         _remove_store(old)
         for suffix in ("", "-wal", "-shm"):
             if os.path.exists(f"{target}{suffix}"):

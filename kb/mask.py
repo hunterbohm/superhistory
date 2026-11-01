@@ -239,14 +239,58 @@ def _prose(sep):
     return not _SEP_CHARACTER.search(sep) and ("is" in sep.lower() or sep[-1:].isspace())
 
 
+def _starts_line(text, start):
+    """Whether only indentation stands between text[start] and the line break, plain or escaped, before it."""
+    while start and text[start - 1] in " \t":
+        start -= 1
+    return not start or text[start - 1] == "\n" or text[start - 2:start] in ("\\n", "\\r")
+
+
+def _wrapped_lines(text, start, end):
+    """The (start, end) of each line of the base64 block text[start:end], without line breaks and indentation."""
+    lines, at = [], start
+    for brk in _UNWRAP.finditer(text, start, end):
+        lines.append((at, brk.start()))
+        at = brk.end()
+    return lines + [(at, end)]
+
+
+def _holds_key(text, lines):
+    return bool(_ENCODED_KEY.search("".join(text[a:b] for a, b in lines)))
+
+
+def _key_lines(text, lines):
+    """The lines of a base64 block that hold the key, without a heading above it or words below it. Wrapped lines are
+    all as wide as the first full one but the last, which may be narrower and brings the base64 to a whole number of
+    4-character groups or is too long for a word; a shorter one holds no more than the key's footer. A line of its own narrower than the line under it, or of another width than two equal lines
+    under it, is a heading such as "Notes". A line kept out still counts when the key is not found without it."""
+    widths = [b - a for a, b in lines]
+    if len(lines) > 1 and _starts_line(text, lines[0][0]) and (
+            widths[0] < widths[1] or len(lines) > 2 and widths[0] != widths[1] == widths[2]):
+        if _holds_key(text, lines[1:]):
+            lines, widths = lines[1:], widths[1:]
+    wrap = max(widths[:2])
+    kept, total = lines[:1], widths[0]
+    for line, width in zip(lines[1:], widths[1:]):
+        if width > wrap or width < wrap and (total + width) % 4 and width < 24:  # a word, not a tail of base64
+            break
+        kept.append(line)
+        total += width
+        if width < wrap:
+            break
+    return kept if _holds_key(text, kept) else lines
+
+
 def _encoded_secrets(text):
     """`text` with each private key in a file written as base64 masked, whole with the lines it wraps onto, and each
     Docker "auth" login."""
     spans = []
     for m in _WRAPPED_BASE64.finditer(text):
-        if _ENCODED_KEY.search(_UNWRAP.sub("", m.group())):
-            escape = _ESCAPE_LETTER.match(text, m.start())
-            spans.append((escape.end() if escape else m.start(), m.end()))
+        escape = _ESCAPE_LETTER.match(text, m.start())
+        lines = _wrapped_lines(text, escape.end() if escape else m.start(), m.end())
+        if _holds_key(text, lines):
+            lines = _key_lines(text, lines)
+            spans.append((lines[0][0], lines[-1][1]))
     text = _replace(text, spans, "[masked]")
     return _AUTH_FIELD.sub(lambda m: m.group(1) + "[masked]" if _basic_credential(m.group(2)) else m.group(0), text)
 
@@ -298,7 +342,9 @@ _KEY_BODY_START = r"(?:MI[E-P][A-Za-z0-9+/]|M[A-H][A-Za-z0-9+/][Cw]|b3Bl)"
 # leaves exactly that. The body's first line is base64 to its end, or to a quote, a backslash or a cut's "…", so a
 # word that only starts like one, followed by more words, stays. Masked through its footer, or through the end of its
 # paragraph.
-_BEFORE_BODY = rf"(?:\\{{1,7}}[nrt]|{_QUOTE}|<br\s*/?>|[\s\"'#>+,;|*\]])"
+# Each alternative takes a character no other does: quotes are _QUOTE's alone, as a run of them read two ways each
+# took time exponential in its length.
+_BEFORE_BODY = rf"(?:\\{{1,7}}[nrt]|{_QUOTE}|<br\s*/?>|[\s#>+,;|*\]])"
 _KEY_REST = re.compile(rf"\[masked\]((?:[A-Za-z0-9+/=]+[ \t\r]*(?=\n|\\(?:r\\)?n)"
                        rf"|(?={_BEFORE_BODY}{{0,64}}{_KEY_BODY_START}[A-Za-z0-9+/=]{{36,}}[ \t\r]*(?:\n|[\\\"'<…]|\Z)))"
                        rf"(?:(?!{_KEY_END}){_IN_PARAGRAPH})*(?:{_KEY_END})?)")

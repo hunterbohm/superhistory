@@ -23,6 +23,8 @@ CHUNK_KEYS = ("chunk", "chunks")
 # The metadata a summary row copies from its item, so a search hit on a summary points at the original.
 POINTER_KEYS = ("url", "path", "host")
 STATE = "_kb"
+# How long a connection waits for another program's lock on the store before it gives up.
+BUSY_MS = 30000
 TOKENIZE = "porter unicode61"
 
 SCHEMA = """
@@ -77,12 +79,12 @@ def peek(path):
     """A connection that reads the store at `path` and leaves its files as they are. Closing a writable connection
     moves the rows in the WAL file into the store, so one is opened read-only when the WAL files are there; without
     them a read-only one would leave new ones behind, and a writable one has nothing to move."""
-    path = os.fspath(path)
+    path = os.path.realpath(path)  # SQLite keeps a linked store's WAL files beside its target
     if os.path.exists(path + "-wal") and os.path.exists(path + "-shm"):
         db = sqlite3.connect(pathlib.Path(path).as_uri() + "?mode=ro", uri=True)
     else:
         db = sqlite3.connect(path)
-    db.execute("PRAGMA busy_timeout=30000")
+    db.execute(f"PRAGMA busy_timeout={BUSY_MS}")
     return db
 
 
@@ -100,7 +102,7 @@ def connect(path, readonly=False):
     else:
         os.makedirs(os.path.dirname(path), exist_ok=True)
         db = sqlite3.connect(path)
-    db.execute("PRAGMA busy_timeout=30000")
+    db.execute(f"PRAGMA busy_timeout={BUSY_MS}")
     if has_unversioned(db):  # an older kb wrote since the look above
         db.close()
         raise NeedsRebuild(REBUILD.format(path=path))
