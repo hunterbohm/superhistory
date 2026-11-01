@@ -181,8 +181,28 @@ class HeadlessKeyTest(unittest.TestCase):
         for after in ("", "\n-----END PRIVATE KEY-----"):
             text = f"notes [masked]\n{self.LINE}\n{self.LINE}{after}\n\nnext paragraph"
             self.assertEqual(mask(text), "notes [masked]\n\nnext paragraph")
-        self.assertEqual(mask("token=[masked]\n3f2a9c" + "0" * 34 + "\nnext"), "token=[masked]",
-                         "a line of nothing but base64 reads as a key's: its paragraph is the cost")
+
+    def test_after_a_placeholder_and_a_line_break_a_keys_first_line_starts_the_rest_of_a_key(self):
+        # main's key pattern stops at a backslash, so in escaped text it masks a key's header and leaves its body from
+        # the first line, cut anywhere, which starts as a real key's DER or OpenSSH body does.
+        for first in ("MIIEvQIBADANBgkqhkiG9w0BAQEFAASC", "MHcCAQEEIJQyFkwn", "MC4CAQAwBQYDK2Vw", "MIGkAgEBBDAqCr+V",
+                      "MEcCAQAwBQYDK2Vx", "b3BlbnNzaC1rZXkt"):
+            for brk in ("\\n", "\\r\\n", "\n", "\r\n"):
+                for rest in (first[:4] + " …", first[:13] + " password=walrus2secret9 harbor …",
+                             first + brk + self.LINE + brk + "-----END PRIVATE KEY-----"):
+                    with self.subTest(first=first, brk=brk, rest=rest[:20]):
+                        text = f"walrus ledger [masked]{brk}{rest}{brk}{brk}next paragraph"
+                        self.assertEqual(mask(text), f"walrus ledger [masked]{brk}{brk}next paragraph")
+
+    def test_after_a_placeholder_and_a_line_break_other_lines_stay(self):
+        for brk in ("\\n", "\n"):
+            for line in ("/usr/local/bin/python3 deploy.py --env prod", "3f2a9c" + "0" * 34, "MCP server started",
+                         "Make the deploy", "PATH=/usr/local/bin:/usr/bin", "MD5 checksums", "QUJDREVGR0hJSktM"):
+                with self.subTest(brk=brk, line=line):
+                    text = f"export GH=[masked]{brk}{line}{brk}then open it"
+                    self.assertEqual(mask(text), text)
+        text = "export GH=ghp_" + "A1" * 12 + "\\n/usr/local/bin/python3 deploy.py\\nthen open it"
+        self.assertEqual(mask(text), "export GH=[masked]\\n/usr/local/bin/python3 deploy.py\\nthen open it")
 
     def test_the_rest_of_a_token_masked_a_chunk_at_a_time_is_masked(self):
         # An older kb masked "sk-ant-..." in one chunk; the token's last characters began the next.
