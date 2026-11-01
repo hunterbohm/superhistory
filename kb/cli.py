@@ -386,9 +386,27 @@ def _remove_store(path):
             os.remove(f"{path}{suffix}")
 
 
+def _items_per_source(path):
+    """How many items each source has in the store at `path`, read from its ids alone: the text of an older kb's
+    rows is never read."""
+    if not os.path.exists(path):
+        return {}
+    # Not opened read-only: in WAL mode that leaves -wal and -shm files beside the store. This only counts.
+    db = sqlite3.connect(path)
+    try:
+        return dict(db.execute("SELECT source, count(DISTINCT source_id) FROM docs WHERE kind IN ('doc', 'raw') "
+                               "GROUP BY source"))
+    except sqlite3.OperationalError:  # no docs table: nothing to lose
+        return {}
+    finally:
+        db.close()
+
+
 def cmd_rebuild(paths, config, args):
     """Read every source into a fresh knowledge base, and put it in place of the old one once it checks out: every
-    source read, the file sound, and no row of no mask version. Otherwise the old one stays as it was."""
+    source read, the file sound, no row of no mask version, and no source with fewer items than the old one has,
+    unless --accept-loss. Otherwise the old one stays as it was, and no copy of either is kept: the old one may hold
+    an older kb's secrets."""
     if not config.sources:
         raise Fail(f"No sources in {paths.config_file}, so there is nothing to rebuild from.")
     log = _logger(paths)
@@ -409,6 +427,15 @@ def cmd_rebuild(paths, config, args):
             _remove_store(fresh)
             raise Fail(f"the fresh knowledge base did not check out ({failures} sources failed; see {paths.log_dir}), "
                        f"so {paths.db} is kept as it was")
+        before, after = _items_per_source(paths.db), _items_per_source(fresh)
+        lost = {source: n - after.get(source, 0) for source, n in sorted(before.items()) if after.get(source, 0) < n}
+        losses = ", ".join(f"{source}: {n:,} fewer items" for source, n in lost.items())
+        if lost and not args.accept_loss:
+            _remove_store(fresh)
+            raise Fail(f"the fresh knowledge base has fewer items than {paths.db} for {losses}. A source that keeps only "
+                       f"recent history, as Claude Code deletes sessions after 30 days, has let them go, and no source "
+                       f"can give them again. The old one is kept as it was. To replace it anyway and lose those items "
+                       f"for good, run `kb rebuild --accept-loss`.")
         _remove_store(old)
         for suffix in ("", "-wal", "-shm"):
             if os.path.exists(f"{paths.db}{suffix}"):
@@ -416,7 +443,8 @@ def cmd_rebuild(paths, config, args):
         os.replace(fresh, paths.db)
         _remove_store(fresh)
         _remove_store(old)
-    print(f"Rebuilt {paths.db} from your sources: {items:,} items. The next ingest writes their summaries.")
+    print(f"Rebuilt {paths.db} from your sources: {items:,} items. The next ingest writes their summaries."
+          + (f" Lost, as --accept-loss allowed: {losses}." if lost else ""))
 
 
 def cmd_supersede(paths, config, args):
@@ -482,8 +510,10 @@ def parser():
     sub.add_parser("config", help="check the config file and list its sources").set_defaults(fn=cmd_config)
     sub.add_parser("remask", help="reapply masking to stored rows after the patterns change").set_defaults(
         fn=cmd_remask)
-    sub.add_parser("rebuild", help="read every source into a fresh knowledge base, in place of this one").set_defaults(
-        fn=cmd_rebuild)
+    rb = sub.add_parser("rebuild", help="read every source into a fresh knowledge base, in place of this one")
+    rb.add_argument("--accept-loss", action="store_true",
+                    help="replace it even when a source has fewer items than before, losing those items for good")
+    rb.set_defaults(fn=cmd_rebuild)
     sp = sub.add_parser("supersede", help="mark an older record as replaced by a newer one")
     sp.add_argument("old_id", type=int)
     sp.add_argument("new_id", type=int)
