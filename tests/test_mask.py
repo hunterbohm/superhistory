@@ -239,7 +239,9 @@ class OlderTextTest(unittest.TestCase):
                      "export REDIS_PASSWORD=walrus2secret1\\nredis-cli -a Zq7wLm4Np8Rt2Kd9Vh3B ping",
                      "-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkq\nthe notes moved\nredis-cli -a Zq7wLm4Np8Rt2Kd9Vh3B",
                      "-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkq\nAuthorization: Token Zq7wLm4Np8Rt2Kd9Vh3B",
-                     "-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkq\nmysql -u root -pZq7wLm4Np8Rt2Kd9Vh3B shop"):
+                     "-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkq\nmysql -u root -pZq7wLm4Np8Rt2Kd9Vh3B shop",
+                     # main's key pattern masked the header, then its named-value rule ate "[masked" and left "]".
+                     "api_key: walrus2secret1\\n-----BEGIN RSA PRIVATE KEY-----\\nMIIEpAIBAAKCAQEAZq7wLm4Np8Rt2Kd9Vh3B"):
             with self.subTest(text=text[:30]):
                 older = main_mask(text)
                 self.assertIn("Zq7wLm4Np8Rt", older, "main left the value readable")
@@ -464,6 +466,13 @@ class EscapeTest(unittest.TestCase):
                      "password: walrus2secret1\\n--token s3cr3tV4lu3XYZ99", "--token=abc123def456ghi\\n--api-key s3cr3tV4lu3XYZ99"):
             with self.subTest(text=text):
                 self.assertNotIn("V4lu3XYZ99", mask(text))
+
+    def test_a_name_with_no_value_does_not_take_a_symbol_name_on_the_next_line(self):
+        for text in ('secrets:\n:password => "walrus2secret9"', '{"private_key":\n:token => "Zq7wLm4Np8Rt2Kd9Vh3B"'):
+            with self.subTest(text=text):
+                masked = mask(text)
+                self.assertNotIn("walrus2secret9", masked)
+                self.assertNotIn("Zq7wLm4Np8Rt", masked)
 
     def test_a_value_ends_where_an_escape_starts_a_symbol_name(self):
         text = '{"body": "api_key: Zq7wLm4Np8Rt2Kd9Vh3B\\n:password => \\"walrus2secret9\\"\\n:token => \\"Zx9Kq2Lm4Np8Rt2Kd9\\""}'
