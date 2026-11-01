@@ -504,6 +504,12 @@ class EscapeTest(unittest.TestCase):
                 self.assertNotIn("walrus2secret9", masked)
                 self.assertNotIn("Zq7wLm4Np8Rt", masked)
 
+    def test_an_authorization_header_reads_its_own_line(self):
+        for text in ("Authorization: Toke\nAuthorization: Token Zq7wLm4Np8Rt2Kd9Vh3B",
+                     "Authorization: Token \nAuthorization: Token Zq7wLm4Np8Rt2Kd9Vh3B"):
+            with self.subTest(text=text):
+                self.assertNotIn("Zq7wLm4Np8Rt", mask(text))
+
     def test_a_value_ends_where_an_escape_starts_a_flag(self):
         for text in ('{"command": "export API_TOKEN=abc123def456\\n--api-key s3cr3tV4lu3XYZ99"}',
                      "password: walrus2secret1\\n--token s3cr3tV4lu3XYZ99", "--token=abc123def456ghi\\n--api-key s3cr3tV4lu3XYZ99"):
