@@ -277,6 +277,15 @@ class OlderTextTest(unittest.TestCase):
                 self.assertIn("Zq7wLm4Np8Rt", older, "main left the value readable")
                 self.assertNotIn("Zq7wLm4Np8Rt", mask_older(older))
 
+    def test_a_name_glued_to_a_placeholder_by_a_chunk_main_remasked_is_masked_with_its_line(self):
+        # main's remask masked a chunk that ended after a key's header, line break included, so the next chunk's
+        # first name is glued to its placeholder.
+        for text in ("[masked]Authorization: Token Zq7wLm4Np8Rt2Kd9Vh3B", "[masked]db_password: walrus2secret9 x",
+                     "[masked]curl -u bob:Zq7wLm4Np8Rt2Kd9Vh3B https://x"):
+            with self.subTest(text=text):
+                self.assertNotIn("Zq7wLm4Np8Rt", mask_older(text))
+                self.assertNotIn("walrus2secret9", mask_older(text))
+
     def test_text_after_a_tokens_placeholder_stays(self):
         for text in ("token [masked] ordinary words walrus deployment", "see [masked], then the plan", "[masked]) and more"):
             self.assertEqual(mask_older(text), text)
