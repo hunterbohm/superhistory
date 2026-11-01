@@ -183,6 +183,9 @@ Known limits:
 - In escaped text, such as a tool's input stored as JSON, a named value reads on through "\n" into the next line's
   first word and masks it too: "password: <pw>\nnext line" becomes "password: [masked] line". That over-masking is
   kept on purpose, since what follows "\n" in the same run may be the rest of the secret.
+- A secret is read through characters you cannot see, such as a zero-width space or a NUL, but not through a vertical
+  tab, a form feed or the separators from 0x1c, which part words as a line break does. A key split by one of those is
+  not masked whole.
 - A token right after a terminal color code, and a private key written percent-encoded or as base64 (as a Kubernetes
   secret holds one), are not masked.
 - A few rare file names are refused as if they held a secret, such as one that names a command's password flag with a

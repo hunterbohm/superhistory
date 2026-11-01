@@ -122,10 +122,10 @@ _KEY_NAME = (
     r")(?![A-Za-z0-9_.-])")
 _ENV_KEY_NAME = rf"(?:(?<![A-Za-z0-9_])|{_AFTER_ESCAPE})([A-Z][A-Z0-9_]*_KEY)(?![A-Za-z0-9_])"
 def _value(stop=""):
-    """A secret's value: a run that holds a placeholder whole, as a value a code was masked in does, and otherwise stops
-    before a space, a quote, a closing mark, the next name after an escape, or what `stop` refuses. A "/" right after
-    a placeholder starts a path, as an AWS key id's credential scope does, so the value ends there."""
-    return rf"((?:\[masked\](?!/)|{stop}(?!{_NEXT_NAME}){_CLOSE}[^ \t\n\r\"'`,;<>)\]}}])+)"
+    """A secret's value: a run that stops before a space, a quote, a closing mark, the next name after an escape, or
+    what `stop` refuses. It ends inside a placeholder, at its "]", so what follows one is read on its own, as the next
+    header after "Token [masked]|" is."""
+    return rf"((?:{stop}(?!{_NEXT_NAME}){_CLOSE}[^ \t\n\r\"'`,;<>)\]}}])+)"
 
 
 _VALUE = _value()
@@ -289,18 +289,20 @@ def _code_spans(text):
     return spans
 
 
-# Characters a reader does not see: NUL and the other C0 controls but tab, line feed and carriage return, as UTF-16
-# text read as bytes holds them, and Unicode's default ignorable code points: zero-width spaces and joiners, direction
-# marks and isolates, the soft hyphen, the byte order mark, variation selectors, fillers and tag characters. A secret
-# reads through them, and one before a secret parts it from the word before (_mask_once).
-INVISIBLE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\u00ad\u034f\u061c\u115f\u1160\u17b4\u17b5\u180b-\u180f\u200b-\u200f\u202a-\u202e"
+# Characters a reader does not see: NUL and the other C0 controls that are not whitespace, as UTF-16 text read as bytes
+# holds them, and Unicode's default ignorable code points: zero-width spaces and joiners, direction marks and isolates,
+# the soft hyphen, the byte order mark, variation selectors, fillers and tag characters. A secret reads through them,
+# and one before a secret parts it from the word before (_mask_once). The vertical tab, the form feed and the four
+# separators from 0x1c are whitespace, as str.split reads them, and part words as a line break does: pdftotext puts a
+# form feed between pages.
+INVISIBLE = re.compile(r"[\x00-\x08\x0e-\x1b\u00ad\u034f\u061c\u115f\u1160\u17b4\u17b5\u180b-\u180f\u200b-\u200f\u202a-\u202e"
                        r"\u2060-\u206f\u3164\ufe00-\ufe0f\ufeff\uffa0\ufff0-\ufff8\U0001bca0-\U0001bca3"
                        r"\U0001d173-\U0001d17a\U000e0000-\U000e0fff]")
 
 # Which mask() a stored row was masked with. A row of another version, or of none, is masked again when read and by
 # the next ingest. The patterns change it by themselves; bump REVISION when the code that applies them changes what
 # it masks.
-REVISION = 5
+REVISION = 6
 VERSION = hashlib.sha256(repr((REVISION, [p.pattern for p in SECRET_PATTERNS + PREFIXED_SECRETS], KEYED_SECRET.pattern,
                                 ENV_KEY_SECRET.pattern, JSON_SECRET.pattern, FLAG_SECRET.pattern, AUTH_SECRET.pattern,
                                 COMMAND_FLAGS, PASSWORD_NAME.pattern, sorted(PLACEHOLDERS), REFERENCE.pattern,
@@ -547,18 +549,43 @@ _TOKENS = {id(rules): (_token_shapes(rules[0]), _token_shapes(rules[0], after_a_
            for rules in (_TEXT_RULES, _ID_RULES)}
 
 
+def _scoped(source):
+    """A pattern's source with its leading "(?i)", if any, scoped to it, so it joins others in one pattern."""
+    return f"(?i:{source[4:]})" if source.startswith("(?i)") else f"(?:{source})"
+
+
+# Where a secret's reading starts: a secret's name and what parts it from its value, a scheme word, a link's scheme, a
+# command a password follows, openssl's "-pass" and a key's header. Read through invisible characters before one, a
+# token before them would take the name as part of itself and leave the secret after it.
+_READING_START = re.compile("|".join(_scoped(source) for source in (
+    KEYED_SECRET.pattern[:-len(_VALUE)], ENV_KEY_SECRET.pattern[:-len(_VALUE)], FLAG_SECRET.pattern[:-len(_VALUE)],
+    AUTH_SECRET.pattern[:AUTH_SECRET.pattern.index(_SCHEME_WORD)],
+    PREFIXED_SECRETS[0].pattern[:PREFIXED_SECRETS[0].pattern.index(f"(?:{_CLOSE}")],
+    _AUTH_FIELD.pattern[:_AUTH_FIELD.pattern.rindex("(")], rf"(?i){_WORD}(?:bearer|basic){_SCHEME_GAP}",
+    r"[a-z][a-z0-9+.-]{0,31}:(?:\\?/){2}", r"(?i)[a-z][a-z0-9+.-]{0,31}%(?:25)?3A(?:%(?:25)?2F|/){2}",
+    "(?i)(?:" + "|".join(command for command, _, _ in COMMAND_FLAGS) + r")(?![A-Za-z0-9_.-])",
+    r"-pass(?:in|out)?[ \t]+['\"]?pass:", "-----BEGIN ")))
+_INVISIBLE_RUN = re.compile(INVISIBLE.pattern + "+")
+
+
 def _mask_once(text, rules=_TEXT_RULES):
     """One pass of every pattern. A secret reads through characters a reader does not see, so the pass matches the text
     without them: a key split by them is one match. Where one stood, a token may start even after a letter, as after a
     space, so one before a key parts it from the word before ("budget<ZWSP>sk-...") without gluing them. Each stretch
     the pass changed there replaces the same stretch of the text as written, and the rest keeps them, so an emoji or a
     script that joins with them reads as it did, even between two secrets. Then the text as written has a pass of its
-    own, where they part words as a space does, as for a name glued to a word by one."""
+    own, where they part words as a space does, as for a name glued to a word by one. A run of them just before where
+    a secret's reading starts stays in the view as a break, so a token before it keeps to itself and the name after it
+    reads as on main ("ghp_...<ZWSP>Authorization: Token ...")."""
     if not INVISIBLE.search(text):
         return _pass(text, rules)
-    view = INVISIBLE.sub("", text)
-    # The view's i-th character sits after every invisible character whose place in the view is i or before.
-    places = [m.start() - n for n, m in enumerate(INVISIBLE.finditer(text))]
+    gone = [i for run in _INVISIBLE_RUN.finditer(text) if not _READING_START.match(text, run.end())
+            for i in range(run.start(), run.end())]
+    if not gone:
+        return _pass(text, rules)
+    view = "".join(text[a + 1:b] for a, b in zip([-1] + gone, gone + [len(text)]))
+    # The view's i-th character sits after every removed character whose place in the view is i or before.
+    places = [i - n for n, i in enumerate(gone)]
     # A token found as the view reads runs through the places inside it; only a place outside every such token can
     # start one after a letter.
     tokens, after_a_break = _TOKENS[id(rules)]
@@ -621,7 +648,7 @@ def _edits(view, masked):
         after = masked.find(placeholder, j)
         rest = masked[j:j + 64 if after < 0 else min(j + 64, after)]
         if not rest and j < len(masked):
-            return None  # another placeholder right after: where this stretch ends is not known
+            rest = placeholder  # another right after: one the view held, as "[masked][masked]" can follow a pass
         end = view.find(rest, i if replacement else i + 1) if rest else len(view)
         if end < 0 or end <= i and not replacement:
             return None
