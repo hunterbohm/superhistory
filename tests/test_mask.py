@@ -496,6 +496,12 @@ class EscapeTest(unittest.TestCase):
                 masked = mask(text)
                 self.assertNotIn("Qx7pass2026", masked)
                 self.assertNotIn("Garden99x", masked)
+        # In escaped text a value reads on through "\\n"; the credential ends there, before what follows it.
+        for text, masked in (("Authorization: Token Zq03154022Wm4Np8Rt2Kd9\\n[masked]\\n[masked]",
+                              "Authorization: Token [masked]\\n[masked]\\n[masked]"),
+                             ("Authorization: Token Zq03154022Wm4Np8Rt2Kd9\\nnext line",
+                              "Authorization: Token [masked]\\nnext line")):
+            self.assertEqual(mask(text), masked)
         for text in ("Authorization: pending review", "Authorization: Organization-level approval needed",
                      "Authorization: Implementation-specific, see RFC 7235."):
             self.assertEqual(mask(text), text)
