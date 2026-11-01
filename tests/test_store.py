@@ -584,11 +584,12 @@ class MaskVersionTest(TempDB):
             self.assertNotIn(self.TOKEN.encode(), fh.read())
 
     def test_remask_keeps_an_old_note_named_with_basic_or_bearer(self):
-        for n, name in enumerate(("Courses/Basic Statistics/lecture-01.md", "Wedding/Ring Bearer duties/plan-2026.md")):
+        for n, name in enumerate(("Courses/Basic Statistics/lecture-01.md", "Wedding/Ring Bearer duties/plan-2026.md",
+                                  "ML/sk-learn-pipeline-experiments.md")):
             self.old(f"desk:{name}", f"central limit theorem {n}", meta={"host": "desk"})
         store.remask(self.db)
-        self.assertEqual(len(self.ids()), 2)
-        self.assertEqual(len(search.search(self.db, "central limit theorem")), 2)
+        self.assertEqual(len(self.ids()), 3)
+        self.assertEqual(len(search.search(self.db, "central limit theorem")), 3)
 
     def test_remask_reads_a_profile_its_rows_record_apart_from_the_id_after_it(self):
         kept = "desk:secret-project:20261028_101500_a1b2c3"

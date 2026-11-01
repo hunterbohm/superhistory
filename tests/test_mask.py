@@ -621,6 +621,17 @@ class SecretInIdTest(unittest.TestCase):
             with self.subTest(name=name):
                 self.assertTrue(secret_in_id(name))
 
+    def test_a_name_starting_with_an_sk_slug_does_not(self):
+        for name in ("sk-learn-pipeline-experiments.md", "Beauty/sk-ii-facial-treatment-essence-review.md",
+                     "i18n/sk-SK_translation-notes-2026.md", "sk-learn-tutorial-notebooks@" + "3f2a9c" * 6 + "e1d4",
+                     "acme/sk-planner-experiments-2026#12"):
+            with self.subTest(name=name):
+                self.assertFalse(secret_in_id(name))
+        for name in ("notes/sk-ant-api03-" + "Z" * 24 + ".md", "sk-proj-" + "Ab1" * 16, "sk-" + "Ab3dE" * 10,
+                     "sk-svcacct-" + "Ab1" * 16, "sk-or-v1-" + "a1" * 32):
+            with self.subTest(name=name):
+                self.assertTrue(secret_in_id(name))
+
     def test_machine_made_ids_do_not(self):
         for name in ("acme/app@" + "3f2a9c" * 6 + "e1d4", "1781000000000000001", "<CAFx3k+Q2Fu_ZXJ5=@mail.gmail.com>",
                      "iMessage;-;+15555550123:2026-10-27", "I_kwDOAbCdEf5Ghij", "default:20260923_121000_71bf95",
