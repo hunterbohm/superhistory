@@ -388,8 +388,8 @@ def secret_in_id(text, names=()):
 _LINE_REST = (rf"(?:(?!\[masked\]{_BEFORE_BODY}{{0,64}}{_KEY_BODY_START})"
               r"(?:[^\r\n\\]|\\(?!\\*[nr])))+")
 # Its named-value rule read a value on through an escaped line break into the next line's name, so that name went into
-# the placeholder and the next value stayed after it, with no name.
-_PLACEHOLDER_LINE = re.compile(rf"((?:[:=]|=>|\bis)[ \t]*[\"']?\[masked\])({_LINE_REST})")
+# the placeholder and the next value stayed after it, with no name; its separator could take a line break too.
+_PLACEHOLDER_LINE = re.compile(rf"((?:[:=]|=>|\bis)[ \t\r\n]*[\"']?\[masked\])({_LINE_REST})")
 # Its key pattern took everything after a header that is base64 or a space, so after a cut key it ate the next words,
 # a command's or a header's name included, up to the first punctuation, and its placeholder is glued to that. A key's
 # body after it is left to _KEY_REST.
