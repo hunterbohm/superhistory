@@ -338,15 +338,59 @@ def _credential(name, sep, word):
     return head
 
 
+_HEADER_SEP = re.compile(r":|%(?:25)?3[Aa]|u003[Aa]")
+# A plain word: letters with a letter past "f", so a hex run such as "dead" in a UUID is none, or capitalized words run
+# together with digits after them, as a product's name is ("WindowsServer2022").
+_PLAIN_WORD = re.compile(r"(?=.*[g-zG-Z])[A-Za-z][a-z]{3,}|(?:[A-Z][a-z]{2,}){2,}\d*")
+_NUMBER_DATE_OR_TIME = re.compile(r"[\d:.+TZ-]+")
+
+
+def _random_run(text, shortest=12):
+    """Whether `text` reads as random: `shortest` or more characters mixing letters and digits, of both cases when
+    shorter than 16, and no plain word."""
+    return (len(text) >= shortest and bool(re.search(r"\d", text)) and bool(re.search(r"[A-Za-z]", text))
+            and (len(text) >= 16 or bool(re.search(r"[a-z]", text) and re.search(r"[A-Z]", text)))
+            and not _PLAIN_WORD.fullmatch(text))
+
+
+def _credential_shaped(word):
+    """Whether a lone token reads as a credential: 12 or more characters with no whitespace, mixing letters and digits,
+    not a number, a date or a time, and either holding a random run of 10 or more between its separators ("live_<run>",
+    a three-part token), or holding no plain word and reading as random whole (a UUID). An identifier with a plain word
+    in it stays: "RFC7235-compliant", "WPA2-Enterprise"."""
+    word = word.rstrip(".,;:!?)")
+    if len(word) < 12 or not re.search(r"\d", word) or not re.search(r"[A-Za-z]", word):
+        return False
+    if _NUMBER_DATE_OR_TIME.fullmatch(word):
+        return False
+    parts = re.split(r"[-_./:]", word)
+    if any(_random_run(part, 10) for part in parts):
+        return True
+    return not any(_PLAIN_WORD.fullmatch(part) for part in parts) and _random_run(word)
+
+
+def _bare_credential(word):
+    """The credential-shaped token a header's value starts with, up to an escaped line break or a placeholder, and
+    without a closing mark after it; or "". Judged by its shape alone, so base64 that starts with "/" counts."""
+    head = _CREDENTIAL_END.split(word, 1)[0].rstrip(".,;:!?)")
+    return head if _credential_shaped(head) else ""
+
+
 def _mask_authorization(m):
-    """An Authorization header with its credential masked: the word after a scheme such as Bearer or
-    AWS4-HMAC-SHA256, whose name stays. A first word with no scheme before it stays, as on main: prose such as
-    "ISO-27001 compliance" reads like a credential."""
+    """An Authorization header with its credential masked: the word after a scheme such as Bearer or AWS4-HMAC-SHA256,
+    whose name stays, or, header style ("Authorization: ..."), a credential-shaped first token with no scheme before
+    it. Prose and identifiers such as "ISO-27001 compliance" stay."""
     name, sep, first, gap, second = m.groups()
-    credential = _credential(name, sep, second) if second and first.lower() in AUTH_SCHEMES else ""
-    if not credential:
+    if first.lower() in AUTH_SCHEMES:
+        credential = _credential(name, sep, second) if second else ""
+        if credential:
+            return f"{name}{sep}{first}{gap}[masked]{second[len(credential):]}"
         return m.group(0)
-    return f"{name}{sep}{first}{gap}[masked]{second[len(credential):]}"
+    # With no scheme, header style: a credential-shaped first token, by design even where main keeps it.
+    credential = _bare_credential(first) if _HEADER_SEP.search(sep) else ""
+    if credential:
+        return f"{name}{sep}[masked]{first[len(credential):]}{gap or ''}{second or ''}"
+    return m.group(0)
 
 
 KEY_FOOTER = re.compile(_KEY_END)
