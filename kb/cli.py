@@ -483,9 +483,11 @@ def cmd_rebuild(paths, config, args):
     with store.exclusive(paths.lock) as held:
         if not held:
             raise Fail("an ingest is running; try again when it finishes")
-        if any(os.path.exists(f"{old}{suffix}") for suffix in ("", "-wal", "-shm")):
-            raise Fail(f"{old} holds a knowledge base an earlier rebuild set aside and could not put back. Move it "
-                       f"somewhere safe or remove it, then run `kb rebuild` again.")
+        aside = [f"{old}{suffix}" for suffix in ("", "-wal", "-shm") if os.path.exists(f"{old}{suffix}")]
+        if aside:
+            raise Fail(f"an earlier rebuild set a knowledge base aside and could not put it back: {', '.join(aside)}. "
+                       f"Move {'it' if len(aside) == 1 else 'them'} somewhere safe or remove "
+                       f"{'it' if len(aside) == 1 else 'them'}, then run `kb rebuild` again.")
         kept = f"{paths.db} is kept as it was"
         before = _per_source(target, kept)
         _remove_store(fresh)
