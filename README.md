@@ -72,6 +72,7 @@ roots = ["~/code"]
 | `kb get ID` | Prints the stored text of a search hit, a page at a time. |
 | `kb ingest` | Reads every source now, then summarizes new long items. |
 | `kb stats` | Shows how many records each source has and which sources failed. |
+| `kb rebuild` | Reads every source into a fresh knowledge base and puts it in place of this one once it checks out. |
 | `kb schedule on`, `off`, `status` | Reads your sources in the background, with launchd on a Mac or a systemd user timer on Linux. |
 | `kb hooks install`, `uninstall`, `status` | Adds or removes the hook in each agent found here. |
 | `kb ai list`, `kb ai test` | Lists the AI plug-ins, or makes one tiny call and says which plug-in answered. |
@@ -180,9 +181,9 @@ Known limits:
 - A private key is masked by its structure: from its header through its footer, or, if the footer is missing, through
   the end of its paragraph. So whatever follows a key cut off before its footer, up to the next blank line, is masked
   with it, and so is the paragraph before a footer with no header.
-- A store an older kb wrote is read with rules for what its masking missed: after a value it masked, the rest of that
-  line is masked too, and so is the rest of a line where its key pattern ate into the text after a key. Such a row loses
-  that text when it is masked again. A row written by today's kb never gets these rules.
+- A knowledge base that an older kb wrote, before each row recorded how it was masked, does not open: an older kb's
+  masking can leave a secret that no pattern finds afterwards. kb says so and names `kb rebuild`, which reads your
+  sources into a fresh one. Items whose source is gone, such as sessions an agent has since deleted, are not in it.
 - A YAML list of secrets under a secret's name (`tokens:` followed by `- value` lines) is masked only where an item
   holds a provider's token shape.
 

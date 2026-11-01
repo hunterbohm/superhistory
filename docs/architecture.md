@@ -57,14 +57,15 @@ The Sync client goes in `kb/sync/`. It meets the engine at two points.
   sorter's lines are masked, so the plug-in, which can be another provider than the user's agent, never sees a
   secret's value. kb's own instructions in those prompts contain nothing mask() changes.
 
-Rows an older kb wrote record no mask version (`store.older`), as main's did, and the store's trigger clears the version
-on any row an older kb changes. Remask and every reader of such a row use `mask.mask_older()`: mask() plus rules for
-what main's masking left that no pattern can read from the text alone. After a value's placeholder, and after a
-placeholder glued to where main's key pattern stopped, the rest of the line is masked, since main's named-value rule
-took the next line's name and its key pattern took the next words. A token's start cut short at a field's end is
-masked, since main's summarizer cut before it masked. Rows of any version never get these rules, so a later version
-does not wear a store down. `tests/test_old_rows.py` generates such rows with main's own mask (`tests/legacy_mask.py`)
-and checks that remask keeps every item with no secret in its id and stamps no row current with a secret in it.
+Rows an older kb wrote record no mask version, as main's did, and the store's trigger clears the version on any row an
+older kb changes; kb's own writers stamp it again. An older kb's masking can leave a secret that no pattern finds
+afterwards, such as a value whose name its named-value rule took, so kb never reads such a row or masks it again in
+place. `store.connect()` refuses a store that holds one (`store.NeedsRebuild`), and a connection opened before an older
+writer changed a row shows it to no reader and leaves it to no remask (`store.unversioned`). `kb rebuild` ingests every
+source into a fresh file under the lock and puts it in place of the old one only once every source was read, the file
+checks sound and no row lacks a version. Remask brings rows of an earlier version of today's mask() up to date.
+`tests/test_old_rows.py` generates both kinds of rows, an earlier version's and an older kb's with main's own mask
+(`tests/legacy_mask.py`), and checks remask over the first and the refusal over the second.
 
 Text is masked before it is cut, never after: a cut can keep part of a secret too short for mask() to know. A row of
 today's version, and for a chunk every chunk of its item, was masked whole, so `kb search` cuts it as stored

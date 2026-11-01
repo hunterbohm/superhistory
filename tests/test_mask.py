@@ -1,7 +1,7 @@
 import unittest
 from unittest import mock
 
-from kb.mask import mask_older, is_auth_code, is_auth_noise, mask, secret_in_id
+from kb.mask import is_auth_code, is_auth_noise, mask, secret_in_id
 
 
 class MaskTest(unittest.TestCase):
@@ -253,51 +253,6 @@ class OtherKeyFormatTest(unittest.TestCase):
                      "-----BEGIN PGP PUBLIC KEY BLOCK-----\n\nmQENBGcW1aEBCAD\n-----END PGP PUBLIC KEY BLOCK-----"):
             with self.subTest(text=text[:20]):
                 self.assertEqual(mask(text), text)
-
-
-class OlderTextTest(unittest.TestCase):
-    """Text an older kb wrote, read with mask_older(): what main's mask left that today's patterns cannot read."""
-
-    def test_a_value_main_left_after_a_placeholder_is_masked(self):
-        from tests.legacy_mask import mask as main_mask
-        # main's named-value rule read a value through an escaped line break into the next line's name, and its key
-        # pattern took a key's body and the words after it up to the first punctuation, a command's name included.
-        for text in ("db_password: walrus2secret1\\napi_key: Zq7wLm4Np8Rt2Kd9Vh3B\\nnext",
-                     "X-Api-Key: walrus2secret1\\nAuthorization: Token Zq7wLm4Np8Rt2Kd9Vh3B",
-                     "export REDIS_PASSWORD=walrus2secret1\\nredis-cli -a Zq7wLm4Np8Rt2Kd9Vh3B ping",
-                     "-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkq\nthe notes moved\nredis-cli -a Zq7wLm4Np8Rt2Kd9Vh3B",
-                     "-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkq\nAuthorization: Token Zq7wLm4Np8Rt2Kd9Vh3B",
-                     "-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkq\nmysql -u root -pZq7wLm4Np8Rt2Kd9Vh3B shop",
-                     # main's separator took a line break, so the next line's name became the value.
-                     ":password =\ndb_password: Zq7wLm4Np8Rt2Kd9Vh3B",
-                     # main's key pattern masked the header, then its named-value rule ate "[masked" and left "]".
-                     "api_key: walrus2secret1\\n-----BEGIN RSA PRIVATE KEY-----\\nMIIEpAIBAAKCAQEAZq7wLm4Np8Rt2Kd9Vh3B"):
-            with self.subTest(text=text[:30]):
-                older = main_mask(text)
-                self.assertIn("Zq7wLm4Np8Rt", older, "main left the value readable")
-                self.assertNotIn("Zq7wLm4Np8Rt", mask_older(older))
-
-    def test_a_name_glued_to_a_placeholder_by_a_chunk_main_remasked_is_masked_with_its_line(self):
-        # main's remask masked a chunk that ended after a key's header, line break included, so the next chunk's
-        # first name is glued to its placeholder.
-        for text in ("[masked]Authorization: Token Zq7wLm4Np8Rt2Kd9Vh3B", "[masked]db_password: walrus2secret9 x",
-                     "[masked]curl -u bob:Zq7wLm4Np8Rt2Kd9Vh3B https://x"):
-            with self.subTest(text=text):
-                self.assertNotIn("Zq7wLm4Np8Rt", mask_older(text))
-                self.assertNotIn("walrus2secret9", mask_older(text))
-
-    def test_a_key_body_glued_to_a_placeholder_later_on_an_eaten_line_is_masked_through_its_paragraph(self):
-        line = "d3xQ9JpieZuSexV8k5+wfgNBVTbKnX+VpiuwNF3Alr+EL453G+4mQSEq7pbWJpUL"
-        for brk in ("\n", "\r\n", "\\n"):
-            text = f"[masked]-cli walrus ledger [masked]{line}{brk}Xj8nl7LKtNJ4Da+q+IGmchmiDpXf3rm1{brk}{brk}next"
-            with self.subTest(brk=brk):
-                masked = mask_older(text)
-                self.assertNotIn("LKtNJ4Da", masked)
-                self.assertTrue(masked.endswith("next"))
-
-    def test_text_after_a_tokens_placeholder_stays(self):
-        for text in ("token [masked] ordinary words walrus deployment", "see [masked], then the plan", "[masked]) and more"):
-            self.assertEqual(mask_older(text), text)
 
 
 class HeadlessKeyTest(unittest.TestCase):
