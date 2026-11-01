@@ -116,9 +116,40 @@ class PairedTest(unittest.TestCase):
             with self.assertRaises(SystemExit):
                 paired.earlier_runs(["month"], "other", (final, baseline))
             os.makedirs(os.path.join(baseline, "bench/results/hillclimb/month/b-baseline-paired"))
+            open(os.path.join(baseline, "bench/results/hillclimb/month/b-baseline-paired/check.jsonl"), "w").close()
             with self.assertRaises(SystemExit) as stop:
                 paired.earlier_runs(["month"], "head", (final, baseline))
             self.assertIn("no logged run", str(stop.exception))
+
+    def test_rival_rows_beside_the_final_month_rows_are_not_a_run(self):
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(paired.splits, "LOG", os.path.join(tmp, "log")):
+            final, baseline = os.path.join(tmp, "final"), os.path.join(tmp, "baseline")
+            with open(paired.splits.LOG, "w") as fh:
+                fh.write("date\ttest\tlabel\trun\tcode\tcommit\n")
+            month = os.path.join(final, "bench/results/hillclimb/month/b-final")
+            os.makedirs(month)
+            for rival in ("mem0", "supermemory", "claude-mem"):
+                open(os.path.join(month, f"{rival}.jsonl"), "w").write("{}\n")
+            paired.earlier_runs(["month"], "head", (final, baseline))
+            open(os.path.join(month, "check.jsonl"), "w").write("{}\n")
+            with self.assertRaises(SystemExit) as stop:
+                paired.earlier_runs(["month"], "head", (final, baseline))
+            self.assertIn("no logged run", str(stop.exception))
+
+    def test_the_baseline_month_rows_are_copied_beside_the_final_and_rival_rows(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            checkout, out = os.path.join(tmp, "baseline"), os.path.join(tmp, "out")
+            ran = os.path.join(checkout, "bench/results/hillclimb/month/b-baseline-paired")
+            os.makedirs(ran)
+            for name in ("check.jsonl", "run.json", "table.md"):
+                open(os.path.join(ran, name), "w").write(name)
+            os.makedirs(os.path.join(out, "month/b-final"))
+            open(os.path.join(out, "month/b-final/mem0.jsonl"), "w").write("rival")
+            paired.copy_baseline_results("month", checkout, out)
+            self.assertEqual(sorted(os.listdir(os.path.join(out, "month/b-baseline-paired"))),
+                             ["check.jsonl", "run.json", "table.md"])
+            self.assertEqual(open(os.path.join(out, "month/b-baseline-paired/check.jsonl")).read(), "check.jsonl")
+            self.assertEqual(os.listdir(os.path.join(out, "month/b-final")), ["mem0.jsonl"])
 
     def test_a_start_with_other_code_than_the_frozen_code_refuses(self):
         with tempfile.TemporaryDirectory() as tmp, mock.patch.object(paired, "FREEZE", os.path.join(tmp, "f.json")):
