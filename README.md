@@ -175,6 +175,9 @@ Known limits:
 - In JSON written inside other JSON text, a password with an escaped quote in it is masked only up to that quote, and
   not at all when fewer than four characters come before it. In plain JSON, and in a tool's input that kb writes as
   JSON itself, the whole value is masked.
+- An Authorization header's credential is masked after a scheme such as Bearer, Token or AWS4-HMAC-SHA256. One
+  with no scheme before it is masked only when it has a provider's token shape, since a word such as "ISO-27001"
+  reads the same.
 - A token right after a terminal color code, and a private key written percent-encoded or as base64 (as a Kubernetes
   secret holds one), are not masked.
 - A few rare file names are refused as if they held a secret, such as one that names a command's password flag with a

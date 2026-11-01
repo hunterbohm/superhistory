@@ -141,9 +141,11 @@ FLAG_SECRET = re.compile(rf"(?i)(?:(?<![A-Za-z0-9_.-])|{_AFTER_ESCAPE})(--" + _K
                          r"(?<!-helper)(?<!-length)(?<!-type)(?<!-url)((?:[ \t]|%(?:25)?20)+[\"']?)(?!-)" + _VALUE)
 # An HTTP Authorization header's credentials: its first word, or after a scheme word ("Token ...", "Bot ...",
 # "ApiKey ..."), the next. _mask_authorization() reads which is the secret.
+# Its first word, the scheme, ends at a space a link encodes too, as in "Authorization%3A%20Token%20<credential>".
+_SCHEME_WORD = _VALUE.replace("(?:(?!", "(?:(?!%(?:25)?20)(?!", 1)
 AUTH_SECRET = re.compile(rf"(?i)((?:(?<![A-Za-z0-9_.-])|{_AFTER_ESCAPE})(?:proxy-)?authorization)"
                          rf"({_QUOTE}?{_LINE_SPACE}*(?::|=|%(?:25)?3[ADad]){_LINE_SPACE}*{_QUOTE}?)"
-                         + _VALUE + rf"(?:({_LINE_SPACE}+)" + _VALUE + ")?")
+                         + _SCHEME_WORD + rf"(?:({_LINE_SPACE}+)" + _VALUE + ")?")
 # Commands that take a password after a short flag, which counts only on that command's line: from its first word to a
 # pipe, ";" or a line break, plain or escaped. Each row: the command, the flag and what parts it from the password, and
 # whether any value counts; otherwise a value of letters only after a space is a word, as after "is" ("docker login -p
@@ -250,7 +252,7 @@ AUTH_SCHEMES = frozenset(("basic", "bearer", "digest", "dpop", "gnap", "hoba", "
                           "googlelogin", "kerberos", "splunk"))
 
 
-_CREDENTIAL_END = re.compile(r"\\+[nrt]|\[masked")
+_CREDENTIAL_END = re.compile(r"\\{1,7}[nrt]|\[masked")  # bounded, as _CLOSE is: a run read from every backslash is quadratic
 
 
 def _credential(name, sep, word):
@@ -265,17 +267,13 @@ def _credential(name, sep, word):
 
 def _mask_authorization(m):
     """An Authorization header with its credential masked: the word after a scheme such as Bearer or
-    AWS4-HMAC-SHA256, whose name stays, or else each of its first two words that looks like a credential."""
+    AWS4-HMAC-SHA256, whose name stays. A first word with no scheme before it stays, as on main: prose such as
+    "ISO-27001 compliance" reads like a credential."""
     name, sep, first, gap, second = m.groups()
-
-    def masked(word):
-        credential = _credential(name, sep, word) if word else ""
-        return "[masked]" + word[len(credential):] if credential else word
-
-    words = [first, masked(second)] if first.lower() in AUTH_SCHEMES else [masked(first), masked(second)]
-    if words == [first, second]:
+    credential = _credential(name, sep, second) if second and first.lower() in AUTH_SCHEMES else ""
+    if not credential:
         return m.group(0)
-    return f"{name}{sep}{words[0]}{gap or ''}{words[1] or ''}"
+    return f"{name}{sep}{first}{gap}[masked]{second[len(credential):]}"
 
 
 KEY_FOOTER = re.compile(_KEY_END)
