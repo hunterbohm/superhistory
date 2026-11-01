@@ -251,10 +251,11 @@ def _code_spans(text):
     return spans
 
 
-# Characters a reader does not see, Unicode's default ignorable code points: zero-width spaces and joiners, direction
+# Characters a reader does not see: NUL and the other C0 controls but tab, line feed and carriage return, as UTF-16
+# text read as bytes holds them, and Unicode's default ignorable code points: zero-width spaces and joiners, direction
 # marks and isolates, the soft hyphen, the byte order mark, variation selectors, fillers and tag characters. A secret
-# split by them reads whole, so each pass matches the text without them.
-INVISIBLE = re.compile(r"[\u00ad\u034f\u061c\u115f\u1160\u17b4\u17b5\u180b-\u180f\u200b-\u200f\u202a-\u202e"
+# reads through them, and one before a secret parts it from the word before (_mask_once).
+INVISIBLE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\u00ad\u034f\u061c\u115f\u1160\u17b4\u17b5\u180b-\u180f\u200b-\u200f\u202a-\u202e"
                        r"\u2060-\u206f\u3164\ufe00-\ufe0f\ufeff\uffa0\ufff0-\ufff8\U0001bca0-\U0001bca3"
                        r"\U0001d173-\U0001d17a\U000e0000-\U000e0fff]")
 
@@ -401,10 +402,9 @@ def _replace(text, spans, replacement):
     return "".join(out + [text[last:]])
 
 
-# What a pass reads, in text and in an item id: the secrets known by their shape, and the patterns that read a value by
-# its name. An id reads "Bearer" and "Basic" as words, and a named value only in assignment form.
-# What a pass masks: token shapes, then named values, each with what masks it and how its matches are read. In text a
-# name's value can be the next name (_sub_named); an id is read as re.sub reads it.
+# What a pass reads, in text and in an item id: the secrets known by their shape, then the patterns that read a value
+# by its name, each with what masks it and how its matches are read. An id reads "Bearer" and "Basic" as words, and a
+# named value only in assignment form, as re.sub reads it; in text a name's value can be the next name (_sub_named).
 _TEXT_RULES = (SECRET_PATTERNS, ((JSON_SECRET, _mask_keyed), (KEYED_SECRET, _mask_keyed), (ENV_KEY_SECRET, _mask_keyed),
                                  (FLAG_SECRET, _mask_keyed), (AUTH_SECRET, _mask_authorization)), "named")
 _ID_RULES = (_ID_PATTERNS, ((KEYED_ID, _mask_keyed), (ENV_KEY_ID, _mask_keyed)), "plain")
@@ -445,24 +445,61 @@ def _sub_named(pattern, masker, text):
     return "".join(out) + text[at:]
 
 
+def _token_shapes(patterns, after_a_break=False):
+    """The token shapes in `patterns` as one pattern. `after_a_break` leaves out the word boundary before each start,
+    for a match where an invisible character stood, which parts a token from the word before it as a space would."""
+    shapes = []
+    for pattern in patterns:
+        source, flags = pattern.pattern, ""
+        if source.startswith("(?i)"):
+            source, flags = source[4:], "i"
+        for boundary in (_NB, _WORD, r"(?<![\d])") if after_a_break else ():
+            if source.startswith(boundary):
+                source = source[len(boundary):]
+                break
+        shapes.append(f"(?{flags}:{source})" if flags else f"(?:{source})")
+    return re.compile("|".join(shapes))
+
+
+_TOKENS = {id(rules): (_token_shapes(rules[0]), _token_shapes(rules[0], after_a_break=True))
+           for rules in (_TEXT_RULES, _ID_RULES)}
+
+
 def _mask_once(text, rules=_TEXT_RULES):
-    """One pass of every pattern. In a text with characters a reader does not see, the pass matches the text without
-    them, and the stretch it changed there, from its first change to its last, replaces the same stretch of the text
-    as written: the rest keeps them, so an emoji or a script that joins with them reads as it did."""
+    """One pass of every pattern. A secret reads through characters a reader does not see, so the pass matches the text
+    without them: a key split by them is one match. Where one stood, a token may start even after a letter, as after a
+    space, so one before a key parts it from the word before ("budget<ZWSP>sk-...") without gluing them. The stretch the
+    pass changed there, from its first change to its last, replaces the same stretch of the text as written; the rest
+    keeps them, so an emoji or a script that joins with them reads as it did. Then the text as written has a pass of
+    its own, where they part words as a space does, as for a name glued to a word by one."""
     if not INVISIBLE.search(text):
         return _pass(text, rules)
     view = INVISIBLE.sub("", text)
-    masked = _pass(view, rules)
-    if masked == view:
-        return text
-    head = len(os.path.commonprefix([view, masked]))
-    tail = len(os.path.commonprefix([view[head:][::-1], masked[head:][::-1]]))
     # The view's i-th character sits after every invisible character whose place in the view is i or before.
     places = [m.start() - n for n, m in enumerate(INVISIBLE.finditer(text))]
-    start = head + bisect.bisect_right(places, head) if head < len(view) else len(text)
-    end = len(view) - tail
-    end = end + bisect.bisect_right(places, end) if end < len(view) else len(text)
-    return text[:start] + masked[head:len(masked) - tail] + text[end:]
+    # A token found as the view reads runs through the places inside it; only a place outside every such token can
+    # start one after a letter.
+    tokens, after_a_break = _TOKENS[id(rules)]
+    found = [(m.start(), m.end()) for m in tokens.finditer(view) if m.end() > m.start()]
+    spans, inside = [], 0
+    for place in sorted(set(places)):
+        while inside < len(found) and found[inside][1] <= place:
+            inside += 1
+        if inside < len(found) and found[inside][0] < place:
+            continue
+        if 0 < place < len(view) and (not spans or place >= spans[-1][1]) and view[place - 1].isalnum():
+            token = after_a_break.match(view, place)
+            if token and token.end() > place:
+                spans.append((place, token.end()))
+    masked = _pass(_replace(view, spans, "[masked]"), rules)
+    if masked != view:
+        head = len(os.path.commonprefix([view, masked]))
+        tail = len(os.path.commonprefix([view[head:][::-1], masked[head:][::-1]]))
+        start = head + bisect.bisect_right(places, head) if head < len(view) else len(text)
+        end = len(view) - tail
+        end = end + bisect.bisect_right(places, end) if end < len(view) else len(text)
+        text = text[:start] + masked[head:len(masked) - tail] + text[end:]
+    return _pass(text, rules)
 
 
 # How many passes mask() makes at most, and how often, in this process, a text still changed at the last one.
