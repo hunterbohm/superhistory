@@ -53,6 +53,30 @@
    "parallel_model_calls": 2,
    "rate_limits": {},
    "stopped": null
+  },
+  {
+   "tool": "supermemory",
+   "load": {
+    "documents": 480,
+    "reused": true,
+    "unsettled": 0,
+    "seconds": 8,
+    "llm": "claude-haiku-5-5",
+    "load_seconds": 15
+   },
+   "passes": [
+    {
+     "ran": 171,
+     "failed": 0
+    }
+   ],
+   "started": "2026-11-01T05:07:25Z",
+   "month_commit": "d79bb3ae066d25f3fc9e882feb59afa0bee1413f",
+   "answer_model": "claude-sonnet-5-5",
+   "judge_model": "gpt-6.1-sol",
+   "parallel_model_calls": 2,
+   "rate_limits": {},
+   "stopped": null
   }
  ]
 }
