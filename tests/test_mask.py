@@ -447,6 +447,60 @@ class InvisibleTest(unittest.TestCase):
                 self.assertEqual(mask(text), text)
                 self.assertEqual(mask("ghp_" + "A1" * 12 + space + "next page"), "[masked]" + space + "next page")
 
+    def test_text_whose_invisible_characters_split_no_secret_masks_as_written(self):
+        # Main's reading of the text as written: what a token, a name or a command parts, it parts.
+        for text, masked in (("sk-proj-" + "C3" * 12 + "\u200dplain_https://sam:walrus2secret9@example.com",
+                              "[masked]\u200dplain_https://sam:[masked]@example.com"),
+                             ("ghp_" + "A1" * 12 + "_co\u00adoperate/curl -u sam:walrus2secret9 x",
+                              "[masked]\u00adoperate/curl -u sam:[masked] x"),
+                             ("ghp_" + "A1" * 12 + "_co\u00adoperate/Proxy-Authorization: Token walrus2secret9",
+                              "[masked]\u00adoperate/Proxy-Authorization: Token [masked]"),
+                             ("password=walrus2secret9 co\u00adoperate password=walrus2secret9|ghp_" + "B2" * 12,
+                              "password=[masked] co\u00adoperate password=[masked]]")):
+            with self.subTest(text=text[:16]):
+                self.assertEqual(mask(text), masked)
+
+    def test_invisible_characters_outside_every_secret_change_nothing_main_reads(self):
+        import random
+        import string
+        from kb.mask import _TEXT_RULES, _pass
+        alnum = string.ascii_letters + string.digits
+
+        def as_written(text):  # main's mask: passes over the text as written until one changes nothing
+            for _ in range(8):
+                masked = _pass(text, _TEXT_RULES)
+                if masked == text:
+                    return text
+                text = masked
+            return text
+
+        for seed in range(800):
+            r = random.Random(seed)
+            run = lambda n: "".join(r.choice(alnum) for _ in range(n)) + r.choice("0123456789")
+            inv = lambda: r.choice(("\u200b", "\u200d", "\u2060", "\u00ad", "\x00", "\ufeff"))
+            secrets = (lambda: "ghp_" + run(30), lambda: "sk-proj-" + run(30), lambda: "password=" + run(12),
+                       lambda: "Authorization: Token " + run(14), lambda: "https://sam:" + run(12) + "@example.com",
+                       lambda: "curl -u sam:" + run(12) + " x", lambda: "Cookie: sid=" + run(12),
+                       lambda: "password=" + run(12) + "|ghp_" + run(30), lambda: "[masked]")
+            words = (lambda: "co" + inv() + "operate", lambda: "\U0001f468\u200d\U0001f469",
+                     lambda: r.choice(("plain_", "the", "x-", "notes/", "budget")) + inv() + r.choice(("plan", "ok", "")))
+            pieces = [(kind, r.choice(kind)()) for kind in (r.choice((secrets, words)) for _ in range(r.randint(2, 10)))]
+            # Invisibles only after a word: one right after a secret makes what follows part of it (gate 12).
+            text = "".join(piece + (inv() if kind is words and r.random() < 0.5 else r.choice((" ", "/", "_", "|")))
+                           for kind, piece in pieces)
+            with self.subTest(seed=seed):
+                self.assertEqual(mask(text), as_written(text), ascii(text))
+
+    def test_repeated_token_starts_between_invisible_characters_cost_time_in_proportion(self):
+        import time
+        took = {}
+        for times in (4000, 16000):
+            text = "eyJabcdefghijk\u200b" * times
+            started = time.process_time()
+            self.assertEqual(mask(text), text)
+            took[times] = time.process_time() - started
+        self.assertLess(took[16000], 8 * max(took[4000], 0.02))
+
     def test_the_rest_of_the_text_keeps_its_invisible_characters(self):
         family, soft = "\U0001f468\u200d\U0001f469", "co\u00adoperate"
         text = f"{family} {soft} then ghp_" + "A1" * 6 + "\u2060" + "A1" * 6 + f" then {family}"
