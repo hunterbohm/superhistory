@@ -178,10 +178,11 @@ def _agreed(values):
 
 
 def item_names(db, source, source_id):
-    """The values every stored row of the item records for ID_FIELDS, each None where they differ or one records
-    none."""
+    """The values the item's own stored rows record for ID_FIELDS, each None where they differ or one records none.
+    Summary rows are left out: an older kb's copy only some fields."""
     fields = ", ".join(f"json_extract(metadata, '$.{field}')" for field in ID_FIELDS)
-    rows = db.execute(f"SELECT {fields} FROM docs WHERE source=? AND source_id=?", (source, source_id)).fetchall()
+    rows = db.execute(f"SELECT {fields} FROM docs WHERE source=? AND source_id=? AND kind IN ('doc', 'raw')",
+                      (source, source_id)).fetchall()
     return tuple(_agreed({row[i] for row in rows}) for i in range(len(ID_FIELDS)))
 
 
@@ -195,7 +196,8 @@ def replace_rows(db, source, source_id, rows, kinds=ITEM_KINDS):
     """Swap one item's rows of the given kinds for `rows` (dicts: kind, ts, title, content, metadata), masked with
     today's mask() and marked with its version. Raises ValueError for a source or item id that looks like it holds a
     secret, which ingest does not store either: a masked id could stand for two items."""
-    if rows and secret_id(source, source_id, _names(rows)):
+    own = [r for r in rows if r["kind"] in ITEM_KINDS]
+    if rows and secret_id(source, source_id, _names(own) if own else item_names(db, source, source_id)):
         raise ValueError("a source or item id that looks like it holds a secret is not stored; rename it")
     if "raw" not in kinds and any(r["kind"] == "raw" for r in rows):
         # Chunks added one write at a time would be masked apart, and a secret could run from one into the next.
