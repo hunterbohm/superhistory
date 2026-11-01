@@ -19,8 +19,10 @@ _NB = rf"(?:(?<![A-Za-z0-9])|{_AFTER_ESCAPE})"
 # does, percent-encoded as in a link, or as an HTML entity. And "=" or ":" between them, plain or encoded the same ways.
 _QUOTE = r"(?:\\{0,7}[\"']|\\{1,7}u00(?:22|27)|%(?:25)?2[27]|&(?:quot|apos|#0{0,3}3[49]|#[xX]0{0,3}2[27]);)"
 _SEP = r"(?:[:=\uff1a\uff1d]|=>|%(?:25)?3[ADad]|\\{1,7}u003[AaDd])"
-# The space around a separator: spaces, tabs, line breaks, and no-break and full-width spaces.
-_GAP = r"[ \t\r\n\u00a0\u3000]*"
+# The space around a separator: spaces, tabs, line breaks, no-break and full-width spaces, and a space a link encodes,
+# "%20" or "+".
+_SPACE = r"(?:[ \t\r\n\u00a0\u3000+]|%(?:25)?20)"
+_GAP = rf"{_SPACE}*"
 # A value stops before a quote escaped to close it, so the escape stays with the quote. At most seven backslashes, as
 # JSON three times inside JSON writes one: an unbounded run read ahead from every backslash would cost time in the
 # square of its length.
@@ -86,10 +88,14 @@ _ID_PATTERNS = [p for p in SECRET_PATTERNS if p not in (BEARER, BASIC)]
 _BASIC_VALUE = re.compile(rf"(?i){_WORD}basic{_SCHEME_GAP}([A-Za-z0-9+/]{{12,}})")
 PREFIXED_SECRETS = [
     re.compile(rf"(?i)({_WORD}(?:set-)?cookie{_QUOTE}?\s*(?::|%(?:25)?3[Aa])\s*{_QUOTE}?)(?:{_CLOSE}[^\"'\n]){{8,}}"),
-    re.compile(r"([a-z][a-z0-9+.-]*://[^/ \t\n\r:@'\"]+:)[^/ \t\n\r@'\"]{3,}(?=@)"),
-    # The same link percent-encoded, once or twice, as a parameter of another link.
-    re.compile(r"(?i)([a-z][a-z0-9+.-]*%(?:25)?3A%(?:25)?2F%(?:25)?2F(?:(?!%(?:25)?(?:3A|2F|40))[^/ \t\n\r@'\"&])+"
-               r"%(?:25)?3A)(?:(?!%(?:25)?(?:2F|40))[^/ \t\n\r@'\"&]){3,}(?=%(?:25)?40)"),
+    # A link's scheme starts a word and is at most 32 characters: read on from every letter of a long run, it took
+    # time in the square of the run's length. Its slashes may be escaped, as some JSON writers write them.
+    re.compile(rf"((?:(?<![A-Za-z0-9+.-])|{_AFTER_ESCAPE})[a-z][a-z0-9+.-]{{0,31}}:(?:\\?/){{2}}[^/ \t\n\r:@'\"]+:)"
+               r"[^/ \t\n\r@'\"]{3,}(?=@)"),
+    # The same link percent-encoded, once or twice, as a parameter of another link, its slashes encoded or not.
+    re.compile(rf"(?i)((?:(?<![A-Za-z0-9+.-])|{_AFTER_ESCAPE})[a-z][a-z0-9+.-]{{0,31}}%(?:25)?3A(?:%(?:25)?2F|/){{2}}"
+               r"(?:(?!%(?:25)?(?:3A|2F|40))[^/ \t\n\r@'\"&])+%(?:25)?3A)(?:(?!%(?:25)?(?:2F|40))[^/ \t\n\r@'\"&]){3,}"
+               r"(?=%(?:25)?40)"),
     # openssl's "-passin pass:..." and "-passout pass:...".
     re.compile(rf"((?<![A-Za-z0-9_-])-pass(?:in|out)?[ \t]+['\"]?pass:)(?:(?!{_NEXT_NAME}){_CLOSE}[^ \t\n\r'\"])+"),
 ]
@@ -106,11 +112,11 @@ KEYED_SECRET = re.compile(_KEY_NAME + rf"({_QUOTE}?{_GAP}(?:{_SEP}|\bis\b){_GAP}
 ENV_KEY_SECRET = re.compile(_ENV_KEY_NAME + rf"({_QUOTE}?{_GAP}{_SEP}{_GAP}{_QUOTE}?)" + _VALUE)
 # A long flag named for a secret, and its value after a space or a quote: "--api-key ...". A flag that names where the
 # secret is, such as "--token-file" or "--password-stdin", takes none, and a value never starts with "-".
-FLAG_SECRET = re.compile(r"(?i)(?<![A-Za-z0-9_.-])(--" + _KEY_NAME[len(r"(?i)(?<![A-Za-z0-9_.-])("):]
+FLAG_SECRET = re.compile(rf"(?i)(?:(?<![A-Za-z0-9_.-])|{_AFTER_ESCAPE})(--" + _KEY_NAME[len(r"(?i)(?<![A-Za-z0-9_.-])("):]
                          + r"(?<!-stdin)(?<!-file)(?<!-env)(?<!-path)(?<!-name)(?<!-id)(?<!-cmd)(?<!-command)"
-                         r"(?<!-helper)(?<!-length)(?<!-type)(?<!-url)([ \t]+[\"']?)(?!-)" + _VALUE)
+                         r"(?<!-helper)(?<!-length)(?<!-type)(?<!-url)((?:[ \t]|%(?:25)?20)+[\"']?)(?!-)" + _VALUE)
 # An HTTP Authorization header's credentials, after any scheme word: "Token ...", "Bot ...", "ApiKey ...".
-AUTH_SECRET = re.compile(rf"(?i)((?<![A-Za-z0-9_.-])(?:proxy-)?authorization)"
+AUTH_SECRET = re.compile(rf"(?i)((?:(?<![A-Za-z0-9_.-])|{_AFTER_ESCAPE})(?:proxy-)?authorization)"
                          rf"({_QUOTE}?[ \t]*(?::|=|%(?:25)?3[ADad])[ \t]*{_QUOTE}?(?:[A-Za-z][A-Za-z0-9_-]*[ \t]+)?)"
                          + _VALUE)
 # Commands that take a password after a short flag, which counts only on that command's line: from its first word to a

@@ -374,7 +374,7 @@ class EscapeTest(unittest.TestCase):
                      "password+%3D+walrus2secret9", "password%253A%2520walrus2secret9",
                      "run it\\n--password walrus2secret9\\nAuthorization: Token walrus2secret9x\\ndone",
                      "%0A--api-key%20walrus2secret9", "https:\\/\\/bob:walrus2secret9@example.com/x",
-                     "next=https%3A//bob%3Awalrus2secret9%40example.com/x"):
+                     "next=https%3A//bob%3Awalrus2secret9%40example.com/x", "smb://CORP\\\\bob:walrus2secret9@files/x"):
             with self.subTest(text=text):
                 self.assertNotIn("walrus2secret9", mask(text))
         for text in ("hello%20world%3Dfine", "a + b = c", "x%20%3D%20y", "https:\\/\\/example.com\\/path"):
