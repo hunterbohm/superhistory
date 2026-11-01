@@ -71,6 +71,8 @@ SECRET_PATTERNS = [
     re.compile(rf"(?:Proc-Type: *4,ENCRYPTED|\[masked\],ENCRYPTED|DEK-Info:)"
                rf"(?:{_FIELDS_TO_KEY_END}|{_KEY_PARAGRAPH}(?:{_BLANK}{_IN_PARAGRAPH}*)?)"),
     SK_TOKEN,
+    # A Docker config written as base64, as a Kubernetes .dockerconfigjson holds it: '{"auths":' and its logins.
+    re.compile(_NB + r"eyJhdXRocyI6[A-Za-z0-9+/=]*"),
     re.compile(_NB + r"(?:sk|rk|pk)_(?:live|test)_[A-Za-z0-9]{16,}"),
     re.compile(_NB + r"(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})"),
     re.compile(_NB + r"xox[abprs]-[A-Za-z0-9-]{10,}"),
@@ -159,13 +161,23 @@ REFERENCE = re.compile(r"^(?:[$%{<(\[*/~]|\.\.?/|os\.|process\.|env\.|getenv|sec
                        r"(?:env|file|cmd):)|"
                        r"^[A-Za-z_]+(?:\.[A-Za-z_]+)+$|^[A-Z][A-Z_]{2,}$|^[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+$|\(")
 
+# A PEM written as base64, as a Kubernetes secret holds a TLS key: "-----BEGIN" is "LS0tLS1CRUdJTi". It runs on through
+# the whole base64 lines that wrap it, and counts when its header says it is a private key.
+_ENCODED_PEM = re.compile(_NB + r"LS0tLS1CRUdJTi[A-Za-z0-9+/=]*"
+                          r"(?:(?:\r?\n|\\(?:r\\)?n)[A-Za-z0-9+/=]+(?=\r?\n|\\[rn]|[\"'\s]|\Z))*")
+# Docker's config holds a registry login in an "auth" field, base64 of "user:password".
+_AUTH_FIELD = re.compile(rf"(?i)((?:(?<![A-Za-z0-9_.-])|{_AFTER_ESCAPE})auth{_QUOTE}?{_GAP}[:=]{_GAP}{_QUOTE}?)"
+                         r"([A-Za-z0-9+/]{4,}={0,2})")
+
+
 # Which mask() a stored row was masked with. A row of another version, or of none, is masked again when read and by
 # the next ingest. The patterns change it by themselves; bump REVISION when the code that applies them changes what
 # it masks.
 REVISION = 3
 VERSION = hashlib.sha256(repr((REVISION, [p.pattern for p in SECRET_PATTERNS + PREFIXED_SECRETS], KEYED_SECRET.pattern,
                                 ENV_KEY_SECRET.pattern, FLAG_SECRET.pattern, AUTH_SECRET.pattern, COMMAND_FLAGS,
-                                PASSWORD_NAME.pattern, sorted(PLACEHOLDERS), REFERENCE.pattern)).encode()).hexdigest()[:16]
+                                PASSWORD_NAME.pattern, sorted(PLACEHOLDERS), REFERENCE.pattern, _ENCODED_PEM.pattern,
+                                _AUTH_FIELD.pattern)).encode()).hexdigest()[:16]
 
 
 def _looks_secret(name, sep, value):
@@ -187,6 +199,17 @@ def _prose(sep):
     """Whether a separator reads as prose does, "is" or a space with no "=" or ":" in it, after which a value of
     letters only is a word and not a password."""
     return not _SEP_CHARACTER.search(sep) and ("is" in sep.lower() or sep[-1:].isspace())
+
+
+def _encoded_secrets(text):
+    """`text` with each private key written as base64 masked, and each Docker "auth" login."""
+    spans = []
+    for m in _ENCODED_PEM.finditer(text):
+        head = re.sub(r"\s|\\[rn]", "", m.group())[:48]
+        if "PRIVATE KEY" in base64.b64decode(head[:len(head) // 4 * 4]).decode("latin-1"):
+            spans.append((m.start(), m.end()))
+    text = _replace(text, spans, "[masked]")
+    return _AUTH_FIELD.sub(lambda m: m.group(1) + "[masked]" if _basic_credential(m.group(2)) else m.group(0), text)
 
 
 def _command_passwords(text):
@@ -260,7 +283,7 @@ def _replace(text, spans, replacement):
 def _mask_once(text):
     for pattern in SECRET_PATTERNS:
         text = pattern.sub("[masked]", text)
-    text = _GLUED_RUN.sub("[masked]", _headless_keys(_key_rest(text)))
+    text = _GLUED_RUN.sub("[masked]", _headless_keys(_key_rest(_encoded_secrets(text))))
     for pattern in PREFIXED_SECRETS:
         text = pattern.sub(lambda m: m.group(1) + "[masked]", text)
     text = _command_passwords(text)
@@ -341,7 +364,7 @@ def secret_in_id(text, names=()):
     masked = text
     for pattern in _ID_PATTERNS:
         masked = pattern.sub("[masked]", masked)
-    masked = _GLUED_RUN.sub("[masked]", _headless_keys(_key_rest(masked)))
+    masked = _GLUED_RUN.sub("[masked]", _headless_keys(_key_rest(_encoded_secrets(masked))))
     for pattern in PREFIXED_SECRETS:
         masked = pattern.sub(lambda m: m.group(1) + "[masked]", masked)
     masked = _command_passwords(masked)
