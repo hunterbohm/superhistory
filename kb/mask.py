@@ -531,10 +531,11 @@ def _same_run(a, i, b, j):
 
 
 def _edits(view, masked):
-    """The stretches of `view` a pass replaced to make `masked`, as (start, end, what replaced it): each by a placeholder
-    or by nothing, as every pattern masks. None when they do not line up so, and the caller takes one stretch. Each
-    stretch ends where what follows it in `masked`, up to 64 characters or the next placeholder, starts again in
-    `view`; the stretches are checked to make `masked` exactly, so a wrong end cannot leave a secret."""
+    """The stretches of `view` a pass replaced to make `masked`, as (start, end, what replaced it): each by a run of
+    placeholders side by side, as two secrets that meet are masked, or by nothing. One in the run may be one the view
+    held. None when they do not line up so, and the caller takes one stretch. Each stretch ends where what follows its
+    run in `masked`, up to 64 characters or the next placeholder, starts again in `view`; the stretches are checked to
+    make `masked` exactly, so a wrong end cannot leave a secret."""
     edits, i, j, placeholder = [], 0, 0, "[masked]"
     while True:
         same = _same_run(view, i, masked, j)
@@ -545,13 +546,13 @@ def _edits(view, masked):
         back = next((k for k in range(min(len(placeholder) - 1, same), 0, -1)
                      if masked.startswith(placeholder, j - k)), 0)
         i, j = i - back, j - back
-        replacement = placeholder if masked.startswith(placeholder, j) else ""
+        replacement = ""
+        while masked.startswith(placeholder, j + len(replacement)):
+            replacement += placeholder
         j += len(replacement)
-        # What follows, up to the next placeholder, which the view does not hold.
+        # What follows the run, up to the next placeholder, which the view may not hold.
         after = masked.find(placeholder, j)
         rest = masked[j:j + 64 if after < 0 else min(j + 64, after)]
-        if not rest and j < len(masked):
-            rest = placeholder  # another right after: one the view held, as "[masked][masked]" can follow a pass
         end = view.find(rest, i if replacement else i + 1) if rest else len(view)
         if end < 0 or end <= i and not replacement:
             return None
