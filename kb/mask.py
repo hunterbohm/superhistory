@@ -118,6 +118,10 @@ _ENV_KEY_NAME = rf"(?:(?<![A-Za-z0-9_])|{_AFTER_ESCAPE})([A-Z][A-Z0-9_]*_KEY)(?!
 _VALUE = rf"((?:(?!{_NEXT_NAME}){_CLOSE}[^ \t\n\r\"'`,;<>)\]}}])+)"
 KEYED_SECRET = re.compile(_KEY_NAME + rf"({_QUOTE}?{_GAP}(?:{_SEP}|\bis\b){_GAP}{_QUOTE}?)" + _VALUE)
 ENV_KEY_SECRET = re.compile(_ENV_KEY_NAME + rf"({_QUOTE}?{_GAP}{_SEP}{_GAP}{_QUOTE}?)" + _VALUE)
+# A JSON string value in plain quotes after a secret's name, read as JSON reads it: to the next quote no backslash
+# escapes, so a quote inside it is part of it. In JSON written inside JSON, whose quotes are escaped, a value ends at
+# the escaped quote, as KEYED_SECRET reads it.
+JSON_SECRET = re.compile(r'(?i)(?<=")(?<!\\")' + _KEY_NAME[4:] + r'("[ \t]*:[ \t]*")((?:[^"\\\r\n]|\\[^\r\n]){1,1024}?)(?=")')
 # A long flag named for a secret, and its value after a space or a quote: "--api-key ...". A flag that names where the
 # secret is, such as "--token-file" or "--password-stdin", takes none, and a value never starts with "-".
 FLAG_SECRET = re.compile(rf"(?i)(?:(?<![A-Za-z0-9_.-])|{_AFTER_ESCAPE})(--" + _KEY_NAME[len(r"(?i)(?<![A-Za-z0-9_.-])("):]
@@ -177,7 +181,8 @@ _AUTH_FIELD = re.compile(rf"(?i)((?:(?<![A-Za-z0-9_.-])|{_AFTER_ESCAPE})auth{_QU
 # it masks.
 REVISION = 3
 VERSION = hashlib.sha256(repr((REVISION, [p.pattern for p in SECRET_PATTERNS + PREFIXED_SECRETS], KEYED_SECRET.pattern,
-                                ENV_KEY_SECRET.pattern, FLAG_SECRET.pattern, AUTH_SECRET.pattern, COMMAND_FLAGS,
+                                ENV_KEY_SECRET.pattern, JSON_SECRET.pattern, FLAG_SECRET.pattern, AUTH_SECRET.pattern,
+                                COMMAND_FLAGS,
                                 PASSWORD_NAME.pattern, sorted(PLACEHOLDERS), REFERENCE.pattern, _ENCODED_PEM.pattern,
                                 _AUTH_FIELD.pattern)).encode()).hexdigest()[:16]
 
@@ -289,7 +294,7 @@ def _mask_once(text):
     for pattern in PREFIXED_SECRETS:
         text = pattern.sub(lambda m: m.group(1) + "[masked]", text)
     text = _command_passwords(text)
-    for pattern in (KEYED_SECRET, ENV_KEY_SECRET, FLAG_SECRET, AUTH_SECRET):
+    for pattern in (JSON_SECRET, KEYED_SECRET, ENV_KEY_SECRET, FLAG_SECRET, AUTH_SECRET):
         text = pattern.sub(_mask_keyed, text)
     return text
 

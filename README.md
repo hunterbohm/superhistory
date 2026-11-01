@@ -171,9 +171,9 @@ Known limits:
 - A password of letters only, after "is" or after a flag and a space ("--password correcthorse"), reads as a word and
   is not masked, so "Use the --password flag" stays readable. With a digit or a symbol, or after "=" or ":", it is
   masked.
-- A password with an escaped quote in it, inside JSON text such as `"password": "ab\"cd"`, is masked only up to the
-  quote. A tool's input that kb writes as JSON is masked field by field first, so this applies to JSON that arrives as
-  text.
+- In JSON written inside other JSON text, a password with an escaped quote in it is masked only up to that quote, and
+  not at all when fewer than four characters come before it. In plain JSON, and in a tool's input that kb writes as
+  JSON itself, the whole value is masked.
 - A token right after a terminal color code, and a private key written percent-encoded, are not masked.
 - A few rare file names are refused as if they held a secret, such as one that names a command's password flag with a
   value ("redis-cli -a auth2.md") or reads as a field ("Cookie: chocolate chip.md").
