@@ -44,6 +44,10 @@ _TO_KEY_END = rf"(?:(?!-----BEGIN )[\s\S]){{0,16384}}?{_KEY_END}"
 _FIELDS_TO_KEY_END = rf"{_IN_PARAGRAPH}{{0,16384}}?(?:{_BLANK}{_IN_PARAGRAPH}{{0,16384}}?)?{_KEY_END}"
 # An HTTP authorization scheme's word and its value are parted by spaces, or in a link by "%20" or "+".
 _SCHEME_GAP = r"(?:\s|%(?:25)?20|\+)+"
+# A provider's "sk-" key. In an item id, only one after a provider's own prefix, or a run of 32 or more letters and
+# digits, counts: "sk-learn-pipeline-experiments.md" names a note.
+SK_TOKEN = re.compile(_NB + r"sk-(?:ant-|proj-|or-v1-)?[A-Za-z0-9_-]{20,}")
+_SK_ID = re.compile(_NB + r"sk-(?:(?:ant|proj|svcacct|admin|or-v1)-[A-Za-z0-9_-]{20,}|[A-Za-z0-9]{32,}(?![A-Za-z0-9_-]))")
 BEARER = re.compile(rf"(?i){_WORD}bearer{_SCHEME_GAP}[A-Za-z0-9._~+/-]{{16,}}=*")
 BASIC = re.compile(rf"(?i){_WORD}basic{_SCHEME_GAP}(?=[A-Za-z0-9+/]*[0-9+/=])[A-Za-z0-9+/]{{12,}}={{0,2}}")
 # A secret's value ends at a space, tab or line break, and the space around its "=" is spaces, tabs and line breaks (a
@@ -66,7 +70,7 @@ SECRET_PATTERNS = [
     # that remask left of them, "[masked],ENCRYPTED".
     re.compile(rf"(?:Proc-Type: *4,ENCRYPTED|\[masked\],ENCRYPTED|DEK-Info:)"
                rf"(?:{_FIELDS_TO_KEY_END}|{_KEY_PARAGRAPH}(?:{_BLANK}{_IN_PARAGRAPH}*)?)"),
-    re.compile(_NB + r"sk-(?:ant-|proj-|or-v1-)?[A-Za-z0-9_-]{20,}"),
+    SK_TOKEN,
     re.compile(_NB + r"(?:sk|rk|pk)_(?:live|test)_[A-Za-z0-9]{16,}"),
     re.compile(_NB + r"(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})"),
     re.compile(_NB + r"xox[abprs]-[A-Za-z0-9-]{10,}"),
@@ -82,9 +86,9 @@ SECRET_PATTERNS = [
     BEARER,
     BASIC,
 ]
-# In an item id, "Bearer" and "Basic" are words: "Ring Bearer duties/plan.md" names a note. A Basic credential still
+# In an item id, "Bearer" and "Basic" are words: "Ring Bearer duties/plan.md" names a note, and so does an "sk-" slug. A Basic credential still
 # counts there by what it is, "user:password" in base64; a bearer token counts only by a provider's shape above.
-_ID_PATTERNS = [p for p in SECRET_PATTERNS if p not in (BEARER, BASIC)]
+_ID_PATTERNS = [_SK_ID if p is SK_TOKEN else p for p in SECRET_PATTERNS if p not in (BEARER, BASIC)]
 _BASIC_VALUE = re.compile(rf"(?i){_WORD}basic{_SCHEME_GAP}([A-Za-z0-9+/]{{12,}})")
 PREFIXED_SECRETS = [
     re.compile(rf"(?i)({_WORD}(?:set-)?cookie{_QUOTE}?\s*(?::|%(?:25)?3[Aa])\s*{_QUOTE}?)(?:{_CLOSE}[^\"'\n]){{8,}}"),
