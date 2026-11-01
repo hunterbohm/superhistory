@@ -32,9 +32,9 @@ class TempDB(unittest.TestCase):
 class OldRowTest(TempDB):
     """Rows an earlier version of mask() stored, which today's changes, so a reader masks them before cutting them."""
 
-    def old(self, sid, content, kind="doc", meta='{}'):
+    def old(self, sid, content, kind="doc", meta='{}', title="t"):
         self.db.execute("INSERT INTO docs(kind, source, source_id, ts, title, content, metadata, masked) "
-                        "VALUES (?, 's', ?, ?, 't', ?, ?, '0123456789abcdef')", (kind, sid, iso(), content, meta))
+                        "VALUES (?, 's', ?, ?, ?, ?, ?, '0123456789abcdef')", (kind, sid, iso(), title, content, meta))
         self.db.commit()
 
     def test_a_match_far_from_a_masked_secret_stays_in_the_passage(self):
@@ -99,9 +99,7 @@ class OldRowTest(TempDB):
                                   "token sk-ant-api03-old-" + "Z" * 24 + " " + "ordinary filler " * 60)):
             with self.subTest(body=body[:20]):
                 self.add(f"now{n}.md", body, title=f"walrus{n}")
-                self.db.execute("INSERT INTO docs(kind, source, source_id, ts, title, content, metadata) "
-                                "VALUES ('doc', 's', ?, ?, ?, ?, '{}')", (f"then{n}.md", iso(), f"walrus{n}", body))
-                self.db.commit()
+                self.old(f"then{n}.md", body, title=f"walrus{n}")
                 hits = {h["source_id"]: h for h in search.search(self.db, f"walrus{n}")}
                 old, current = hits[f"then{n}.md"], hits[f"now{n}.md"]
                 self.assertEqual((old["snippet"], old["excerpt"]), (current["snippet"], current["excerpt"]))
