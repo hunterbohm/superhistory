@@ -51,7 +51,9 @@ _SCHEME_GAP = r"(?:\s|%(?:25)?20|\+)+"
 # A provider's "sk-" key. In an item id, only one after a provider's own prefix with a capital or a digit in it, or a
 # run of 32 or more letters and digits, counts: "sk-learn-pipeline-experiments.md" and "sk-proj-roadmap.md" name notes.
 SK_TOKEN = re.compile(_NB + r"sk-(?:ant-|proj-|or-v1-)?[A-Za-z0-9_-]{20,}")
-_SK_ID = re.compile(_NB + r"sk-(?:(?:ant|proj|svcacct|admin|or-v1)-(?=[A-Za-z0-9_-]*?[A-Z0-9])[A-Za-z0-9_-]{20,}"
+# The capital or digit a real key holds is looked for among its first 128 characters: looked for to the end of a
+# long run of "sk-" slugs from each one, it took time in the square of the run.
+_SK_ID = re.compile(_NB + r"sk-(?:(?:ant|proj|svcacct|admin|or-v1)-(?=[a-z_-]{0,128}[A-Z0-9])[A-Za-z0-9_-]{20,}"
                     r"|[A-Za-z0-9]{32,}(?![A-Za-z0-9]))")
 BEARER = re.compile(rf"(?i){_WORD}bearer{_SCHEME_GAP}[A-Za-z0-9._~+/-]{{16,}}=*")
 BASIC = re.compile(rf"(?i){_WORD}basic{_SCHEME_GAP}(?=[A-Za-z0-9+/]*[0-9+/=])[A-Za-z0-9+/]{{12,}}={{0,2}}")
