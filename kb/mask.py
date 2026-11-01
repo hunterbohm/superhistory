@@ -250,21 +250,29 @@ AUTH_SCHEMES = frozenset(("basic", "bearer", "digest", "dpop", "gnap", "hoba", "
                           "googlelogin", "kerberos", "splunk"))
 
 
+_CREDENTIAL_END = re.compile(r"\\+[nrt]|\[masked")
+
+
 def _credential(name, sep, word):
-    """Whether `word` after Authorization looks like a credential: not a word of letters, hyphens and an end mark, such
-    as "Organization-level", and not a value already masked."""
-    return ("[masked" not in word and not re.fullmatch(r"[A-Za-z]+(?:-[A-Za-z]+)*[.,;:!?]?", word)
-            and _looks_secret(name, sep, word))
+    """The credential in `word` after Authorization, up to an escaped line break or a placeholder already in it, as
+    "Credential=" stands before an AWS key id's; or "" when that is no credential, such as a word of letters, hyphens
+    and an end mark like "Organization-level"."""
+    head = _CREDENTIAL_END.split(word, 1)[0]
+    if not head or re.fullmatch(r"[A-Za-z]+(?:-[A-Za-z]+)*[.,;:!?]?", head) or not _looks_secret(name, sep, head):
+        return ""
+    return head
 
 
 def _mask_authorization(m):
     """An Authorization header with its credential masked: the word after a scheme such as Bearer or
     AWS4-HMAC-SHA256, whose name stays, or else each of its first two words that looks like a credential."""
     name, sep, first, gap, second = m.groups()
-    if first.lower() in AUTH_SCHEMES:
-        words = [first, "[masked]" if second and _credential(name, sep, second) else second]
-    else:
-        words = [("[masked]" if word and _credential(name, sep, word) else word) for word in (first, second)]
+
+    def masked(word):
+        credential = _credential(name, sep, word) if word else ""
+        return "[masked]" + word[len(credential):] if credential else word
+
+    words = [first, masked(second)] if first.lower() in AUTH_SCHEMES else [masked(first), masked(second)]
     if words == [first, second]:
         return m.group(0)
     return f"{name}{sep}{words[0]}{gap or ''}{words[1] or ''}"
