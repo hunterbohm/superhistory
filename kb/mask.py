@@ -13,7 +13,7 @@ import traceback
 # four escapes before the name: a longer run read back one escape at a time from every backslash in it would cost
 # time in the square of its length.
 _AFTER_ESCAPE = r"(?<=\\[nrtbf])|(?<=\\u[0-9A-Fa-f]{4})|(?<=%[0-9A-Fa-f]{2})|(?<=%25[0-9A-Fa-f]{2})"
-_NEXT_NAME = r"(?:\\(?:[nrtbf]|u[0-9A-Fa-f]{4})){1,4}[A-Za-z0-9_.-]+[\"']?[ \t]*(?:[:=]|=>)"
+_NEXT_NAME = r"(?:\\(?:[nrtbf]|u[0-9A-Fa-f]{4})){1,4}(?:[A-Za-z0-9_.-]+[\"']?[ \t]*(?:[:=]|=>)|-{1,2}[A-Za-z])"
 _NB = rf"(?:(?<![A-Za-z0-9])|{_AFTER_ESCAPE})"
 # A quote around a name or a value as text writes it: plain, escaped as JSON writes it, once or as JSON inside JSON
 # does, percent-encoded as in a link, or as an HTML entity. And "=" or ":" between them, plain or encoded the same ways.
@@ -116,8 +116,12 @@ _KEY_NAME = (
     r")(?![A-Za-z0-9_.-])")
 _ENV_KEY_NAME = rf"(?:(?<![A-Za-z0-9_])|{_AFTER_ESCAPE})([A-Z][A-Z0-9_]*_KEY)(?![A-Za-z0-9_])"
 _VALUE = rf"((?:(?!{_NEXT_NAME}){_CLOSE}[^ \t\n\r\"'`,;<>)\]}}])+)"
-KEYED_SECRET = re.compile(_KEY_NAME + rf"({_QUOTE}?{_GAP}(?:{_SEP}|\bis\b){_GAP}{_QUOTE}?)" + _VALUE)
-ENV_KEY_SECRET = re.compile(_ENV_KEY_NAME + rf"({_QUOTE}?{_GAP}{_SEP}{_GAP}{_QUOTE}?)" + _VALUE)
+# A value never starts with another secret's name and its separator: under a YAML parent key named like a secret, or
+# a key left empty, the next line's name would be taken as the value, and the secret after it left.
+_NOT_A_NAME = (rf"(?!(?:{_KEY_NAME[4:].replace('(?<![A-Za-z0-9_.-])(', '(?<![A-Za-z0-9_.-])(?:', 1)}"
+               rf"|{_ENV_KEY_NAME.replace('([A-Z]', '(?:[A-Z]', 1)}){_QUOTE}?[ \t]*(?:{_SEP}|\bis\b))")
+KEYED_SECRET = re.compile(_KEY_NAME + rf"({_QUOTE}?{_GAP}(?:{_SEP}|\bis\b){_GAP}{_QUOTE}?){_NOT_A_NAME}" + _VALUE)
+ENV_KEY_SECRET = re.compile(_ENV_KEY_NAME + rf"({_QUOTE}?{_GAP}{_SEP}{_GAP}{_QUOTE}?){_NOT_A_NAME}" + _VALUE)
 # A JSON string value in plain quotes after a secret's name, read as JSON reads it: to the next quote no backslash
 # escapes, so a quote inside it is part of it. In JSON written inside JSON, whose quotes are escaped, a value ends at
 # the escaped quote, as KEYED_SECRET reads it.
