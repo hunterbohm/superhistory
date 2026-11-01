@@ -227,7 +227,7 @@ class GitHubSourceTest(GitHubCase):
         self.assertEqual(self.gh.views(), [])
 
     def test_a_missing_gh_binary_is_an_error(self):
-        with self.assertRaises(FileNotFoundError):
+        with self.assertRaisesRegex(RuntimeError, "gh did not run"):
             self.read(since=self.now - DAY, gh=os.path.join(self.tmp, "no-such-gh"))
 
 

@@ -182,8 +182,8 @@ def _sign_in(options):
             conn.login(options.address, password)
         except imaplib.IMAP4.error as exc:
             raise RuntimeError(
-                f"Gmail refused the sign-in for {options.address} ({_reason(exc)}). Create an app password at "
-                "https://myaccount.google.com/apppasswords (it needs 2-Step Verification) and point `password` at "
+                f"Gmail refused the sign-in for {options.address} ({mask.mask(_reason(exc))}). Create an app password "
+                "at https://myaccount.google.com/apppasswords (it needs 2-Step Verification) and point `password` at "
                 "it; the account password does not work over IMAP.") from None
         return conn
     if not (options.client_id and options.client_secret and options.refresh_token):
@@ -198,14 +198,16 @@ def _sign_in(options):
         conn.authenticate("XOAUTH2", lambda _: auth)
     except imaplib.IMAP4.error as exc:
         raise RuntimeError(
-            f"Gmail refused the OAuth sign-in for {options.address} ({_reason(exc)}). Check that the OAuth client "
-            f"belongs to this account's Google Cloud project and that the refresh token has the {SCOPE} scope.") from None
+            f"Gmail refused the OAuth sign-in for {options.address} ({mask.mask(_reason(exc))}). Check that the OAuth "
+            f"client belongs to this account's Google Cloud project and that the refresh token has the {SCOPE} "
+            "scope.") from None
     return conn
 
 
 def _reason(exc):
     text = exc.args[0] if exc.args else ""
-    return (text.decode(errors="replace") if isinstance(text, bytes) else str(text))[:200]
+    # Masked whole before it is cut, so a cut cannot leave the start of a token too short to mask.
+    return mask.mask(text.decode(errors="replace") if isinstance(text, bytes) else str(text))[:200]
 
 
 def _token_request(form):
@@ -219,10 +221,12 @@ def _token_request(form):
         except ValueError:
             error = ""
         raise RuntimeError(
-            f"Google refused the OAuth token request (HTTP {exc.code} {error}). Check client_id and client_secret, "
-            "and sign in again for a new refresh token if it was revoked or expired.") from None
+            f"Google refused the OAuth token request (HTTP {exc.code} {mask.mask(str(error))}). Check client_id and "
+            "client_secret, and sign in again for a new refresh token if it was revoked or expired.") from None
     except urllib.error.URLError as exc:
-        raise RuntimeError(f"cannot reach {TOKEN_URL}: {exc.reason}") from None
+        raise RuntimeError(mask.mask(f"cannot reach {TOKEN_URL}: {exc.reason}")) from None
+    except Exception as exc:
+        raise RuntimeError(mask.mask(f"the token request to {TOKEN_URL} failed: {type(exc).__name__}: {exc}")) from None
 
 
 def oauth_login(client_id, client_secret, open_browser=webbrowser.open, timeout=300):
@@ -268,7 +272,7 @@ def oauth_login(client_id, client_secret, open_browser=webbrowser.open, timeout=
     if answer.get("state") != [state]:
         raise RuntimeError("the browser's answer does not belong to this sign-in")
     if "error" in answer:
-        raise RuntimeError(f"Google sign-in failed: {answer['error'][0]}")
+        raise RuntimeError(mask.mask(f"Google sign-in failed: {answer['error'][0]}"))
     token = _token_request({"client_id": client_id, "client_secret": client_secret, "code": answer["code"][0],
                             "code_verifier": verifier, "redirect_uri": redirect, "grant_type": "authorization_code"})
     if not token.get("refresh_token"):
@@ -279,7 +283,7 @@ def oauth_login(client_id, client_secret, open_browser=webbrowser.open, timeout=
 def _ok(answer):
     status, data = answer
     if status != "OK":
-        raise RuntimeError(f"IMAP answered {status}: {data!r:.200}")
+        raise RuntimeError(f"IMAP answered {mask.mask(str(status))}: " + repr(mask.mask_all(_decoded(data)))[:200])
     return data
 
 
@@ -314,13 +318,29 @@ def _open_all_mail(conn):
         _, data = conn.response(code)
         if not data or data[0] is None:
             raise RuntimeError(f"Gmail did not report {code} for All Mail")
-        numbers.append(int(data[0]))
+        numbers.append(_number(data[0], code))
     return numbers[0], numbers[1] - 1
 
 
 def _search(conn, criteria):
     data = _ok(conn.uid("SEARCH", criteria))
-    return [int(n) for n in b" ".join(d for d in data if d).split()]
+    return [_number(n, "a UID") for n in b" ".join(d for d in data if d).split()]
+
+
+def _number(value, what):
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        raise RuntimeError(f"Gmail sent {what} that is not a number: " + repr(mask.mask_all(_decoded(value)))[:80]) from None
+
+
+def _decoded(data):
+    """IMAP's answer as text, so it is masked before repr() escapes its line breaks."""
+    if isinstance(data, bytes):
+        return data.decode("utf-8", "replace")
+    if isinstance(data, (list, tuple)):
+        return [_decoded(d) for d in data]
+    return data
 
 
 def _list(conn, since, window_days):
@@ -536,10 +556,10 @@ def _clean_body(body):
             out = out[:n]
             break
     text = "\n".join(out)
-    text = LONG_URL.sub(lambda m: m.group(0)[:60] + "…", text)
+    text = LONG_URL.sub(lambda m: mask.mask(m.group(0))[:60] + "…", text)
     text = re.sub(r"[ \t]+\n", "\n", text)
     text = re.sub(rf"^(?:{SPACE}|\n)+|(?:{SPACE}|\n)+\Z", "", re.sub(r"\n{3,}", "\n\n", text))
-    return text if len(text) <= BODY_CHARS else text[:BODY_CHARS] + " …"
+    return mask.clip(text, BODY_CHARS)
 
 
 def _render(address, thread, bodies):

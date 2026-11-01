@@ -7,6 +7,7 @@ from pathlib import Path
 
 import kb
 from kb import ai, check, search, store
+from kb.mask import holds_secret, mask, secret_in_id
 
 HOST = "demo"
 SHOWN_HITS = 5
@@ -24,7 +25,9 @@ def _lines(path):
 
 
 def load(db, folder):
-    items = _lines(Path(folder) / "items.jsonl")
+    # A month someone else made can name a record after a secret; such a record is skipped, as ingest skips one.
+    items = [item for item in _lines(Path(folder) / "items.jsonl")
+             if not holds_secret(str(item["source"])) and not secret_in_id(str(item["source_id"]))]
     for item in items:
         store.store_item(db, item["source"], f"{HOST}:{item['source_id']}", item["ts"], item["title"],
                          item["content"], {**item.get("meta", {}), "host": HOST})
@@ -53,7 +56,7 @@ def show(db, question, config, model, out):
         hits = search.search(db, question["question"], limit=SHOWN_HITS)
         out(f"Search finds {len(hits)} candidate record{'s' if len(hits) != 1 else ''}:" if hits else "Search finds nothing.")
         for h in hits:
-            out(f"  {h['ts'][:10]}  {h['source']}  {h['title'][:80]}")
+            out(f"  {h['ts'][:10]}  {h['source']}  {mask(h['title'])[:80]}")
         out("The check would now ask your AI plug-in which of these fit, and add only those. "
             "Set one up with `kb setup` to see it.")
         return

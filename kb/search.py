@@ -1,9 +1,11 @@
 import json
 import math
 import re
+import sqlite3
 from datetime import datetime, timezone
 
-from kb.store import SUMMARY_KINDS
+from kb.mask import mask, mask_all
+from kb.store import SUMMARY_KINDS, TOKENIZE, current, item_names, secret_id, unversioned
 
 STOPWORDS = set("""a an and are as at be been but by can could did do does doing for from had has have
 how i if in into is it its just me my no not of on or our should so than that the their them then there
@@ -15,6 +17,7 @@ CANDIDATES = 60
 # The longest passage FTS5's snippet() gives: the stretch of a record where its matching words cluster.
 EXCERPT_TOKENS = 64
 EXCERPT_CHARS = 500
+SNIPPET_CHARS = 220
 MARK, END = "\x02", "\x03"
 
 
@@ -110,15 +113,48 @@ def search(db, query, after=None, sources=(), limit=10, before=None, keep=None):
             best[(src, sid)] = hit
     for key, hit in best.items():
         hit["score"] = total[key]
-    hits = sorted((h for h in best.values() if keep is None or keep(h)), key=lambda h: -h["score"])[:limit]
+    fresh = current(db, [h["id"] for h in best.values()])
+    skipped = unversioned(db, [h["id"] for h in best.values()])  # an older kb's rows, which no reader shows
+    # A store from before ingest refused such ids can hold an item whose id or source looks like a secret.
+    allowed = (h for h in best.values() if h["id"] not in skipped and (h["id"] in fresh
+               or not secret_id(h["source"], h["source_id"], item_names(db, h["source"], h["source_id"]))))
+    hits = sorted((h for h in allowed if keep is None or keep(h)), key=lambda h: -h["score"])[:limit]
     for hit in hits:
-        snip, marked = db.execute(
-            f"SELECT snippet(docs_fts, 1, '[', ']', ' … ', 24), snippet(docs_fts, 1, char(2), char(3), ' … ', "
-            f"{EXCERPT_TOKENS}) FROM docs_fts WHERE docs_fts MATCH ? AND rowid = ?", (match, hit["id"])).fetchone()
-        text = snip if "[" in snip else hit["content"][:220]
-        hit["snippet"] = re.sub(r"\s+", " ", text).strip()
-        hit["excerpt"] = excerpt(marked if MARK in marked else hit["content"])
+        if hit["id"] in fresh:
+            snip, marked = db.execute(
+                f"SELECT snippet(docs_fts, 1, '[', ']', ' … ', 24), snippet(docs_fts, 1, char(2), char(3), ' … ', "
+                f"{EXCERPT_TOKENS}) FROM docs_fts WHERE docs_fts MATCH ? AND rowid = ?", (match, hit["id"])).fetchone()
+            hit["snippet"] = re.sub(r"\s+", " ", snip if "[" in snip else hit["content"][:SNIPPET_CHARS]).strip()
+            hit["excerpt"] = excerpt(marked if MARK in marked else hit["content"])
+        else:
+            # Older rows are masked whole before any cut, and the match is found again in the masked text.
+            hit["title"], hit["content"], hit["meta"] = mask(hit["title"]), _masked_item(db, hit), mask_all(hit["meta"])
+            marked = _marked(hit["content"], match)
+            hit["snippet"] = excerpt(marked.replace(MARK, MARK + "[").replace(END, "]" + END), SNIPPET_CHARS)
+            hit["excerpt"] = excerpt(marked)
     return hits
+
+
+def _masked_item(db, hit):
+    """The hit's text masked whole: a doc or summary row by itself, a chunk as its item's chunks joined in order."""
+    if hit["kind"] != "raw":
+        return mask(hit["content"])
+    return mask("".join(r[0] for r in db.execute(
+        "SELECT content FROM docs WHERE source=? AND source_id=? AND kind='raw' "
+        "ORDER BY json_extract(metadata, '$.chunk')", (hit["source"], hit["source_id"]))))
+
+
+def _marked(text, match):
+    """`text` with the words the FTS query `match` finds marked as snippet() marks them, found by FTS5 itself in an
+    index of just this text, so stemming matches as it does in the store."""
+    index = sqlite3.connect(":memory:")
+    try:
+        index.execute(f"CREATE VIRTUAL TABLE t USING fts5(content, tokenize='{TOKENIZE}')")
+        index.execute("INSERT INTO t(rowid, content) VALUES (1, ?)", (text,))
+        row = index.execute("SELECT highlight(t, 0, char(2), char(3)) FROM t WHERE t MATCH ?", (match,)).fetchone()
+        return row[0] if row else text
+    finally:
+        index.close()
 
 
 def excerpt(marked, chars=EXCERPT_CHARS):
@@ -136,4 +172,4 @@ def pointer(meta, machine=None):
     host = meta.get("host")
     if host and host != machine and meta.get("path") and where == meta.get("path"):
         where = f"{host}:{where}"
-    return where
+    return mask(where)

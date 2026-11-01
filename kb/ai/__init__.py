@@ -11,6 +11,8 @@ import threading
 import time
 from typing import Any, Callable, NamedTuple, Optional
 
+from kb.mask import mask
+
 
 class Prompt(NamedTuple):
     system: str
@@ -26,7 +28,10 @@ class Traits(NamedTuple):
 
 
 class AIError(Exception):
-    pass
+    """Its message is masked, because it can quote a provider's answer or a CLI's error output."""
+
+    def __init__(self, message="", *args):
+        super().__init__(mask(str(message)), *args)
 
 
 class NotReady(AIError):
@@ -69,11 +74,33 @@ def visible_plugins():
     return [name for name, spec in PLUGINS.items() if not spec.hidden]
 
 
+def masked(prompt):
+    """The prompt with secrets masked. The configured model can be another provider than the user's agent, so it
+    never sees a secret's value, only that one was there."""
+    return prompt._replace(system=mask(prompt.system), user=mask(prompt.user))
+
+
+class _Masked:
+    """A plug-in's model that masks every prompt before it goes out."""
+
+    def __init__(self, model):
+        self._model = model
+
+    def ask(self, prompt, timeout):
+        return self._model.ask(masked(prompt), timeout)
+
+    def __getattr__(self, name):
+        return getattr(self._model, name)
+
+
 def load(settings):
-    """The model for the config's [ai] table. Raises NotReady when there is none."""
+    """The model for the config's [ai] table, masking what it is sent. Raises NotReady when there is none."""
     if settings is None:
         raise NotReady("no AI plug-in is set up; run `kb setup`")
-    return PLUGINS[settings.plugin].make(settings.options)
+    from kb.config import secret_looking
+    if secret_looking(settings.options):
+        raise NotReady(f"[ai] {', '.join(secret_looking(settings.options))} looks like a secret; give a key as key")
+    return _Masked(PLUGINS[settings.plugin].make(settings.options))
 
 
 def hedged(model, prompt, timeout, hedge_after=None):
@@ -81,6 +108,7 @@ def hedged(model, prompt, timeout, hedge_after=None):
     first, gets an identical copy. Raises TimeoutError at the deadline, else the last call's error."""
     deadline = time.monotonic() + timeout
     answers = queue.Queue()
+    prompt = masked(prompt)  # also for a model a caller made itself, not through load()
 
     def call():
         try:

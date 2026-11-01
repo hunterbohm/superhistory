@@ -5,6 +5,7 @@ import shutil
 import subprocess
 
 from kb import agents
+from kb.mask import mask
 from kb.agents import Agent, _turns
 
 PLUGIN = "kb-context"
@@ -141,8 +142,9 @@ def _turns_before(history, text):
     if turns and turns[-1] == ("user", text.strip()):
         turns.pop()
     limits = _turns.BEFORE_CHARS
+    turns = [(role, mask(body)) for role, body in turns[-2:]]  # masked whole, before the cut
     return [{"role": role, "text": body[-limits[role]:] if role == "assistant" else body[:limits[role]]}
-            for role, body in turns[-2:]]
+            for role, body in turns]
 
 
 def request(event):

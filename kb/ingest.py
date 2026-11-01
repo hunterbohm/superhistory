@@ -7,11 +7,14 @@ import json
 import sys
 import time
 
-from kb import ai, store, summarize
+from kb import ai, mask as mask_module, store, summarize
+from kb.mask import holds_secret, id_names, mask, masked_log, secret_in_id
 from kb.remote import HostAway, SshReader
 from kb.sources import Excludes, Gone, Item, Progress, Run
 
 COMMIT_EVERY = 200
+# How long one ingest spends masking older rows again; the rest wait for the next ingest, read masked meanwhile.
+REMASK_SECONDS = 60
 
 
 _UNBUILT = object()
@@ -44,9 +47,12 @@ class LocalReader:
 
 
 def apply(db, source, host, event):
-    """Stores the event under the id "<host>:<source_id>". Applying an event twice changes nothing the second time.
-    Returns True when rows changed."""
-    if isinstance(event, Progress):
+    """Stores the event under the id "<host>:<source_id>". An item whose id looks like it holds a secret, such as a
+    file named after a token, is not stored. Applying an event twice changes nothing the second time. Returns True
+    when rows changed."""
+    if holds_secret(source) or holds_secret(host):
+        raise ValueError("a source or host name that looks like a secret is not stored")
+    if isinstance(event, Progress) or secret_in_id(event.source_id, id_names(getattr(event, "meta", None))):
         return False
     sid = f"{host}:{event.source_id}"
     if isinstance(event, Gone):
@@ -84,12 +90,19 @@ def run_unit(db, source, host, reader, log):
     mark = None
     started = time.time()
     for event in reader.events(source, since):
+        if holds_secret(json.dumps(event.mark, default=str)):
+            log.warning("%s@%s: skipped an event whose position looks like it holds a secret", source.name, host)
+            continue
         mark = event.mark if mark is None else max(mark, event.mark)
         if isinstance(event, Progress):
             continue
         try:
             if not isinstance(event, (Item, Gone)):
-                raise TypeError(f"not an event: {event!r}")
+                raise TypeError(f"not an event: a {type(event).__name__}")
+            if not isinstance(event, Progress) and secret_in_id(event.source_id,
+                                                                 id_names(getattr(event, "meta", None))):
+                log.warning("%s@%s: skipped %s, whose name looks like it holds a secret; rename it to index it",
+                            source.name, host, mask(event.source_id))
             changed += apply(db, source.name, host, event)
         except Exception as exc:
             log.warning("%s@%s: skipped %s: %s", source.name, host, getattr(event, "source_id", "?"), exc)
@@ -101,7 +114,7 @@ def run_unit(db, source, host, reader, log):
     pruned = 0
     if source.type.live_ids:
         db.commit()
-        live = {f"{host}:{sid}" for sid in reader.live_ids(source)}
+        live = {f"{host}:{sid}" for sid in reader.live_ids(source) if not secret_in_id(sid)}
         stored = [] if not live else [r[0] for r in db.execute(
             "SELECT DISTINCT source_id FROM docs WHERE source=? AND substr(source_id, 1, ?) = ?",
             (source.name, len(host) + 1, f"{host}:"))]
@@ -119,7 +132,11 @@ def run_unit(db, source, host, reader, log):
 def run(db, config, log, only=(), with_summaries=True, model_factory=None):
     """Every configured source, or those named in `only`, then summaries for new long items. Returns the number of
     failures. The caller holds the database lock."""
+    log = masked_log(log)
+    capped = mask_module.capped
     model_factory = model_factory or (lambda: ai.load(config.ai))
+    store.clean_state(db)
+    db.commit()
     local = LocalReader(model_factory)
     remote = {h.name: SshReader(h) for h in config.hosts}
     away = set()
@@ -129,6 +146,11 @@ def run(db, config, log, only=(), with_summaries=True, model_factory=None):
             continue
         for host in source.hosts:
             if host in away:
+                continue
+            if holds_secret(source.name) or holds_secret(host):
+                # A config built without config.parse can hold such a name; it goes into every id and health key.
+                log.warning("a source or host name looks like a secret; skipped it without storing anything")
+                failures += 1
                 continue
             unit = f"{source.name}@{host}"
             try:
@@ -145,6 +167,9 @@ def run(db, config, log, only=(), with_summaries=True, model_factory=None):
                 failures += 1
     store.set_watermark(db, store.STATE, "last_ingest", store.now_iso())
     db.commit()
+    if store.old_rows(db) or store.rebuild_owed(db):
+        changed, left = store.remask(db, REMASK_SECONDS, log)
+        log.info("remask: %d rows masked again, %d older rows left for the next ingest", changed, left)
     if with_summaries and config.summarize.enabled and config.ai:
         try:
             summarize.run(db, config, model_factory(), log)
@@ -155,5 +180,11 @@ def run(db, config, log, only=(), with_summaries=True, model_factory=None):
         else:
             store.record_ok(db, "summarize")
             db.commit()
+    if mask_module.capped > capped:
+        total = int(store.get_watermark(db, store.STATE, "mask_capped") or 0) + mask_module.capped - capped
+        store.set_watermark(db, store.STATE, "mask_capped", total)
+        db.commit()
+        log.warning("masking stopped at its pass limit %d times and masked those regions whole",
+                    mask_module.capped - capped)
     log.info("ingest done: %d failures", failures)
     return failures

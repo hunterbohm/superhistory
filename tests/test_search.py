@@ -29,6 +29,52 @@ class TempDB(unittest.TestCase):
         return changed
 
 
+class OldRowTest(TempDB):
+    """Rows an earlier version of mask() stored, which today's changes, so a reader masks them before cutting them."""
+
+    def old(self, sid, content, kind="doc", meta='{}'):
+        self.db.execute("INSERT INTO docs(kind, source, source_id, ts, title, content, metadata, masked) "
+                        "VALUES (?, 's', ?, ?, 't', ?, ?, '0123456789abcdef')", (kind, sid, iso(), content, meta))
+        self.db.commit()
+
+    def test_a_match_far_from_a_masked_secret_stays_in_the_passage(self):
+        self.old("d.md", "token sk-ant-api03-old-" + "Z" * 24 + " " + "ordinary filler " * 100
+                 + "walrus deployment was approved by Dana.")
+        hit = search.search(self.db, "walrus deployment")[0]
+        for passage in (hit["snippet"], hit["excerpt"]):
+            self.assertIn("walrus", passage)
+            self.assertNotIn("Z" * 12, passage)
+        self.assertIn("[walrus]", hit["snippet"])
+
+    def test_a_secret_across_three_chunks_is_masked_in_every_passage(self):
+        line = ("T2xkUGVtQm9keUxpbmU" * 4)[:64]
+        key = "-----BEGIN PRIVATE KEY-----\n" + f"{line}\n" * 90 + "-----END PRIVATE KEY-----"
+        parts = store.chunk("p" * 3820 + "\n" + key + "\nwalrus deployment notes\n")
+        self.assertEqual(len(parts), 3)
+        for i, part in enumerate(parts):
+            self.old("k.md", part, kind="raw", meta=f'{{"chunk": {i}, "chunks": 3}}')
+        hit = search.search(self.db, "walrus deployment")[0]
+        self.assertEqual(hit["meta"]["chunk"], 2, "the match is in the chunk without the key's header")
+        for text in (hit["snippet"], hit["excerpt"], hit["content"]):
+            self.assertNotIn(line[:12], text)
+        self.assertIn("walrus", hit["excerpt"])
+
+    def test_a_stemmed_match_stays_in_the_passage(self):
+        self.old("r.md", "ordinary filler " * 150 + "The run was approved by Dana.")
+        hit = search.search(self.db, "running")[0]
+        self.assertIn("[run] was approved", hit["snippet"])
+        self.assertIn("run was approved", hit["excerpt"])
+
+    def test_an_old_item_whose_id_looks_like_a_secret_is_left_out(self):
+        self.old("desk:key-sk-ant-api03-old-" + "Z" * 24 + ".md", "walrus deployment")
+        self.assertEqual(search.search(self.db, "walrus deployment"), [])
+
+    def test_current_rows_keep_the_index_snippet(self):
+        self.add("d.md", "ordinary filler " * 100 + "walrus deployment was approved by Dana.")
+        hit = search.search(self.db, "walrus deployment")[0]
+        self.assertIn("[walrus] [deployment]", hit["snippet"])
+
+
 class FtsQueryTest(unittest.TestCase):
     def test_words_are_quoted_and_or_joined(self):
         self.assertEqual(search.fts_query("hello world"), '"hello" OR "world"')
@@ -186,6 +232,7 @@ class SearchTest(TempDB):
         self.add("fresh", "ibis", title="fresh", ts=iso())
         fresh = search.search(self.db, "ibis")[0]["score"]
         self.db.execute("UPDATE docs SET ts=?", (iso(timedelta(days=36500)),))
+        self.db.execute("UPDATE docs SET masked=?", (store.VERSION,))  # the test's edit, not an older kb's
         old = search.search(self.db, "ibis")[0]["score"]
         self.assertAlmostEqual(fresh / old, 2.0, places=2)
 

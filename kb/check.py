@@ -5,6 +5,7 @@
 "before" holds the conversation turns just ahead of the message, oldest first; hooks send the last two.
 Every failure prints nothing. One JSON line per call goes to the check log, never with the message text.
 """
+import hashlib
 import json
 import os
 import re
@@ -16,6 +17,7 @@ from typing import NamedTuple, Optional
 
 from kb import ai, search, store
 from kb.ai import BadAnswer, Prompt
+from kb.mask import mask, mask_all
 
 QUERY_SYSTEM = """The user types a message to one of their AI agents. You see the message and the conversation turns \
 just before it. Their knowledge base holds their past email, texts, notes, meeting notes, commits, GitHub threads \
@@ -77,11 +79,13 @@ def read_request(text):
 
 def prompt_text(message, before):
     parts = []
+    # Masked whole before it is cut, so a cut cannot drop a secret's field name and keep its value.
     for turn in before:
         limit = BEFORE_CHARS[turn["role"]]
-        text = turn["text"][-limit:] if turn["role"] == "assistant" else turn["text"][:limit]
+        text = mask(turn["text"])
+        text = text[-limit:] if turn["role"] == "assistant" else text[:limit]
         parts.append(f"[{turn['role']} turn before]\n{text}")
-    parts.append("[The user's message]\n" + message[:MESSAGE_CHARS])
+    parts.append("[The user's message]\n" + mask(message)[:MESSAGE_CHARS])
     return "\n\n".join(parts)
 
 
@@ -96,7 +100,7 @@ def plan(message, before, model, timeout, hedge_after):
     query = answer.get("query")
     if not isinstance(query, str) or not query.strip():
         raise BadAnswer("no query in the answer")
-    return query.strip()[:200]
+    return mask(query.strip())[:200]
 
 
 class Lookup(NamedTuple):
@@ -130,7 +134,7 @@ def records(db, query, session, seen):
 
 def pick(message, before, hits, model, timeout, hedge_after=None):
     """The hits the model scored useful, in search order. Raises BadAnswer when it gives no scores."""
-    lines = [f"{i}. {h['ts'][:10]} {h['source']} | {_line(h['title'])[:120]} | {h['excerpt']}"
+    lines = [f"{i}. {h['ts'][:10]} {h['source']} | {_line(mask(h['title']))[:120]} | {h['excerpt']}"
              for i, h in enumerate(hits, 1)]
     user = prompt_text(message, before) + "\n\n[Records]\n" + "\n".join(lines)
     scores = ai.ask_json(model, Prompt(PICK_SYSTEM, user), timeout, "scores", hedge_after=hedge_after).get("scores")
@@ -149,7 +153,7 @@ def render(hits, machine=None):
         return ""
     lines = [HEADER]
     for i, h in enumerate(hits, 1):
-        lines.append(f"{i}. {h['ts'][:10]}  {h['source']}  #{h['id']}  {_line(h['title'])[:120]}")
+        lines.append(f"{i}. {h['ts'][:10]}  {h['source']}  #{h['id']}  {_line(mask(h['title']))[:120]}")
         summary = "summary: " if h["kind"] in store.SUMMARY_KINDS else ""
         lines.append(f"   {summary}{h['excerpt']}")
         lines.append(f"   -> {search.pointer(h['meta'], machine)}")
@@ -163,7 +167,8 @@ class Seen:
         self.folder = os.fspath(folder)
 
     def _path(self, session):
-        return os.path.join(self.folder, re.sub(r"[^\w.-]", "_", session)[:120] + ".json")
+        # Hashed: a session name comes from the agent, and a file name is no place for whatever it holds.
+        return os.path.join(self.folder, hashlib.sha256(session.encode("utf-8", "replace")).hexdigest()[:32] + ".json")
 
     def load(self, session):
         if not session:
@@ -194,7 +199,7 @@ class Seen:
 
 def write_log(path, entry):
     """One JSON line per call. It never holds the message text."""
-    line = json.dumps({"ts": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"), **entry})
+    line = json.dumps({"ts": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"), **mask_all(entry)})
     try:
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, "a", encoding="utf-8") as fh:

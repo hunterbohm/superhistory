@@ -2,6 +2,8 @@ import json
 import os
 import re
 
+from kb.mask import mask
+
 TAIL_BYTES = 1_000_000
 BEFORE_CHARS = {"assistant": 1500, "user": 600}
 INJECTED = re.compile(r"^\s*(<task-notification>|<system-reminder>|<command-|<local-command|# AGENTS\.md instructions"
@@ -53,5 +55,6 @@ def turns_before(transcript_path, prompt):
     out = []
     for role, text in turns[-2:]:
         limit = BEFORE_CHARS[role]
+        text = mask(text)  # whole, before the cut, so the cut cannot keep a secret without its field name
         out.append({"role": role, "text": text[-limit:] if role == "assistant" else text[:limit]})
     return out

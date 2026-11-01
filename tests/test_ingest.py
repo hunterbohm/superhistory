@@ -105,6 +105,17 @@ class IngestCase(unittest.TestCase):
         return None if raw is None else json.loads(raw)
 
 
+class OlderStateTest(IngestCase):
+    def test_an_ingest_drops_failure_lines_an_older_kb_wrote(self):
+        # An older kb cut this line before masking it, so the piece of a token in it is too short to know.
+        self.db.execute("INSERT INTO ingest_state(source, key, watermark) VALUES (?, 'fail:fake@m2', ?)",
+                        (store.STATE, "2026-10-28T10:00:00Z token ghp_Zq7Lm2Xc9Vb4Nn8"))
+        self.db.commit()
+        self.run_all(Script(events=[item("x")]))
+        self.assertEqual(store.failing(self.db), [])
+        self.assertNotIn("Zq7Lm2Xc9", json.dumps(self.db.execute("SELECT * FROM ingest_state").fetchall()))
+
+
 class RunUnitTest(IngestCase):
     def test_ids_are_prefixed_with_the_host_and_meta_carries_it(self):
         self.run_unit(Script(events=[item("x", "alpha text")]))
@@ -389,6 +400,48 @@ class RunTest(IngestCase):
         self.assertEqual(len(built), 1)
 
 
+class RemaskOnIngestTest(IngestCase):
+    def test_ingest_masks_older_rows_again_and_the_header_says_so_until_it_has(self):
+        token = "sk-ant-api03-ingest-" + "Q" * 24
+        self.db.execute("INSERT INTO docs(kind, source, source_id, ts, title, content, masked) VALUES "
+                        "('doc', 'old', 'a', ?, 't', ?, '0123456789abcdef')", (store.now_iso(), f"note with {token}"))
+        self.db.commit()
+        cfg = make_config(Script("good", events=[item("g1")]))
+        store.set_watermark(self.db, store.STATE, "last_ingest", store.now_iso())
+        self.assertIn("1 rows predate today's masking", cli.header(self.db, cfg))
+        self.assertEqual(ingest.run(self.db, cfg, LOG), 0)
+        self.assertEqual(store.old_rows(self.db), 0)
+        self.assertNotIn(token, json.dumps(self.rows()))
+        self.assertNotIn("predate", cli.header(self.db, cfg))
+
+    def test_ingest_finishes_a_rebuild_a_remask_left_owed(self):
+        token = "sk-ant-api03-rebuild-" + "Q" * 24
+        self.db.execute("INSERT INTO docs(kind, source, source_id, ts, title, content, masked) VALUES "
+                        "('doc', 'old', 'a', ?, 't', ?, '0123456789abcdef')", (store.now_iso(), f"note with {token}"))
+        self.db.commit()
+        with mock.patch.object(store, "_rebuild", side_effect=RuntimeError("interrupted")):
+            with self.assertRaises(RuntimeError):
+                store.remask(self.db, seconds=60)
+        self.assertEqual(store.old_rows(self.db), 0)
+        self.assertEqual(ingest.run(self.db, make_config(Script("good", events=[])), LOG), 0)
+        self.assertFalse(store.rebuild_owed(self.db))
+        path = self.db.execute("PRAGMA database_list").fetchone()[2]
+        with open(path, "rb") as fh:
+            self.assertNotIn(token.encode(), fh.read())
+
+    def test_a_remask_cut_short_by_its_time_finishes_on_later_ingests(self):
+        for i in range(60):
+            self.db.execute("INSERT INTO docs(kind, source, source_id, ts, title, content, masked) VALUES "
+                            "('doc', 'old', ?, ?, 't', 'x', '0123456789abcdef')", (f"a{i}", store.now_iso()))
+        self.db.commit()
+        cfg = make_config(Script("good", events=[]))
+        with mock.patch.object(ingest, "REMASK_SECONDS", 0):
+            ingest.run(self.db, cfg, LOG)
+            self.assertEqual(store.old_rows(self.db), 10)
+            ingest.run(self.db, cfg, LOG)
+        self.assertEqual(store.old_rows(self.db), 0)
+
+
 class SummaryTest(IngestCase):
     def long_source(self):
         return Script("notes", events=[item("long", "word " * 3000), item("short", "tiny")], summarize=True)
@@ -477,6 +530,18 @@ class CliTest(unittest.TestCase):
             return sorted(r[0] for r in db.execute("SELECT source_id FROM docs"))
         finally:
             db.close()
+
+    def test_masking_that_hits_its_pass_limit_is_counted_in_stats(self):
+        from kb import mask as mask_module
+        self.configure(self.make_notes())
+        real = mask_module._mask_once
+        with mock.patch.object(mask_module, "_mask_once",  # a pass that never settles on the note's text
+                               lambda text: text + "!" if "walrus pricing" in text else real(text)):
+            self.assertEqual(self.ingest(), 0)
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            cli.main(["stats"])
+        self.assertIn("Masking reached its pass limit on", out.getvalue())
 
     def test_ingest_reads_the_configured_sources(self):
         self.configure(self.make_notes())

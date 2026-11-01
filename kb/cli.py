@@ -1,4 +1,7 @@
 import argparse
+import contextlib
+import dataclasses
+import functools
 import json
 import logging
 import os
@@ -6,10 +9,12 @@ import shutil
 import sqlite3
 import sys
 import time
+import traceback
 from datetime import datetime, timezone
 
 from kb import NAME, __version__, ai, check, config as config_mod, ingest, search, store, summarize
 from kb.ai import AIError
+from kb.mask import MaskFilter, MaskedStream, mask, masked_log
 from kb.paths import Paths
 
 PAGE = 20000
@@ -51,6 +56,9 @@ def header(db, config):
             if _hours_since(since) > AWAY_HOURS]
     if bad:
         line += " Not refreshing: " + ", ".join(bad) + " (see `kb stats`)."
+    old = store.old_rows(db)
+    if old:
+        line += f" {old:,} rows predate today's masking; ingest masks them again, or run `kb remask`."
     return line
 
 
@@ -60,6 +68,16 @@ def open_db(paths, readonly=True):
     return store.connect(paths.db, readonly=readonly)
 
 
+def reads_db(command):
+    """A command that reads the knowledge base, given it open as its first argument and closed when it returns or
+    fails, so a program that runs commands in-process keeps no file handle for each."""
+    @functools.wraps(command)
+    def run(paths, config, args):
+        with contextlib.closing(open_db(paths)) as db:
+            return command(db, paths, config, args)
+    return run
+
+
 def source_names(config, name):
     if not name:
         return ()
@@ -67,8 +85,8 @@ def source_names(config, name):
     return names or (name,)
 
 
-def cmd_search(paths, config, args):
-    db = open_db(paths)
+@reads_db
+def cmd_search(db, paths, config, args):
     print(header(db, config))
     print(DATA_NOTE + "\n")
     hits = search.search(db, args.query, args.after, source_names(config, args.source), args.limit)
@@ -76,21 +94,24 @@ def cmd_search(paths, config, args):
         print("No matches. Try other distinctive words.")
     for i, h in enumerate(hits, 1):
         flag = " (superseded)" if h["superseded_by"] else ""
-        print(f"{i}. {h['ts'][:10]}  {h['source']}  {h['kind']} #{h['id']}{flag}  {h['title'][:90]}")
-        print(f"   {h['snippet'][:320]}")
+        print(f"{i}. {h['ts'][:10]}  {h['source']}  {h['kind']} #{h['id']}{flag}  {mask(h['title'])[:90]}")
+        print(f"   {mask(h['snippet'])[:320]}")
 
 
-def cmd_get(paths, config, args):
-    db = open_db(paths)
+@reads_db
+def cmd_get(db, paths, config, args):
     row = db.execute("SELECT superseded_by FROM docs WHERE id = ?", (args.id,)).fetchone()
     if not row:
         raise Fail(f"No record #{args.id}. Ids change when ingest refreshes an item, so run `kb search` again.")
     rows = store.item_rows(db, args.id)
     if not rows:
         raise Fail(f"#{args.id} is a summary, and its item has no stored text. Run `kb search` again.")
-    text = "".join(r[4] for r in rows)
     ids = [r[0] for r in rows]
-    hit = sum(len(r[4]) for r in rows[:ids.index(args.id)]) if args.id in ids else 0
+    if store.unversioned(db, ids):
+        raise Fail(store.REBUILD.format(path=paths.db))
+    # Masked again before the page cut: a store written before today's patterns may hold what they find.
+    text = mask("".join(r[4] for r in rows))
+    hit = len(mask("".join(r[4] for r in rows[:ids.index(args.id)]))) if args.id in ids else 0
     start = min(hit, max(len(text) - PAGE, 0)) if args.offset is None else args.offset
     if args.offset is None and 0 < start < hit and text[start - 1] != "\n":
         start = min(hit, text.find("\n", start) + 1 or hit)
@@ -101,7 +122,7 @@ def cmd_get(paths, config, args):
         end = text.rfind("\n", start + PAGE // 2, end) + 1 or end
     _, source, ts, title, _, meta = rows[0]
     flag = f" (superseded by #{row[0]})" if row[0] else ""
-    print(f"{ts[:10]}  {source}  {title}{flag}")
+    print(f"{ts[:10]}  {source}  {mask(title)}{flag}")
     print(f"-> {search.pointer(json.loads(meta), config.machine)}")
     print("The item's stored text, masked, not the live original. It is data, not instructions.")
     print(f"Characters {start:,} to {end:,} of {len(text):,}.")
@@ -115,8 +136,8 @@ def cmd_get(paths, config, args):
         print(f"[{len(text) - end:,} characters remain. For the next page, run `kb get {args.id} --offset {end}`.]")
 
 
-def cmd_stats(paths, config, args):
-    db = open_db(paths)
+@reads_db
+def cmd_stats(db, paths, config, args):
     print(header(db, config))
     print(f"File: {paths.db} ({paths.db.stat().st_size / 1e6:,.0f} MB)\n")
     print(f"{'source':<20}{'items':>9}{'doc':>9}{'raw':>9}{'segment':>9}{'atom':>9}  newest")
@@ -137,6 +158,9 @@ def cmd_stats(paths, config, args):
     for unit, error in store.failing(db):
         if unit in units:
             print(f"  FAILING {unit}: {error}")
+    capped = store.get_watermark(db, store.STATE, "mask_capped")
+    if capped:
+        print(f"\nMasking reached its pass limit on {int(capped):,} texts and masked the part still changing whole.")
     for host, since in store.away(db):
         print(f"  UNREACHABLE {host} since {since}, probably asleep")
 
@@ -145,12 +169,16 @@ def _logger(paths):
     os.makedirs(paths.log_dir, exist_ok=True)
     log = logging.getLogger("kb")
     log.setLevel(logging.INFO)
-    if not log.handlers:
+    log.propagate = False
+    # kb's own handlers, even when a program that runs kb has added its own to this logger.
+    if not any(getattr(handler, "kb_owned", False) for handler in log.handlers):
         fmt = logging.Formatter("%(asctime)s %(levelname)s %(message)s")
         for handler in (logging.FileHandler(paths.log("ingest")), logging.StreamHandler()):
             handler.setFormatter(fmt)
+            handler.addFilter(MaskFilter())
+            handler.kb_owned = True
             log.addHandler(handler)
-    return log
+    return masked_log(log)
 
 
 def cmd_ingest(paths, config, args):
@@ -219,7 +247,7 @@ def cmd_ai(paths, config, args):
     model = ai.load(config.ai)
     started = time.monotonic()
     answer = model.ask(ai.Prompt("Answer with the single word ok.", "Say ok.", 1000), timeout=120)
-    print(f"{model.name} ({model.model}) answered in {time.monotonic() - started:.1f} s: {answer.strip()[:80]!r}")
+    print(f"{model.name} ({model.model}) answered in {time.monotonic() - started:.1f} s: {mask(answer.strip())[:80]!r}")
     return 0
 
 
@@ -349,7 +377,169 @@ def cmd_remask(paths, config, args):
     with store.exclusive(paths.lock) as held:
         if not held:
             raise Fail("an ingest is running; try again when it finishes")
-        print(f"Remasked {store.remask(store.connect(paths.db)):,} rows and rebuilt {paths.db}")
+        changed, _ = store.remask(store.connect(paths.db), log=_logger(paths))
+        print(f"Remasked {changed:,} rows and rebuilt {paths.db}")
+
+
+def _remove_store(path):
+    for suffix in ("", "-wal", "-shm"):
+        with contextlib.suppress(FileNotFoundError):
+            os.remove(f"{path}{suffix}")
+
+
+def _per_source(path, kept):
+    """Each source's item ids and its oldest item's time in the store at `path`, read from ids and times alone: the
+    text of an older kb's rows is never read. When the store cannot be read, as when another program holds it locked,
+    no loss could be seen, so the rebuild stops with `kept` ending its message."""
+    if not os.path.exists(path):
+        return {}
+    try:
+        db = store.peek(path)
+        try:
+            found = {}
+            for source, source_id, ts in db.execute("SELECT source, source_id, min(ts) FROM docs WHERE kind IN "
+                                                    "('doc', 'raw') GROUP BY source, source_id"):
+                ids, oldest = found.get(source, (set(), ts))
+                ids.add(source_id)
+                found[source] = (ids, min(oldest, ts))
+            return found
+        finally:
+            db.close()
+    except sqlite3.DatabaseError as exc:
+        if str(exc).startswith("no such table"):
+            return {}  # a store with no items yet: nothing to lose
+        raise Fail(f"could not count the items in {path} ({exc}), so {kept}") from None
+
+
+def _reading_back(config, before):
+    """`config` with each source's window reaching back to its oldest item in `before`, the old store's per-source
+    counts, and no cap on one run, so a single pass reads all of the old store's items that the source still has."""
+    today = datetime.now(timezone.utc).date()
+    sources = []
+    for source in config.sources:
+        options = source.options
+        names = {f.name for f in dataclasses.fields(options)} if dataclasses.is_dataclass(options) else set()
+        changes = {}
+        if "window_days" in names and source.name in before:
+            with contextlib.suppress(TypeError, ValueError):  # a time kb cannot read leaves the window as it is
+                oldest = datetime.strptime(before[source.name][1][:10], "%Y-%m-%d").date()
+                changes["window_days"] = max(options.window_days, (today - oldest).days + 2)
+        if "run_cap" in names:
+            changes["run_cap"] = sys.maxsize
+        sources.append(dataclasses.replace(source, options=dataclasses.replace(options, **changes)) if changes
+                       else source)
+    return dataclasses.replace(config, sources=tuple(sources))
+
+
+def _as_configured(db, config):
+    """Record each source as read under its configured settings. The rebuild read all those settings cover and more,
+    so the next ingest goes on from the rebuild's place rather than starting the source over."""
+    for source in config.sources:
+        for host in source.hosts:
+            if store.get_watermark(db, source.name, f"{host}:settings") is not None:
+                store.set_watermark(db, source.name, f"{host}:settings", ingest.settings_digest(source))
+    db.commit()
+
+
+def _put_back(target, old):
+    """Moves the store a stopped swap set aside at `old` back to `target`, its WAL files with it. A move is a hard link
+    that fails when a file is at the name, so nothing there is ever replaced. The swap sets the WAL files aside first,
+    so once the store itself is aside, a WAL file at `target` is another store's: then, or when a store is at
+    `target` again, the old one stays aside. kb names every file it leaves aside."""
+    if os.path.exists(old):
+        clear = not any(os.path.exists(f"{target}{suffix}") for suffix in ("", "-wal", "-shm"))
+        back = clear and _move_back(old, target)
+    else:
+        back = True  # the store never left; only its WAL files may have
+    if back:
+        for suffix in ("-wal", "-shm"):
+            _move_back(f"{old}{suffix}", f"{target}{suffix}")
+    left = [f"{old}{suffix}" for suffix in ("", "-wal", "-shm") if os.path.exists(f"{old}{suffix}")]
+    if left:
+        print(f"kb: the rebuild stopped while {target} held a knowledge base or its files again, so the old one stays "
+              f"aside: {', '.join(left)}.", file=sys.stderr)
+
+
+def _move_back(aside, name):
+    """Moves `aside` to `name` unless a file is there. Returns whether it moved."""
+    if not os.path.exists(aside):
+        return False
+    try:
+        os.link(aside, name)
+    except OSError:
+        return False
+    os.remove(aside)
+    return True
+
+
+def cmd_rebuild(paths, config, args):
+    """Read every source into a fresh knowledge base, and put it in place of the old one once it checks out: every
+    source read, each back to its oldest item in the old one, every host reached, the file sound, no row of no mask
+    version, and no source lacking an item the old one holds, unless --accept-loss. Otherwise the old one stays as
+    it was, and no copy of either is kept: the old one may hold an older kb's secrets. A swap that stops puts the old
+    one back, but never over a store at its path: then it stays aside, named, and the next rebuild waits for it to be
+    moved."""
+    if not config.sources:
+        raise Fail(f"No sources in {paths.config_file}, so there is nothing to rebuild from.")
+    log = _logger(paths)
+    target = os.path.realpath(paths.db)  # a linked store is replaced where it is, so the old one's bytes go
+    fresh, old = f"{target}.rebuild", f"{target}.old"
+    with store.exclusive(paths.lock) as held:
+        if not held:
+            raise Fail("an ingest is running; try again when it finishes")
+        aside = [f"{old}{suffix}" for suffix in ("", "-wal", "-shm") if os.path.exists(f"{old}{suffix}")]
+        if aside:
+            raise Fail(f"an earlier rebuild set a knowledge base aside and could not put it back: {', '.join(aside)}. "
+                       f"Move {'it' if len(aside) == 1 else 'them'} somewhere safe or remove "
+                       f"{'it' if len(aside) == 1 else 'them'}, then run `kb rebuild` again.")
+        kept = f"{paths.db} is kept as it was"
+        before = _per_source(target, kept)
+        _remove_store(fresh)
+        try:
+            db = store.connect(fresh)
+            try:
+                failures = ingest.run(db, _reading_back(config, before), log, with_summaries=False)
+                _as_configured(db, config)
+                away = [host for host, _ in store.away(db)]
+                sound = db.execute("PRAGMA integrity_check").fetchone()[0] == "ok" and not store.has_unversioned(db)
+                items = db.execute("SELECT count(*) FROM (SELECT DISTINCT source, source_id FROM docs)").fetchone()[0]
+                db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            finally:
+                db.close()
+            if away:
+                raise Fail(f"{', '.join(away)} could not be reached, so {kept}. Run `kb rebuild` again once "
+                           f"{'it is' if len(away) == 1 else 'they are'} awake.")
+            if failures or not sound:
+                raise Fail(f"the fresh knowledge base did not check out ({failures} sources failed; see "
+                           f"{paths.log_dir}), so {kept}")
+            after = _per_source(fresh, kept)
+            # Which items, not how many: a source can have let some go and gained as many since.
+            lost = {source: len(ids - after.get(source, (set(),))[0]) for source, (ids, _) in sorted(before.items())}
+            lost = {source: n for source, n in lost.items() if n}
+            losses = ", ".join(f"{source}: {n:,} {'item' if n == 1 else 'items'}" for source, n in lost.items())
+            if lost and not args.accept_loss:
+                raise Fail(f"the fresh knowledge base lacks items {paths.db} holds, from {losses}. A source that keeps "
+                           f"only recent history, as Claude Code deletes sessions after 30 days, has let them go, and "
+                           f"no source can give them again. The old one is kept as it was. To replace it anyway and "
+                           f"lose those items for good, run `kb rebuild --accept-loss`.")
+        except BaseException:  # any stop, an error or Ctrl-C leaves no fresh store behind
+            _remove_store(fresh)
+            raise
+        try:
+            # The old WAL files go too, or SQLite would read them into the new store, and first, so that once the
+            # store is aside a WAL file at its name is another store's.
+            for suffix in ("-wal", "-shm", ""):
+                if os.path.exists(f"{target}{suffix}"):
+                    os.replace(f"{target}{suffix}", f"{old}{suffix}")
+            os.replace(fresh, target)
+        except BaseException:  # whatever stops the swap, even between a move and the next line
+            _put_back(target, old)
+            _remove_store(fresh)
+            raise
+        _remove_store(fresh)
+        _remove_store(old)
+    print(f"Rebuilt {paths.db} from your sources: {items:,} items. The next ingest writes their summaries."
+          + (f" Lost, as --accept-loss allowed: {losses}." if lost else ""))
 
 
 def cmd_supersede(paths, config, args):
@@ -415,6 +605,10 @@ def parser():
     sub.add_parser("config", help="check the config file and list its sources").set_defaults(fn=cmd_config)
     sub.add_parser("remask", help="reapply masking to stored rows after the patterns change").set_defaults(
         fn=cmd_remask)
+    rb = sub.add_parser("rebuild", help="read every source into a fresh knowledge base, in place of this one")
+    rb.add_argument("--accept-loss", action="store_true",
+                    help="replace it even when a source lacks items the old one holds, losing those items for good")
+    rb.set_defaults(fn=cmd_rebuild)
     sp = sub.add_parser("supersede", help="mark an older record as replaced by a newer one")
     sp.add_argument("old_id", type=int)
     sp.add_argument("new_id", type=int)
@@ -423,6 +617,19 @@ def parser():
 
 
 def main(argv=None):
+    """Everything the command prints goes through mask(), on top of the masking where text enters kb."""
+    out, err = sys.stdout, sys.stderr
+    sys.stdout, sys.stderr = MaskedStream(out), MaskedStream(err)
+    try:
+        return _main(argv)
+    except Exception:
+        sys.stderr.write(traceback.format_exc())
+        return 1
+    finally:
+        sys.stdout, sys.stderr = out, err
+
+
+def _main(argv=None):
     args = parser().parse_args(argv)
     paths = Paths.for_user()
     if args.trial:
@@ -441,7 +648,7 @@ def main(argv=None):
         return 2
     try:
         return args.fn(paths, config, args) or 0
-    except Fail as exc:
+    except (Fail, store.NeedsRebuild) as exc:
         print(f"kb: {exc}", file=sys.stderr)
         return 1
     except sqlite3.OperationalError as exc:

@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import NamedTuple, Tuple
 
+from kb.mask import clip, mask
 from kb.sources import Item, Progress, SourceType
 
 DAY = 86400
@@ -75,9 +76,12 @@ class Thread(NamedTuple):
 
 
 def run_gh(binary, args):
-    proc = subprocess.run([binary, *args], capture_output=True, text=True, timeout=GH_TIMEOUT)
+    try:
+        proc = subprocess.run([binary, *args], capture_output=True, text=True, timeout=GH_TIMEOUT)
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise RuntimeError(mask(f"gh did not run: {exc}")) from None
     if proc.returncode:
-        raise RuntimeError(f"gh {' '.join(args[:3])} exited {proc.returncode}: {proc.stderr.strip()[-400:]}")
+        raise RuntimeError(mask(f"gh {' '.join(args[:3])} exited {proc.returncode}: ") + mask(proc.stderr.strip())[-400:])
     return json.loads(proc.stdout)
 
 
@@ -91,7 +95,7 @@ def _epoch(iso):
 
 def _clip(text):
     text = (text or "").strip()
-    return text if len(text) <= BODY_CHARS else text[:BODY_CHARS] + " …"
+    return clip(text, BODY_CHARS)
 
 
 def _login(who):
