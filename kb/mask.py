@@ -107,10 +107,13 @@ PREFIXED_SECRETS = [
     # openssl's "-passin pass:..." and "-passout pass:...".
     re.compile(rf"((?<![A-Za-z0-9_-])-pass(?:in|out)?[ \t]+['\"]?pass:)(?:(?!{_NEXT_NAME}){_CLOSE}[^ \t\n\r'\"])+"),
 ]
+# A secret's name is a whole run of name characters whose last dotted part holds a key word, or one ending in "_pw" or
+# the like. Read as that part after the run's last dot, it takes one pass over a long run; read as any characters
+# around a key word, it went back over the run once for every key word in it.
 _KEY_NAME = (
     r"(?i)(?<![A-Za-z0-9_.-])("
-    r"[A-Za-z0-9_.-]*?(?:api[_-]?key|access[_-]?key|private[_-]?key|secret|token|credentials?|passw(?:or)?d|passcode|"
-    r"session[_-]?(?:token|key|secret|cookie)|bw_session)[A-Za-z0-9_-]*?"
+    r"(?:[A-Za-z0-9_.-]*\.)?(?=[A-Za-z0-9_-]*?(?:api[_-]?key|access[_-]?key|private[_-]?key|secret|token|"
+    r"credentials?|passw(?:or)?d|passcode|session[_-]?(?:token|key|secret|cookie)|bw_session))[A-Za-z0-9_-]+"
     r"|[A-Za-z0-9]+(?:[_-][A-Za-z0-9]+)*[_-](?:pass|pwd|pw)"
     r"|x-(?:[A-Za-z0-9]+-)*auth(?:-[A-Za-z0-9]+)*"
     r")(?![A-Za-z0-9_.-])")
