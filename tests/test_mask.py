@@ -368,9 +368,45 @@ class InvisibleTest(unittest.TestCase):
                              ("ghp_" + "A1" * 12 + f" family {family} ghp_" + "B2" * 12 + "[masked]",
                               f"[masked] family {family} [masked][masked]"),
                              (f"[masked][masked] {family} ghp_" + "B2" * 12 + f" {family} [masked] [masked]",
-                              f"[masked][masked] {family} [masked] {family} [masked] [masked]")):
+                              f"[masked][masked] {family} [masked] {family} [masked] [masked]"),
+                             # Two placeholders a pass made side by side, after a change before the joiner.
+                             ("ghp_" + "A1" * 12 + f" family {family} Authorization: Token walrus2secret9|ghp_" + "B2" * 12,
+                              f"[masked] family {family} Authorization: Token [masked][masked]"),
+                             ("ghp_" + "A1" * 12 + f" co\u00adoperate {family} Authorization: Token walrus2secret9|ghp_"
+                              + "B2" * 12 + "|ghp_" + "C3" * 12 + f" {family}",
+                              f"[masked] co\u00adoperate {family} Authorization: Token [masked][masked]|[masked] {family}"),
+                             ("ghp_" + "A1" * 12 + f" {family} Authorization: Token walrus2secret9|ghp_" + "B2" * 12
+                              + f" {family} Authorization: Token tapir7secret3|ghp_" + "C3" * 12,
+                              f"[masked] {family} Authorization: Token [masked][masked] {family} Authorization: Token "
+                              "[masked][masked]")):
             with self.subTest(text=text[:12]):
                 self.assertEqual(mask(text), masked)
+
+    def test_joiners_and_soft_hyphens_in_words_between_secrets_stay_whatever_the_secrets(self):
+        import random
+        import string
+        alnum = string.ascii_letters + string.digits
+        family, soft = "\U0001f468\u200d\U0001f469", "co\u00adoperate"
+
+        def run(r, n):
+            return "".join(r.choice(alnum) for _ in range(n)) + r.choice("0123456789")
+
+        for seed in range(600):
+            r = random.Random(seed)
+            secrets = (lambda: "ghp_" + run(r, r.randint(24, 36)), lambda: "sk-proj-" + run(r, r.randint(20, 40)),
+                       lambda: "AKIA" + "".join(r.choice(string.ascii_uppercase + string.digits) for _ in range(16)),
+                       lambda: "password=" + run(r, 12), lambda: "Authorization: Token " + run(r, 14),
+                       lambda: "Authorization: Token " + run(r, 12) + "|ghp_" + run(r, 30),
+                       lambda: "password=" + run(r, 12) + "|ghp_" + run(r, 30) + "[masked]",
+                       lambda: "ghp_" + run(r, 30) + "[masked]", lambda: "[masked]", lambda: "[masked][masked]")
+            words = (lambda: family, lambda: soft, lambda: r.choice(("plan", "the", "ledger", "walrus")))
+            pieces = [r.choice(r.choice((secrets, words)))() for _ in range(r.randint(3, 12))]
+            text = " ".join(pieces)
+            with self.subTest(seed=seed):
+                masked = mask(text)
+                self.assertEqual((masked.count("\u200d"), masked.count("\u00ad")), (text.count("\u200d"), text.count("\u00ad")),
+                                 ascii(text))
+                self.assertEqual(mask(masked), masked)
 
     # What follows a token and an invisible character, and how main masks it there with the character kept.
     READINGS = (("Authorization: Token walrus2secret9", "Authorization: Token [masked]"),
