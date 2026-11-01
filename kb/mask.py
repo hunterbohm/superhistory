@@ -1,7 +1,6 @@
 import base64
 import bisect
 import hashlib
-import itertools
 import logging
 import os
 import re
@@ -187,22 +186,6 @@ REFERENCE = re.compile(r"^(?:\$(?:[{(]|[A-Z_][A-Z0-9_]*$|[a-z_][a-z0-9_]*$|env:)
 
 # A private key in a file written as base64, as a Kubernetes secret holds a TLS key: wherever the file's text says
 # "PRIVATE KEY", the run holds that word's base64 at one of the three byte offsets a word can start at.
-def _base64_of(word):
-    """The base64 characters `word`'s bytes alone decide, at each of the three offsets it can start at."""
-    return [base64.b64encode(b"\0" * k + word + b"\0\0\0").decode()[-(-8 * k // 6):8 * (k + len(word)) // 6]
-            for k in range(3)]
-
-
-_ENCODED_KEY = re.compile("|".join(map(re.escape, _base64_of(b"PRIVATE KEY"))))
-_WRAP = r"[ \t\r]*(?:\r?\n|\\r\\n|\\n)[ \t]*"
-# A run of base64, with each line after it that it wraps onto: a line that is base64 from its indentation to its end,
-# however short. A run shorter than 16 starts one only when lines follow it. A run can start just after a backslash,
-# so the letter of an escape such as \n can lead it. Which of the lines hold a key is _key_range's to say.
-_WRAPPED_LINE = rf"{_WRAP}[A-Za-z0-9+/]+={{0,2}}(?=[ \t\r]*(?:\r?\n|\\r\\n|\\n|\\?[\"'<]|\Z))"
-_WRAPPED_BASE64 = re.compile(rf"(?<![A-Za-z0-9+/])(?:[A-Za-z0-9+/]{{16,}}={{0,2}}(?:{_WRAPPED_LINE})*"
-                             rf"|[A-Za-z0-9+/]+={{0,2}}(?:{_WRAPPED_LINE})+)")
-_UNWRAP = re.compile(_WRAP)
-_ESCAPE_LETTER = re.compile(r"(?<=\\)(?:[nrt]|u[0-9A-Fa-f]{4})")
 # Docker's config holds a registry login in an "auth" field, base64 of "user:password".
 _AUTH_FIELD = re.compile(rf"(?i)((?:(?<![A-Za-z0-9_.-])|{_AFTER_ESCAPE})auth{_QUOTE}?{_GAP}[:=]{_GAP}{_QUOTE}?)"
                          r"([A-Za-z0-9+/]{4,}={0,2})")
@@ -215,8 +198,7 @@ REVISION = 3
 VERSION = hashlib.sha256(repr((REVISION, [p.pattern for p in SECRET_PATTERNS + PREFIXED_SECRETS], KEYED_SECRET.pattern,
                                 ENV_KEY_SECRET.pattern, JSON_SECRET.pattern, FLAG_SECRET.pattern, AUTH_SECRET.pattern,
                                 COMMAND_FLAGS,
-                                PASSWORD_NAME.pattern, sorted(PLACEHOLDERS), REFERENCE.pattern, _ENCODED_KEY.pattern,
-                                _WRAPPED_BASE64.pattern, _AUTH_FIELD.pattern)).encode()).hexdigest()[:16]
+                                PASSWORD_NAME.pattern, sorted(PLACEHOLDERS), REFERENCE.pattern, _AUTH_FIELD.pattern)).encode()).hexdigest()[:16]
 
 
 def _looks_secret(name, sep, value):
@@ -240,87 +222,8 @@ def _prose(sep):
     return not _SEP_CHARACTER.search(sep) and ("is" in sep.lower() or sep[-1:].isspace())
 
 
-def _wrapped_lines(text, start, end):
-    """The (start, end) of each line of the base64 block text[start:end], without line breaks and indentation."""
-    lines, at = [], start
-    for brk in _UNWRAP.finditer(text, start, end):
-        lines.append((at, brk.start()))
-        at = brk.end()
-    return lines + [(at, end)]
-
-
-# Where in a base64 group of 4 characters each encoding of "PRIVATE KEY" starts, which fixes how the groups of the
-# base64 around it fall.
-_KEY_WORD_PHASE = {code: -(-8 * k // 6) for k, code in enumerate(_base64_of(b"PRIVATE KEY"))}
-_NOT_TEXT = re.compile(rb"[^\t\n\r\x20-\x7e]")
-_FOOTER = re.compile(rb"-----END [A-Z0-9 ]+-----")
-_FILE_END = re.compile(rb"-----END [A-Z0-9 ]+-----\s*\Z")
-
-
-def _decoded(joined, start, end):
-    """What joined[start:end], whole groups of base64, decodes to, or None when it is not base64."""
-    try:
-        return base64.b64decode(joined[start:end], validate=True)
-    except ValueError:
-        return None
-
-
-def _key_range(joined, starts, ends, found, floor):
-    """The first and last lines of a base64 block that hold the key whose encoded "PRIVATE KEY" is `found`, none above
-    line `floor`. A key file is text, so a line is the key's while the base64 through it, in the groups `found` fixes,
-    still decodes to text: a heading, a word between two keys or another stream decodes to other bytes and stays,
-    however the lines are wrapped. Below, the key's lines end where the text ends in a footer."""
-    phase = (found.start() - _KEY_WORD_PHASE[found.group()]) % 4
-    down = lambda p: p - (p - phase) % 4  # the group boundary at or before p
-    up = lambda p: p + (phase - p) % 4  # the group boundary at or after p
-    top = bisect.bisect_right(ends, found.start())
-    bottom = bisect.bisect_left(ends, found.end())
-    while top > floor and up(starts[top - 1]) < down(starts[top]):
-        above = _decoded(joined, up(starts[top - 1]), down(starts[top]))
-        if above is None or _NOT_TEXT.search(above):
-            break
-        top -= 1
-    recent = _decoded(joined, up(max(starts[top], ends[bottom] - 48)), down(ends[bottom])) or b""
-    for line in range(bottom + 1, len(ends)):
-        if ends[bottom] == down(ends[bottom]) and _FILE_END.search(recent):
-            break
-        below = _decoded(joined, down(ends[bottom]), down(ends[line]))
-        if below is None:
-            break
-        other = _NOT_TEXT.search(below)
-        if other:
-            if _FOOTER.search(recent + below[:other.start()]):  # the text ended in a footer within this line
-                bottom = line
-            break
-        bottom = line
-        recent = (recent + below)[-48:]
-    return top, bottom
-
-
-def _key_spans(text, lines):
-    """The spans to mask in a base64 block: for each encoded "PRIVATE KEY" outside the spans before it, its key's
-    lines. The block is joined once, and each key's lines are read once."""
-    joined = "".join(text[a:b] for a, b in lines)
-    ends = list(itertools.accumulate(b - a for a, b in lines))
-    starts = [0] + ends[:-1]
-    spans, floor = [], 0
-    for found in _ENCODED_KEY.finditer(joined):
-        if bisect.bisect_right(ends, found.start()) < floor:
-            continue
-        top, bottom = _key_range(joined, starts, ends, found, floor)
-        spans.append((lines[top][0], lines[bottom][1]))
-        floor = bottom + 1
-    return spans
-
-
-def _encoded_secrets(text):
-    """`text` with each private key in a file written as base64 masked, whole with the lines it wraps onto, and each
-    Docker "auth" login."""
-    spans = []
-    for m in _WRAPPED_BASE64.finditer(text):
-        escape = _ESCAPE_LETTER.match(text, m.start())
-        spans += _key_spans(text, _wrapped_lines(text, escape.end() if escape else m.start(), m.end()))
-    text = _replace(text, spans, "[masked]")
+def _docker_logins(text):
+    """`text` with each Docker "auth" login masked: base64 of "user:password"."""
     return _AUTH_FIELD.sub(lambda m: m.group(1) + "[masked]" if _basic_credential(m.group(2)) else m.group(0), text)
 
 
@@ -410,7 +313,7 @@ def _replace(text, spans, replacement):
 def _mask_once(text):
     for pattern in SECRET_PATTERNS:
         text = pattern.sub("[masked]", text)
-    text = _GLUED_RUN.sub("[masked]", _headless_keys(_key_rest(_encoded_secrets(text))))
+    text = _GLUED_RUN.sub("[masked]", _headless_keys(_key_rest(_docker_logins(text))))
     for pattern in PREFIXED_SECRETS:
         text = pattern.sub(lambda m: m.group(1) + "[masked]", text)
     text = _command_passwords(text)
@@ -509,7 +412,7 @@ def secret_in_id(text, names=()):
     masked = text
     for pattern in _ID_PATTERNS:
         masked = pattern.sub("[masked]", masked)
-    masked = _GLUED_RUN.sub("[masked]", _headless_keys(_key_rest(_encoded_secrets(masked))))
+    masked = _GLUED_RUN.sub("[masked]", _headless_keys(_key_rest(_docker_logins(masked))))
     for pattern in PREFIXED_SECRETS:
         masked = pattern.sub(lambda m: m.group(1) + "[masked]", masked)
     masked = _command_passwords(masked)
