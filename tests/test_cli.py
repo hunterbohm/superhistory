@@ -543,10 +543,17 @@ class OlderStoreTest(TempHome):
         self.assertIn(self.path + ".old", err)
         self.assertEqual(store_files(folder), before)
 
-    def test_putting_back_never_moves_the_old_store_over_one_another_program_just_made(self):
+    def set_aside(self):
+        """Sets the store aside as a swap does, its WAL files first: macOS's SQLite keeps them after a close."""
         aside = self.path + ".old"
         self.db.close()
-        os.replace(self.path, aside)
+        for suffix in ("-wal", "-shm", ""):
+            if os.path.exists(self.path + suffix):
+                os.replace(self.path + suffix, aside + suffix)
+        return aside
+
+    def test_putting_back_never_moves_the_old_store_over_one_another_program_just_made(self):
+        aside = self.set_aside()
         link, err = os.link, io.StringIO()
 
         def another_program_first(src, dst):
@@ -567,9 +574,7 @@ class OlderStoreTest(TempHome):
 
     def test_putting_back_never_puts_the_old_store_beside_another_programs_wal(self):
         from tests.support import commit_and_die
-        aside = self.path + ".old"
-        self.db.close()
-        os.replace(self.path, aside)
+        aside = self.set_aside()
         foreign = os.path.join(self.tmp.name, "foreign.sqlite")
         commit_and_die(foreign, "CREATE TABLE other(x)")
         os.replace(foreign + "-wal", self.path + "-wal")
