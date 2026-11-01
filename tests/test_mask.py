@@ -198,6 +198,28 @@ class OtherKeyFormatTest(unittest.TestCase):
                     self.assertNotIn("WalrusSsh2", masked)
                     self.assertEqual(masked, "first\n\n[masked]\n\nlast paragraph")
 
+    def test_a_key_or_a_registry_login_written_as_base64_is_masked(self):
+        import base64
+        import json
+        import textwrap
+        pem = "-----BEGIN EC PRIVATE KEY-----\nMHcCAQEEIWalrusScalar2Secret9BodyPiecesXyzQ2FuYXJ5\n-----END EC PRIVATE KEY-----\n"
+        cert = "-----BEGIN CERTIFICATE-----\nMIIBszCCAVmgAwIBAgIUWalrusPublicCertBody\n-----END CERTIFICATE-----\n"
+        key64, cert64 = base64.b64encode(pem.encode()).decode(), base64.b64encode(cert.encode()).decode()
+        login = base64.b64encode(b"bob:walrus2secret9").decode()
+        config64 = base64.b64encode(json.dumps({"auths": {"registry.example.com": {"auth": login}}}).encode()).decode()
+        for text in (f"data:\n  tls.crt: {cert64}\n  tls.key: {key64}\n", f"{key64}", "\n".join(textwrap.wrap(key64, 76)),
+                     f'{{"tls.key": "{key64}"}}', f".dockerconfigjson: {config64}",
+                     json.dumps({"auths": {"registry.example.com": {"auth": login}}}),
+                     json.dumps(json.dumps({"auths": {"registry.example.com": {"auth": login}}}))):
+            with self.subTest(text=text[:30]):
+                masked = mask(text)
+                self.assertNotIn(key64[20:40], masked)
+                self.assertNotIn(login, masked)
+                self.assertNotIn(config64[16:40], masked)
+        self.assertIn(cert64, mask(f"data:\n  tls.crt: {cert64}\n  tls.key: {key64}\n"), "a certificate stays")
+        for text in ('{"auth": "required"}', '{"auth": "bearer"}', '"auth": "c29tZSBub3Rlcw=="'):
+            self.assertEqual(mask(text), text)
+
     def test_prose_about_those_formats_stays(self):
         for text in ("PGP keys are signed in a block", "Private-Lines counts the lines", "an AGE-SECRET-KEY-1 identity",
                      "-----BEGIN PGP PUBLIC KEY BLOCK-----\n\nmQENBGcW1aEBCAD\n-----END PGP PUBLIC KEY BLOCK-----"):
