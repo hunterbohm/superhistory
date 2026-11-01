@@ -118,7 +118,7 @@ _ENV_KEY_NAME = rf"(?:(?<![A-Za-z0-9_])|{_AFTER_ESCAPE})([A-Z][A-Z0-9_]*_KEY)(?!
 _VALUE = rf"((?:(?!{_NEXT_NAME}){_CLOSE}[^ \t\n\r\"'`,;<>)\]}}])+)"
 # A value never starts with another secret's name and its separator: under a YAML parent key named like a secret, or
 # a key left empty, the next line's name would be taken as the value, and the secret after it left.
-_NOT_A_NAME = (rf"(?!(?:{_KEY_NAME[4:].replace('(?<![A-Za-z0-9_.-])(', '(?<![A-Za-z0-9_.-])(?:', 1)}"
+_NOT_A_NAME = (rf"(?!:?(?:{_KEY_NAME[4:].replace('(?<![A-Za-z0-9_.-])(', '(?<![A-Za-z0-9_.-])(?:', 1)}"
                rf"|{_ENV_KEY_NAME.replace('([A-Z]', '(?:[A-Z]', 1)}){_QUOTE}?[ \t]*(?:{_SEP}|\bis\b))")
 KEYED_SECRET = re.compile(_KEY_NAME + rf"({_QUOTE}?{_GAP}(?:{_SEP}|\bis\b){_GAP}{_QUOTE}?){_NOT_A_NAME}" + _VALUE)
 ENV_KEY_SECRET = re.compile(_ENV_KEY_NAME + rf"({_QUOTE}?{_GAP}{_SEP}{_GAP}{_QUOTE}?){_NOT_A_NAME}" + _VALUE)
@@ -257,7 +257,7 @@ _KEY_BODY_START = r"(?:MI[E-P][A-Za-z0-9+/]|M[A-H][A-Za-z0-9+/][Cw]|b3Bl)"
 # spaces. main's pattern stops at the first character that is not base64 or a space, so in escaped text, in code with
 # a string a line, behind comment or quote marks and where a chunk ended between a header and its line break, it
 # leaves exactly that. Masked through its footer, or through the end of its paragraph.
-_BEFORE_BODY = rf"(?:\\{{1,7}}[nrt]|{_QUOTE}|<br\s*/?>|[\s\"'#>+,;|*])"
+_BEFORE_BODY = rf"(?:\\{{1,7}}[nrt]|{_QUOTE}|<br\s*/?>|[\s\"'#>+,;|*\]])"
 _KEY_REST = re.compile(rf"\[masked\]((?:[A-Za-z0-9+/=]+[ \t\r]*(?=\n|\\(?:r\\)?n)"
                        rf"|(?={_BEFORE_BODY}{{0,64}}{_KEY_BODY_START}))"
                        rf"(?:(?!{_KEY_END}){_IN_PARAGRAPH})*(?:{_KEY_END})?)")
