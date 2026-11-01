@@ -360,6 +360,18 @@ class HealthTest(TempDB):
 
 
 class RemaskTest(TempDB):
+    def test_an_older_row_replaced_by_a_write_leaves_no_bytes_after_the_next_remask(self):
+        # main stored the note with its password; today's ingest writes the item again, masked.
+        self.db.execute("INSERT INTO docs(kind, source, source_id, ts, title, content) VALUES "
+                        "('doc', 's', 'a', ?, 't', 'redis-cli -a Qx7RedisBytes2026zz ping')", (iso(),))
+        self.db.commit()
+        store.store_item(self.db, "s", "a", iso(), "t", "redis-cli -a Qx7RedisBytes2026zz ping", {})
+        self.db.commit()
+        self.assertTrue(store.rebuild_owed(self.db), "the old row's words may still sit in the index and the file")
+        store.remask(self.db)
+        with open(self.path, "rb") as fh:
+            self.assertNotIn(b"qx7redisbytes2026zz", fh.read().lower())
+
     def test_remask_removes_old_values_from_rows_and_index(self):
         leaked = "GITHUB_TOKEN=abcdef1234567890abcdef1234567890"
         self.db.execute("INSERT INTO docs(kind, source, source_id, ts, title, content) VALUES "
