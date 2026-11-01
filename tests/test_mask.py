@@ -280,12 +280,26 @@ class OtherKeyFormatTest(unittest.TestCase):
         import textwrap
         encoded = base64.b64encode(b"-----BEGIN PRIVATE KEY-----\nFakeKeyBody123456\n-----END PRIVATE KEY-----\n").decode()
         body = encoded[40:60]  # the encoded "FakeKeyBody123456"
-        for width in (4, 8, 12, 16, 40, 64, 76):
+        for width in (4, 8, 12, 16, 40, 64, 76, len(encoded)):
             for brk in ("\n", "\\n", "\n  "):
                 with self.subTest(width=width, brk=brk):
-                    masked = mask("key:\n" + brk.join(textwrap.wrap(encoded, width)) + "\nThanks, Bob")
+                    masked = mask("Notes\n" + brk.join(textwrap.wrap(encoded, width)) + "\nThanks, Bob")
                     self.assertNotIn(body, re.sub(r"\s+|\\n", "", masked))
+                    self.assertTrue(masked.startswith("Notes\n"), "a heading above the block stays: " + masked)
                     self.assertTrue(masked.endswith("\nThanks, Bob"), masked)
+
+    def test_words_on_their_own_lines_after_a_base64_key_stay(self):
+        import base64
+        import textwrap
+        key = ("-----BEGIN PRIVATE KEY-----\n" + base64.b64encode(bytes(range(200))).decode()
+               + "\n-----END PRIVATE KEY-----\n")
+        encoded = base64.b64encode(key.encode()).decode()
+        for width in (12, 64, 76, len(encoded)):
+            lines = textwrap.wrap(encoded, width)
+            for after in ("\nThanks\nAlbert", "\nCheers", "\nThanks\nAlbert\n\nnext paragraph"):
+                with self.subTest(width=width, after=after):
+                    masked = mask("Notes\n" + "\n".join(lines) + after)
+                    self.assertEqual(masked, "Notes\n[masked]" + after)
 
     def test_prose_about_those_formats_stays(self):
         for text in ("PGP keys are signed in a block", "Private-Lines counts the lines", "an AGE-SECRET-KEY-1 identity",
@@ -342,6 +356,14 @@ class HeadlessKeyTest(unittest.TestCase):
                      "token: [masked] MIGRATION2026UseTheNewCustomerAccountTable, as named"):
             with self.subTest(text=text[:30]):
                 self.assertEqual(mask(text), text)
+
+    def test_quotes_after_a_placeholder_cost_time_in_proportion(self):
+        import time
+        for quote in ('"', "'", "\"'"):
+            with self.subTest(quote=quote):
+                started = time.process_time()
+                mask("[masked]" + quote * (24 // len(quote)) + "MIGRATION plan")
+                self.assertLess(time.process_time() - started, 0.5)
 
     def test_after_a_placeholder_and_a_line_break_other_lines_stay(self):
         for brk in ("\\n", "\n"):

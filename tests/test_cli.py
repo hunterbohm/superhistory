@@ -429,6 +429,23 @@ class OlderStoreTest(TempHome):
         self.assertIn("kept as it was", err)
         self.assertEqual(store_files(folder), before)
 
+    def test_rebuild_stops_when_it_cannot_count_the_old_stores_items(self):
+        from tests.support import store_files
+        self.add_rotated_items(3)
+        folder = os.path.dirname(self.path)
+        before = store_files(folder)
+        holder = sqlite3.connect(self.path)  # another program holding the old store locked
+        holder.execute("PRAGMA locking_mode=EXCLUSIVE")
+        holder.execute("BEGIN EXCLUSIVE")
+        with mock.patch.object(store, "BUSY_MS", 50):
+            code, out, err = self.run_kb("rebuild")
+        holder.rollback()
+        holder.close()
+        self.assertEqual(code, 1, out)
+        self.assertIn("could not count", err)
+        self.assertIn("kept as it was", err)
+        self.assertEqual(store_files(folder), before)
+
     def test_rebuild_keeps_the_old_store_when_a_host_is_asleep(self):
         from kb.remote import HostAway
         self.db.close()

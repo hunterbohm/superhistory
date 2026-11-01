@@ -715,6 +715,20 @@ class UnversionedRowTest(TempDB):
                 store.connect(self.path, readonly=readonly)
             self.assertEqual(store_files(folder), before, "neither the store nor its WAL changed")
 
+    def test_a_linked_store_whose_last_writer_left_rows_in_its_wal_is_refused_untouched(self):
+        from tests.support import commit_and_die, store_files
+        self.db.close()
+        commit_and_die(self.path, "INSERT INTO docs(kind, source, source_id, ts, title, content, metadata, masked) "
+                                  "VALUES ('doc', 's', 'in-wal', ?, 'w', 'an older row in the WAL', '{}', NULL)", iso())
+        folder = os.path.dirname(self.path)
+        before = store_files(folder)
+        link = os.path.join(tempfile.mkdtemp(dir=os.path.dirname(folder)), "kb.sqlite")
+        os.symlink(self.path, link)
+        for readonly in (True, False):
+            with self.subTest(readonly=readonly), self.assertRaises(store.NeedsRebuild):
+                store.connect(link, readonly=readonly)
+            self.assertEqual(store_files(folder), before)
+
     def test_an_open_connection_reads_and_remasks_none(self):
         self.assertEqual([h["source_id"] for h in search.search(self.db, "pelican")], ["kept"])
         store.remask(self.db)
