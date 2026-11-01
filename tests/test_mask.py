@@ -469,6 +469,60 @@ class InvisibleTest(unittest.TestCase):
         self.assertFalse(secret_in_id("notes\u200b\u200d.md"))
 
 
+class BareAuthorizationTest(unittest.TestCase):
+    """After "Authorization:" or "Proxy-Authorization:", header style, a single credential-shaped token is masked even
+    with no scheme word before it. Prose and identifiers there stay."""
+    PROSE = ("pending", "Organization-level", "Implementation-specific,", "ISO-27001", "CVE-2024-12345", "RFC-7235",
+             "SHA-256", "UTF-8", "x86_64", "Q4-2026", "v2.1.3", "HTTP/1.1", "1234567890123", "3.14159265358",
+             "2026-11-01", "2026-11-01T10:00:00Z", "10:00:00.000Z", "RFC7235-compliant", "OAuth2.0-based-flow",
+             "SHA256-checksums", "GDPR-2018-compliant", "PCI-DSS-v4.0-ready", "well-known", "re-authorization",
+             "Kerberos5-tickets", "ISO-27001:2022", "IEEE-802.1X", "WPA2-Enterprise", "AES-256-GCM",
+             "X.509v3-certificates", "S3-bucket-policies", "ec2-instance-role", "k8s-namespace-admins",
+             "WindowsServer2022", "WindowsServer2022-compatible", "/usr/local/bin/python3", "HTTP/2-only")
+
+    def credentials(self, r):
+        import base64
+        import string
+        import uuid
+        letters_digits = string.ascii_letters + string.digits
+
+        def mixed(n, alphabet):
+            while True:
+                token = "".join(r.choice(alphabet) for _ in range(n))
+                if any(c.isdigit() for c in token) and any(c.isalpha() for c in token):
+                    return token
+
+        def encoded(encode, n):
+            while True:
+                token = encode(bytes(r.randrange(256) for _ in range(n))).decode().rstrip("=" if encode is
+                                                                                          base64.urlsafe_b64encode else "")
+                if any(c.isdigit() for c in token) and any(c.isalpha() for c in token):
+                    return token
+
+        return {"letters and digits": mixed(r.randint(12, 64), letters_digits),
+                "hex": mixed(r.randint(16, 64), "0123456789abcdef"),
+                "base64": encoded(base64.b64encode, r.randint(12, 48)),
+                "base64url": encoded(base64.urlsafe_b64encode, r.randint(12, 48)),
+                "uuid": str(uuid.UUID(int=r.getrandbits(128), version=4)),
+                "prefixed": r.choice(("live_", "tok_", "key_", "pat_", "api_")) + mixed(r.randint(16, 40), letters_digits),
+                "three parts": ".".join(mixed(r.randint(10, 30), letters_digits + "-_") for _ in range(3))}
+
+    def test_a_credential_shaped_token_after_authorization_is_masked(self):
+        import random
+        for seed in range(400):
+            for shape, token in self.credentials(random.Random(seed)).items():
+                for text in (f"Authorization: {token}", f"proxy-authorization: {token} for the staging API",
+                             f'curl -H "AUTHORIZATION: {token}" https://api.example.com'):
+                    with self.subTest(seed=seed, shape=shape, text=text[:20]):
+                        self.assertNotIn(token, mask(text))
+
+    def test_prose_and_identifiers_after_authorization_stay(self):
+        for word in self.PROSE:
+            for text in (f"Authorization: {word} applies to the team", f"Authorization: {word}"):
+                with self.subTest(text=text):
+                    self.assertEqual(mask(text), text)
+
+
 class EscapeTest(unittest.TestCase):
     """JSON text, such as a tool's input stored as JSON, escapes a line break as "\\n": a secret right after one, or on
     the next line after another's value, is masked as at the start of a line."""
@@ -622,10 +676,13 @@ class EscapeTest(unittest.TestCase):
                 self.assertNotIn("walrus2", mask(text))
 
     def test_an_authorization_credential_after_a_scheme_is_masked_and_prose_stays(self):
-        # The credential is the word after a known scheme. A first word with no scheme before it stays, as on main:
-        # prose such as "ISO-27001 compliance" reads like one.
+        # The credential is the word after a known scheme, or a first word with no scheme that reads as random: long,
+        # with digits and letters, no plain word inside it, not a date. Prose such as "ISO-27001 compliance" stays.
         for text in ("Authorization: SCRAM-SHA-256 Qx7pass2026zzQ9", "Proxy-Authorization: AWS4-HMAC-SHA256 Qx7pass2026zzQ9",
-                     "use Authorization: Token Qx7pass2026zzQ9 for the staging API", "Authorization=Bearer SecretGarden99x"):
+                     "use Authorization: Token Qx7pass2026zzQ9 for the staging API", "Authorization=Bearer SecretGarden99x",
+                     "use Authorization: Qx7pass2026zzQ9 for the staging API", "Authorization: Qx7pass2026zzQ9 (expires Friday)",
+                     "Authorization: SecretGarden99x is on the fridge", "Authorization: abcd1234efgh5678wxyz",
+                     'curl -H "Authorization: Qx7pass2026zzQ9" https://api.example.com'):
             with self.subTest(text=text):
                 masked = mask(text)
                 self.assertNotIn("Qx7pass2026", masked)
@@ -638,10 +695,19 @@ class EscapeTest(unittest.TestCase):
             self.assertEqual(mask(text), masked)
         for text in ("Authorization: pending review", "Authorization: Organization-level approval needed",
                      "Authorization: Implementation-specific, see RFC 7235.", "Authorization: ISO-27001 compliance required.",
-                     "Authorization: CVE-2024-12345 review pending", "Authorization: v2.1 of the policy applies"):
+                     "Authorization: CVE-2024-12345 review pending", "Authorization: v2.1 of the policy applies",
+                     "Authorization: RFC7235-compliant tokens only", "Authorization: OAuth2.0-based-flow applies",
+                     "Authorization: 2026-11-01T10:00:00Z granted", "Authorization: SHA256 checksums attached"):
             self.assertEqual(mask(text), text)
         aws = "Authorization: AWS4-HMAC-SHA256 Credential=" + "AKIA" + "QW3RTY7UIOPAS2DF" + "/20261101/us-east-1/s3/aws4_request"
         self.assertEqual(mask(aws), "Authorization: AWS4-HMAC-SHA256 Credential=[masked]/20261101/us-east-1/s3/aws4_request")
+
+    def test_a_named_value_in_escaped_text_is_masked_through_the_next_lines_first_word_as_on_main(self):
+        # A known over-masking, kept on purpose: what follows "\\n" in the value's run may be the rest of the secret.
+        for text, masked in (("password: Qx7pass2026zzQ9\\nnext line", "password: [masked] line"),
+                             ("password: Qx7pass2026\\nab12cd34 and more", "password: [masked] and more")):
+            with self.subTest(text=text):
+                self.assertEqual(mask(text), masked)
 
     def test_a_run_of_backslashes_in_an_authorization_value_costs_time_in_proportion(self):
         import time
