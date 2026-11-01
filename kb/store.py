@@ -225,15 +225,25 @@ def item_hash(title, text):
 
 def _as_stored(rows):
     """`rows` as replace_rows() stores them: masked, a long item's chunks as one text by _whole(), and the item's rows
-    recording the hash of its masked title and text, whatever hash they came with."""
+    recording the hash of its masked title and text, whatever hash they came with. When that differs from the hash
+    they came with, summaries among `rows` name the new one as _rehash_summaries() has them do."""
     rows = [{**r, "ts": mask(str(r["ts"])), "title": mask(r["title"]),
              "content": r["content"] if r["kind"] == "raw" else mask(r["content"]), "metadata": mask_all(r["metadata"])}
             for r in _whole(rows)]
     items = sorted((r for r in rows if r["kind"] in ITEM_KINDS), key=lambda r: r["metadata"].get("chunk", 0))
     if items:
+        sent = items[0]["metadata"].get("hash")
         digest = item_hash(items[0]["title"], "".join(r["content"] for r in items))
         for r in items:
             r["metadata"]["hash"] = digest
+        if sent is not None and sent != digest:
+            # The text is not what the sender hashed: summaries written with it follow it, as remask's do.
+            for r in rows:
+                if r["kind"] in SUMMARY_KINDS:
+                    of_hash = r["metadata"].pop("of_hash", None)
+                    r["metadata"].pop("prefix", None)
+                    if of_hash == sent:
+                        r["metadata"]["of_hash"] = digest
     return rows
 
 

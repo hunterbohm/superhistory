@@ -51,9 +51,7 @@ _SCHEME_GAP = r"(?:\s|%(?:25)?20|\+)+"
 # A provider's "sk-" key. In an item id, only one after a provider's own prefix with a capital or a digit in it, or a
 # run of 32 or more letters and digits, counts: "sk-learn-pipeline-experiments.md" and "sk-proj-roadmap.md" name notes.
 SK_TOKEN = re.compile(_NB + r"sk-(?:ant-|proj-|or-v1-)?[A-Za-z0-9_-]{20,}")
-# The capital or digit a real key holds is looked for among its first 128 characters: looked for to the end of a
-# long run of "sk-" slugs from each one, it took time in the square of the run.
-_SK_ID = re.compile(_NB + r"sk-(?:(?:ant|proj|svcacct|admin|or-v1)-(?=[a-z_-]{0,128}[A-Z0-9])[A-Za-z0-9_-]{20,}"
+_SK_ID = re.compile(_NB + r"sk-(?:(?:ant|proj|svcacct|admin|or-v1)-(?=[A-Za-z0-9_-]*?[A-Z0-9])[A-Za-z0-9_-]{20,}"
                     r"|[A-Za-z0-9]{32,}(?![A-Za-z0-9]))")
 BEARER = re.compile(rf"(?i){_WORD}bearer{_SCHEME_GAP}[A-Za-z0-9._~+/-]{{16,}}=*")
 BASIC = re.compile(rf"(?i){_WORD}basic{_SCHEME_GAP}(?=[A-Za-z0-9+/]*[0-9+/=])[A-Za-z0-9+/]{{12,}}={{0,2}}")
@@ -207,11 +205,17 @@ _AUTH_FIELD = re.compile(rf"(?i)((?:(?<![A-Za-z0-9_.-])|{_AFTER_ESCAPE})auth{_QU
 # with at least 20 characters after its head, so one cut short counts too; prose after "VP1" in words of other
 # lengths does not. A line break, plain or escaped, parts groups as a space does, since a code wraps.
 CODE_GAP = re.compile(r"(?:[- \r\n]|\\[nr])*")
-CODE_HEAD = re.compile(rf"{_NB}[Vv]{CODE_GAP.pattern}(?:[Rr]{CODE_GAP.pattern}[Cc]|[Pp]){CODE_GAP.pattern}[0-9]")
+# A head starts a word: after "-" or "_" it is part of a name, such as "password-VP1-...", which keeps its value.
+CODE_HEAD = re.compile(rf"(?:(?<![A-Za-z0-9_-])|{_AFTER_ESCAPE})[Vv]{CODE_GAP.pattern}(?:[Rr]{CODE_GAP.pattern}[Cc]|[Pp])"
+                       rf"{CODE_GAP.pattern}[0-9]")
 # Crockford's characters with I, L and O, in either case, and the characters Python upper-cases into them.
 CODE_RUN = re.compile(r"[0-9A-TV-Za-tv-z\u00df\u0131\u017f\ufb00-\ufb06]+")
 CODE_LENGTH = {"recovery": 32, "pairing": 26}
 MIN_CODE = 20
+
+
+# What follows a run that is the start of a name rather than a code's group: "_" or "." in the name, or its separator.
+_NAME_GOES_ON = re.compile(r"[_.]|[ \t]*[:=]")
 
 
 def _code_end(text, head, inner=False):
@@ -222,6 +226,8 @@ def _code_end(text, head, inner=False):
     while True:
         start = CODE_GAP.match(text, end).end()
         run = CODE_RUN.match(text, start)
+        if run and _NAME_GOES_ON.match(text, run.end()):  # the start of a name, as "api" in "\\napi_key: ...": no group
+            run = None
         size = len(run.group().upper()) if run else 0
         if not inner:
             other = CODE_HEAD.match(text, start)
@@ -241,6 +247,25 @@ def _code_end(text, head, inner=False):
     return end, total
 
 
+# A code's body is random base32, so it holds digits, and the client prints it in capitals. A body with fewer than
+# MIN_DIGITS digits, about one code in 1,400, counts in capitals, or typed lowercase when it reads as base32 rather than
+# words: no I, L or O, which base32 has only for digits, and fewer than CODE_VOWELS of its letters vowels, as base32
+# has only A and E. Words after a head, such as "VP1 team will meet next week", hold them. Of runs of four-letter
+# dictionary words read as a code, 0.25% pass for one; of lowercase codes of letters only, 1 in 50,000 does not.
+MIN_DIGITS = 2
+CODE_VOWELS = 0.4
+
+
+def _reads_as_code(body):
+    """Whether a code's body, as written, reads as base32 rather than words (MIN_DIGITS, CODE_VOWELS)."""
+    # In capitals but for "l", "i" or "o", which a person can type for 1 and 0 and the parser reads so.
+    if sum(c.isdigit() for c in body) >= MIN_DIGITS or not re.search(r"[a-hjkmnp-z]", body):
+        return True
+    letters = [c for c in body.lower() if c.isalpha()]
+    return (not any(c in "ilo" for c in letters)
+            and sum(c in "aeiou" for c in letters) < CODE_VOWELS * max(len(letters), 1))
+
+
 def _code_spans(text):
     """Where the sync client's codes are, as (start, end) spans."""
     spans = []
@@ -248,8 +273,19 @@ def _code_spans(text):
         if spans and head.start() < spans[-1][1]:
             continue
         end, total = _code_end(text, head)
-        if total >= MIN_CODE:
-            spans.append((head.start(), end))
+        # Groups it read, from the last: a word after a code, such as "plan", can read as its last group.
+        runs, at = [], head.end()
+        while at < end:
+            run = CODE_RUN.match(text, CODE_GAP.match(text, at).end())
+            if not run or run.end() > end:
+                break
+            runs.append((run.end(), len(run.group().upper())))
+            at = run.end()
+        while total >= MIN_CODE and runs:
+            if _reads_as_code(text[head.start():runs[-1][0]][head.end() - head.start():]):
+                spans.append((head.start(), runs[-1][0]))
+                break
+            total -= runs.pop()[1]
     return spans
 
 
@@ -269,7 +305,7 @@ VERSION = hashlib.sha256(repr((REVISION, [p.pattern for p in SECRET_PATTERNS + P
                                 ENV_KEY_SECRET.pattern, JSON_SECRET.pattern, FLAG_SECRET.pattern, AUTH_SECRET.pattern,
                                 COMMAND_FLAGS, PASSWORD_NAME.pattern, sorted(PLACEHOLDERS), REFERENCE.pattern,
                                 _AUTH_FIELD.pattern, INVISIBLE.pattern, CODE_HEAD.pattern, CODE_RUN.pattern,
-                                sorted(CODE_LENGTH.items()), MIN_CODE)).encode()).hexdigest()[:16]
+                                sorted(CODE_LENGTH.items()), MIN_CODE, MIN_DIGITS, CODE_VOWELS)).encode()).hexdigest()[:16]
 
 
 def _looks_secret(name, sep, value):
@@ -359,7 +395,7 @@ def _credential_shaped(word):
     a three-part token), or holding no plain word and reading as random whole (a UUID). An identifier with a plain word
     in it stays: "RFC7235-compliant", "WPA2-Enterprise"."""
     word = word.rstrip(".,;:!?)")
-    if len(word) < 12 or not re.search(r"\d", word) or not re.search(r"[A-Za-z]", word):
+    if len(word) < 12 or not re.search(r"\d", word) or not re.search(r"[A-Za-z]", word) or re.search(r"\s", word):
         return False
     if _NUMBER_DATE_OR_TIME.fullmatch(word):
         return False
@@ -514,10 +550,10 @@ _TOKENS = {id(rules): (_token_shapes(rules[0]), _token_shapes(rules[0], after_a_
 def _mask_once(text, rules=_TEXT_RULES):
     """One pass of every pattern. A secret reads through characters a reader does not see, so the pass matches the text
     without them: a key split by them is one match. Where one stood, a token may start even after a letter, as after a
-    space, so one before a key parts it from the word before ("budget<ZWSP>sk-...") without gluing them. The stretch the
-    pass changed there, from its first change to its last, replaces the same stretch of the text as written; the rest
-    keeps them, so an emoji or a script that joins with them reads as it did. Then the text as written has a pass of
-    its own, where they part words as a space does, as for a name glued to a word by one."""
+    space, so one before a key parts it from the word before ("budget<ZWSP>sk-...") without gluing them. Each stretch
+    the pass changed there replaces the same stretch of the text as written, and the rest keeps them, so an emoji or a
+    script that joins with them reads as it did, even between two secrets. Then the text as written has a pass of its
+    own, where they part words as a space does, as for a name glued to a word by one."""
     if not INVISIBLE.search(text):
         return _pass(text, rules)
     view = INVISIBLE.sub("", text)
@@ -539,13 +575,63 @@ def _mask_once(text, rules=_TEXT_RULES):
                 spans.append((place, token.end()))
     masked = _pass(_replace(view, spans, "[masked]"), rules)
     if masked != view:
-        head = len(os.path.commonprefix([view, masked]))
-        tail = len(os.path.commonprefix([view[head:][::-1], masked[head:][::-1]]))
-        start = head + bisect.bisect_right(places, head) if head < len(view) else len(text)
-        end = len(view) - tail
-        end = end + bisect.bisect_right(places, end) if end < len(view) else len(text)
-        text = text[:start] + masked[head:len(masked) - tail] + text[end:]
+        edits = _edits(view, masked)
+        if edits is None:  # one stretch, from the first change to the last
+            head = len(os.path.commonprefix([view, masked]))
+            tail = len(os.path.commonprefix([view[head:][::-1], masked[head:][::-1]]))
+            edits = [(head, len(view) - tail, masked[head:len(masked) - tail])]
+        out, last = [], 0
+        for start, end, replacement in edits:
+            # The invisible characters just before and just after a changed stretch stay; those inside it go.
+            start, end = start + bisect.bisect_right(places, start), end + bisect.bisect_left(places, end)
+            out += [text[last:start], replacement]
+            last = max(start, end)
+        text = "".join(out) + text[last:]
     return _pass(text, rules)
+
+
+def _same_run(a, i, b, j):
+    """How many characters a[i:] and b[j:] have in common at their start, compared a block at a time."""
+    n, block = 0, 4096
+    while True:
+        x, y = a[i + n:i + n + block], b[j + n:j + n + block]
+        if x != y or len(x) < block:
+            return n + len(os.path.commonprefix([x, y]))
+        n += block
+
+
+def _edits(view, masked):
+    """The stretches of `view` a pass replaced to make `masked`, as (start, end, what replaced it): each by a placeholder
+    or by nothing, as every pattern masks. None when they do not line up so, and the caller takes one stretch. Each
+    stretch ends where what follows it in `masked`, up to 64 characters or the next placeholder, starts again in
+    `view`; the stretches are checked to make `masked` exactly, so a wrong end cannot leave a secret."""
+    edits, i, j, placeholder = [], 0, 0, "[masked]"
+    while True:
+        same = _same_run(view, i, masked, j)
+        i, j = i + same, j + same
+        if i == len(view) and j == len(masked):
+            break
+        # A placeholder whose first characters matched the view's, as "[m" can.
+        back = next((k for k in range(min(len(placeholder) - 1, same), 0, -1)
+                     if masked.startswith(placeholder, j - k)), 0)
+        i, j = i - back, j - back
+        replacement = placeholder if masked.startswith(placeholder, j) else ""
+        j += len(replacement)
+        # What follows, up to the next placeholder, which the view does not hold.
+        after = masked.find(placeholder, j)
+        rest = masked[j:j + 64 if after < 0 else min(j + 64, after)]
+        if not rest and j < len(masked):
+            return None  # another placeholder right after: where this stretch ends is not known
+        end = view.find(rest, i if replacement else i + 1) if rest else len(view)
+        if end < 0 or end <= i and not replacement:
+            return None
+        edits.append((i, end, replacement))
+        i = end
+    built, last = [], 0
+    for start, end, replacement in edits:
+        built += [view[last:start], replacement]
+        last = end
+    return edits if "".join(built) + view[last:] == masked else None
 
 
 # How many passes mask() makes at most, and how often, in this process, a text still changed at the last one.
