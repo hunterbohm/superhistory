@@ -195,9 +195,11 @@ def _base64_of(word):
 _ENCODED_KEY = re.compile("|".join(map(re.escape, _base64_of(b"PRIVATE KEY"))))
 _WRAP = r"[ \t\r]*(?:\r?\n|\\r\\n|\\n)[ \t]*"
 # A run of base64, with each line after it that it wraps onto: a line that is base64 from its indentation to its end.
-# A run can start just after a backslash, so the letter of an escape such as \n can lead it.
-_WRAPPED_BASE64 = re.compile(rf"(?<![A-Za-z0-9+/])[A-Za-z0-9+/]{{16,}}={{0,2}}"
-                             rf"(?:{_WRAP}[A-Za-z0-9+/]{{4,}}={{0,2}}(?=[ \t\r]*(?:\r?\n|\\r\\n|\\n|\\?[\"'<]|\Z)))*")
+# A run as short as a word starts one only when lines follow it. A run can start just after a backslash, so the
+# letter of an escape such as \n can lead it.
+_WRAPPED_LINE = rf"{_WRAP}[A-Za-z0-9+/]{{4,}}={{0,2}}(?=[ \t\r]*(?:\r?\n|\\r\\n|\\n|\\?[\"'<]|\Z))"
+_WRAPPED_BASE64 = re.compile(rf"(?<![A-Za-z0-9+/])(?:[A-Za-z0-9+/]{{16,}}={{0,2}}(?:{_WRAPPED_LINE})*"
+                             rf"|[A-Za-z0-9+/]{{4,}}={{0,2}}(?:{_WRAPPED_LINE})+)")
 _UNWRAP = re.compile(_WRAP)
 _ESCAPE_LETTER = re.compile(r"(?<=\\)(?:[nrt]|u[0-9A-Fa-f]{4})")
 # Docker's config holds a registry login in an "auth" field, base64 of "user:password".
@@ -268,14 +270,14 @@ def _mask_keyed(m):
 
 
 def _mask_authorization(m):
-    """An Authorization header with its first word masked when that is the secret, or else the word after it, which
-    follows a scheme word."""
+    """An Authorization header with each of its first two words masked that looks like a secret: the first when it is
+    the credential itself, the second when it follows a scheme word, and both when the scheme's name looks like one,
+    as SCRAM-SHA-256 does."""
     name, sep, first, gap, second = m.groups()
-    if _looks_secret(name, sep, first):
-        return f"{name}{sep}[masked]{gap or ''}{second or ''}"
-    if second and _looks_secret(name, sep, second):
-        return f"{name}{sep}{first}{gap}[masked]"
-    return m.group(0)
+    words = [("[masked]" if word and _looks_secret(name, sep, word) else word) for word in (first, second)]
+    if words == [first, second]:
+        return m.group(0)
+    return f"{name}{sep}{words[0]}{gap or ''}{words[1] or ''}"
 
 
 KEY_FOOTER = re.compile(_KEY_END)
@@ -293,10 +295,12 @@ _KEY_BODY_START = r"(?:MI[E-P][A-Za-z0-9+/]|M[A-H][A-Za-z0-9+/][Cw]|b3Bl)"
 # stand between a line's start and its text: line breaks plain or escaped at any depth, quotes, "#", ">", "+", <br> and
 # spaces. main's pattern stops at the first character that is not base64 or a space, so in escaped text, in code with
 # a string a line, behind comment or quote marks and where a chunk ended between a header and its line break, it
-# leaves exactly that. Masked through its footer, or through the end of its paragraph.
+# leaves exactly that. The body's first line is base64 to its end, or to a quote, a backslash or a cut's "…", so a
+# word that only starts like one, followed by more words, stays. Masked through its footer, or through the end of its
+# paragraph.
 _BEFORE_BODY = rf"(?:\\{{1,7}}[nrt]|{_QUOTE}|<br\s*/?>|[\s\"'#>+,;|*\]])"
 _KEY_REST = re.compile(rf"\[masked\]((?:[A-Za-z0-9+/=]+[ \t\r]*(?=\n|\\(?:r\\)?n)"
-                       rf"|(?={_BEFORE_BODY}{{0,64}}{_KEY_BODY_START}[A-Za-z0-9+/=]{{36,}}))"
+                       rf"|(?={_BEFORE_BODY}{{0,64}}{_KEY_BODY_START}[A-Za-z0-9+/=]{{36,}}[ \t\r]*(?:\n|[\\\"'<…]|\Z)))"
                        rf"(?:(?!{_KEY_END}){_IN_PARAGRAPH})*(?:{_KEY_END})?)")
 
 

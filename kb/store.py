@@ -73,16 +73,35 @@ REBUILD = ("{path} holds rows an older kb wrote, before each row recorded how it
            "and says how many.")
 
 
-def connect(path, readonly=False):
-    """The store at `path`, made if it is new. Raises NeedsRebuild for a store with rows an older kb wrote."""
+def peek(path):
+    """A connection that reads the store at `path` and leaves its files as they are. Closing a writable connection
+    moves the rows in the WAL file into the store, so one is opened read-only when the WAL files are there; without
+    them a read-only one would leave new ones behind, and a writable one has nothing to move."""
     path = os.fspath(path)
+    if os.path.exists(path + "-wal") and os.path.exists(path + "-shm"):
+        db = sqlite3.connect(pathlib.Path(path).as_uri() + "?mode=ro", uri=True)
+    else:
+        db = sqlite3.connect(path)
+    db.execute("PRAGMA busy_timeout=30000")
+    return db
+
+
+def connect(path, readonly=False):
+    """The store at `path`, made if it is new. Raises NeedsRebuild for a store with rows an older kb wrote, before
+    writing anything to it, so an older kb still opens it as it was."""
+    path = os.fspath(path)
+    if os.path.exists(path):
+        with contextlib.closing(peek(path)) as db:
+            older = has_unversioned(db)
+        if older:
+            raise NeedsRebuild(REBUILD.format(path=path))
     if readonly:
         db = sqlite3.connect(pathlib.Path(path).as_uri() + "?mode=ro", uri=True)
     else:
         os.makedirs(os.path.dirname(path), exist_ok=True)
         db = sqlite3.connect(path)
     db.execute("PRAGMA busy_timeout=30000")
-    if has_unversioned(db):  # before kb writes anything, so an older kb still opens its store as it was
+    if has_unversioned(db):  # an older kb wrote since the look above
         db.close()
         raise NeedsRebuild(REBUILD.format(path=path))
     if not readonly:

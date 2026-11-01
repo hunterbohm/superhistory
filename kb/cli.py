@@ -392,8 +392,7 @@ def _per_source(path):
     text of an older kb's rows is never read."""
     if not os.path.exists(path):
         return {}
-    # Not opened read-only: in WAL mode that leaves -wal and -shm files beside the store. This only counts.
-    db = sqlite3.connect(path)
+    db = store.peek(path)
     try:
         return {source: (items, oldest) for source, items, oldest in db.execute(
             "SELECT source, count(DISTINCT source_id), min(ts) FROM docs WHERE kind IN ('doc', 'raw') GROUP BY source")}
