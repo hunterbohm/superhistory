@@ -136,7 +136,8 @@ class Planted:
         if form < 0.8:
             return " ".join(head) + "--" + "--".join(groups)
         wrap = self.r.randint(1, len(groups) - 1)
-        return f"{head}-{'-'.join(groups[:wrap])}-{self.r.choice(('\n', '\\n', '\\r\\n'))}{'-'.join(groups[wrap:])}"
+        brk = self.r.choice(("\n", "\\n", "\\r\\n"))  # an f-string holds no backslash before Python 3.12
+        return f"{head}-{'-'.join(groups[:wrap])}-{brk}{'-'.join(groups[wrap:])}"
 
     def text(self):
         if self.r.random() < 0.25:
