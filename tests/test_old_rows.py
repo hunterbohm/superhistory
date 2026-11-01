@@ -128,8 +128,9 @@ def write(db, r, case):
     older = (legacy_mask.mask if pick < 0.55 else legacy_store.token_mask if pick < 0.8 else mask if earlier
              else (lambda text: text))
     text = case.text
-    if r.random() < 0.4:  # a tool's input as main's readers wrote it: JSON, cut to 300 characters before masking
+    if r.random() < 0.4:  # a tool's input as a reader wrote it: JSON, which main cut to 300 characters before masking
         text = json.dumps({"body": text}, ensure_ascii=False)
+        text = mask(text) if earlier else text  # this branch's readers mask a tool's input before they cut it
         text = "TOOL mcp__notes__create: " + (text if len(text) <= 300 else text[:300] + " …")
     legacy_store.store_item(db, case.source, case.sid, TS, f"title {case.n}", text, case.meta, CHUNK, older)
     if r.random() < 0.4:  # summaries as main's summarizer wrote them: cut, then masked, with url, path and host only
