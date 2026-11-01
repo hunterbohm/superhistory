@@ -1,4 +1,6 @@
 import argparse
+import contextlib
+import functools
 import json
 import logging
 import os
@@ -65,6 +67,16 @@ def open_db(paths, readonly=True):
     return store.connect(paths.db, readonly=readonly)
 
 
+def reads_db(command):
+    """A command that reads the knowledge base, given it open as its first argument and closed when it returns or
+    fails, so a program that runs commands in-process keeps no file handle for each."""
+    @functools.wraps(command)
+    def run(paths, config, args):
+        with contextlib.closing(open_db(paths)) as db:
+            return command(db, paths, config, args)
+    return run
+
+
 def source_names(config, name):
     if not name:
         return ()
@@ -72,8 +84,8 @@ def source_names(config, name):
     return names or (name,)
 
 
-def cmd_search(paths, config, args):
-    db = open_db(paths)
+@reads_db
+def cmd_search(db, paths, config, args):
     print(header(db, config))
     print(DATA_NOTE + "\n")
     hits = search.search(db, args.query, args.after, source_names(config, args.source), args.limit)
@@ -85,8 +97,8 @@ def cmd_search(paths, config, args):
         print(f"   {mask(h['snippet'])[:320]}")
 
 
-def cmd_get(paths, config, args):
-    db = open_db(paths)
+@reads_db
+def cmd_get(db, paths, config, args):
     row = db.execute("SELECT superseded_by FROM docs WHERE id = ?", (args.id,)).fetchone()
     if not row:
         raise Fail(f"No record #{args.id}. Ids change when ingest refreshes an item, so run `kb search` again.")
@@ -121,8 +133,8 @@ def cmd_get(paths, config, args):
         print(f"[{len(text) - end:,} characters remain. For the next page, run `kb get {args.id} --offset {end}`.]")
 
 
-def cmd_stats(paths, config, args):
-    db = open_db(paths)
+@reads_db
+def cmd_stats(db, paths, config, args):
     print(header(db, config))
     print(f"File: {paths.db} ({paths.db.stat().st_size / 1e6:,.0f} MB)\n")
     print(f"{'source':<20}{'items':>9}{'doc':>9}{'raw':>9}{'segment':>9}{'atom':>9}  newest")
