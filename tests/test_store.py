@@ -283,6 +283,17 @@ class MovedItemTest(TempDB):
         self.assertEqual([m["path"] for m in self.metas("doc")], ["/new/Notes/a.md"])
         self.assertFalse(self.add("a", "same words", meta={"path": "/new/Notes/a.md"}))
 
+    def test_a_moved_item_keeps_the_mask_version_of_each_row(self):
+        body = long_body("pelican")
+        self.add("a", body, meta={"path": "/old/a.md"})
+        store.replace_rows(self.db, "s", "a", [{"kind": "segment", "ts": iso(), "title": "seg", "content": "summary",
+                                                "metadata": {"path": "/old/a.md", "of_hash": "h1"}}], ())
+        self.db.execute("UPDATE docs SET masked='0123456789abcdef' WHERE kind='segment'")  # an earlier version's
+        self.db.commit()
+        self.assertTrue(self.add("a", body, meta={"path": "/new/a.md"}))
+        self.assertEqual(sorted({(k, v) for k, v in self.db.execute("SELECT kind, masked FROM docs")}),
+                         [("raw", store.VERSION), ("segment", "0123456789abcdef")])
+
     def test_a_moved_long_item_keeps_its_summaries_and_points_them_to_the_new_path(self):
         body = long_body("pelican")
         self.add("a", body, meta={"path": "/old/a.md", "url": "obsidian://old"})
