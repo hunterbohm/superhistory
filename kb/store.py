@@ -217,6 +217,11 @@ def replace_rows(db, source, source_id, rows, kinds=ITEM_KINDS):
         raise ValueError("an item's chunks are replaced all at once, with the raw kind")
     rows = _whole(rows)
     marks = ",".join("?" * len(kinds))
+    if db.execute(f"SELECT 1 FROM docs WHERE source=? AND source_id=? AND kind IN ({marks}) AND masked IS NOT ? LIMIT 1",
+                  (source, source_id, *kinds, VERSION)).fetchone():
+        # Rows of another mask's version may hold what today's would hide; their words stay in the index's data and
+        # the file's free pages until a rebuild.
+        set_watermark(db, STATE, "remask", "rebuild")
     db.execute(f"DELETE FROM docs WHERE source=? AND source_id=? AND kind IN ({marks})",
                (source, source_id, *kinds))
     # Masked here too, since Sync and Cloud write rows another store sent; for rows store_item made it changes nothing.
