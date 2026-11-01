@@ -529,19 +529,25 @@ class OlderStoreTest(TempHome):
         self.assertEqual(other.execute("SELECT name FROM sqlite_master").fetchall(), [("other",)])
         self.assertIn(self.path + ".old", err)
 
-    def test_a_rebuild_stops_before_reading_when_an_earlier_one_left_a_store_aside(self):
+    def test_a_rebuild_stops_before_reading_when_an_earlier_one_left_a_store_aside_and_names_each_file(self):
         from tests.support import store_files
         self.db.close()
-        with open(self.path + ".old", "wb") as fh:
-            fh.write(b"a store an earlier rebuild set aside")
         folder = os.path.dirname(self.path)
-        before = store_files(folder)
-        with mock.patch("kb.ingest.run") as run:
-            code, out, err = self.run_kb("rebuild", "--accept-loss")
-        self.assertEqual(code, 1)
-        run.assert_not_called()
-        self.assertIn(self.path + ".old", err)
-        self.assertEqual(store_files(folder), before)
+        for left in ((".old",), (".old-wal",), (".old", ".old-wal", ".old-shm")):
+            with self.subTest(left=left):
+                for suffix in left:
+                    with open(self.path + suffix, "wb") as fh:
+                        fh.write(b"what an earlier rebuild set aside")
+                before = store_files(folder)
+                with mock.patch("kb.ingest.run") as run:
+                    code, out, err = self.run_kb("rebuild", "--accept-loss")
+                self.assertEqual(code, 1)
+                run.assert_not_called()
+                named = re.findall(re.escape(self.path) + r"\.old(?:-wal|-shm)?\b", err)
+                self.assertEqual(sorted(set(named)), sorted(self.path + suffix for suffix in left))
+                self.assertEqual(store_files(folder), before)
+                for suffix in left:
+                    os.remove(self.path + suffix)
 
     def set_aside(self):
         """Sets the store aside as a swap does, its WAL files first: macOS's SQLite keeps them after a close."""
