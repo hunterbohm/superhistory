@@ -491,8 +491,9 @@ def _mask_once(text, rules=_TEXT_RULES):
 
 def _split_secrets(text, rules):
     """Where in `text` a secret reads only across characters a reader does not see, as ordered (start, end) spans of
-    the text as written: a token split or interleaved by them, even where its first part is a token by itself, or a
-    secret's name split by them, whose value is masked. The text read without them is the view. In it a token
+    the text as written: a token split or interleaved by them, even where its first part is a token by itself, the
+    rest of one an older kb masked only up to them ("[masked]<ZWSP>rest"), or a secret's name split by them, whose
+    value is masked. The text read without them is the view. In it a token
     may start right after a letter where one stood, as after a space, so one before a key glued to a word reads it
     ("budget<ZWSP>s<ZWSP>k-..."). A run of them just before where a secret's reading starts stays in the view, as a
     break. A split token ends before the last of them ahead of any reading the text as written starts inside it, such
@@ -535,8 +536,10 @@ def _split_secrets(text, rules):
                 return m.start()
         return None
 
+    # What an older kb, masking only up to an invisible character, left of a token glued to its placeholder.
+    rests = [(m.start(), m.end()) for m in _GLUED_RUN.finditer(view)]
     removed, spans = set(gone), []
-    for start, end in found + glued:
+    for start, end in found + glued + rests:
         if not split(start, end):
             continue
         start, end = raw(start, end)
