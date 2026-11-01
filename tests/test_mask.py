@@ -498,7 +498,8 @@ class LinearTimeTest(unittest.TestCase):
     time, where a pattern that reads on from every character would take some two hundred and fifty."""
     RUNS = ("0123456789abcdef", "token", "abcdefghij", "ABCDEFGHIJ", "QUJDRGVm+/9z", "a:", "password=", "a_pw ",
             "set-cookie", "a.", "token.", "x-", "token ", "_KEY_", "curl -u a:", "-----BEGIN ", "[masked]A",
-            "a\u200b", "ghp_\u200b" + "A1" * 12 + " ", "vp1 abcd ", "V R C 1 ", "VRC1-0123-")
+            "a\u200b", "ghp_\u200b" + "A1" * 12 + " ", "vp1 abcd ", "V R C 1 ", "VRC1-0123-", "curl ", "password",
+            "a.token.")
     SIZES = (1 << 16, 1 << 20)
 
     def test_every_shape_is_linear_up_to_a_megabyte(self):
