@@ -175,8 +175,14 @@ class HeadlessKeyTest(unittest.TestCase):
             with self.subTest(text=text[:30]):
                 self.assertNotIn(self.LINE[:12], mask(text))
                 self.assertNotIn("Ag==", mask(text))
-        for text in ("x [masked] and Ag==\nwords", "token=[masked]\n3f2a9c" + "0" * 34 + "\nnext"):
-            self.assertEqual(mask(text), text, "a word, or a hash on the next line, after a placeholder stays")
+        for text in ("x [masked] and Ag==\nwords", "apiKey: [masked]\nconnectionTimeoutMillis: 3000\nnext"):
+            self.assertEqual(mask(text), text, "a word, or a line that is not a key's, after a placeholder stays")
+        # A chunk that ended between a key's header and its line break left a line break, then the body.
+        for after in ("", "\n-----END PRIVATE KEY-----"):
+            text = f"notes [masked]\n{self.LINE}\n{self.LINE}{after}\n\nnext paragraph"
+            self.assertEqual(mask(text), "notes [masked]\n\nnext paragraph")
+        self.assertEqual(mask("token=[masked]\n3f2a9c" + "0" * 34 + "\nnext"), "token=[masked]",
+                         "a line of nothing but base64 reads as a key's: its paragraph is the cost")
 
     def test_the_rest_of_a_token_masked_a_chunk_at_a_time_is_masked(self):
         # An older kb masked "sk-ant-..." in one chunk; the token's last characters began the next.
