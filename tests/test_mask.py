@@ -368,6 +368,19 @@ class EscapeTest(unittest.TestCase):
                      "next=https%3A%2F%2Fexample.com%3A8443%2Fpath%40v2"):
             self.assertEqual(mask(text), text)
 
+    def test_an_encoded_space_beside_a_separator_and_flags_after_an_escape_are_read(self):
+        for text in ("password%3A%20walrus2secret9", "aws_secret_access_key%20%3D%20walrus2secret9xyz",
+                     "q=%7B%22user%22%3A%20%22bob%22%2C%20%22password%22%3A%20%22walrus2secret9%22%7D",
+                     "password+%3D+walrus2secret9", "password%253A%2520walrus2secret9",
+                     "run it\\n--password walrus2secret9\\nAuthorization: Token walrus2secret9x\\ndone",
+                     "%0A--api-key%20walrus2secret9", "https:\\/\\/bob:walrus2secret9@example.com/x",
+                     "next=https%3A//bob%3Awalrus2secret9%40example.com/x"):
+            with self.subTest(text=text):
+                self.assertNotIn("walrus2secret9", mask(text))
+        for text in ("hello%20world%3Dfine", "a + b = c", "x%20%3D%20y", "https:\\/\\/example.com\\/path"):
+            with self.subTest(text=text):
+                self.assertEqual(mask(text), text)
+
     def test_a_password_with_a_backslash_in_it_is_masked_whole(self):
         for password in ("Ab3\\nQz9kLm", "C:\\temp\\walrus9", "pa\\u00e4ss9word"):
             with self.subTest(password=password):
