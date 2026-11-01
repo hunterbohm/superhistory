@@ -32,9 +32,9 @@ class TempDB(unittest.TestCase):
 class OldRowTest(TempDB):
     """Rows an earlier version of mask() stored, which today's changes, so a reader masks them before cutting them."""
 
-    def old(self, sid, content, kind="doc", meta='{}'):
+    def old(self, sid, content, kind="doc", meta='{}', title="t"):
         self.db.execute("INSERT INTO docs(kind, source, source_id, ts, title, content, metadata, masked) "
-                        "VALUES (?, 's', ?, ?, 't', ?, ?, '0123456789abcdef')", (kind, sid, iso(), content, meta))
+                        "VALUES (?, 's', ?, ?, ?, ?, ?, '0123456789abcdef')", (kind, sid, iso(), title, content, meta))
         self.db.commit()
 
     def test_a_match_far_from_a_masked_secret_stays_in_the_passage(self):
@@ -68,6 +68,58 @@ class OldRowTest(TempDB):
     def test_an_old_item_whose_id_looks_like_a_secret_is_left_out(self):
         self.old("desk:key-sk-ant-api03-old-" + "Z" * 24 + ".md", "walrus deployment")
         self.assertEqual(search.search(self.db, "walrus deployment"), [])
+
+    def test_an_old_row_gets_the_card_a_current_row_gets_for_the_same_text(self):
+        key = "sk-ant-api03-old-" + "Z" * 24
+        text = "ordinary filler " * 60 + f"the walrus deployment key is {key} for now " + "more filler " * 60
+        self.add("now.md", text)
+        self.old("then.md", text)
+        hits = {h["source_id"]: h for h in search.search(self.db, "walrus deployment")}
+        old, current = hits["then.md"], hits["now.md"]
+        self.assertEqual((old["snippet"], old["excerpt"]), (current["snippet"], current["excerpt"]))
+        self.assertIn("walrus deployment key", old["excerpt"])
+        self.assertNotIn("Z" * 12, old["excerpt"])
+        self.assertLess(len(old["excerpt"]), search.EXCERPT_CHARS)
+
+    def test_an_old_chunk_gets_the_card_its_current_chunk_gets(self):
+        text = "prefix padding " * 180 + "\nwalrus deployment approved.\n" + "suffix padding " * 180
+        self.add("now.md", text)
+        parts = store.chunk(text)
+        self.assertGreater(len(parts), 1)
+        for i, part in enumerate(parts):
+            self.old("then.md", part, kind="raw", meta=f'{{"chunk": {i}, "chunks": {len(parts)}}}')
+        hits = {h["source_id"]: h for h in search.search(self.db, "walrus deployment")}
+        old, current = hits["then.md"], hits["now.md"]
+        self.assertEqual(old["meta"]["chunk"], current["meta"]["chunk"])
+        self.assertEqual((old["snippet"], old["excerpt"]), (current["snippet"], current["excerpt"]))
+        self.assertNotIn("suffix", old["excerpt"])
+
+    def test_an_old_chunk_a_key_runs_into_gets_the_card_of_its_whole_masked_item(self):
+        line = ("T2xkUGVtQm9keUxpbmU" * 4)[:64]
+        key = "-----BEGIN PRIVATE KEY-----\n" + f"{line}\n" * 90 + "-----END PRIVATE KEY-----"
+        text = "context " + " " * 3800 + "\n" + key + "\nwalrus deployment notes\n"
+        self.add("now.md", text)
+        parts = store.chunk(text)
+        self.assertEqual(len(parts), 3)
+        for i, part in enumerate(parts):
+            self.old("then.md", part, kind="raw", meta=f'{{"chunk": {i}, "chunks": 3}}')
+        hits = {h["source_id"]: h for h in search.search(self.db, "walrus deployment")}
+        old, current = hits["then.md"], hits["now.md"]
+        self.assertEqual(old["meta"]["chunk"], 2, "the match is in the chunk the key runs into")
+        self.assertEqual((old["snippet"], old["excerpt"]), (current["snippet"], current["excerpt"]))
+        self.assertIn("context", old["excerpt"])
+        self.assertNotIn(line[:12], old["snippet"] + old["excerpt"])
+
+    def test_an_old_row_matched_by_its_title_alone_gets_a_current_rows_card(self):
+        for n, body in enumerate(("Opening [note] " + "ordinary filler " * 60,
+                                  "token sk-ant-api03-old-" + "Z" * 24 + " " + "ordinary filler " * 60)):
+            with self.subTest(body=body[:20]):
+                self.add(f"now{n}.md", body, title=f"walrus{n}")
+                self.old(f"then{n}.md", body, title=f"walrus{n}")
+                hits = {h["source_id"]: h for h in search.search(self.db, f"walrus{n}")}
+                old, current = hits[f"then{n}.md"], hits[f"now{n}.md"]
+                self.assertEqual((old["snippet"], old["excerpt"]), (current["snippet"], current["excerpt"]))
+                self.assertNotIn("Z" * 12, old["snippet"] + old["excerpt"])
 
     def test_current_rows_keep_the_index_snippet(self):
         self.add("d.md", "ordinary filler " * 100 + "walrus deployment was approved by Dana.")
