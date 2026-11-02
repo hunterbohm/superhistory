@@ -48,6 +48,31 @@ def credential(r):
                      ("Basic", base64.b64encode(f"deploy:{token}".encode()).decode())))
 
 
+def lowercase_token(r):
+    """A credential of lower-case letters alone, as the first review wrote them: one run, groups joined by "-" or
+    "/", or a run with a number after a dot."""
+    letters = "".join(r.choice(string.ascii_lowercase) for _ in range(r.randint(16, 40)))
+    how = r.random()
+    if how < 0.4:
+        return letters
+    if how < 0.8:
+        size = r.randint(3, 8)
+        return r.choice("-/").join(letters[i:i + size] for i in range(0, len(letters), size))
+    return f"{letters}.{r.randint(1, 99999)}"
+
+
+def basic_credential(r):
+    """base64 of "user:password" as a Basic header holds it, the user and password in ASCII, Latin-1 or UTF-8, with
+    its padding or without."""
+    import base64
+    alphabet = r.choice((string.ascii_letters + string.digits, "abcäöüßéèªº¿", "ążłéтест"))
+    user = "".join(r.choice(alphabet) for _ in range(r.randint(1, 8)))
+    password = "".join(r.choice(alphabet + "?/!") for _ in range(r.randint(1, 16)))
+    encoding = "latin-1" if all(ord(c) < 256 for c in user + password) and r.random() < 0.5 else "utf-8"
+    encoded = base64.b64encode(f"{user}:{password}".encode(encoding)).decode()
+    return encoded.rstrip("=") if r.random() < 0.5 else encoded
+
+
 class SchemeWordTest(unittest.TestCase):
     def test_the_audit_paths_are_ordinary(self):
         for path in ("Basic Statistics/notes.md", "Ring Bearer responsibilities/notes.md", "Ring Bearer duties/list.md",
@@ -78,6 +103,29 @@ class SchemeWordTest(unittest.TestCase):
                     if path in text:
                         self.assertIn(path, masked, "the path next to it stays")
                     self.assertTrue(holds_secret(text))
+
+    def test_the_first_reviews_credentials_are_masked_as_on_main(self):
+        for text in ("Authorization: Bearer eiaoumqnavxozpiuafeldogy", "Bearer aubx-ecjq-ivkx-opzy",
+                     "Bearer eiaoumqnavxozpiuafeldogy.1234", "Basic YWE/YWE/YWE/Omc", "Basic qjqhabqkqdpj/iyvt//i",
+                     "Bearer aubx/ecjq/ivkx/opzy", "Authorization: Basic Statistics/notes.md"):
+            with self.subTest(text=text):
+                self.assertEqual(mask(text), as_on_main(text))
+
+    def test_lower_case_and_basic_credentials_are_masked_as_on_main(self):
+        for seed in range(2000):
+            r = random.Random(f"lower:{seed}")
+            secret = r.choice((lambda: "Bearer " + lowercase_token(r), lambda: "Basic " + basic_credential(r)))()
+            for text in (secret, f"Authorization: {secret}", f"curl -H 'Authorization: {secret}' x", f"see {secret}"):
+                with self.subTest(text=text):
+                    self.assertEqual(mask(text), as_on_main(text))
+
+    def test_a_field_after_a_kept_path_reads_as_it_reads_alone(self):
+        # Main's mask took the path's words, and with them the field's name after them, so it never read the value.
+        for field in ("Cookie: chocolate chip recipe", "password: hunter22x", "api_key: q8Zr2Lm7Xk4Vp9Nt3Bw6Hc1"):
+            for path in ("Basic Statistics/notes.md", "Ring Bearer responsibilities/notes.md"):
+                text = f"{path}: {field}"
+                with self.subTest(text=text):
+                    self.assertEqual(mask(text), f"{path}: {mask(field)}")
 
     def test_main_hides_nothing_this_keeps_but_scheme_words(self):
         # Every character main's mask hides, this one hides, but in a run of words after Basic or Bearer.
