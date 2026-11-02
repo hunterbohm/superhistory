@@ -97,7 +97,8 @@ def render(path, mark):
                     else:
                         lines.append(f"ASSISTANT: {text}")
                 elif ptype == "tool_use":
-                    lines.append(f"TOOL {part.get('name')}: {_clip(_tool_input(part.get('input'), part.get('name')), TOOL_CHARS)}")
+                    tool_input = _tool_input(part.get("input"), part.get("name"))
+                    lines.append(f"TOOL {part.get('name')}: {_clip(tool_input, TOOL_CHARS)}")
                 elif ptype == "tool_result":
                     if part.get("is_error"):
                         lines.append(f"ERROR: {_clip(_result_text(part), ERROR_CHARS)}")

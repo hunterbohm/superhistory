@@ -117,7 +117,8 @@ def _tool_calls(raw):
     for c in calls:
         if isinstance(c, dict):
             name = (c.get("function") or {}).get("name")
-            out.append(f"TOOL {name}: {_clip(_tool_input((c.get('function') or {}).get('arguments'), name), TOOL_CHARS)}")
+            arguments = _tool_input((c.get("function") or {}).get("arguments"), name)
+            out.append(f"TOOL {name}: {_clip(arguments, TOOL_CHARS)}")
     return out
 
 

@@ -501,9 +501,10 @@ def _short_password_span(m):
 
 
 # A password's name that names something about it rather than it: its policy, hint, reset, length, rules, file.
-_ABOUT_A_PASSWORD = re.compile(r"(?i)(?:^|[_.-]|(?-i:(?<=[a-z])(?=[A-Z])))(?:polic(?:y|ies)|hints?|reset|length|min|max|"
-                               r"rules?|requirements?|strength|expir\w*|change[ds]?|file|path|url|name|type|id|prompt|label|"
-                               r"field|regex|pattern|format|hash\w*|validat\w*)s?(?=$|[_.-]|(?-i:[A-Z]))")
+_ABOUT_A_PASSWORD = re.compile(
+    r"(?i)(?:^|[_.-]|(?-i:(?<=[a-z])(?=[A-Z])))(?:polic(?:y|ies)|hints?|reset|length|min|max|rules?|requirements?|"
+    r"strength|expir\w*|change[ds]?|file|path|url|name|type|id|prompt|label|field|regex|pattern|format|hash\w*|"
+    r"validat\w*)s?(?=$|[_.-]|(?-i:[A-Z]))")
 
 
 def _password_span(m):
@@ -860,7 +861,8 @@ def _split_secrets(text, rules):
                 glued.append((place, token.end()))
                 continue
             for pattern, group, entropy, _, allowed, stopwords in vendored:
-                m = pattern.match(view, place, stop)  # within the same window, so repeated starts cost time in proportion
+                # Within the same window, so repeated starts cost time in proportion.
+                m = pattern.match(view, place, stop)
                 if m and m.end() == stop < len(view):
                     m = pattern.match(view, place)
                 span = m and _gitleaks_secret(m, group, entropy, allowed, stopwords)
@@ -1094,7 +1096,8 @@ _TYPING_TOOL = re.compile(r"(?i)(?:browser_|puppeteer_|playwright_)?(?:type|type
 # key description", "Password hint"), after a selector's own attribute names are taken out ("input[name=password]").
 _SECRET_LABEL = re.compile(r"(?<![A-Za-z])(?i:pin|pwd|otp|cvc|cvv2?|2fa|mfa)(?![a-z])|(?i:passw(?:or)?d|passcode|"
                            r"passphrase|secret|token|credential|one[ _-]?time[ _-]?(?:code|password|pass)|"
-                           r"verification[ _-]?code|security[ _-]?code|(?:api|access|private)[ _-]?key)(?:s|S)?(?![a-z])")
+                           r"verification[ _-]?code|security[ _-]?code|(?:api|access|private)[ _-]?key)"
+                           r"(?:s|S)?(?![a-z])")
 _ABOUT_LABEL = re.compile(r"(?<![A-Za-z])(?i:names?|descriptions?|labels?|notes?|hints?|questions?|types?|ids?|counts?|"
                           r"length|expir[a-z]*|strength|polic(?:y|ies)|requirements?|reset|manager|size|format|usage|"
                           r"created|updated|scopes?|permissions?)(?![a-z])")

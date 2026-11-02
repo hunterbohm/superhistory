@@ -184,7 +184,8 @@ def render(paths, mark):
                     fallback_title = fallback_title or text
                 lines.append(f"{label}: {text}")
         elif ptype == "function_call":
-            lines.append(f"TOOL {payload.get('name')}: {_clip(_call_args(payload.get('arguments'), payload.get('name')), TOOL_CHARS)}")
+            arguments = _call_args(payload.get("arguments"), payload.get("name"))
+            lines.append(f"TOOL {payload.get('name')}: {_clip(arguments, TOOL_CHARS)}")
         elif ptype == "custom_tool_call":
             lines.append(f"TOOL {payload.get('name')}: {_clip(str(payload.get('input') or ''), TOOL_CHARS)}")
         elif ptype in ("function_call_output", "custom_tool_call_output"):
