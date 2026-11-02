@@ -103,10 +103,23 @@ _SCHEME_HEAD = re.compile(rf"(?i)(?:basic|bearer){_SCHEME_GAP}")
 _PATH_WORD = re.compile(r"[a-z]+|[A-Z][a-z]+|(?:[A-Z][a-z]+){2,}|[A-Z]{2,}|[A-Z]{1,3}[a-z]{2,}")
 _EXTENSION = re.compile(r"\.[A-Za-z][A-Za-z0-9]{0,4}$")
 _PATH_TAIL = re.compile(r"[A-Za-z0-9 _/.-]{0,160}?\.[A-Za-z][A-Za-z0-9]{0,4}(?![A-Za-z0-9])")
-# Letter pairs no English word holds, and four vowels in a row, which a random run of letters seldom lacks.
-_NO_WORD = re.compile(r"(?i)q(?!u)|j[^aeiouy]|bx|cj|cv|cx|dx|fq|fv|fx|fz|gq|gv|gx|hx|hz|kq|kx|kz|lx|mq|mx|mz|pq|pv|px|"
-                      r"pz|sx|tq|vb|vf|vh|vj|vk|vm|vp|vq|vw|vx|vz|wq|wv|wx|wz|xb|xg|xj|xk|xr|xv|xz|zb|zf|zg|zj|zk|"
-                      r"zm|zp|zq|zv|zw|zx|[aeiou]{4}")
+# The letter pairs that make up 99% of those in a common English word list, 367 of the 676: every pair in a word in a
+# path is one of them, as a random run of letters seldom manages. And four vowels in a row, which no such word has.
+_COMMON_PAIRS = frozenset((
+    "ab ac ad ae af ag ah ai ak al am an ap ar as at au av aw ax ay az ba bb be bi bl bo br bs bu by ca cc ce "
+    "ch ci ck cl co cr cs ct cu cy da db dd de dg dh di dl dm dn do dr ds du dv dw dy ea eb ec ed ee ef eg eh "
+    "ei ek el em en eo ep eq er es et eu ev ew ex ey ez fa fe ff fi fl fo fr fs ft fu fy ga ge gg gh gi gl gm "
+    "gn go gr gs gu gy ha he hi hl hm hn ho hr hs ht hu hw hy ia ib ic id ie if ig ik il im in io ip iq ir is "
+    "it iu iv ix iz ja je ji jo ju ka ke kh ki kl kn ko kr ks ku ky la lb lc ld le lf lg li lk ll lm ln lo lp "
+    "ls lt lu lv ly ma mb me mi mm mn mo mp ms mu my na nb nc nd ne nf ng nh ni nj nk nl nm nn no np nq nr ns "
+    "nt nu nv nw ny oa ob oc od oe of og oh oi ok ol om on oo op or os ot ou ov ow ox oy oz pa pe ph pi pl po "
+    "pp pr ps pt pu py qu ra rb rc rd re rf rg rh ri rk rl rm rn ro rp rr rs rt ru rv rw ry sa sb sc se sf sh "
+    "si sk sl sm sn so sp sq ss st su sw sy ta tb tc te tf th ti tl tm tn to tr ts tt tu tw ty tz ua ub uc ud "
+    "ue uf ug ui uk ul um un uo up ur us ut uz va ve vi vo wa we wh wi wl wn wo wr ws xa xc xe xi xp xt ya yb "
+    "yc yd ye yi yl ym yn yo yp yr ys yt za ze zi zo zz").split())
+_VOWEL_RUN = re.compile(r"(?i)[aeiou]{4}")
+# A run of the letters of hex alone, as a token in hex with no digit is: no word is so long in them.
+_HEX_LETTERS = re.compile(r"[A-Fa-f]{12,}")
 # The name of a header whose value is a credential, just before the scheme word.
 _AUTHORIZATION_BEFORE = re.compile(r"(?i)authorization[\"']?[ \t]*(?::|=|%(?:25)?3A)[ \t]*[\"']?$")
 
@@ -114,45 +127,61 @@ _AUTHORIZATION_BEFORE = re.compile(r"(?i)authorization[\"']?[ \t]*(?::|=|%(?:25)
 def _scheme_words(m):
     """Whether a match of Basic or Bearer and what follows reads as words in a note's path, as in "Basic
     Statistics/notes.md" or "Ring Bearer responsibilities/notes.md", not a credential. That is: no header's value
-    ("Authorization: Bearer ..."); a path, its run or what follows it in the path ending in a file's extension; past
-    that extension, no digit, "+" or "=", and parts joined by "/", ".", "_" or "-", each a word (_PATH_WORD) with a
-    vowel and no letter pair or vowel run a word never has (_NO_WORD), which a run of base64 or of random letters
-    seldom passes; one part alone has a third of its letters vowels, as a word has. After Basic, not base64 of
-    "user:password" either, padded or not, in UTF-8 or Latin-1. Any other match is no such run."""
+    ("Authorization: Bearer ..."); part of a file's path (_in_a_path); past the file's extension, no digit, "+" or
+    "=", not the letters of hex alone, and parts joined by "/", ".", "_" or "-", each a word (_PATH_WORD) with a vowel
+    and only common English letter pairs (_english), which a run of base64 or of random letters seldom passes; one
+    part alone has a third of its letters vowels, as a word has. After Basic, not base64 of "user:password" either,
+    padded or not, in any single-byte code page or UTF-8. Any other match is no such run."""
     head = _SCHEME_HEAD.match(m.group())
     if not head or _AUTHORIZATION_BEFORE.search(m.string, max(0, m.start() - 64), m.start()):
         return False
     run = m.group()[head.end():]
-    if not _EXTENSION.search(run) and not _PATH_TAIL.match(m.string, m.end()):
+    if not _in_a_path(m, run):
         return False
     run = _EXTENSION.sub("", run)
     parts = [part for part in re.split(r"[/._-]+", run) if part]
-    if not parts or re.search(r"[0-9+=]", run):
+    if not parts or re.search(r"[0-9+=]", run) or _HEX_LETTERS.fullmatch("".join(parts)):
         return False
-    if not all(_PATH_WORD.fullmatch(part) and re.search(r"[aeiouyAEIOUY]", part) and not _NO_WORD.search(part)
-               for part in parts):
+    if not all(_PATH_WORD.fullmatch(part) and re.search(r"[aeiouyAEIOUY]", part) and _english(part) for part in parts):
         return False
     if len(parts) == 1 and sum(c in "aeiouyAEIOUY" for c in parts[0]) * 3 < len(parts[0]):
         return False
     return not (head.group().lower().startswith("basic") and (_basic_credential(run) or _decodes_to_login(run)))
 
 
+def _english(part):
+    """Whether a part of a path reads as English words: each word in it, a part run together in capitals ("ApiKey")
+    read word by word, holds only common letter pairs and no four vowels in a row."""
+    for word in re.findall(r"[A-Z]{2,}(?![a-z])|[A-Z]?[a-z]+|[A-Z]+", part):
+        word = word.lower()
+        if _VOWEL_RUN.search(word) or any(word[i:i + 2] not in _COMMON_PAIRS for i in range(len(word) - 1)):
+            return False
+    return True
+
+
+def _in_a_path(m, run):
+    """Whether a scheme word's run is part of a file's path: it ends in the file's extension, or the path goes on from
+    it to one (_PATH_TAIL). Past a space, the path goes on only where the run already holds a "/", the next word is
+    capitalized, as a folder's or a file's name often is, or the rest reaches a folder's "/": a token followed by prose
+    that names a file, as in "Bearer <token> see notes.md", is in no path."""
+    if _EXTENSION.search(run):
+        return True
+    tail = _PATH_TAIL.match(m.string, m.end())
+    if not tail:
+        return False
+    rest = tail.group()
+    return " " not in rest or "/" in run or "/" in rest or bool(re.match(r" +[A-Z]", rest))
+
+
 def _decodes_to_login(run):
-    """Whether `run`, padded as base64 is when written without its "=", decodes to "user:password" text in UTF-8 or
-    Latin-1, as a Basic credential from any client does."""
+    """Whether `run`, padded as base64 is when written without its "=", decodes to "user:password" with no control
+    character in it, as a Basic credential does in UTF-8, Latin-1 or any other single-byte code page."""
     run = run[:-1] if len(run) % 4 == 1 else run
     try:
         raw = base64.b64decode(run + "=" * (-len(run) % 4), validate=True)
     except ValueError:
         return False
-    for encoding in ("utf-8", "latin-1"):
-        try:
-            text = raw.decode(encoding)
-        except UnicodeDecodeError:
-            continue
-        if ":" in text and text.isprintable():
-            return True
-    return False
+    return b":" in raw and not re.search(rb"[\x00-\x1f\x7f]", raw)
 
 
 _BASIC_VALUE = re.compile(rf"(?i){_WORD}basic{_SCHEME_GAP}([A-Za-z0-9+/]{{12,}})")
