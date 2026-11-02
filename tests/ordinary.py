@@ -83,6 +83,12 @@ SHAPES = (
                                   word(r, PLAIN)),
     lambda r: f"{r.choice('soxe')}.{ident(r, PLAIN)}{r.randint(1, 2099)} = {r.choice(('true', 'null', '0'))};",
     lambda r: f"<token>{r.choice(('internationalization', 'counterrevolutionaries', 'responsibilities'))}</token>",
+    lambda r: "<tokens>%s</tokens>" % "".join(
+        f"<token>{r.choice(('HTTP', 'UTF8', 'JSON', 'IPv6', 'Base64', ''))}"
+        f"{''.join(word(r, PLAIN).title() for _ in range(r.randint(1, 3)))}{r.randint(0, 2099)}</token>"
+        for _ in range(r.randint(1, 3))),
+    lambda r: "[masked]%s%s.md" % (r.choice(("\x1b[0m", "\x9b0m", "\\u001b[0m", "\\x1b[0m", "\\033[0m", "\x7f")),
+                                   r.choice(("README", "CHANGELOG", "notes", "plan-v2"))),
 )
 
 

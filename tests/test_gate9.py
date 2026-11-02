@@ -669,6 +669,62 @@ class ReviewFourTest(unittest.TestCase):
                 self.assertEqual(mask(text), text)
 
 
+class ReviewFiveTest(unittest.TestCase):
+    """The fifth review's findings."""
+
+    def test_a_token_or_pin_of_another_kind_needs_a_credential(self):
+        for label, value in (("CSS color token", "#ff8800"), ("Map pin", "40.7128,-74.0060"), ("Design token", "spacing-4"),
+                             ("Output tokens", "4096"), ("Drop a pin", "Main St"), ("Lexer token", "IDENTIFIER")):
+            with self.subTest(label=label):
+                self.assertEqual(typed_secrets("mcp__playwright__browser_type", {"element": label, "text": value}),
+                                 {"element": label, "text": value})
+        for label, value in (("Discord token", "q8Zr2Lm7Xk4Vp9Nt3Bw6Hc1"), ("Card PIN", "4821"), ("Bearer token", "abc12"),
+                             ("Enter the token", "abc12"), ("PIN", "4821"), ("Your 4-digit PIN", "4821"),
+                             ("Personal access token", "abc12")):
+            with self.subTest(label=label):
+                self.assertEqual(typed_secrets("mcp__playwright__browser_type", {"element": label, "text": value})["text"],
+                                 "[masked]")
+        args = json.dumps({"element": "CSS color token", "ref": "e3", "text": "#ff8800"})
+        self.assertIn("#ff8800", codex._call_args(args, "mcp__playwright__browser_type"))
+
+    def test_a_tokenizers_identifiers_in_xml_stay(self):
+        for text in ("<tokens><token>HTTPStatus200</token><token>UTF8Identifier</token></tokens>",
+                     "<token>Base64Encoder2026</token>", "<xs:token>IPv6Address42x</xs:token>"):
+            with self.subTest(text=text):
+                self.assertEqual(mask(text), text)
+        for text in ("<accessToken>q8Zr2Lm7Xk4Vp9Nt3Bw6Hc1</accessToken>",
+                     "<SessionToken>q8Zr2Lm7Xk4Vp9Nt3Bw6Hc1</SessionToken>", "<api_token>q8Zr2Lm7Xk4Vp9Nt3Bw6Hc1</api_token>"):
+            with self.subTest(text=text):
+                self.assertIn(">[masked]</", mask(text))
+
+    def test_a_coloured_option_after_a_password_flag_is_no_password(self):
+        for text in ("mongosh -p \x1b[31m--quiet\x1b[0m", "keytool -list -storepass \x1b[1m-v\x1b[0m",
+                     "mongosh -p \\u001b[31m--quiet\\u001b[0m"):
+            with self.subTest(text=text):
+                self.assertEqual(mask(text), text)
+        args = {"args": ["mongosh", "-p", "\x1b[31m--quiet\x1b[0m"]}
+        self.assertEqual(mask_all(args), args)
+        self.assertEqual(mask("mongosh -p \x1b[31mTr0ub4dor-Zk9q\x1b[0m"), "mongosh -p [masked]")
+
+    def test_a_colour_code_after_a_placeholder_is_a_break(self):
+        for code in ("\x1b[0m", "\x9b0m", "\\u001b[0m", "\\x1b[0m", "\\033[0m", "\x7f", "\x81"):
+            text = f"[masked]{code}README.md"
+            with self.subTest(code=code):
+                self.assertEqual(mask(text), text)
+        self.assertEqual(mask("[masked]\u200bREADME.md"), "[masked].md")  # an older kb's leftover, as main reads it
+        with tempfile.TemporaryDirectory() as tmp:
+            db = store.connect(os.path.join(tmp, "kb.sqlite"))
+            try:
+                content = "built [masked]\x1b[0mREADME.md"
+                db.execute("INSERT INTO docs(kind,source,source_id,ts,title,content,metadata,masked) "
+                           "VALUES(?,?,?,?,?,?,?,?)", ("doc", "notes", "notes:a", "2026-11-01", "Plan", content, "{}", "old"))
+                db.commit()
+                store.remask(db)
+                self.assertEqual(db.execute("SELECT content FROM docs").fetchone()[0], content)
+            finally:
+                db.close()
+
+
 # Commands as an argument list, each flag's value its own item: (the list, the items masked).
 ARGV = (
     (["login", "--password", PASSWORD], {2}), (["--token", SUB], {1}), (["--api-key", SUB, "--verbose"], {1}),
