@@ -143,7 +143,8 @@ def _scheme_words(m):
     not the letters of hex alone, and parts joined by "/", ".", "_" or "-", each a word (_PATH_WORD) with a vowel, no
     long run of hex letters and only common English letter pairs (_english), which a run of base64 or of random letters
     seldom passes; one part alone has a third of its letters vowels, as a word has. After Basic, not base64 of
-    "user:password" either, padded or not, in any single-byte code page or UTF-8. Any other match is no such run."""
+    "user:password" either, alone or before a "/" (_holds_a_login), padded or not, in any single-byte code page or
+    UTF-8. Any other match is no such run."""
     head = _SCHEME_HEAD.match(m.group())
     if not head or _AUTHORIZATION_BEFORE.search(m.string, max(0, m.start() - 64), m.start()):
         return False
@@ -158,7 +159,14 @@ def _scheme_words(m):
         return False
     if len(parts) == 1 and sum(c in "aeiouyAEIOUY" for c in parts[0]) * 3 < len(parts[0]):
         return False
-    return not (head.group().lower().startswith("basic") and (_basic_credential(run) or _decodes_to_login(run)))
+    return not (head.group().lower().startswith("basic") and _holds_a_login(run))
+
+
+def _holds_a_login(run):
+    """Whether a Basic run is, or starts with, base64 of "user:password": the whole run, or its part before any "/",
+    as a login written right before a path's words reads ("Basic <login>/weekly.md")."""
+    ends = [i for i, c in enumerate(run) if c == "/" and i >= 4] + [len(run)]
+    return any(_basic_credential(run[:end]) or _decodes_to_login(run[:end]) for end in ends)
 
 
 def _english(part):
