@@ -47,8 +47,9 @@ def _main():
 main = _main()
 
 
-# Gate 9's new readings, its new names, and the four values it reads as no secret (a name in an AWS resource's name,
-# a file's name of words after "/", a date or a time after a key's name, a tokenizer's name), each switched off.
+# Gate 9's new readings, its new names, gitleaks' rules, and the four values it reads as no secret (a name in an AWS
+# resource's name, a file's name of words after "/", a date or a time after a key's name, a tokenizer's name), each
+# switched off.
 _NEVER = re.compile(r"(?!)")
 _NAME_OFF = (("subscription[_-]?key|", ""),)
 _TOKENIZER_OFF = (("token(?!i[sz])", "token"),)
@@ -83,6 +84,7 @@ class gate9:
     def __enter__(self):
         swap = {"_ARN_HEAD": _NEVER, "_FILE_NAME": _NEVER, "_DATE_OR_TIME": _NEVER}
         if self.what == "all":
+            swap["_GITLEAKS"] = []
             links = [re.compile(p.pattern.replace("]*:)", "]+:)").replace("&])*%(?:25)?3A)", "&])+%(?:25)?3A)"),
                                 p.flags) for p in head.PREFIXED_SECRETS[1:3]]
             swap.update(PREFIXED_SECRETS=[head.PREFIXED_SECRETS[0], *links, *head.PREFIXED_SECRETS[3:]],
@@ -108,6 +110,10 @@ def new_readings(text):
             out.update(range(m.start(3), m.end(3)))
         for m in pattern.finditer(shaped):
             out.update(range(*head._back(origin, m.start(3), m.end(3), len(text))))
+    for start, end in head._gitleaks_spans(text):
+        out.update(range(start, end))
+    for start, end in head._gitleaks_spans(shaped):
+        out.update(range(*head._back(origin, start, end, len(text))))
     for m in head.ENCODED_PRIVATE_KEY.finditer(text):
         out.update(range(m.start(), m.end()))
     for pattern in head.PREFIXED_SECRETS[1:3]:

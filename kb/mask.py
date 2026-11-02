@@ -2,10 +2,13 @@ import base64
 import bisect
 import hashlib
 import logging
+import math
 import os
 import re
 import sys
 import traceback
+
+from kb import gitleaks
 
 # JSON text escapes a line break as "\n" and other characters likewise, and a link as "%0A", once or, encoded twice,
 # as "%250A". A secret right after an escape reads as glued to its letter, and a value ends at an escape that starts
@@ -60,8 +63,9 @@ BASIC = re.compile(rf"(?i){_WORD}basic{_SCHEME_GAP}(?=[A-Za-z0-9+/]*[0-9+/=])[A-
 # feed, which end a value early or make "password=\u2028password" look like a placeholder.
 # A private key percent-encoded, as a link's parameter holds one: its header, its body and its line breaks encoded,
 # through its footer or the end of the encoded run.
-ENCODED_PRIVATE_KEY = re.compile(r"-----BEGIN(?:%20[A-Z]+)*%20PRIVATE%20KEY-----(?:%0[ADad]|%2[BFbf]|%3[Dd]|[A-Za-z0-9+/=])"
-                                 r"{0,16384}(?:-----END(?:%20[A-Z]+)*%20PRIVATE%20KEY-----)?")
+ENCODED_PRIVATE_KEY = re.compile(r"-----BEGIN(?:%20[A-Z]+)*%20PRIVATE%20KEY-----"
+                                 r"(?:%0[ADad]|%2[BFbf]|%3[Dd]|[A-Za-z0-9+/=]){0,16384}"
+                                 r"(?:-----END(?:%20[A-Z]+)*%20PRIVATE%20KEY-----)?")
 SECRET_PATTERNS = [
     # A private key, by its structure and not read line by line: from its header through its footer, or, with no
     # footer, through the end of its paragraph. So a key cut off, wrapped at any width or followed at once by other
@@ -143,8 +147,8 @@ PREFIXED_SECRETS = [
     re.compile(rf"((?<![A-Za-z0-9_-])-pass(?:in|out)?[ \t]+['\"]?pass:)(?:(?!{_NEXT_NAME}){_CLOSE}[^ \t\n\r'\"])+"),
 ]
 # A secret's name is a whole run of name characters whose last dotted part holds a key word, or one ending in "_pw" or
-# the like. A tokenizer's name is none. Read as that part after the run's last dot, it takes one pass over a long run; read as any characters
-# around a key word, it went back over the run once for every key word in it.
+# the like. A tokenizer's name is none. Read as that part after the run's last dot, it takes one pass over a long run;
+# read as any characters around a key word, it went back over the run once for every key word in it.
 _KEY_NAME = (
     r"(?i)(?<![A-Za-z0-9_.-])("
     r"(?:[A-Za-z0-9_.-]*\.)?(?=[A-Za-z0-9_-]*?(?:api[_-]?key|access[_-]?key|private[_-]?key|subscription[_-]?key|"
@@ -274,6 +278,61 @@ INVISIBLE = re.compile(_CSI + r"|[\x00-\x08\x0e-\x1b\x7f-\x84\x86-\x9f\u00ad\u03
                        r"\u180b-\u180f\u200b-\u200f\u202a-\u202e\u2060-\u206f\u3164\ufe00-\ufe0f\ufeff\uffa0"
                        r"\ufff0-\ufff8\U0001bca0-\U0001bca3\U0001d173-\U0001d17a\U000e0000-\U000e0fff]")
 
+# Provider tokens kb takes from gitleaks (kb/gitleaks.py), each a token's own shape: compiled ASCII-only, as Go reads
+# \w and \b; the group holding the secret; the least entropy it has; keywords one of which a text holds before the rule
+# is read; and what marks a secret as none, the rule's and gitleaks' own for every rule.
+_GITLEAKS = [(re.compile(source, re.ASCII), group, entropy, keywords, [re.compile(a) for a in allowed], stopwords)
+             for _, source, group, entropy, keywords, allowed, stopwords in gitleaks.RULES]
+_GITLEAKS_ALLOW = [re.compile(a) for a in gitleaks.ALLOW_REGEXES]
+# The same rules with no word boundary before them, for a token right after a letter where an invisible character stood.
+_GITLEAKS_AFTER_A_BREAK = [(re.compile(re.sub(r"^((?:\(\?i\))?)\\b", r"\1", rule[0].pattern), re.ASCII), *rule[1:])
+                           for rule in _GITLEAKS]
+
+
+def _entropy(text):
+    """Shannon entropy in bits per character, as gitleaks reads a secret's."""
+    counts = {}
+    for c in text:
+        counts[c] = counts.get(c, 0) + 1
+    return -sum(n / len(text) * math.log2(n / len(text)) for n in counts.values())
+
+
+def _gitleaks_secret(m, group, entropy, allowed, stopwords):
+    """Where a gitleaks rule's match holds its secret, as gitleaks reads it, or None: its group, or for group 1 the
+    first group that holds anything; with more entropy than the rule asks; and nothing marks it as none."""
+    if group == 1:
+        group = next((g for g in range(1, m.re.groups + 1) if m.group(g)), 0)
+    start, end = m.span(group)
+    secret = m.string[start:end]
+    if start < 0 or not secret or entropy and _entropy(secret) <= entropy:
+        return None
+    lower = secret.lower()
+    if any(a.search(secret) for a in allowed) or any(a.search(secret) for a in _GITLEAKS_ALLOW) \
+            or any(w in lower for w in stopwords) or any(w in lower for w in gitleaks.STOPWORDS):
+        return None
+    return start, end
+
+
+def _gitleaks_spans(text, rules=None):
+    """Where gitleaks' rules find a secret in `text`, ordered and merged; each rule read only where a keyword of it
+    is in the text."""
+    lower, spans = text.lower(), []
+    for pattern, group, entropy, keywords, allowed, stopwords in (_GITLEAKS if rules is None else rules):
+        if keywords and not any(k in lower for k in keywords):
+            continue
+        for m in pattern.finditer(text):
+            span = _gitleaks_secret(m, group, entropy, allowed, stopwords)
+            if span:
+                spans.append(span)
+    merged = []
+    for start, end in sorted(spans):
+        if merged and start <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+        else:
+            merged.append((start, end))
+    return merged
+
+
 # Which mask() a stored row was masked with. A row of another version, or of none, is masked again when read and by
 # the next ingest. The patterns change it by themselves; bump REVISION when the code that applies them changes what
 # it masks.
@@ -281,7 +340,8 @@ REVISION = 10
 VERSION = hashlib.sha256(repr((REVISION, [p.pattern for p in SECRET_PATTERNS + PREFIXED_SECRETS], KEYED_SECRET.pattern,
                                 ENV_KEY_SECRET.pattern, JSON_SECRET.pattern, FLAG_SECRET.pattern, AUTH_SECRET.pattern,
                                 COMMAND_FLAGS, PASSWORD_NAME.pattern, sorted(PLACEHOLDERS), REFERENCE.pattern,
-                                _AUTH_FIELD.pattern, INVISIBLE.pattern)).encode()).hexdigest()[:16]
+                                _AUTH_FIELD.pattern, INVISIBLE.pattern, gitleaks.VERSION,
+                                [rule[1] for rule in gitleaks.RULES])).encode()).hexdigest()[:16]
 
 
 def _looks_secret(name, sep, value):
@@ -491,8 +551,8 @@ def _replace(text, spans, replacement):
 _WHOLE_VALUES = ((XML_SECRET, _keyed_span), (LINE_PASSWORD, _line_password_span), (APP_PASSWORD, _password_span),
                  *((p, _password_span) for p in QUOTED_PASSWORDS))
 _TEXT_RULES = (SECRET_PATTERNS, ((JSON_SECRET, _keyed_span), *_WHOLE_VALUES, (KEYED_SECRET, _keyed_span),
-                                 (ENV_KEY_SECRET, _keyed_span), (SHORT_PASSWORD, _keyed_span), (FLAG_SECRET, _keyed_span),
-                                 (AUTH_SECRET, _authorization_span)), "named")
+                                 (ENV_KEY_SECRET, _keyed_span), (SHORT_PASSWORD, _keyed_span),
+                                 (FLAG_SECRET, _keyed_span), (AUTH_SECRET, _authorization_span)), "named")
 _ID_RULES = (_ID_PATTERNS, ((KEYED_ID, _keyed_span), (ENV_KEY_ID, _keyed_span)), "plain")
 
 
@@ -525,6 +585,7 @@ def _run(text, rules, origin=None, named=None):
     for pattern in patterns:
         text, origin = _edit(text, origin, [(m.start(), m.end(), "[masked]") for m in pattern.finditer(text)
                                             if pattern not in (BASIC, BEARER) or not _scheme_words(m)])
+    text, origin = _edit(text, origin, [(start, end, "[masked]") for start, end in _gitleaks_spans(text)])
     for edits in (_docker_login_edits, _key_rest_edits, _headless_key_edits,
                   lambda text: [(m.start(), m.end(), "[masked]") for m in _GLUED_RUN.finditer(text)]):
         text, origin = _edit(text, origin, edits(text))
@@ -666,6 +727,9 @@ def _split_secrets(text, rules):
     where = sorted(set(places))
     tokens, after_a_break = _TOKENS[id(rules)]
     found = [(m.start(), m.end()) for m in tokens.finditer(view) if m.end() > m.start() and not _scheme_words(m)]
+    found = sorted(found + _gitleaks_spans(view))
+    lower = view.lower()
+    vendored = [rule for rule in _GITLEAKS_AFTER_A_BREAK if not rule[3] or any(k in lower for k in rule[3])]
     glued, inside = [], 0
     for place in where:
         while inside < len(found) and found[inside][1] <= place:
@@ -679,6 +743,13 @@ def _split_secrets(text, rules):
                 token = after_a_break.match(view, place)
             if token and token.end() > place and not _scheme_words(token):
                 glued.append((place, token.end()))
+                continue
+            for pattern, group, entropy, _, allowed, stopwords in vendored:
+                m = pattern.match(view, place)
+                span = m and _gitleaks_secret(m, group, entropy, allowed, stopwords)
+                if span and span[1] > place:
+                    glued.append((max(place, span[0]), span[1]))
+                    break
 
     def split(start, end):  # whether a place lies inside
         n = bisect.bisect_right(where, start)

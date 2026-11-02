@@ -187,8 +187,18 @@ Known limits:
 - A secret is read through characters you cannot see, such as a zero-width space or a NUL, but not through a vertical
   tab, a form feed or the separators from 0x1c, which part words as a line break does. A key split by one of those is
   not masked whole.
-- A token right after a terminal color code, and a private key written percent-encoded or as base64 (as a Kubernetes
-  secret holds one), are not masked.
+- A private key written as base64 (as a Kubernetes secret holds one) is not masked.
+- Provider tokens kb does not know by itself are masked by rules taken from gitleaks (kb/gitleaks.py, gitleaks v8.30.1,
+  MIT licence), where gitleaks finds one: a few of its rules read only where the provider's name is near the token,
+  as Airtable's and Facebook's do. gitleaks reads Netlify's "nfp_" tokens only by the word "netlify" near a value and
+  has no rule for Resend's "re_" tokens, so kb does not mask them by themselves.
+- A password an agent types into a web page through a browser tool is masked when the field's label says password,
+  passcode, secret, token, PIN or the like. With no label, as Chrome DevTools names a field by its id alone, it is
+  masked only when it is shaped like a credential.
+- A password with a comma, a semicolon or a bracket in it is masked whole in quotes, in an XML element or on a line of
+  its own, as a .env or YAML file writes one; inside a sentence it is masked up to that mark. One with a space, a
+  backtick, "<", ">" or a quote in it is masked up to that, but for Google's app passwords (four groups of four
+  letters).
 - After "Basic" or "Bearer", words joined by "/", ".", "_" or "-" read as a path or a name, not a credential, so a
   note in "Basic Statistics/" keeps its path; a credential there has a digit, "+" or "=", a part with no vowel, or
   decodes as "user:password".
