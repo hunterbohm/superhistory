@@ -745,7 +745,9 @@ def _split_secrets(text, rules):
                 glued.append((place, token.end()))
                 continue
             for pattern, group, entropy, _, allowed, stopwords in vendored:
-                m = pattern.match(view, place)
+                m = pattern.match(view, place, stop)  # within the same window, so repeated starts cost time in proportion
+                if m and m.end() == stop < len(view):
+                    m = pattern.match(view, place)
                 span = m and _gitleaks_secret(m, group, entropy, allowed, stopwords)
                 if span and span[1] > place:
                     glued.append((max(place, span[0]), span[1]))
@@ -971,10 +973,12 @@ def _masked_items(items, key):
 _TYPING_TOOL = re.compile(r"(?i)(?:browser_|puppeteer_|playwright_)?(?:type|type_text|fill|fill_form|fill_field|"
                           r"press_sequentially|input_text|set_value)")
 # A field label that asks for a secret: a password, passcode or passphrase, a PIN, a one-time or security code, a
-# token, a secret, an API or private key.
-_SECRET_LABEL = re.compile(r"(?i)passw(?:or)?d|passcode|passphrase|\bpwd\b|(?<![a-z])pin(?![a-z])|secret|token|"
+# token, a secret, an API or private key. Not one that asks about it: "Token name", "Password hint".
+_SECRET_LABEL = re.compile(r"(?i)(?:passw(?:or)?d|passcode|passphrase|\bpwd\b|(?<![a-z])pin(?![a-z])|secret|token|"
                            r"(?<![a-z])otp(?![a-z])|one[ _-]?time|verification[ _-]?code|security[ _-]?code|2fa|mfa|"
-                           r"(?<![a-z])cv[cv]2?(?![a-z])|(?:api|access|private|secret)[ _-]?key|credential")
+                           r"(?<![a-z])cv[cv]2?(?![a-z])|(?:api|access|private|secret)[ _-]?key|credential)s?"
+                           r"(?![ _-]*(?:name|description|label|note|hint|question|type|id|count|length|expir[a-z]*|"
+                           r"strength|polic[a-z]*|requirements?|reset|manager)(?![a-z]))")
 # Where a tool names the field it types into, and where it holds what it types.
 _LABEL_KEYS = ("element", "name", "label", "selector", "field", "placeholder", "description", "target", "type",
                "aria_label", "ariaLabel", "title", "id", "locator")

@@ -110,7 +110,8 @@ class ColourCodeTest(unittest.TestCase):
 # The labels a page gives a field that takes a secret, and some that take none.
 SECRET_LABELS = ("Password", "Password textbox", "Confirm password", "Passcode", "PIN", "Enter your PIN", "Secret key",
                  "API token", "Access token", "One-time code", "passphrase", "current-password")
-ORDINARY_LABELS = ("Email", "Search", "Full name", "Message", "Street address", "Username", "Company", "Comment")
+ORDINARY_LABELS = ("Email", "Search", "Full name", "Message", "Street address", "Username", "Company", "Comment",
+                   "Token name", "Password hint", "Secret question", "API key description", "Token expiration")
 ORDINARY_VALUES = ("me@example.com", "pelican plan", "Sam Lee", "12 Harbour Road", "the launch is approved", "sam")
 
 
