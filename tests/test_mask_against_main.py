@@ -98,6 +98,7 @@ class gate9:
         if self.what == "all":
             swap["_GITLEAKS"] = []
             swap["_named"] = _main_named
+            swap["_name_value_edits"] = lambda text: []
             links = [re.compile(p.pattern.replace("]*:)", "]+:)").replace("&])*%(?:25)?3A)", "&])+%(?:25)?3A)"),
                                 p.flags) for p in head.PREFIXED_SECRETS[1:3]]
             swap.update(PREFIXED_SECRETS=[head.PREFIXED_SECRETS[0], *links, *head.PREFIXED_SECRETS[3:]],
@@ -125,6 +126,10 @@ def new_readings(text):
             out.update(range(*head._back(origin, m.start(3), m.end(3), len(text))))
     for start, end in head._gitleaks_spans(text):
         out.update(range(start, end))
+    for start, end, _ in head._name_value_edits(text):
+        out.update(range(start, end))
+    for start, end, _ in head._name_value_edits(shaped):
+        out.update(range(*head._back(origin, start, end, len(text))))
     for start, end in head._gitleaks_spans(shaped):
         out.update(range(*head._back(origin, start, end, len(text))))
     for m in head.ENCODED_PRIVATE_KEY.finditer(text):

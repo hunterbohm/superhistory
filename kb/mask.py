@@ -730,6 +730,7 @@ def _run(text, rules, origin=None, named=None):
     # gitleaks' rules last, so a named value holding a provider's token is read whole first; and in text only, as an
     # id is read more narrowly (secret_in_id), and an id one took for a token would drop its item.
     if reading == "named":
+        text, origin = _edit(text, origin, _name_value_edits(text))
         text, origin = _edit(text, origin, [(start, end, "[masked]") for start, end in _gitleaks_spans(text)])
     return text, origin
 
@@ -737,6 +738,33 @@ def _run(text, rules, origin=None, named=None):
 def _pass(text, rules):
     """One pass of every pattern over `text`, as main reads it."""
     return _run(text, rules)[0]
+
+
+# A JSON object written in text, with no object inside it, and its string fields, plain or escaped once as JSON in
+# JSON writes them: a field's name and its value.
+_FLAT_OBJECT = re.compile(r"\{[^{}]{1,4000}\}")
+_FIELDS = (re.compile(r'"([^"\\\n]{1,64})"\s*:\s*"((?:[^"\\\n]|\\.){0,2048})"'),
+           re.compile(r'\\"([^"\\\n]{1,64})\\"\s*:\s*\\"((?:(?!\\")[^\n]){0,2048})\\"'))
+
+
+def _name_value_edits(text):
+    """Each value a JSON object in text holds apart from its name, as a request's headers do ({"name": "Cookie",
+    "value": ...}), Postman's variables ({"key": "password", "value": ...}) and AWS tags ({"Key": "api_key", "Value":
+    ...}), masked whole where it is a secret by that name (_pair_secret): an object with one name or key field and one
+    value field, in any case."""
+    edits = []
+    if "value" not in text.lower():
+        return edits
+    for obj in _FLAT_OBJECT.finditer(text):
+        for fields in _FIELDS:
+            found = list(fields.finditer(obj.group()))
+            names = [f for f in found if f.group(1).lower() in ("name", "key")]
+            values = [f for f in found if f.group(1).lower() == "value"]
+            if len(names) == 1 and len(values) == 1 and values[0].group(2) and _pair_secret(
+                    names[0].group(2), values[0].group(2)):
+                edits.append((obj.start() + values[0].start(2), obj.start() + values[0].end(2), "[masked]"))
+                break
+    return edits
 
 
 def _named(pattern, span_of, text, reading):
@@ -1083,10 +1111,10 @@ def secret_in_id(text, names=()):
 
 
 # The headers kb reads in text as "name: value", a cookie or a credential: a field so named, or a name and a value
-# held apart under one ({"name": "Cookie", "value": ...}, ["Authorization", ...]), is read so too. And the keys that
-# hold such a name beside "value".
+# held apart under one ({"name": "Cookie", "value": ...}, ["Authorization", ...]), is read so too. A cookie's own
+# content, a name and "=", and a credential's last word, which a list of two words, as tags are, does not hold.
 _HEADER_NAMES = frozenset(("cookie", "set-cookie", "authorization", "proxy-authorization"))
-_PAIR_NAME_KEYS = ("name", "key", "header", "field")
+_COOKIE_CONTENT = re.compile(r"[^\s=;,]+=[^\s;,]")
 
 
 def _as_header(name, value):
@@ -1098,17 +1126,31 @@ def _as_header(name, value):
     return masked[len(head):] if masked.startswith(head) else "[masked]"
 
 
-def _pair_value(name, value, masked):
-    """A value held apart from its name, `masked` as mask_all masked it alone, read with its name too: as a header's
-    (_as_header), or as a secret's field's when it is shaped like a credential. What either reading hides is hidden."""
-    if not isinstance(name, str) or not isinstance(value, str):
-        return masked
-    paired = _as_header(name, value)
-    if paired is None:
-        paired = "[masked]" if _SECRET_FIELD.match(name.strip()) and _credential_shaped(value.strip()) else value
-    if paired == value or paired == masked:
-        return masked
-    return paired if masked == value else "[masked]"
+def _pair_secret(name, value, listed=False):
+    """Whether a value held apart from its name is a secret by that name: under a header's (_HEADER_NAMES), when the
+    header read in text hides any of it, or under a secret's field name, when the field's rule says so (mask_all).
+    `listed` for a list of the two, which may be two words, as tags are: then the value holds the header's own
+    content, a cookie's "name=" or a credential, or is shaped like a credential under a secret's name."""
+    name, value = name.strip(), value.strip()
+    lowered = name.lower()
+    if lowered in _HEADER_NAMES:
+        if listed and not (_COOKIE_CONTENT.search(value) if "cookie" in lowered else
+                           value and _credential_shaped(value.split()[-1])):
+            return False
+        return _as_header(name, value) != value
+    if not _SECRET_FIELD.match(name):
+        return False
+    if listed:
+        return _credential_shaped(value)
+    return _looks_secret(name, "=", value) and (lowered not in ("pass", "pwd") or _short_name_secret(value))
+
+
+def _pair_value(name, value, masked, listed=False):
+    """A value held apart from its name, `masked` as mask_all masked it alone: whole, where it is a secret by that name
+    (_pair_secret)."""
+    if isinstance(name, str) and isinstance(value, str) and _pair_secret(name, value, listed):
+        return "[masked]"
+    return masked
 
 
 def mask_all(value, key=None):
@@ -1133,9 +1175,10 @@ def mask_all(value, key=None):
     if isinstance(value, dict):
         out = {mask(k) if isinstance(k, str) else k: mask_all(v, k if isinstance(k, str) else None)
                for k, v in value.items()}
-        name = next((value[k] for k in _PAIR_NAME_KEYS if isinstance(value.get(k), str)), None)
-        if name is not None and isinstance(value.get("value"), str) and "value" in out:
-            out["value"] = _pair_value(name, value["value"], out["value"])
+        names = [k for k in value if isinstance(k, str) and k.lower() in ("name", "key")]
+        values = [k for k in value if isinstance(k, str) and k.lower() == "value"]
+        if len(names) == 1 and len(values) == 1 and mask(values[0]) in out:
+            out[mask(values[0])] = _pair_value(value[names[0]], value[values[0]], out[mask(values[0])])
         return out
     if isinstance(value, (list, tuple)):
         return _masked_items(value, key)
@@ -1152,7 +1195,7 @@ def _masked_items(items, key):
     item as a secret than the item alone does, the item, one argument, is masked whole."""
     out = [mask_all(v, key) for v in items]
     if len(items) == 2:  # a name and its value, as a list of headers holds them
-        out[1] = _pair_value(items[0], items[1], out[1])
+        out[1] = _pair_value(items[0], items[1], out[1], listed=True)
     for i in range(1, len(items)):
         flag, item = items[i - 1], items[i]
         if not (isinstance(flag, str) and isinstance(item, str) and flag.startswith("-") and len(flag) <= 64 and item):
