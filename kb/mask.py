@@ -516,7 +516,7 @@ def _short_name_secret(value):
     characters a reader does not see, such as a colour code. Either word alone names much else, a working directory or
     a compiler's pass."""
     value = INVISIBLE.sub("", value)
-    return not _PATH_VALUE.match(value) and _credential_shaped(value)
+    return not _PATH_VALUE.match(value) and _password_shaped(value)
 
 
 def _short_password_span(m):
@@ -543,6 +543,8 @@ def _beside_a_user(m):
     return bool(_USER_BEFORE.search(m.string, max(0, at - 300), at) or _USER_AFTER.match(m.string, m.end()))
 
 
+# A name that ends in a secret's word, so names the secret itself: "db_password", "Ppasswd", "API_KEY", "authToken".
+_ENDS_IN_A_SECRET = re.compile(r"(?i)(?:passw(?:or)?d|passcode|passphrase|pwd|pass|secret|token|key|credentials?)s?$")
 # A password's name that names something about it rather than it: its policy, hint, reset, length, rules, file.
 _ABOUT_A_PASSWORD = re.compile(
     r"(?i)(?:^|[_.-]|(?-i:(?<=[a-z])(?=[A-Z])))(?:polic(?:y|ies)|hints?|reset|length|min|max|rules?|requirements?|"
@@ -567,7 +569,7 @@ def _xml_span(m):
     one not named for a password, a value without a credential's shape: an element named "token" or "secret" holds a
     word as often as a secret ("<tokens><token>internationalization</token></tokens>")."""
     name, value = m.group(1), INVISIBLE.sub("", m.group(3))
-    if _ABOUT_A_PASSWORD.search(name) or not _XML_PASSWORD.search(name) and not _credential_shaped(value):
+    if _ABOUT_A_PASSWORD.search(name) or not _XML_PASSWORD.search(name) and not _password_shaped(value):
         return None
     return _keyed_span(m)
 
@@ -625,6 +627,28 @@ def _credential_shaped(word):
     if any(_random_run(part, 10) for part in parts):
         return True
     return not any(_PLAIN_WORD.fullmatch(part) for part in parts) and _random_run(word)
+
+
+# A code identifier: words and acronyms in camel case with version numbers after them ("ConvertBF16ToF32",
+# "OAuth2AuthorizationCode", "HTTPStatus200"). A digit runs straight into lower case letters only in a password
+# ("Tr0ub4dor", "L4terSecret"), and a random token's letters fall in short runs.
+_DIGIT_INTO_A_WORD = re.compile(r"\d[a-z]")
+
+
+def _identifier_shaped(word):
+    """Whether a word reads as a code identifier: no digit runs into lower case letters, and at least half its letters
+    stand in runs of three or more, read as camel case splits them."""
+    if _DIGIT_INTO_A_WORD.search(word):
+        return False
+    runs = [run for run in _LABEL_WORD.findall(word) if run.isalpha()]
+    letters = sum(map(len, runs))
+    return bool(letters) and 2 * sum(len(run) for run in runs if len(run) >= 3) >= letters
+
+
+def _password_shaped(word):
+    """_credential_shaped, but no code identifier: for the readings main's own lack, which judge a value by its shape
+    alone where main has no reading at all."""
+    return _credential_shaped(word) and not _identifier_shaped(word.rstrip(".,;:!?)"))
 
 
 def _bare_credential(word):
@@ -850,8 +874,10 @@ def _named(pattern, span_of, text, reading, note=lambda _: None):
         if span:
             yield m, span
             inner = pattern.match(text, m.start(3)) if reading == "named" else None
-            # Not at a name about a secret, as main shows its value: "password: password_hash: SHA256".
-            if inner and inner.start(3) >= span[1] and not _ABOUT_A_PASSWORD.search(inner.group(1)):
+            # Only at a name that ends in a secret's word and is about none, as main shows the value of any other:
+            # "password: password_hash: SHA256", "password: passwordAlgorithm: bcrypt".
+            if inner and inner.start(3) >= span[1] and _ENDS_IN_A_SECRET.search(inner.group(1)) \
+                    and not _ABOUT_A_PASSWORD.search(inner.group(1)):
                 note(inner)  # read on at a masked value, as main does not
                 m = inner
             else:
@@ -1109,10 +1135,12 @@ class _Split:
                 continue
             if _NEW_INVISIBLE.search(self.text, *self.raw(name_start, name_end + 1)):
                 # Parted by a colour code, DEL or a C1 control, which main sees, as grep's colour parts the word it
-                # found: read strictly, as a field's name is, so no name about a secret ("password_ESC[31mpolicy"),
-                # and but for a password's, a value shaped like a credential.
+                # found: read strictly, only a name that ends in a secret's word and is about none
+                # ("password_ESC[31mpolicy", "x-authESC[31m-flow" are not), and but for a password's, only a value
+                # shaped like one.
                 name, value = self.view[name_start:name_end], self.view[start:end]
-                if _ABOUT_A_PASSWORD.search(name) or not PASSWORD_NAME.search(name) and not _credential_shaped(value):
+                if not _ENDS_IN_A_SECRET.search(name) or _ABOUT_A_PASSWORD.search(name) \
+                        or not PASSWORD_NAME.search(name) and not _password_shaped(value):
                     continue
             start, end = self.raw(start, end)
             at = _reading_inside(self.text, start, end)
@@ -1271,7 +1299,7 @@ def _pair_secret(name, value, listed=False):
     if not _SECRET_FIELD.match(name) or lowered in ("pass", "pwd") or _ABOUT_A_PASSWORD.search(name):
         return False  # no secret's name, a word alone, or one about a password, as "password_policy" is
     if listed:
-        return _credential_shaped(value)
+        return _password_shaped(value)
     return _looks_secret(name, "=", value)
 
 
@@ -1407,8 +1435,10 @@ def _without_attribute_names(label):
 def _names_a_secret(words, searching=False):
     """Whether a phrase's words name a secret: a secret's word or run of words with only a form's own words after it,
     none before it that finds, shows or names secrets (_NOT_ASKING), nor any before the phrase (`searching`), and for
-    a token or a PIN, no word before it of another kind. One pass over the words, so a long label costs time in
+    a token or a PIN, a credential's kind before it: 2, or 1 for a token or a PIN with no word of a kind before it,
+    which the rest of its label may still give another (_of_another_kind); else 0. One pass over the words, so a long label costs time in
     proportion to its length."""
+    loose = 0
     plain_from = [True] * (len(words) + 1)  # whether only a form's own words follow from each place on
     for k in range(len(words) - 1, -1, -1):
         plain_from[k] = plain_from[k + 1] and (words[k] in _AFTER_A_SECRET or words[k].isdigit())
@@ -1422,13 +1452,28 @@ def _names_a_secret(words, searching=False):
                     continue
                 # Read with the word before it as well, as camel case splits "GitHub".
                 kinds = {words[kind], "".join(words[max(0, kind - 1):kind + 1])} if kind is not None else set()
-                if end == i + 1 and word in _LOOSE_SECRET_WORDS and (kind is not None or word == "tokens") \
-                        and not kinds & _SECRET_KINDS:
+                if end == i + 1 and word in _LOOSE_SECRET_WORDS and not kinds & _SECRET_KINDS:
+                    if kind is None and word != "tokens":
+                        loose = 1  # alone in its phrase: a secret's, unless its label gives it another kind
                     continue
-                return True
+                return 2
         searching = searching or word in _NOT_ASKING
         if word not in _FORM_WORDS and not word.isdigit():
             kind = i
+    return loose
+
+
+def _of_another_kind(words):
+    """Whether a label's words hold one that gives a token or a PIN another kind than a credential's: any but a form's
+    own, a secret's, a credential's kind (read with a neighbour, as camel case splits "GitHub") or a number, wherever
+    it stands ("Token (CSS)", "PIN: map marker")."""
+    plain = _FORM_WORDS | _AFTER_A_SECRET | _LOOSE_SECRET_WORDS | _SECRET_KINDS
+    for k, word in enumerate(words):
+        if word in plain or word.isdigit():
+            continue
+        if k and words[k - 1] + word in _SECRET_KINDS or k + 1 < len(words) and word + words[k + 1] in _SECRET_KINDS:
+            continue
+        return True
     return False
 
 
@@ -1437,13 +1482,17 @@ def _asks_for_a_secret(labels):
     (_ABOUT_WORDS), read word by word after a selector's own attribute names are taken out ("input[name=password]")."""
     asks, about = False, False
     for label in labels:
-        searching = False  # a word that finds, shows or names secrets reads on to the label's end
+        searching, loose, label_words = False, False, []  # a search reads on to the label's end
         for clause in _CLAUSE_END.split(_without_attribute_names(label)):
             for phrase in _JOINING_WORD.split(clause):
                 words = [w.lower() for w in _LABEL_WORD.findall(phrase)]
+                label_words += words
                 about = about or bool(_ABOUT_WORDS.intersection(words))
-                asks = asks or _names_a_secret(words, searching)
+                reading = _names_a_secret(words, searching)
+                asks, loose = asks or reading == 2, loose or reading == 1
                 searching = searching or bool(_NOT_ASKING.intersection(words))
+        # A token or a PIN asks for one only where nothing in its label gives it another kind.
+        asks = asks or loose and not _of_another_kind(label_words)
     return asks and not about
 
 
@@ -1471,7 +1520,7 @@ def typed_secrets(name, args):
         for key in _TYPED_KEYS:
             value = item.get(key)
             if isinstance(value, (str, int)) and not isinstance(value, bool) and str(value) and (
-                    secret or not labels and _credential_shaped(INVISIBLE.sub("", str(value)))):
+                    secret or not labels and _password_shaped(INVISIBLE.sub("", str(value)))):
                 out[key] = "[masked]"
         return out
 

@@ -73,7 +73,7 @@ def _call_args(arguments, name=None):
     if not isinstance(args, dict):
         return str(args)
     typed = typed_secrets(name, args)
-    if typed is not args:  # what it typed, with the field it typed into
+    if typed != args:  # a secret it typed, masked, with the field it typed into; else as before
         return json.dumps(mask_all(typed), ensure_ascii=False)
     for key in ("cmd", "command", "path", "file_path", "pattern", "query", "url", "message", "prompt", "text"):
         if key in args:

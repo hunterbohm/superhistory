@@ -36,7 +36,7 @@ def _tool_input(inp, name=None):
     if not isinstance(inp, dict):
         return str(inp)
     typed = typed_secrets(name, inp)
-    if typed is not inp:  # what it typed, with the field it typed into
+    if typed != inp:  # a secret it typed, masked, with the field it typed into; else as before
         return json.dumps(mask_all(typed), ensure_ascii=False)
     for key in ("command", "file_path", "path", "pattern", "url", "query", "description", "prompt"):
         if key in inp:
