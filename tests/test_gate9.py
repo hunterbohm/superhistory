@@ -766,6 +766,41 @@ class ReviewSixTest(unittest.TestCase):
                          "aws configure set aws_session_token [masked]")
 
 
+class ReviewSevenTest(unittest.TestCase):
+    """The seventh review's findings."""
+
+    def test_a_split_name_after_a_placeholder_and_a_colour_code_keeps_its_value_masked(self):
+        for code in ("\x1b[0m", "\x9b0m", "\\u001b[0m", "\\x1b[0m", "\\033[0m", "\x7f", "\x81"):
+            with self.subTest(code=code):
+                self.assertEqual(mask(f"[masked]{code}api_k\u200bey: L4terSecret-Xq9"),
+                                 f"[masked]{code}api_k\u200bey: [masked]")
+
+    def test_no_reading_on_at_a_name_about_a_secret(self):
+        for text, masked in (("password: password_hash: SHA256", "password: [masked] SHA256"),
+                             ("password: password_policy: strict2026", "password: [masked] strict2026"),
+                             ("secret: api_key_name: billing", "secret: api_key_name: billing"),
+                             ("passwd: Ppasswd: Pw7xYzQ9mK2nL4pR end", "passwd: [masked] [masked] end")):
+            with self.subTest(text=text):
+                self.assertEqual(mask(text), masked)
+
+    def test_pass_alone_names_a_password_only_beside_a_user(self):
+        for text in ('compiler pass="ConvertBF16ToF32" changed=0', "pass=ConvertBF16ToF32", "pass: 'LowerSCF2LLVM'",
+                     "pwd=Base64Encoder2026"):
+            with self.subTest(text=text):
+                self.assertEqual(mask(text), text)
+        for kept in ({"pass": "ConvertBF16ToF32"}, {"name": "pass", "value": "ConvertBF16ToF32"},
+                     ["pass", "ConvertBF16ToF32"], {"pwd": "Base64Encoder2026", "changed": 0}):
+            with self.subTest(kept=kept):
+                self.assertEqual(mask_all(kept), kept)
+        for text, masked in (("user=sam pass=Tr0ub4dor-Zk9q", "user=sam pass=[masked]"),
+                             ("auth:\n  user: me@example.com\n  pass: 'Tr0ub4dor-Zk9q'",
+                              "auth:\n  user: me@example.com\n  pass: '[masked]'"),
+                             ("Server=db;Uid=sa;Pwd=Tr0ub4dor-Zk9q;", "Server=db;Uid=sa;Pwd=[masked];")):
+            with self.subTest(text=text):
+                self.assertEqual(mask(text), masked)
+        self.assertEqual(mask_all({"login": "sam", "pass": "Tr0ub4dor-Zk9q"}), {"login": "sam", "pass": "[masked]"})
+
+
 # Commands as an argument list, each flag's value its own item: (the list, the items masked).
 ARGV = (
     (["login", "--password", PASSWORD], {2}), (["--token", SUB], {1}), (["--api-key", SUB, "--verbose"], {1}),
