@@ -674,14 +674,16 @@ def _pass(text, rules):
 def _named(pattern, span_of, text, reading):
     """Each of `pattern`'s matches, a name, a separator and a value, whose secret `span_of` finds, with that span. In
     text a match that holds none is tried again at its value, which can be the next name, as in "secrets: db_password:
-    <value>"; past that the search goes on after the match, as re.sub's does, so a long value is read once. An id reads
-    as re.sub reads it."""
+    <value>"; so is one that holds a secret, where the value it masks is a name and its separator whose own value
+    follows, as in "passwd: Ppasswd: <password>". Past that the search goes on after the match, as re.sub's does, so a
+    long value is read once. An id reads as re.sub reads it."""
     m = pattern.search(text)
     while m:
         span = span_of(m)
         if span:
             yield m, span
-            m = pattern.search(text, m.end())
+            inner = pattern.match(text, m.start(3)) if reading == "named" else None
+            m = inner if inner and inner.start(3) >= span[1] else pattern.search(text, m.end())
             continue
         inner = pattern.match(text, m.start(3)) if reading == "named" else None
         m = inner if inner else pattern.search(text, m.end())

@@ -74,6 +74,19 @@ _ALL_OFF = ([p for p in head.SECRET_PATTERNS if p is not head.ENCODED_PRIVATE_KE
 _FOUR_OFF = (head.SECRET_PATTERNS, _keyed(head._TEXT_RULES, _TOKENIZER_OFF), "named")
 
 
+def _main_named(pattern, span_of, text, reading):
+    """mask._named as main reads: after a masked value the search goes on past it, never at it."""
+    m = pattern.search(text)
+    while m:
+        span = span_of(m)
+        if span:
+            yield m, span
+            m = pattern.search(text, m.end())
+            continue
+        inner = pattern.match(text, m.start(3)) if reading == "named" else None
+        m = inner if inner else pattern.search(text, m.end())
+
+
 class gate9:
     """Within it, mask._run reads as with gate 9's readings off ("all") or the four values it reads as no secret off
     ("four"): its rules to pass to _run, and the module's own patterns swapped."""
@@ -85,6 +98,7 @@ class gate9:
         swap = {"_ARN_HEAD": _NEVER, "_FILE_NAME": _NEVER, "_DATE_OR_TIME": _NEVER}
         if self.what == "all":
             swap["_GITLEAKS"] = []
+            swap["_named"] = _main_named
             links = [re.compile(p.pattern.replace("]*:)", "]+:)").replace("&])*%(?:25)?3A)", "&])+%(?:25)?3A)"),
                                 p.flags) for p in head.PREFIXED_SECRETS[1:3]]
             swap.update(PREFIXED_SECRETS=[head.PREFIXED_SECRETS[0], *links, *head.PREFIXED_SECRETS[3:]],
@@ -125,9 +139,15 @@ def new_readings(text):
                 out.update(range(m.start(2), m.end(2)))
     for pattern, _ in head._TEXT_RULES[1]:
         if pattern is not head.AUTH_SECRET:
-            for m in pattern.finditer(text):
-                if re.search(r"(?i)subscription[_-]?key", m.group(1)):
-                    out.update(range(m.start(3), m.end(3)))
+            for source in (text, shaped):
+                for m in pattern.finditer(source):
+                    if source is text and re.search(r"(?i)subscription[_-]?key", m.group(1)):
+                        out.update(range(m.start(3), m.end(3)))
+                    # A masked value that is a name and its separator, and that name's own value after it.
+                    inner = pattern.match(source, m.start(3))
+                    if inner and inner.start(3) >= m.end(3):
+                        span = (inner.start(3), inner.end(3))
+                        out.update(range(*span) if source is text else range(*head._back(origin, *span, len(text))))
     return out
 
 
