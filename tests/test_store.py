@@ -420,6 +420,19 @@ class ChunkMaskTest(TempDB):
         self.assertFalse(store.store_item(self.db, "s", "item", iso(), "title", text, {}), "the same text again is no change")
 
 
+class ChunkChainTest(TempDB):
+    def test_a_chain_of_tokens_glued_across_chunks_leaves_no_current_row_with_one_and_the_same_text_is_no_change(self):
+        from kb.mask import mask
+        text = "a" * 4000 + ("." + "a" * 3991).join(["ghp_" + "A" * 4996] * 17)
+        self.assertTrue(store.store_item(self.db, "s", "item", iso(), "t", text, {}))
+        self.assertFalse(store.store_item(self.db, "s", "item", iso(), "t", text, {}), "the same text again is no change")
+        rows = self.db.execute("SELECT content, masked FROM docs WHERE source_id='item'").fetchall()
+        self.assertEqual([c[:8] for c, v in rows if v == store.VERSION and mask(c) != c], [])
+        joined = "".join(c for (c,) in self.db.execute("SELECT content FROM docs WHERE source_id='item' AND kind='raw' "
+                                                        "ORDER BY json_extract(metadata, '$.chunk')"))
+        self.assertEqual(mask(joined), joined, "and the item masks clean as one text")
+
+
 class ItemHashTest(TempDB):
     """An item's rows record the hash of its title and text as stored, masked, never of text a mask has since changed:
     with the masked text beside it, such a hash would confirm a guess at the secret."""

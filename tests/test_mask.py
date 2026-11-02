@@ -662,6 +662,13 @@ class BareAuthorizationTest(unittest.TestCase):
             with self.subTest(space=hex(ord(space))):
                 self.assertEqual(mask(text), text)
 
+    def test_a_tokens_invisible_characters_count_for_nothing(self):
+        for text in ("Authorization: aB1cD2eF3g\u200b\u200b", "Authorization: RFC7235-compli\u00adant",
+                     "Authorization: ISO-2700\u200b1"):
+            with self.subTest(text=text):
+                self.assertEqual(mask(text), text)
+        self.assertNotIn("H4", mask("Authorization: aB1cD2eF3gH4\u200b"), "twelve characters a reader sees still count")
+
     def test_authorization_inside_a_path_or_a_value_is_no_header(self):
         for text in ("password=/notes:Authorization:A1b2C3d4E5f6/data", "see /docs/Authorization:A1b2C3d4E5f6Qx7",
                      "x:Authorization: A1b2C3d4E5f6Qx7"):
