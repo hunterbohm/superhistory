@@ -48,6 +48,31 @@ def credential(r):
                      ("Basic", base64.b64encode(f"deploy:{token}".encode()).decode())))
 
 
+def lowercase_token(r):
+    """A credential of lower-case letters alone, as the first review wrote them: one run, groups joined by "-" or
+    "/", or a run with a number after a dot."""
+    letters = "".join(r.choice(string.ascii_lowercase) for _ in range(r.randint(16, 40)))
+    how = r.random()
+    if how < 0.4:
+        return letters
+    if how < 0.8:
+        size = r.randint(3, 8)
+        return r.choice("-/").join(letters[i:i + size] for i in range(0, len(letters), size))
+    return f"{letters}.{r.randint(1, 99999)}"
+
+
+def basic_credential(r):
+    """base64 of "user:password" as a Basic header holds it, the user and password in ASCII, Latin-1 or UTF-8, with
+    its padding or without."""
+    import base64
+    alphabet = r.choice((string.ascii_letters + string.digits, "abcäöüßéèªº¿", "ążłéтест"))
+    user = "".join(r.choice(alphabet) for _ in range(r.randint(1, 8)))
+    password = "".join(r.choice(alphabet + "?/!") for _ in range(r.randint(1, 16)))
+    encoding = "latin-1" if all(ord(c) < 256 for c in user + password) and r.random() < 0.5 else "utf-8"
+    encoded = base64.b64encode(f"{user}:{password}".encode(encoding)).decode()
+    return encoded.rstrip("=") if r.random() < 0.5 else encoded
+
+
 class SchemeWordTest(unittest.TestCase):
     def test_the_audit_paths_are_ordinary(self):
         for path in ("Basic Statistics/notes.md", "Ring Bearer responsibilities/notes.md", "Ring Bearer duties/list.md",
@@ -79,6 +104,29 @@ class SchemeWordTest(unittest.TestCase):
                         self.assertIn(path, masked, "the path next to it stays")
                     self.assertTrue(holds_secret(text))
 
+    def test_the_first_reviews_credentials_are_masked_as_on_main(self):
+        for text in ("Authorization: Bearer eiaoumqnavxozpiuafeldogy", "Bearer aubx-ecjq-ivkx-opzy",
+                     "Bearer eiaoumqnavxozpiuafeldogy.1234", "Basic YWE/YWE/YWE/Omc", "Basic qjqhabqkqdpj/iyvt//i",
+                     "Bearer aubx/ecjq/ivkx/opzy", "Authorization: Basic Statistics/notes.md"):
+            with self.subTest(text=text):
+                self.assertEqual(mask(text), as_on_main(text))
+
+    def test_lower_case_and_basic_credentials_are_masked_as_on_main(self):
+        for seed in range(2000):
+            r = random.Random(f"lower:{seed}")
+            secret = r.choice((lambda: "Bearer " + lowercase_token(r), lambda: "Basic " + basic_credential(r)))()
+            for text in (secret, f"Authorization: {secret}", f"curl -H 'Authorization: {secret}' x", f"see {secret}"):
+                with self.subTest(text=text):
+                    self.assertEqual(mask(text), as_on_main(text))
+
+    def test_a_field_after_a_kept_path_reads_as_it_reads_alone(self):
+        # Main's mask took the path's words, and with them the field's name after them, so it never read the value.
+        for field in ("Cookie: chocolate chip recipe", "password: hunter22x", "api_key: q8Zr2Lm7Xk4Vp9Nt3Bw6Hc1"):
+            for path in ("Basic Statistics/notes.md", "Ring Bearer responsibilities/notes.md"):
+                text = f"{path}: {field}"
+                with self.subTest(text=text):
+                    self.assertEqual(mask(text), f"{path}: {mask(field)}")
+
     def test_main_hides_nothing_this_keeps_but_scheme_words(self):
         # Every character main's mask hides, this one hides, but in a run of words after Basic or Bearer.
         alnum = string.ascii_letters + string.digits
@@ -87,8 +135,11 @@ class SchemeWordTest(unittest.TestCase):
             pieces = []
             for _ in range(r.randint(2, 8)):
                 pick = r.random()
-                if pick < 0.35:
+                if pick < 0.25:
                     pieces.append(note_path(r))
+                elif pick < 0.35:
+                    pieces.append(f"{note_path(r)}: " + r.choice(("Cookie: chocolate chip recipe", "password: walrus2x",
+                                                                 "api_key: q8Zr2Lm7Xk4Vp9Nt3Bw6Hc1", "plain words")))
                 elif pick < 0.7:
                     pieces.append(" ".join(credential(r)))
                 else:
@@ -100,8 +151,11 @@ class SchemeWordTest(unittest.TestCase):
                 with mock.patch.object(mask_module, "_scheme_words", lambda *_: False):
                     theirs, theirs_kept = mask_with_origin(text)
                 shown_here = set(i for i in kept if i >= 0) - set(i for i in theirs_kept if i >= 0)
-                self.assertEqual(set(i for i in theirs_kept if i >= 0) - set(i for i in kept if i >= 0), set(),
-                                 f"hides more than main: {ours!r}")
+                # What main shows and this hides: a field's value whose name main hid with the words before it, so
+                # it never read the value, which it masks wherever it reads the name.
+                hidden_here = set(i for i in theirs_kept if i >= 0) - set(i for i in kept if i >= 0)
+                self.assertEqual(hidden_here - values_named_where_main_hid(text, set(theirs_kept)), set(),
+                                 f"hides more than main: {ours!r} vs {theirs!r}")
                 # Each run kept starts inside such words; it may run on past them, through what main took with
                 # them, as the rest glued to the placeholder it put there.
                 for start, end in runs(shown_here):
@@ -129,6 +183,18 @@ class SchemeWordTest(unittest.TestCase):
                 db.close()
             self.assertTrue(sid.endswith(":Basic Statistics/notes.md"), sid)
             self.assertIn("Basic Statistics/notes.md", meta, "the stored path is the file's")
+
+
+def values_named_where_main_hid(text, main_shown):
+    """The positions of each field's value, as the mask reads a cookie's or a secret's name, whose name main hid."""
+    out = set()
+    fields = [(m.span(1), (m.end(1), m.end())) for m in mask_module.PREFIXED_SECRETS[0].finditer(text)]
+    for pattern in (mask_module.KEYED_SECRET, mask_module.ENV_KEY_SECRET, mask_module.JSON_SECRET):
+        fields += [(m.span(1), m.span(3)) for m in pattern.finditer(text)]
+    for (name_start, name_end), (start, end) in fields:
+        if any(i not in main_shown for i in range(name_start, name_end)):
+            out.update(range(start, end))
+    return out
 
 
 def runs(positions):

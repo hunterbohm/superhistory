@@ -199,9 +199,10 @@ Known limits:
   its own, as a .env or YAML file writes one; inside a sentence it is masked up to that mark. One with a space, a
   backtick, "<", ">" or a quote in it is masked up to that, but for Google's app passwords (four groups of four
   letters).
-- After "Basic" or "Bearer", words joined by "/", ".", "_" or "-" read as a path or a name, not a credential, so a
-  note in "Basic Statistics/" keeps its path; a credential there has a digit, "+" or "=", a part with no vowel, or
-  decodes as "user:password".
+- In a note's path, the words after "Basic" or "Bearer" read as words, not a credential, so a note in "Basic
+  Statistics/" keeps its path: the words, or the path they are in, end in a file's extension, and each part is a word
+  with a vowel and no letter pair a word never has. A header's value, a run with a digit, "+" or "=", and base64 of
+  "user:password" are masked as before. A field after such a path, as "Cookie: ...", is masked as it is anywhere else.
 - A few rare file names are refused as if they held a secret, such as one that names a command's password flag with a
   value ("redis-cli -a auth2.md") or reads as a field ("Cookie: chocolate chip.md").
 - A private key is masked by its structure: from its header through its footer, or, if the footer is missing, through
