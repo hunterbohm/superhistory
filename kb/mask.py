@@ -668,6 +668,7 @@ _WHOLE_VALUES = ((XML_SECRET, _xml_span), (LINE_PASSWORD, _line_password_span), 
 _MAIN_PREFIXED = [PREFIXED_SECRETS[0], *(re.compile(p.pattern.replace("]*:)", "]+:)", 1).replace(
     "&])*%(?:25)?3A)", "&])+%(?:25)?3A)", 1), p.flags) for p in PREFIXED_SECRETS[1:3]), *PREFIXED_SECRETS[3:]]
 _MAIN_COMMANDS = 5
+_SUBSCRIPTION_KEY = re.compile(r"(?i)subscription[_-]?key")
 
 
 def _main_reading(pattern):
@@ -677,6 +678,8 @@ def _main_reading(pattern):
 _MAIN_RULES = ([p for p in SECRET_PATTERNS if p is not ENCODED_PRIVATE_KEY],
                tuple((_main_reading(p), _keyed_span) for p in (JSON_SECRET, KEYED_SECRET, ENV_KEY_SECRET, FLAG_SECRET))
                + ((AUTH_SECRET, _authorization_span),), "main")
+# The readings of text main's own lack, read by name.
+_NEW_READINGS = frozenset([p for p, _ in _WHOLE_VALUES] + [SHORT_PASSWORD])
 _TEXT_RULES = (SECRET_PATTERNS, ((JSON_SECRET, _keyed_span), *_WHOLE_VALUES, (KEYED_SECRET, _keyed_span),
                                  (ENV_KEY_SECRET, _keyed_span), (SHORT_PASSWORD, _short_password_span),
                                  (FLAG_SECRET, _keyed_span), (AUTH_SECRET, _authorization_span)), "named")
@@ -702,26 +705,42 @@ def _edit(text, origin, edits):
     return "".join(out), kept
 
 
-def _run(text, rules, origin=None, named=None):
+def _run(text, rules, origin=None, named=None, fired=None):
     """One pass of every pattern, as (the text masked, where each of its characters came from): the secrets known by
     their shape, then an older kb's leftovers, links, cookies and commands, then the patterns that read a value by its
     name. With `origin` None, nothing is tracked and the second is None. With `named` a list, each named value masked
-    is added to it as (name start, name end, masked start, masked end) in the first text, which needs `origin`."""
+    is added to it as (name start, name end, masked start, masked end) in the first text, which needs `origin`. With
+    `fired` a list, something is added to it when a reading main's own readings (_MAIN_RULES) lack masks anything:
+    with none, this pass masks as theirs does."""
     patterns, keyed, reading = rules
     size = len(text)
+    note = fired.append if fired is not None else (lambda _: None)
     for pattern in patterns:
-        text, origin = _edit(text, origin, [(m.start(), m.end(), "[masked]") for m in pattern.finditer(text)
-                                            if pattern not in (BASIC, BEARER) or not _scheme_words(m)])
+        edits = [(m.start(), m.end(), "[masked]") for m in pattern.finditer(text)
+                 if pattern not in (BASIC, BEARER) or not _scheme_words(m)]
+        if edits and pattern is ENCODED_PRIVATE_KEY:
+            note(pattern)
+        text, origin = _edit(text, origin, edits)
     for edits in (_docker_login_edits, _key_rest_edits, _headless_key_edits,
                   lambda text: [(m.start(), m.end(), "[masked]") for m in _GLUED_RUN.finditer(text)]):
         text, origin = _edit(text, origin, edits(text))
-    for pattern in (_MAIN_PREFIXED if reading == "main" else PREFIXED_SECRETS):
-        text, origin = _edit(text, origin, [(m.end(1), m.end(), "[masked]") for m in pattern.finditer(text)])
+    for pattern, main in zip(PREFIXED_SECRETS if reading != "main" else _MAIN_PREFIXED, _MAIN_PREFIXED):
+        found = list(pattern.finditer(text))
+        if pattern is not main and any(not main.fullmatch(text, m.start(), m.end()) for m in found):
+            note(pattern)  # a link with no user name
+        text, origin = _edit(text, origin, [(m.end(1), m.end(), "[masked]") for m in found])
     if _ANY_COMMAND.search(text):
-        for command in (_COMMANDS[:_MAIN_COMMANDS] if reading == "main" else _COMMANDS):
-            text, origin = _edit(text, origin, _command_password_edits(text, *command))
+        for n, command in enumerate(_COMMANDS[:_MAIN_COMMANDS] if reading == "main" else _COMMANDS):
+            edits = _command_password_edits(text, *command)
+            if edits and n >= _MAIN_COMMANDS:
+                note(command)
+            text, origin = _edit(text, origin, edits)
+    if reading == "named" and _SUBSCRIPTION_KEY.search(text):
+        note(_SUBSCRIPTION_KEY)  # a name main's own do not read, which moves where their searches go on
     for pattern, span_of in keyed:
-        found = list(_named(pattern, span_of, text, reading))
+        found = list(_named(pattern, span_of, text, reading, note))
+        if found and pattern in _NEW_READINGS:
+            note(pattern)
         if named is not None:
             for m, (start, end) in found:
                 if origin[m.start(1)] >= 0 and origin[m.end(1) - 1] >= 0:
@@ -730,8 +749,10 @@ def _run(text, rules, origin=None, named=None):
     # gitleaks' rules last, so a named value holding a provider's token is read whole first; and in text only, as an
     # id is read more narrowly (secret_in_id), and an id one took for a token would drop its item.
     if reading == "named":
-        text, origin = _edit(text, origin, _name_value_edits(text))
-        text, origin = _edit(text, origin, [(start, end, "[masked]") for start, end in _gitleaks_spans(text)])
+        for edits in (_name_value_edits(text), [(start, end, "[masked]") for start, end in _gitleaks_spans(text)]):
+            if edits:
+                note(edits)
+            text, origin = _edit(text, origin, edits)
     return text, origin
 
 
@@ -767,7 +788,7 @@ def _name_value_edits(text):
     return edits
 
 
-def _named(pattern, span_of, text, reading):
+def _named(pattern, span_of, text, reading, note=lambda _: None):
     """Each of `pattern`'s matches, a name, a separator and a value, whose secret `span_of` finds, with that span. In
     text a match that holds none is tried again at its value, which can be the next name, as in "secrets: db_password:
     <value>"; so is one that holds a secret, where the value it masks is a name and its separator whose own value
@@ -779,7 +800,11 @@ def _named(pattern, span_of, text, reading):
         if span:
             yield m, span
             inner = pattern.match(text, m.start(3)) if reading == "named" else None
-            m = inner if inner and inner.start(3) >= span[1] else pattern.search(text, m.end())
+            if inner and inner.start(3) >= span[1]:
+                note(inner)  # read on at a masked value, as main does not
+                m = inner
+            else:
+                m = pattern.search(text, m.end())
             continue
         inner = pattern.match(text, m.start(3)) if reading in ("named", "main") else None
         m = inner if inner else pattern.search(text, m.end())
@@ -859,7 +884,10 @@ def _read(text, rules, origin=None):
     _run reads it."""
     if rules is not _TEXT_RULES:
         return _run(text, rules, origin)
-    masked, came = _run(text, rules, list(range(len(text))))
+    fired = []
+    masked, came = _run(text, rules, list(range(len(text))), fired=fired)
+    if not fired:  # no reading main's lack masked anything, so theirs mask just as this did
+        return masked, None if origin is None else [origin[c] if c >= 0 else -1 for c in came]
     added = bytearray(b"\x01") * len(text)
     for c in _run(text, _MAIN_RULES, list(range(len(text))))[1]:
         if c >= 0:

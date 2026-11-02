@@ -73,7 +73,7 @@ _ALL_OFF = ([p for p in head.SECRET_PATTERNS if p is not head.ENCODED_PRIVATE_KE
             _keyed(head._TEXT_RULES, _NAME_OFF + _TOKENIZER_OFF, _NEW_READINGS), "named")
 
 
-def _main_named(pattern, span_of, text, reading):
+def _main_named(pattern, span_of, text, reading, note=None):
     """mask._named as main reads: after a masked value the search goes on past it, never at it."""
     m = pattern.search(text)
     while m:

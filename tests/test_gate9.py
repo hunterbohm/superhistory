@@ -405,6 +405,23 @@ class ReviewTwoTest(unittest.TestCase):
             finally:
                 db.close()
 
+    def test_with_no_new_reading_fired_the_pass_is_mains_own(self):
+        # _read reads main's own readings besides only when a reading theirs lack masked something: else both agree.
+        import kb.mask as m
+        from tests import ordinary
+        from tests.test_mask_against_main import Generated
+        texts = ordinary.texts(1500, "fired") + [Generated(random.Random(f"fired:{n}")).text() for n in range(1500)]
+        texts += [t for t, _ in SmallerShapesTest.MASKED] + list(SmallerShapesTest.KEPT)
+        quiet = 0
+        for text in texts:
+            fired = []
+            full = m._run(text, m._TEXT_RULES, list(range(len(text))), fired=fired)
+            if not fired:
+                quiet += 1
+                with self.subTest(text=text):
+                    self.assertEqual(full, m._run(text, m._MAIN_RULES, list(range(len(text)))))
+        self.assertGreater(quiet, 2000)
+
     def test_labels_in_capitals_and_camel_case(self):
         for label in ("TOKENIZER", "SECRETARY", "TokenName", "PasswordHint", "SECRET_KEY_NAME", "tokenCount",
                       "PASSWORD_POLICY", "apiKeyDescription"):
