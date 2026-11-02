@@ -529,9 +529,11 @@ _USER_NAME = r"(?:user(?:[ _-]?(?:name|id))?|uid|login|e-?mail|account)"
 _USER_KEY = re.compile(_USER_NAME, re.I)
 # The field right before a name, a user's name and its value with nothing after it but a separator, space and a quote
 # ("Uid=sa;Pwd", "user: 'me@example.com', pass", '"user": "sa", "pwd'); and the field right after a value.
+# Between the two, at most one line break, plain or escaped: a blank line parts them.
+_ONE_BREAK = r"[ \t]*(?:(?:\r?\n|(?:\\r)?\\n)[ \t]*)?"
 _USER_BEFORE = re.compile(rf"""(?i)(?<![A-Za-z0-9]){_USER_NAME}["']?[ \t]*(?:[:=]|=>)[ \t]*"""
-                          r"""(?:"[^"\n]{0,256}"|'[^'\n]{0,256}'|[^\s,;&'"]{1,256})[ \t]*[,;&]?\s*["']?\Z""")
-_USER_AFTER = re.compile(rf"""(?i)["']?[ \t]*[,;&]?\s*["']?{_USER_NAME}["']?[ \t]*(?:[:=]|=>)""")
+                          rf"""(?:"[^"\n]{{0,256}}"|'[^'\n]{{0,256}}'|(?:[^\s,;&'"\\]|\\(?![nr])){{1,256}})[ \t]*[,;&]?{_ONE_BREAK}["']?\Z""")
+_USER_AFTER = re.compile(rf"""(?i)\\?["']?[ \t]*[,;&]?{_ONE_BREAK}["']?{_USER_NAME}["']?[ \t]*(?:[:=]|=>)""")
 
 
 def _beside_a_user(m):
@@ -1371,9 +1373,11 @@ _SECRET_KINDS = frozenset((
     "gitlab", "bitbucket", "npm", "pypi", "slack", "discord", "telegram", "vercel", "cloudflare", "huggingface", "hf",
     "docker", "card", "bank", "atm", "sim", "debit", "credit", "wallet", "phone", "device", "transfer", "transaction",
     "payment", "parental", "voicemail"))
-# Where a label's phrase ends: at a mark other than "-" or "_", or at a word that joins phrases ("Password for admin").
-_PHRASE_END = re.compile(r"[^A-Za-z0-9\s_-]+|(?<![A-Za-z0-9])(?:to|for|of|from|in|on|at|with|by|and|or)(?![A-Za-z0-9])",
-                         re.I)
+# Where a label's clause ends, at a mark other than "-" or "_"; and where its phrase ends inside one, at a word that
+# joins phrases ("Password for admin"). A word that finds, shows or names secrets reads on across a joining word
+# ("Search for passwords"), not across a mark.
+_CLAUSE_END = re.compile(r"[^A-Za-z0-9\s_-]+")
+_JOINING_WORD = re.compile(r"(?i)(?<![A-Za-z0-9])(?:to|for|of|from|in|on|at|with|by|and|or)(?![A-Za-z0-9])")
 _ABOUT_WORDS = frozenset((
     "name", "names", "description", "descriptions", "label", "labels", "note", "notes", "hint", "hints", "question",
     "questions", "type", "types", "id", "ids", "count", "counts", "length", "expiry", "expiration", "expires",
@@ -1384,34 +1388,47 @@ _ABOUT_WORDS = frozenset((
 _SELECTOR_ATTRIBUTE = re.compile(r"(?i)\b(?:name|id|type|for|class|placeholder|aria-label|data-[\w-]+)\s*[~|^$*]?=")
 
 
-def _names_a_secret(words):
+def _names_a_secret(words, searching=False):
     """Whether a phrase's words name a secret: a secret's word or run of words with only a form's own words after it,
-    none before it that finds, shows or names secrets (_NOT_ASKING), and for a token or a PIN, no word before it of
-    another kind."""
+    none before it that finds, shows or names secrets (_NOT_ASKING), nor any before the phrase (`searching`), and for
+    a token or a PIN, no word before it of another kind. One pass over the words, so a long label costs time in
+    proportion to its length."""
+    plain_from = [True] * (len(words) + 1)  # whether only a form's own words follow from each place on
+    for k in range(len(words) - 1, -1, -1):
+        plain_from[k] = plain_from[k + 1] and (words[k] in _AFTER_A_SECRET or words[k].isdigit())
+    kind = None  # the last word before this one that is not a form's own, which names a token's or a PIN's kind
     for i, word in enumerate(words):
-        if _NOT_ASKING.intersection(words[:i]):
-            continue
-        ends = [i + 1] if word in _SECRET_WORDS else []
-        ends += [i + len(run) for run in _SECRET_RUNS if tuple(words[i:i + len(run)]) == run]
-        for end in ends:
-            if not all(w in _AFTER_A_SECRET or w.isdigit() for w in words[end:]):
-                continue
-            # The word naming its kind, read with the one before as well, as camel case splits "GitHub".
-            k = next((k for k in range(i - 1, -1, -1) if words[k] not in _FORM_WORDS and not words[k].isdigit()), None)
-            kinds = {words[k], "".join(words[max(0, k - 1):k + 1])} if k is not None else set()
-            if end == i + 1 and word in _LOOSE_SECRET_WORDS and (k is not None or word == "tokens") \
-                    and not kinds & _SECRET_KINDS:
-                continue
-            return True
+        if not searching:
+            ends = [i + 1] if word in _SECRET_WORDS else []
+            ends += [i + len(run) for run in _SECRET_RUNS if tuple(words[i:i + len(run)]) == run]
+            for end in ends:
+                if not plain_from[end]:
+                    continue
+                # Read with the word before it as well, as camel case splits "GitHub".
+                kinds = {words[kind], "".join(words[max(0, kind - 1):kind + 1])} if kind is not None else set()
+                if end == i + 1 and word in _LOOSE_SECRET_WORDS and (kind is not None or word == "tokens") \
+                        and not kinds & _SECRET_KINDS:
+                    continue
+                return True
+        searching = searching or word in _NOT_ASKING
+        if word not in _FORM_WORDS and not word.isdigit():
+            kind = i
     return False
 
 
 def _asks_for_a_secret(labels):
     """Whether a field's labels ask for a secret, a phrase in one naming it (_names_a_secret), and none asks about one
     (_ABOUT_WORDS), read word by word after a selector's own attribute names are taken out ("input[name=password]")."""
-    phrases = [[w.lower() for w in _LABEL_WORD.findall(phrase)] for label in labels
-               for phrase in _PHRASE_END.split(_SELECTOR_ATTRIBUTE.sub(" ", label))]
-    return any(map(_names_a_secret, phrases)) and not any(_ABOUT_WORDS.intersection(words) for words in phrases)
+    asks, about = False, False
+    for label in labels:
+        for clause in _CLAUSE_END.split(_SELECTOR_ATTRIBUTE.sub(" ", label)):
+            searching = False
+            for phrase in _JOINING_WORD.split(clause):
+                words = [w.lower() for w in _LABEL_WORD.findall(phrase)]
+                about = about or bool(_ABOUT_WORDS.intersection(words))
+                asks = asks or _names_a_secret(words, searching)
+                searching = searching or bool(_NOT_ASKING.intersection(words))
+    return asks and not about
 
 
 # Where a tool names the field it types into, and where it holds what it types.

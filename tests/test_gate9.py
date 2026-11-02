@@ -839,6 +839,7 @@ class ReviewNineTest(unittest.TestCase):
             with self.subTest(text=text):
                 self.assertEqual(mask(text), text)
         self.assertEqual(mask("user: me@example.com\npass: 'Tr0ub4dor-Zk9q'"), "user: me@example.com\npass: '[masked]'")
+        self.assertEqual(mask("user: me@example.com\\npass: 'Tr0ub4dor-Zk9q'"), "user: me@example.com\\npass: '[masked]'")
 
     def test_a_search_before_a_joining_word_still_searches(self):
         for label, value in (("Search for passwords", "billing"), ("Filter by password", "bank"),
