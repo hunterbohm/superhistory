@@ -74,6 +74,13 @@ SHAPES = (
     lambda r: f"{r.choice(('TASK', 'DISK', 'MASK', 'RISK', 'DESK'))}{run(r, HEX, 32)}",
     lambda r: f"PWD=/{word(r, PLAIN)}{r.randint(1, 99)} OLDPWD=~/{word(r, PLAIN)}{r.randint(1, 9)}",
     lambda r: f"opt -passes={word(r, PLAIN)}-{word(r, PLAIN)} pass={word(r, PLAIN)}-{word(r, PLAIN)}",
+    lambda r: '{"Key":"%s","Value":"%s-%d"}' % (r.choice(("Name", "Env", "Team", "Owner", "Project")), word(r, PLAIN),
+                                                r.randint(1, 99)),
+    lambda r: '{"key":"%s","value":"https://%s.example.com/%s"}' % (ident(r, PLAIN), word(r, PLAIN), word(r, PLAIN)),
+    lambda r: '{"name":"%s","value":"%s"}' % (r.choice(("Accept", "Content-Type", "User-Agent", "Cache-Control")),
+                                              r.choice(("text/html", "no-cache", "application/json", "Mozilla/5.0"))),
+    lambda r: '["%s","%s %s"]' % (r.choice(("cookie", "Cookie", "password", "token", "authorization")), word(r, PLAIN),
+                                  word(r, PLAIN)),
 )
 
 

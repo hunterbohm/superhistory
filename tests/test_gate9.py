@@ -497,6 +497,61 @@ class HeaderFieldTest(unittest.TestCase):
         self.assertEqual(changed, {"cookie", "set-cookie", "authorization", "proxy-authorization"})
 
 
+class NameValueTextTest(unittest.TestCase):
+    """JSON written in text that holds a name and its value in separate fields, as a request's headers, Postman's
+    variables and AWS tags do, is read as the name and its value (found in the Cloud egress review); a list of two
+    words, as tags are, stays."""
+
+    S = HEADER_SECRET
+    MASKED = (
+        ('{"headers":[{"name":"Cookie","value":"session=%s"}]}' % S, '{"headers":[{"name":"Cookie","value":"[masked]"}]}'),
+        ('{"key":"password","value":"Tr0ub4dor-Zk9q"}', '{"key":"password","value":"[masked]"}'),
+        ('{"Key":"api_key","Value":"q8Zr2Lm7Xk4Vp9Nt3Bw6Hc1"}', '{"Key":"api_key","Value":"[masked]"}'),
+        ('{"value": "session=%s", "name": "Cookie"}' % S, '{"value": "[masked]", "name": "Cookie"}'),
+        ('{"name":"Cookie","path":"/","secure":true,"value":"sid=%s"}' % S,
+         '{"name":"Cookie","path":"/","secure":true,"value":"[masked]"}'),
+        ('{"name": "Authorization", "value": "%s9q"}' % S, '{"name": "Authorization", "value": "[masked]"}'),
+        ('{"NAME":"Set-Cookie","VALUE":"sid=%s; Path=/"}' % S, '{"NAME":"Set-Cookie","VALUE":"[masked]"}'),
+        ('{\\"name\\":\\"Cookie\\",\\"value\\":\\"session=%s\\"}' % S,
+         '{\\"name\\":\\"Cookie\\",\\"value\\":\\"[masked]\\"}'),
+    )
+    KEPT = ('["cookie","chocolate chip"]', '{"tags":["password","reset"]}', '{"Key":"Name","Value":"web-server-01"}',
+            '{"key":"baseUrl","value":"https://api.example.com/v1"}', '{"name":"Accept","value":"text/html"}',
+            '{"name":"token_type","value":"Bearer"}', '{"name":"secret_name","value":"prod-db-creds"}',
+            '{"name":"Cookie","value":"yes"}', '{"key":"password","value":"string"}', '[["Cookie", "chocolate chip"]]',
+            '{"name":"cookie consent","value":"accepted all"}')
+
+    def test_a_name_and_its_value_held_apart_in_text(self):
+        for text, masked in self.MASKED:
+            with self.subTest(text=text):
+                self.assertEqual(mask(text), masked)
+
+    def test_ordinary_pairs_and_tags_stay(self):
+        for text in self.KEPT:
+            with self.subTest(text=text):
+                self.assertEqual(mask(text), text)
+
+    def test_through_the_readers_tool_output(self):
+        out = 'network: {"url":"https://api.example.com","headers":[{"name":"Cookie","value":"session=%s"}]}' % self.S
+        for reader, records in (
+                ("codex", codex_session({"type": "function_call", "name": "mcp__playwright__browser_network_requests",
+                                         "arguments": "{}"}, {"type": "function_call_output", "output": out})),
+                ("claude_code", claude_session({"type": "tool_result", "content": [{"type": "text", "text": out}]},
+                                               role="user"))):
+            with self.subTest(reader=reader):
+                self.assertNotIn(self.S, stored(reader, records))
+
+    def test_fields_in_any_case_and_two_word_lists(self):
+        self.assertEqual(mask_all({"Key": "api_key", "Value": "q8Zr2Lm7Xk4Vp9Nt3Bw6Hc1"}),
+                         {"Key": "api_key", "Value": "[masked]"})
+        self.assertEqual(mask_all({"KEY": "password", "VALUE": "Tr0ub4dor-Zk9q"}), {"KEY": "password", "VALUE": "[masked]"})
+        for kept in (["cookie", "chocolate chip"], ["Cookie", "oatmeal raisin"], ["password", "reset"],
+                     ["authorization", "pending review"], {"tags": [["Cookie", "chocolate chip"]]}):
+            with self.subTest(kept=kept):
+                self.assertEqual(mask_all(kept), kept)
+        self.assertEqual(mask_all(["Cookie", f"session={self.S}"]), ["Cookie", "[masked]"])
+
+
 # Commands as an argument list, each flag's value its own item: (the list, the items masked).
 ARGV = (
     (["login", "--password", PASSWORD], {2}), (["--token", SUB], {1}), (["--api-key", SUB, "--verbose"], {1}),
