@@ -64,9 +64,9 @@ BASIC = re.compile(rf"(?i){_WORD}basic{_SCHEME_GAP}(?=[A-Za-z0-9+/]*[0-9+/=])[A-
 # feed, which end a value early or make "password=\u2028password" look like a placeholder.
 # A private key percent-encoded, as a link's parameter holds one: its header, its body and its line breaks encoded,
 # through its footer or the end of the encoded run.
-ENCODED_PRIVATE_KEY = re.compile(r"-----BEGIN(?:%20[A-Z]+)*%20PRIVATE%20KEY-----"
+ENCODED_PRIVATE_KEY = re.compile(r"-----BEGIN(?:(?:%20|\+)[A-Z]+)*(?:%20|\+)PRIVATE(?:%20|\+)KEY-----"
                                  r"(?:%0[ADad]|%2[BFbf]|%3[Dd]|[A-Za-z0-9+/=]){0,16384}"
-                                 r"(?:-----END(?:%20[A-Z]+)*%20PRIVATE%20KEY-----)?")
+                                 r"(?:-----END(?:(?:%20|\+)[A-Z]+)*(?:%20|\+)PRIVATE(?:%20|\+)KEY-----)?")
 SECRET_PATTERNS = [
     # A private key, by its structure and not read line by line: from its header through its footer, or, with no
     # footer, through the end of its paragraph. So a key cut off, wrapped at any width or followed at once by other
@@ -289,6 +289,11 @@ LINE_PASSWORD = re.compile(
     r"(?im)(?:^|(?<=\\n))[ \t]*(?:export[ \t]+|-[ \t]+)?" + _KEY_NAME[4:] + r"([ \t]*[:=][ \t]*)"
     r"((?:(?![;,&][A-Za-z_][A-Za-z0-9_.-]*=)(?!\\[nr])[^\s\"'`]){1,512})(?=[ \t]+#[^\r\n]*$|[ \t]*\r?$|\\[nr])")
 # Google's app password, four groups of four lower-case letters, after a password's name and "=" or in quotes.
+# On a line of its own, as YAML writes one, after an unquoted colon too: the four groups and nothing after them but a
+# comment, and not four English words, so a sentence after "password:" is read as main reads it
+# (_app_password_line_span).
+APP_PASSWORD_LINE = re.compile(r"(?m)(?:^|(?<=\\n))[ \t]*(?:export[ \t]+|-[ \t]+)?(?i:" + _KEY_NAME[4:] + r")([ \t]*:[ \t]*)"
+                               r"([a-z]{4}(?: [a-z]{4}){3})(?=[ \t]+#[^\r\n]*$|[ \t]*\r?$|\\[nr])")
 APP_PASSWORD = re.compile(_KEY_NAME + r"""((?:[ \t]*=|[\"']?[ \t]*[:=][ \t]*[\"'])[ \t]*)([a-z]{4}(?: [a-z]{4}){3})"""
                           r"(?![A-Za-z0-9])")
 # An HTTP Authorization header's credentials: its first word, or after a scheme word ("Token ...", "Bot ...",
@@ -372,10 +377,18 @@ _CSI = r"(?:\x1b\[|\x9b|\\(?:u001[bB]|x1[bB]|033)\[|\\(?:u009[bB]|x9[bB]|233))(?
 _FORMAT_CHARACTERS = (r"\u00ad\u034f\u061c\u115f\u1160\u17b4\u17b5\u180b-\u180f\u200b-\u200f\u202a-\u202e\u2060-\u206f"
                       r"\u3164\ufe00-\ufe0f\ufeff\uffa0\ufff0-\ufff8\U0001bca0-\U0001bca3\U0001d173-\U0001d17a"
                       r"\U000e0000-\U000e0fff")
-INVISIBLE = re.compile(_CSI + rf"|[\x00-\x08\x0e-\x1b\x7f-\x84\x86-\x9f{_FORMAT_CHARACTERS}]")
-# Main's own: a lone control or format character, not a colour code, DEL or a C1 control (_NEW_INVISIBLE).
+# The same characters escaped, as JSON ("\u200b", "\u007f") and Python's repr ("\x7f", "\xad", "\u2060") print them.
+_ESCAPED_INVISIBLE = (
+    r"\\u(?:000[0-8]|000[eEfF]|001[0-9a-bA-B]|007[fF]|008[0-46-9a-fA-F]|009[0-9a-fA-F]|00[aA][dD]|034[fF]|061[cC]"
+    r"|115[fF]|1160|17[bB][45]|180[b-fB-F]|200[b-fB-F]|202[a-eA-E]|206[0-9a-fA-F]|3164|[fF][eE]0[0-9a-fA-F]"
+    r"|[fF][eE][fF][fF]|[fF][fF][aA]0|[fF][fF][fF][0-8])"
+    r"|\\x(?:0[0-8]|0[eEfF]|1[0-9a-bA-B]|7[fF]|8[0-46-9a-fA-F]|9[0-9a-fA-F]|[aA][dD])"
+    r"|\\U000(?:1[bB][cC][aA][0-3]|1[dD]17[3-9aA]|[eE]0[0-9a-fA-F]{3})")
+INVISIBLE = re.compile(_CSI + rf"|{_ESCAPED_INVISIBLE}|[\x00-\x08\x0e-\x1b\x7f-\x84\x86-\x9f{_FORMAT_CHARACTERS}]")
+# Main's own: a lone control or format character, not a colour code, an escaped one, DEL or a C1 control
+# (_NEW_INVISIBLE).
 _MAIN_INVISIBLE_RUN = re.compile(rf"[\x00-\x08\x0e-\x1b{_FORMAT_CHARACTERS}]+")
-_NEW_INVISIBLE = re.compile(_CSI + r"|[\x7f-\x84\x86-\x9f]")
+_NEW_INVISIBLE = re.compile(_CSI + rf"|{_ESCAPED_INVISIBLE}|[\x7f-\x84\x86-\x9f]")
 
 # Provider tokens kb takes from gitleaks (kb/gitleaks.py), each a token's own shape: compiled ASCII-only, as Go reads
 # \w and \b; the group holding the secret; the least entropy it has; keywords one of which a text holds before the rule
@@ -479,19 +492,24 @@ def _docker_login_edits(text):
 
 
 def _command_line_end(text, start):
-    """Where a command's line from `start` ends, as the shell reads it: at a pipe or ";" outside quotes, and at a line
-    break, plain or escaped. A line whose first quote comes escaped ('\\"'), as JSON holds a command, is read unescaped:
-    its escaped quotes are the shell's quotes, an escaped backslash escapes the shell character after it, and a bare
-    '"' ends the JSON string. One pass over the line."""
+    """Where a command's line from `start` ends, as the shell reads it: outside quotes at what ends a command or starts
+    another (a pipe, ";", "&", a bracket, a backtick or a redirection), at a JSON string's end ('"' before ",", ":",
+    "}" or "]"), and at a line break, plain, or escaped where it is not inside quotes of plain text. A line whose first
+    double quote comes escaped ('\\"'), as JSON holds a command, is read unescaped: its escaped quotes are the shell's
+    quotes, an escaped backslash escapes the shell character after it, and a bare '"' ends the JSON string; a single
+    quote, which JSON leaves bare, decides nothing. One pass over the line."""
     i, n = start, len(text)
-    quote, escaped = "", None  # the open quote, and whether this line's quotes come escaped once
+    quote, escaped = "", None  # the open quote, and whether this line's double quotes come escaped once
     while i < n:
         here, c = i, text[i]
         if c == "\\":
             following = text[i + 1:i + 2]
             if following in ("n", "r"):
-                return here
-            if following in ("'", '"') and escaped is not False:
+                if not quote or escaped:
+                    return here
+                i += 2  # a backslash and a letter inside quotes of plain text: part of the argument
+                continue
+            if following == '"' and escaped is not False or following == "'" and escaped:
                 escaped, c, i = True, following, i + 2
             else:  # the shell's own backslash, and the character it escapes
                 i += 2
@@ -501,17 +519,23 @@ def _command_line_end(text, start):
         else:
             if c in "\n\r" or c == '"' and escaped:
                 return here
-            if c in "'\"" and escaped is None:
+            if c == '"' and _JSON_STRING_END.match(text, i + 1):
+                return here
+            if c == '"' and escaped is None:
                 escaped = False
             i += 1
         if quote:
             if c == quote:
                 quote = ""
-        elif c in "|;":
+        elif c in "|;&()`<>":
             return here
         elif c in "'\"":
             quote = c
     return n
+
+
+# What follows a '"' that ends a JSON string rather than a shell argument.
+_JSON_STRING_END = re.compile(r"[ \t]*[,:}\]]")
 
 
 def _command_password_edits(text, line_pattern, flag, always, unseen=False):
@@ -610,6 +634,12 @@ def _password_span(m):
 def _line_password_span(m):
     """Where a password's line value is, when the line holds more past where _VALUE would end it."""
     return _password_span(m) if re.search(r"[,;<>)\]}].", m.group(3)) else None
+
+
+def _app_password_line_span(m):
+    """_password_span for an app password on a line of its own, but for four words that read as English ("password:
+    this will work fine"), which a random app password's groups rarely all do."""
+    return None if all(map(_english, m.group(3).split())) else _password_span(m)
 
 
 def _xml_span(m):
@@ -782,6 +812,7 @@ def _replace(text, spans, replacement):
 # named value only in assignment form, as re.sub reads it; in text a name's value can be the next name (_named).
 # The readings that take a password's value whole where KEYED_SECRET would end it early, so they come before it.
 _WHOLE_VALUES = ((XML_SECRET, _xml_span), (LINE_PASSWORD, _line_password_span), (APP_PASSWORD, _password_span),
+                 (APP_PASSWORD_LINE, _app_password_line_span),
                  *((p, _password_span) for p in QUOTED_PASSWORDS))
 # Main's own readings of text, as gate 9 found them: its token shapes, links, commands and named values, each read as
 # main reads it, with the four values gate 9 reads as no secret (a tokenizer's, an ARN's, a date's, a file name's)

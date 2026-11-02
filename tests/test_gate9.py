@@ -1134,8 +1134,9 @@ class ReviewSixteenTest(unittest.TestCase):
         self.assertEqual(mask("APP_PASSWORD: qjrx vnmw kzpt bhfc"), "APP_PASSWORD: [masked]")
         self.assertEqual(mask("smtp:\n  app_password: qjrx vnmw kzpt bhfc  # mail\n"),
                          "smtp:\n  app_password: [masked]  # mail\n")
+        # Inside a sentence the four groups are not read whole; main's own reading takes the first word, as before.
         self.assertEqual(mask("I asked about the password: when will they come"),
-                         "I asked about the password: when will they come")
+                         "I asked about the password: [masked] will they come")
 
 
 # Commands as an argument list, each flag's value its own item: (the list, the items masked).
