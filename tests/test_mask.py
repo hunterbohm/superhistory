@@ -967,10 +967,7 @@ class RepeatTest(unittest.TestCase):
     def test_text_still_changing_at_the_limit_is_masked_whole_and_counted(self):
         from kb import mask as mask_module
         before = mask_module.capped
-        def growing(text, rules, origin=None, novel=None):  # a pass that never settles
-            return text[:6] + "x" + text[6:], None if origin is None else origin[:6] + [-1] + origin[6:]
-
-        with mock.patch.object(mask_module, "_once", growing):
+        with mock.patch.object(mask_module, "_mask_once", lambda text: text[:6] + "x" + text[6:]):
             self.assertEqual(mask_module.mask("keep: secret part"), "keep: [masked]secret part")
         self.assertEqual(mask_module.capped, before + 1)
 
@@ -978,7 +975,7 @@ class RepeatTest(unittest.TestCase):
         import time
         from kb import mask as mask_module
         plain = "walrus ledger notes deploy plan " * 20000
-        with mock.patch.object(mask_module, "_once", wraps=mask_module._once) as once:
+        with mock.patch.object(mask_module, "_mask_once", wraps=mask_module._mask_once) as once:
             mask(plain)
             self.assertEqual(once.call_count, 1)
             mask(plain + " password=walrus2secret9")

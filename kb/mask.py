@@ -1,5 +1,6 @@
 import base64
 import bisect
+import contextvars
 import hashlib
 import logging
 import math
@@ -949,8 +950,11 @@ def _once(text, rules, origin=None, novel=None):
     """_mask_once, and with `origin`, where each character of the result came from in the first text (_edit). The pass
     reads the text as given (_read), never what the view masked, so what it hides stays hidden: the view only adds.
     Where it adds, the characters of the pass's own result that came from the view's spans are hidden (_hide). A text
-    whose invisible characters split no secret masks as _read reads it. With `novel` a list, something is added to it
-    where the pass may read otherwise than main's own: a reading main's lack fired, or the view hid anything."""
+    whose invisible characters split no secret masks as _read reads it. With `novel` a list, or by default mask()'s own
+    (_NOVEL), something is added to it where the pass may read otherwise than main's own: a reading main's lack fired,
+    or the view hid anything."""
+    if novel is None:
+        novel = _NOVEL.get()
     spans = _split_secrets(text, rules) if INVISIBLE.search(text) else []
     if spans and novel is not None:
         novel.append(spans)
@@ -1254,6 +1258,8 @@ def _back(origin, start, end, size):
 # How many passes mask() makes at most, and how often, in this process, a text still changed at the last one.
 MAX_PASSES = 8
 capped = 0
+# mask()'s note of whether a pass read otherwise than main's own could (_once's `novel`), for its passes alone.
+_NOVEL = contextvars.ContextVar("kb_mask_novel", default=None)
 
 
 def _masked(text):
@@ -1290,10 +1296,26 @@ def mask(text):
     """The text with every secret replaced by "[masked]". A placeholder can make the text next to it read as a secret
     or as a key's leftovers, so masking repeats until a pass changes nothing: masked text masks to itself, and text
     with no secret costs one pass. No pattern matches a placeholder alone, so it stops; should a text still change at
-    the last pass, the region still changing is masked whole, and counted in `capped`."""
+    the last pass, the region still changing is masked whole, and counted in `capped`. Where a pass read otherwise than
+    main's own could, the text is masked again as _masked masks it, all main's own mask hides hidden too."""
     global capped
-    original = text
-    text, _, still = _masked(text)
+    original, novel = text, []
+    marker = _NOVEL.set(novel)
+    try:
+        for _ in range(MAX_PASSES):
+            masked = _mask_once(text)
+            if masked == text:
+                break
+            text = masked
+        else:
+            text = None
+    finally:
+        _NOVEL.reset(marker)
+    still = text is None
+    if novel:
+        text, _, still = _masked(original)
+    elif still:
+        text = masked
     if not still:
         return text
     # Still changing: everything between what the original and the last pass share at both ends becomes one mask.
