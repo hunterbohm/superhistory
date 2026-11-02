@@ -1,0 +1,149 @@
+"""A word for an HTTP auth scheme in an ordinary note's path, "Basic Statistics/notes.md" or "Ring Bearer
+responsibilities/notes.md", is no credential: the text mask reads it as words, so the note's id, its stored path and
+anything that checks an id with holds_secret() keep it. A real credential after the same words is masked as main masks
+it. Main's mask is this branch's with that one reading switched off (kb.mask._scheme_words), so the comparison with it
+is exact."""
+import contextlib
+import io
+import os
+import random
+import string
+import tempfile
+import unittest
+from unittest import mock
+
+from kb import cli, mask as mask_module, store
+from kb.mask import holds_secret, mask, mask_with_origin, secret_in_id
+
+INSTALL = "c-aaaaaaaaaaaaa"
+SCHEMES = ("Basic", "Bearer", "Token", "Digest", "Negotiate", "OAuth", "Bot", "ApiKey", "Hoba", "Mutual", "Key")
+WORDS = ("Statistics", "statistics", "notes", "Training", "Income", "Experiment", "duties", "responsibilities", "list",
+         "Bonds", "History", "Economics", "plan", "Weekly", "Contracts", "Reading", "summary", "Ideas", "meeting",
+         "Agenda", "Recipes", "Cooking", "garden", "Shopping", "minutes", "Research", "draft", "Final", "review")
+
+
+def as_on_main(text):
+    """main's mask: this branch's with scheme words read as a credential, as main reads them."""
+    with mock.patch.object(mask_module, "_scheme_words", lambda *_: False):
+        return mask(text)
+
+
+def note_path(r):
+    """An ordinary note's path that holds an auth-scheme word: folders and a file name of words."""
+    def name():
+        words = [r.choice(WORDS) for _ in range(r.randint(1, 3))]
+        words.insert(r.randint(0, len(words)), r.choice(SCHEMES))
+        return r.choice((" ", "_", "-")).join(words)
+    parts = [name() for _ in range(r.randint(1, 3))]
+    return "/".join(parts) + r.choice((".md", ".txt", ".org", "/notes.md", "/README.md"))
+
+
+def credential(r):
+    """A credential as one follows Basic or Bearer: base64 of user:password, or a random token."""
+    import base64
+    alnum = string.ascii_letters + string.digits
+    token = "".join(r.choice(alnum) for _ in range(r.randint(20, 40))) + r.choice(string.digits)
+    return r.choice((("Basic", base64.b64encode(f"sam:walrus{r.randint(10, 99)}secret".encode()).decode()),
+                     ("Bearer", token), ("Bearer", "eyJ" + token + "." + token[::-1] + "." + token[:12]),
+                     ("Basic", base64.b64encode(f"deploy:{token}".encode()).decode())))
+
+
+class SchemeWordTest(unittest.TestCase):
+    def test_the_audit_paths_are_ordinary(self):
+        for path in ("Basic Statistics/notes.md", "Ring Bearer responsibilities/notes.md", "Ring Bearer duties/list.md",
+                     "Basic Income/Experiment Notes/summary.md", "Bearer Bonds/History/notes.md"):
+            with self.subTest(path=path):
+                self.assertEqual(mask(path), path)
+                self.assertFalse(holds_secret(f"{INSTALL}:{path}"))
+
+    def test_ordinary_note_paths_with_scheme_words_are_kept(self):
+        for seed in range(2000):
+            path = note_path(random.Random(f"path:{seed}"))
+            with self.subTest(path=path):
+                self.assertEqual(mask(path), path)
+                self.assertFalse(holds_secret(f"{INSTALL}:{path}"))
+                self.assertFalse(secret_in_id(path))
+                self.assertEqual(mask(f"see {path} for the plan"), f"see {path} for the plan")
+
+    def test_a_real_credential_next_to_them_is_masked(self):
+        for seed in range(2000):
+            r = random.Random(f"credential:{seed}")
+            scheme, secret = credential(r)
+            path = note_path(r)
+            for text in (f"{path} {scheme} {secret}", f"Authorization: {scheme} {secret}\n{path}",
+                         f"curl -H '{scheme} {secret}' # {path}", f"{scheme} {secret}"):
+                with self.subTest(seed=seed, text=text):
+                    masked = mask(text)
+                    self.assertNotIn(secret[:12], masked)
+                    if path in text:
+                        self.assertIn(path, masked, "the path next to it stays")
+                    self.assertTrue(holds_secret(text))
+
+    def test_main_hides_nothing_this_keeps_but_scheme_words(self):
+        # Every character main's mask hides, this one hides, but in a run of words after Basic or Bearer.
+        alnum = string.ascii_letters + string.digits
+        for seed in range(1500):
+            r = random.Random(f"mix:{seed}")
+            pieces = []
+            for _ in range(r.randint(2, 8)):
+                pick = r.random()
+                if pick < 0.35:
+                    pieces.append(note_path(r))
+                elif pick < 0.7:
+                    pieces.append(" ".join(credential(r)))
+                else:
+                    pieces.append(r.choice(("password=", "api_key: ", "token is ")) + "".join(
+                        r.choice(alnum) for _ in range(14)) + "7")
+            text = r.choice((" ", "\n", " | ")).join(pieces)
+            with self.subTest(seed=seed):
+                ours, kept = mask_with_origin(text)
+                with mock.patch.object(mask_module, "_scheme_words", lambda *_: False):
+                    theirs, theirs_kept = mask_with_origin(text)
+                shown_here = set(i for i in kept if i >= 0) - set(i for i in theirs_kept if i >= 0)
+                self.assertEqual(set(i for i in theirs_kept if i >= 0) - set(i for i in kept if i >= 0), set(),
+                                 f"hides more than main: {ours!r}")
+                # Each run kept starts inside such words; it may run on past them, through what main took with
+                # them, as the rest glued to the placeholder it put there.
+                for start, end in runs(shown_here):
+                    self.assertTrue(any(mask_module._scheme_words(m) for m in scheme_matches(text)
+                                        if m.start() <= start < m.end()), f"keeps {text[start:end]!r}")
+
+    def test_a_note_with_a_scheme_word_in_its_path_is_stored_with_its_path_and_found(self):
+        with tempfile.TemporaryDirectory() as home:
+            notes = os.path.join(home, "notes", "Basic Statistics")
+            os.makedirs(notes)
+            with open(os.path.join(notes, "notes.md"), "w", encoding="utf-8") as fh:
+                fh.write("the pelican regression lecture\n")
+            with open(os.path.join(home, "config.toml"), "w", encoding="utf-8") as fh:
+                fh.write(f'machine = "studio"\n[sources.notes]\npath = "{os.path.join(home, "notes")}"\n')
+            out = io.StringIO()
+            with mock.patch.dict(os.environ, {"KB_HOME": home}), contextlib.redirect_stdout(out), \
+                    contextlib.redirect_stderr(io.StringIO()):
+                self.assertEqual(cli.main(["ingest", "--no-summaries"]), 0)
+                self.assertEqual(cli.main(["search", "pelican"]), 0)
+            self.assertIn("Basic Statistics", out.getvalue())
+            db = store.connect(os.path.join(home, "data", "kb.sqlite"))
+            try:
+                (sid, meta), = db.execute("SELECT source_id, metadata FROM docs").fetchall()
+            finally:
+                db.close()
+            self.assertTrue(sid.endswith(":Basic Statistics/notes.md"), sid)
+            self.assertIn("Basic Statistics/notes.md", meta, "the stored path is the file's")
+
+
+def runs(positions):
+    out = []
+    for i in sorted(positions):
+        if out and out[-1][1] == i:
+            out[-1][1] = i + 1
+        else:
+            out.append([i, i + 1])
+    return [tuple(run) for run in out]
+
+
+def scheme_matches(text):
+    return [m for pattern in (mask_module.BASIC, mask_module.BEARER) for m in pattern.finditer(text)]
+
+
+if __name__ == "__main__":
+    unittest.main()
