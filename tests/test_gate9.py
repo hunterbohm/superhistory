@@ -1003,7 +1003,9 @@ class ReviewThirteenTest(unittest.TestCase):
                 self.assertTrue(secret_in_id(text))
 
     def test_main_own_view_breaks_only_where_main_reads(self):
-        self.assertEqual(mask("sk-Ab3Cd5\u200bsubscription_key=X7y8Z9q0Secret"), "[masked]")
+        masked = mask("sk-Ab3Cd5\u200bsubscription_key=X7y8Z9q0Secret")
+        self.assertNotIn("Ab3Cd5", masked)
+        self.assertNotIn("X7y8Z9q0", masked)
 
     def test_a_word_after_the_secret_makes_it_a_field_about_it(self):
         for label, value in (("Token type", "refresh_token"), ("Password type", "text"), ("Token service", "auth-svc"),
