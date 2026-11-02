@@ -98,30 +98,63 @@ SECRET_PATTERNS = [
 _ID_PATTERNS = [_SK_ID if p is SK_TOKEN else p for p in SECRET_PATTERNS if p not in (BEARER, BASIC)]
 _SCHEME_HEAD = re.compile(rf"(?i)(?:basic|bearer){_SCHEME_GAP}")
 # A word in a note's path: lower case, capitalized, run together in capitals ("ApiKey"), in capitals, or a short
-# capital start before lower case ("OAuth"); and a file's extension at the end.
+# capital start before lower case ("OAuth"); a file's extension at the end of a run; and what may follow a run in the
+# same path to the file's extension, its other folders' and the file's own words.
 _PATH_WORD = re.compile(r"[a-z]+|[A-Z][a-z]+|(?:[A-Z][a-z]+){2,}|[A-Z]{2,}|[A-Z]{1,3}[a-z]{2,}")
-_EXTENSION = re.compile(r"\.[A-Za-z0-9]{1,5}$")
+_EXTENSION = re.compile(r"\.[A-Za-z][A-Za-z0-9]{0,4}$")
+_PATH_TAIL = re.compile(r"[A-Za-z0-9 _/.-]{0,160}?\.[A-Za-z][A-Za-z0-9]{0,4}(?![A-Za-z0-9])")
+# Letter pairs no English word holds, and four vowels in a row, which a random run of letters seldom lacks.
+_NO_WORD = re.compile(r"(?i)q(?!u)|j[^aeiouy]|bx|cj|cv|cx|dx|fq|fv|fx|fz|gq|gv|gx|hx|hz|kq|kx|kz|lx|mq|mx|mz|pq|pv|px|"
+                      r"pz|sx|tq|vb|vf|vh|vj|vk|vm|vp|vq|vw|vx|vz|wq|wv|wx|wz|xb|xg|xj|xk|xr|xv|xz|zb|zf|zg|zj|zk|"
+                      r"zm|zp|zq|zv|zw|zx|[aeiou]{4}")
+# The name of a header whose value is a credential, just before the scheme word.
+_AUTHORIZATION_BEFORE = re.compile(r"(?i)authorization[\"']?[ \t]*(?::|=|%(?:25)?3A)[ \t]*[\"']?$")
 
 
 def _scheme_words(m):
-    """Whether a match of Basic or Bearer and what follows reads as words: a note's path or a name, as in "Basic
-    Statistics/notes.md" or "Ring Bearer responsibilities notes.md", not a credential. That is, past a file's
-    extension, no digit, "+" or "=", and parts joined by "/", ".", "_" or "-", each a word (_PATH_WORD) with a vowel,
-    which a run of base64 seldom has in every part; one part alone has a third of its letters vowels, as a word has
-    and a random run of letters seldom does. After Basic, not base64 of "user:password" either. Any other match is no
-    such run."""
+    """Whether a match of Basic or Bearer and what follows reads as words in a note's path, as in "Basic
+    Statistics/notes.md" or "Ring Bearer responsibilities/notes.md", not a credential. That is: no header's value
+    ("Authorization: Bearer ..."); a path, its run or what follows it in the path ending in a file's extension; past
+    that extension, no digit, "+" or "=", and parts joined by "/", ".", "_" or "-", each a word (_PATH_WORD) with a
+    vowel and no letter pair or vowel run a word never has (_NO_WORD), which a run of base64 or of random letters
+    seldom passes; one part alone has a third of its letters vowels, as a word has. After Basic, not base64 of
+    "user:password" either, padded or not, in UTF-8 or Latin-1. Any other match is no such run."""
     head = _SCHEME_HEAD.match(m.group())
-    if not head:
+    if not head or _AUTHORIZATION_BEFORE.search(m.string, max(0, m.start() - 64), m.start()):
         return False
-    run = _EXTENSION.sub("", m.group()[head.end():])
+    run = m.group()[head.end():]
+    if not _EXTENSION.search(run) and not _PATH_TAIL.match(m.string, m.end()):
+        return False
+    run = _EXTENSION.sub("", run)
     parts = [part for part in re.split(r"[/._-]+", run) if part]
     if not parts or re.search(r"[0-9+=]", run):
         return False
-    if not all(_PATH_WORD.fullmatch(part) and re.search(r"[aeiouyAEIOUY]", part) for part in parts):
+    if not all(_PATH_WORD.fullmatch(part) and re.search(r"[aeiouyAEIOUY]", part) and not _NO_WORD.search(part)
+               for part in parts):
         return False
     if len(parts) == 1 and sum(c in "aeiouyAEIOUY" for c in parts[0]) * 3 < len(parts[0]):
         return False
-    return not (head.group().lower().startswith("basic") and _basic_credential(run))
+    return not (head.group().lower().startswith("basic") and (_basic_credential(run) or _decodes_to_login(run)))
+
+
+def _decodes_to_login(run):
+    """Whether `run`, padded as base64 is when written without its "=", decodes to "user:password" text in UTF-8 or
+    Latin-1, as a Basic credential from any client does."""
+    run = run[:-1] if len(run) % 4 == 1 else run
+    try:
+        raw = base64.b64decode(run + "=" * (-len(run) % 4), validate=True)
+    except ValueError:
+        return False
+    for encoding in ("utf-8", "latin-1"):
+        try:
+            text = raw.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+        if ":" in text and text.isprintable():
+            return True
+    return False
+
+
 _BASIC_VALUE = re.compile(rf"(?i){_WORD}basic{_SCHEME_GAP}([A-Za-z0-9+/]{{12,}})")
 PREFIXED_SECRETS = [
     re.compile(rf"(?i)({_WORD}(?:set-)?cookie{_QUOTE}?\s*(?::|%(?:25)?3[Aa])\s*{_QUOTE}?)(?:{_CLOSE}[^\"'\n]){{8,}}"),

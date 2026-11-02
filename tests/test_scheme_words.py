@@ -135,8 +135,11 @@ class SchemeWordTest(unittest.TestCase):
             pieces = []
             for _ in range(r.randint(2, 8)):
                 pick = r.random()
-                if pick < 0.35:
+                if pick < 0.25:
                     pieces.append(note_path(r))
+                elif pick < 0.35:
+                    pieces.append(f"{note_path(r)}: " + r.choice(("Cookie: chocolate chip recipe", "password: walrus2x",
+                                                                 "api_key: q8Zr2Lm7Xk4Vp9Nt3Bw6Hc1", "plain words")))
                 elif pick < 0.7:
                     pieces.append(" ".join(credential(r)))
                 else:
@@ -148,8 +151,11 @@ class SchemeWordTest(unittest.TestCase):
                 with mock.patch.object(mask_module, "_scheme_words", lambda *_: False):
                     theirs, theirs_kept = mask_with_origin(text)
                 shown_here = set(i for i in kept if i >= 0) - set(i for i in theirs_kept if i >= 0)
-                self.assertEqual(set(i for i in theirs_kept if i >= 0) - set(i for i in kept if i >= 0), set(),
-                                 f"hides more than main: {ours!r}")
+                # What main shows and this hides: a field's value whose name main hid with the words before it, so
+                # it never read the value, which it masks wherever it reads the name.
+                hidden_here = set(i for i in theirs_kept if i >= 0) - set(i for i in kept if i >= 0)
+                self.assertEqual(hidden_here - values_named_where_main_hid(text, set(theirs_kept)), set(),
+                                 f"hides more than main: {ours!r} vs {theirs!r}")
                 # Each run kept starts inside such words; it may run on past them, through what main took with
                 # them, as the rest glued to the placeholder it put there.
                 for start, end in runs(shown_here):
@@ -177,6 +183,18 @@ class SchemeWordTest(unittest.TestCase):
                 db.close()
             self.assertTrue(sid.endswith(":Basic Statistics/notes.md"), sid)
             self.assertIn("Basic Statistics/notes.md", meta, "the stored path is the file's")
+
+
+def values_named_where_main_hid(text, main_shown):
+    """The positions of each field's value, as the mask reads a cookie's or a secret's name, whose name main hid."""
+    out = set()
+    fields = [(m.span(1), (m.end(1), m.end())) for m in mask_module.PREFIXED_SECRETS[0].finditer(text)]
+    for pattern in (mask_module.KEYED_SECRET, mask_module.ENV_KEY_SECRET, mask_module.JSON_SECRET):
+        fields += [(m.span(1), m.span(3)) for m in pattern.finditer(text)]
+    for (name_start, name_end), (start, end) in fields:
+        if any(i not in main_shown for i in range(name_start, name_end)):
+            out.update(range(start, end))
+    return out
 
 
 def runs(positions):
