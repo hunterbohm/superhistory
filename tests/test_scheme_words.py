@@ -235,7 +235,7 @@ class SchemeWordTest(unittest.TestCase):
 
     def test_a_field_after_a_kept_path_reads_as_it_reads_alone(self):
         # Main's mask took the path's words, and with them the field's name after them, so it never read the value.
-        for field in ("Cookie: chocolate chip recipe", "password: hunter22x", "api_key: q8Zr2Lm7Xk4Vp9Nt3Bw6Hc1"):
+        for field in ("Cookie: chocolate chip recipe", "password: walrus22x", "api_key: q8Zr2Lm7Xk4Vp9Nt3Bw6Hc1"):
             for path in ("Basic Statistics/notes.md", "Ring Bearer responsibilities/notes.md"):
                 text = f"{path}: {field}"
                 with self.subTest(text=text):
