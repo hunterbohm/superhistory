@@ -155,9 +155,25 @@ def _scheme_words(m):
 
 def _holds_a_login(run):
     """Whether a Basic run is, or starts with, base64 of "user:password": the whole run, or its part before any "/",
-    as a login written right before a path's words reads ("Basic <login>/weekly.md")."""
-    ends = [i for i, c in enumerate(run) if c == "/" and i >= 4] + [len(run)]
-    return any(_basic_credential(run[:end]) or _decodes_to_login(run[:end]) for end in ends)
+    as a login written right before a path's words reads ("Basic <login>/weekly.md"), decodes, padded or not, to bytes
+    holding ":" and no control byte, as a login in UTF-8, Latin-1 or any single-byte code page does. The run is decoded
+    once and each part judged from it, so a run of many "/" costs time in proportion to its length."""
+    raw = base64.b64decode(run[:len(run) // 4 * 4]) if re.fullmatch(r"[A-Za-z0-9+/]*", run) else b""
+    if not raw and len(run) >= 4:
+        return False
+    colon = raw.find(b":")
+    control = re.search(rb"[\x00-\x1f\x7f]", raw)
+    colon, control = (len(raw) + 1 if colon < 0 else colon), (control.start() if control else len(raw) + 1)
+    for end in [i for i, c in enumerate(run) if c == "/" and i >= 2] + [len(run)]:
+        end -= end % 4 == 1  # a lone last character holds no byte
+        blocks, rest = end // 4 * 3, run[end // 4 * 4:end]
+        try:
+            tail = base64.b64decode(rest + "=" * (-len(rest) % 4)) if rest else b""
+        except ValueError:
+            continue
+        if (colon < blocks or b":" in tail) and not (control < blocks or re.search(rb"[\x00-\x1f\x7f]", tail)):
+            return True
+    return False
 
 
 def _english(part):
@@ -184,17 +200,6 @@ def _in_a_path(m, run):
         return False
     rest = tail.group()
     return " " not in rest or "/" in run or "/" in rest or bool(re.match(r" +[A-Z]", rest))
-
-
-def _decodes_to_login(run):
-    """Whether `run`, padded as base64 is when written without its "=", decodes to "user:password" with no control
-    character in it, as a Basic credential does in UTF-8, Latin-1 or any other single-byte code page."""
-    run = run[:-1] if len(run) % 4 == 1 else run
-    try:
-        raw = base64.b64decode(run + "=" * (-len(run) % 4), validate=True)
-    except ValueError:
-        return False
-    return b":" in raw and not re.search(rb"[\x00-\x1f\x7f]", raw)
 
 
 _BASIC_VALUE = re.compile(rf"(?i){_WORD}basic{_SCHEME_GAP}([A-Za-z0-9+/]{{12,}})")
