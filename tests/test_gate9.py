@@ -585,6 +585,43 @@ class NameValueTextTest(unittest.TestCase):
         self.assertEqual(mask_all(["Cookie", f"session={self.S}"]), ["Cookie", "[masked]"])
 
 
+class ReviewThreeTest(unittest.TestCase):
+    """The third review's findings."""
+
+    def test_text_after_a_masked_pair_and_a_token_stays(self):
+        text = json.dumps({"key": "password", "value": "SK0123456789abcdef0123456789abcdef"}, separators=(",", ":"))
+        tail = " preserve these ordinary notes after the object"
+        self.assertEqual(mask(text + tail), '{"key":"password","value":"[masked]"}' + tail)
+        self.assertEqual(mask(json.dumps({"key": "api_key", "value": "x"}) + " then glpat-" + "a1b2" * 5 + " end"),
+                         json.dumps({"key": "api_key", "value": "x"}) + " then [masked] end")
+
+    def test_a_pair_about_a_password_stays(self):
+        for obj in ({"key": "password_policy", "value": "lowercase,uppercase,digits"},
+                    {"name": "PASSWORD_HINT", "value": "some nice kind word"}, {"key": "token_type", "value": "Bearer"},
+                    {"name": "passwordResetUrl", "value": "https://x.example/reset"}):
+            with self.subTest(obj=obj):
+                text = json.dumps(obj, separators=(",", ":"))
+                self.assertEqual(mask(text), text)
+                self.assertEqual(mask_all(obj), obj)
+
+    def test_a_label_about_a_count_keeps_the_number(self):
+        for label in ("Max tokens", "Token budget", "Token limit", "Tokens per minute", "Maximum token count",
+                      "max_tokens", "tokenQuota", "Context window tokens"):
+            with self.subTest(label=label):
+                self.assertEqual(typed_secrets("mcp__playwright__browser_type", {"element": label, "text": "2048"}),
+                                 {"element": label, "text": "2048"})
+        self.assertEqual(typed_secrets("mcp__playwright__browser_type", {"element": "PIN", "text": "2048"})["text"],
+                         "[masked]")
+
+    def test_colour_codes_in_a_value_do_not_make_it_a_credential(self):
+        for form in FORMS:
+            c = FORMS[form]
+            for text in (f"pass=constant-{c}31mpropagation{c}0m", f"PWD={c}1m/workspace1{c}0m", f"pwd=/srv/app{c}0m"):
+                with self.subTest(text=text):
+                    self.assertEqual(mask(text), text)
+        self.assertEqual(mask("pwd=Tr0ub4dor-Zk9q\x1b[0m"), "pwd=[masked]\x1b[0m")
+
+
 # Commands as an argument list, each flag's value its own item: (the list, the items masked).
 ARGV = (
     (["login", "--password", PASSWORD], {2}), (["--token", SUB], {1}), (["--api-key", SUB, "--verbose"], {1}),
