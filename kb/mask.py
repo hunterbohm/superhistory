@@ -1101,12 +1101,19 @@ class _Split:
     def values(self, named):
         """The values of `named`, _named_spans in the view, as the text as written holds them: only of a split name, or
         one parted from its separator, as the text as written reads a value through invisible characters already, and
-        one past the separator, as on a blank line after "password:", splits no name; and up to where a reading the
-        text as written starts inside."""
+        one past the separator, as on a blank line after "password:", splits no name; up to where a reading the text
+        as written starts inside; and of a name parted by a character main sees, strictly."""
         out = []
         for name_start, name_end, start, end in named:
             if not self.split(name_start, name_end + 1) or start >= end:
                 continue
+            if _NEW_INVISIBLE.search(self.text, *self.raw(name_start, name_end + 1)):
+                # Parted by a colour code, DEL or a C1 control, which main sees, as grep's colour parts the word it
+                # found: read strictly, as a field's name is, so no name about a secret ("password_ESC[31mpolicy"),
+                # and but for a password's, a value shaped like a credential.
+                name, value = self.view[name_start:name_end], self.view[start:end]
+                if _ABOUT_A_PASSWORD.search(name) or not PASSWORD_NAME.search(name) and not _credential_shaped(value):
+                    continue
             start, end = self.raw(start, end)
             at = _reading_inside(self.text, start, end)
             if at is not None:
@@ -1374,8 +1381,8 @@ _SECRET_KINDS = frozenset((
     "docker", "card", "bank", "atm", "sim", "debit", "credit", "wallet", "phone", "device", "transfer", "transaction",
     "payment", "parental", "voicemail"))
 # Where a label's clause ends, at a mark other than "-" or "_"; and where its phrase ends inside one, at a word that
-# joins phrases ("Password for admin"). A word that finds, shows or names secrets reads on across a joining word
-# ("Search for passwords"), not across a mark.
+# joins phrases ("Password for admin"). A word that finds, shows or names secrets reads on across both ("Search for
+# passwords", "Search (passwords)").
 _CLAUSE_END = re.compile(r"[^A-Za-z0-9\s_-]+")
 _JOINING_WORD = re.compile(r"(?i)(?<![A-Za-z0-9])(?:to|for|of|from|in|on|at|with|by|and|or)(?![A-Za-z0-9])")
 _ABOUT_WORDS = frozenset((
@@ -1385,7 +1392,16 @@ _ABOUT_WORDS = frozenset((
     "usage", "created", "updated", "scope", "scopes", "permission", "permissions", "max", "maximum", "min", "minimum",
     "limit", "limits", "budget", "budgets", "quota", "quotas", "per", "total", "number", "remaining", "used", "window",
     "context", "cost", "price", "rate", "rates"))
-_SELECTOR_ATTRIBUTE = re.compile(r"(?i)\b(?:name|id|type|for|class|placeholder|aria-label|data-[\w-]+)\s*[~|^$*]?=")
+# A selector's attribute and its "=", read from where its name starts only, so a run of names costs time in proportion.
+_SELECTOR_ATTRIBUTE = re.compile(r"(?<![\w-])([\w-]+)\s*[~|^$*]?=")
+_SELECTOR_NAMES = frozenset(("name", "id", "type", "for", "class", "placeholder", "aria-label"))
+
+
+def _without_attribute_names(label):
+    """A selector with its own attribute names taken out ("input[name=password]" reads as "input[ password]")."""
+    return _SELECTOR_ATTRIBUTE.sub(
+        lambda m: " " if m.group(1).lower() in _SELECTOR_NAMES or m.group(1).lower().startswith("data-") else m.group(0),
+        label)
 
 
 def _names_a_secret(words, searching=False):
@@ -1421,8 +1437,8 @@ def _asks_for_a_secret(labels):
     (_ABOUT_WORDS), read word by word after a selector's own attribute names are taken out ("input[name=password]")."""
     asks, about = False, False
     for label in labels:
-        for clause in _CLAUSE_END.split(_SELECTOR_ATTRIBUTE.sub(" ", label)):
-            searching = False
+        searching = False  # a word that finds, shows or names secrets reads on to the label's end
+        for clause in _CLAUSE_END.split(_without_attribute_names(label)):
             for phrase in _JOINING_WORD.split(clause):
                 words = [w.lower() for w in _LABEL_WORD.findall(phrase)]
                 about = about or bool(_ABOUT_WORDS.intersection(words))
