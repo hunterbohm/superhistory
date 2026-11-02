@@ -418,6 +418,85 @@ class ReviewTwoTest(unittest.TestCase):
                                  "[masked]")
 
 
+HEADER_SECRET = "Pw7xYzQ9mK2nL4pR"
+# HTTP header and form field names, and other field names made of ordinary words, for the check that only a header
+# kb reads as "name: value" changes how its value is masked.
+HTTP_HEADERS = ("Accept", "Accept-Encoding", "Accept-Language", "Age", "Allow", "Cache-Control", "Connection",
+                "Content-Disposition", "Content-Encoding", "Content-Language", "Content-Length", "Content-Type", "Date",
+                "ETag", "Expires", "Host", "If-Modified-Since", "If-None-Match", "Last-Modified", "Link", "Location",
+                "Origin", "Pragma", "Range", "Referer", "Retry-After", "Server", "Strict-Transport-Security", "Upgrade",
+                "User-Agent", "Vary", "Via", "Warning", "WWW-Authenticate", "X-Forwarded-For", "X-Request-Id",
+                "X-Frame-Options", "X-Content-Type-Options", "Sec-Fetch-Mode", "Sec-Fetch-Site", "Sec-CH-UA", "DNT",
+                "Forwarded", "Keep-Alive", "TE", "Trailer", "Transfer-Encoding", "Content-Security-Policy",
+                "Access-Control-Allow-Origin", "Access-Control-Allow-Headers", "Cookie2", "X-Cookie-Consent",
+                "Authorization-Scope", "Cookies", "cookie_consent", "authorization_url", "cookie_name")
+HEADER_NAMES = {"cookie", "set-cookie", "authorization", "proxy-authorization"}
+
+
+def field_names():
+    from tests.ordinary import WORDS
+    words = sorted(set(WORDS) | {"plan", "status", "message", "title", "path", "user", "email", "phone", "address",
+                                 "query", "page", "limit", "offset", "sort", "filter", "lang", "region", "zone", "mode"})
+    names = set(HTTP_HEADERS) | {n.lower() for n in HTTP_HEADERS} | set(HEADER_NAMES)
+    names |= {"Set-Cookie", "SET-COOKIE", "Cookie", "COOKIE", "Authorization", "Proxy-Authorization"}
+    for a in words:
+        names |= {a, a.title(), a.upper()}
+        for b in words:
+            names |= {f"{a}_{b}", f"{a.title()}-{b.title()}", f"{a}{b.title()}"}
+    return sorted(names)
+
+
+class HeaderFieldTest(unittest.TestCase):
+    """A header held as a field's key, or as a name and a value held apart, is masked as kb masks the header in text,
+    "name: value" (found in the Cloud egress review); no other field name changes."""
+
+    CASES = (
+        ({"Cookie": f"session={HEADER_SECRET}"}, {"Cookie": "[masked]"}),
+        ({"Set-Cookie": f"sid={HEADER_SECRET}; Path=/; HttpOnly"}, {"Set-Cookie": "[masked]"}),
+        ({"cookie": f"a=1; session={HEADER_SECRET}"}, {"cookie": "[masked]"}),
+        ({"Authorization": f"{HEADER_SECRET}9q"}, {"Authorization": "[masked]"}),
+        ({"Proxy-Authorization": f"{HEADER_SECRET}9q"}, {"Proxy-Authorization": "[masked]"}),
+        ({"headers": [{"name": "Cookie", "value": f"session={HEADER_SECRET}"}]},
+         {"headers": [{"name": "Cookie", "value": "[masked]"}]}),
+        ({"headers": [{"key": "Authorization", "value": f"{HEADER_SECRET}9q"}]},
+         {"headers": [{"key": "Authorization", "value": "[masked]"}]}),
+        ({"headers": [["Cookie", f"session={HEADER_SECRET}"]]}, {"headers": [["Cookie", "[masked]"]]}),
+        ({"headers": [["Authorization", f"{HEADER_SECRET}9q"]]}, {"headers": [["Authorization", "[masked]"]]}),
+        ({"headers": [("set-cookie", f"sid={HEADER_SECRET}")]}, {"headers": [["set-cookie", "[masked]"]]}),
+    )
+
+    def test_each_shape_is_masked(self):
+        for value, masked in self.CASES:
+            with self.subTest(value=value):
+                self.assertEqual(mask_all(value), masked)
+
+    def test_through_the_readers(self):
+        for value, _ in self.CASES:
+            for reader in READERS:
+                with self.subTest(reader=reader, value=value):
+                    text = stored(reader, tool_call(reader, "mcp__http__request", {"url": "https://api.example.com",
+                                                                                    "request": value}))
+                    self.assertNotIn(HEADER_SECRET, text)
+
+    def test_only_a_header_name_changes_how_a_value_is_masked(self):
+        from unittest import mock
+        import kb.mask as mask_module
+        values = (f"session={HEADER_SECRET}", f"{HEADER_SECRET}9q", f"Bearer {HEADER_SECRET}xYz", "text/html; charset=utf-8",
+                  "en-US,en;q=0.9", "gzip, deflate", "no-cache", "1024", "keep-alive", "the launch plan for Dana")
+        names = field_names()
+        self.assertGreater(len(names), 10000)
+        changed = set()
+        for name in names:
+            for value in values:
+                now = mask_all({name: value})
+                with mock.patch.object(mask_module, "_HEADER_NAMES", frozenset()):
+                    before = mask_all({name: value})
+                if now != before:
+                    changed.add(name.lower())
+        self.assertEqual(changed - HEADER_NAMES, set())
+        self.assertEqual(changed, {"cookie", "set-cookie", "authorization", "proxy-authorization"})
+
+
 # Commands as an argument list, each flag's value its own item: (the list, the items masked).
 ARGV = (
     (["login", "--password", PASSWORD], {2}), (["--token", SUB], {1}), (["--api-key", SUB, "--verbose"], {1}),
