@@ -912,6 +912,43 @@ class ReviewTenTest(unittest.TestCase):
                 self.assertLess(large, 20 * small + 0.05, (unit, small, large))
 
 
+class ReviewElevenTest(unittest.TestCase):
+    """The eleventh review's findings."""
+
+    def test_a_token_or_pin_of_another_kind_across_the_label(self):
+        for label, value in (("Token (CSS)", "color.primary"), ("Token (lexer)", "IDENT"), ("Pin (map)", "40.71,-74.00"),
+                             ("Token - design system", "spacing-4"), ("PIN: map marker", "Pier 39")):
+            with self.subTest(label=label):
+                self.assertEqual(typed_secrets("browser_type", {"element": label, "text": value}),
+                                 {"element": label, "text": value})
+        for label in ("Token (required)", "PIN (4 digits)", "Your PIN", "Bot token (Discord)"):
+            with self.subTest(label=label):
+                self.assertEqual(typed_secrets("browser_type", {"element": label, "text": "4821"})["text"], "[masked]")
+
+    def test_an_identifier_is_no_credential_in_the_new_readings(self):
+        for text in ("x-auth\x1b[31m-flow\x1b[0m: OAuth2AuthorizationCode", "user=ci pass=ConvertBF16ToF32",
+                     "user=ci pass=OAuth2AuthorizationCode", "user=ci pass=HTTPStatus200Handler"):
+            with self.subTest(text=text):
+                self.assertEqual(mask(text), text)
+        for text, secret in (("user=ci pass=Tr0ub4dor-Zk9q", "Tr0ub4dor"), ("user=ci pass=L4terSecret-Xq9", "L4ter"),
+                             ("DB_\x1b[01;31mPASS\x1b[mWORD=L4terSecret-Xq9", "L4ter"),
+                             ("api_\x1b[1mkey\x1b[0m: q8Zr2Lm7Xk4Vp9Nt3Bw6Hc1", "q8Zr2Lm7")):
+            with self.subTest(text=text):
+                self.assertNotIn(secret, mask(text))
+
+    def test_reading_on_only_at_a_name_that_ends_in_a_secret(self):
+        for text, masked in (("password: passwordAlgorithm: bcrypt", "password: [masked] bcrypt"),
+                             ("password: password_description: strong", "password: [masked] strong"),
+                             ("passwd: Ppasswd: Pw7xYzQ9mK2nL4pR end", "passwd: [masked] [masked] end")):
+            with self.subTest(text=text):
+                self.assertEqual(mask(text), masked)
+
+    def test_an_ordinary_typing_call_renders_as_main_renders_it(self):
+        args = {"element": "Search " + "documentation " * 30, "ref": "e15", "text": "billing-invoice-query"}
+        self.assertEqual(codex._call_args(args, "browser_type"), "billing-invoice-query")
+        self.assertIn("[masked]", codex._call_args({"element": "Password", "ref": "e3", "text": "x7Kq9mZ2"}, "browser_type"))
+
+
 # Commands as an argument list, each flag's value its own item: (the list, the items masked).
 ARGV = (
     (["login", "--password", PASSWORD], {2}), (["--token", SUB], {1}), (["--api-key", SUB, "--verbose"], {1}),
