@@ -350,6 +350,22 @@ class CheckTest(unittest.TestCase):
         self.assertLess(time.monotonic() - started, 0.35)
         self.assertEqual(self.log_entries()[-1]["error"], "TimeoutError")
 
+    def test_lookup_with_runs_the_check_over_several_stores(self):
+        self.add("gmail", "test:a", "Dana on the Connect launch date", ts="2026-10-04T10:00:00Z")
+        team_path = os.path.join(os.path.dirname(self.paths.db), "team.sqlite")
+        team = store.connect(team_path)
+        self.addCleanup(team.close)
+        store.store_item(team, "notes", "m-1/c-aaaaaaaaaaaaa:plan.md", "2026-10-03T10:00:00Z", "t",
+                         "Connect launch checklist", {"path": "/team/plan.md"})
+        team.commit()
+        mine = store.connect(self.paths.db, readonly=True)
+        self.addCleanup(mine.close)
+        stores = [("mine", mine), ("team", team)]
+        found = check.lookup_with(lambda query, limit, keep: search.search_stores(stores, query, limit=limit, keep=keep),
+                                  ASK, [], "sess-1", set(), plan_and_pick("Dana Connect launch"), 5.0, None)
+        self.assertEqual(sorted((h["store"], h["source_id"]) for h in found.hits),
+                         [("mine", "test:a"), ("team", "m-1/c-aaaaaaaaaaaaa:plan.md")])
+
     def test_lookup_returns_the_query_candidates_and_hits(self):
         self.add("gmail", "test:a", "Dana on the Connect launch date", ts="2026-10-04T10:00:00Z")
         self.add("vault", "test:b", "Connect launch checklist", ts="2026-10-03T10:00:00Z")

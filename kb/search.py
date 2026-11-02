@@ -4,6 +4,7 @@ import re
 import sqlite3
 from datetime import datetime, timezone
 
+from kb import store
 from kb.mask import mask, mask_all
 from kb.store import SUMMARY_KINDS, TOKENIZE, current, item_names, secret_id, unversioned
 
@@ -101,11 +102,13 @@ def search(db, query, after=None, sources=(), limit=10, before=None, keep=None):
     if before:
         now = datetime.fromisoformat(before.replace("Z", "+00:00"))
     rows = db.execute(
-        f"SELECT id, kind, source, source_id, ts, title, content, metadata, superseded_by FROM docs "
+        f"SELECT id, kind, source, source_id, ts, title, content, metadata FROM docs "
         f"WHERE id IN ({','.join('?' * len(fused))})", list(fused)).fetchall()
+    marks = store.superseded(db, {(r[2], r[3]) for r in rows})
     best, total = {}, {}
     for row in rows:
-        rid, kind, src, sid, ts, title, content, meta, superseded = row
+        rid, kind, src, sid, ts, title, content, meta = row
+        superseded = marks.get((src, sid))
         score = fused[rid] * coverage[rid] * (1 + math.exp(-_age_days(ts, now) / 180))
         if superseded:
             score *= 0.5
@@ -136,6 +139,16 @@ def search(db, query, after=None, sources=(), limit=10, before=None, keep=None):
         hit["snippet"] = re.sub(r"\s+", " ", snip if "[" in snip else own[:SNIPPET_CHARS]).strip()
         hit["excerpt"] = excerpt(marked if MARK in marked else own)
     return hits
+
+
+def search_stores(stores, query, after=None, sources=(), limit=10, before=None, keep=None):
+    """search() in each of several stores, merged best first. `stores` is [(label, db), ...]. Row ids are unique only
+    within one store, so each hit names its store in hit["store"]."""
+    hits = []
+    for label, db in stores:
+        for hit in search(db, query, after, sources, limit, before, keep):
+            hits.append({**hit, "store": label})
+    return sorted(hits, key=lambda h: -h["score"])[:limit]
 
 
 def _masked_item(db, hit):

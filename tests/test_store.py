@@ -453,7 +453,8 @@ class MaskVersionTest(TempDB):
     def test_a_store_from_before_versions_does_not_open_unless_it_is_empty(self):
         path = os.path.join(self.tmp.name, "old.sqlite")
         old = sqlite3.connect(path)
-        old.executescript(store.SCHEMA.replace("  superseded_by INTEGER,\n  masked TEXT\n", "  superseded_by INTEGER\n"))
+        old.executescript(store.SCHEMA.replace("  metadata TEXT NOT NULL DEFAULT '{}',\n  masked TEXT\n",
+                                               "  metadata TEXT NOT NULL DEFAULT '{}'\n"))
         self.assertNotIn("masked", [column[1] for column in old.execute("PRAGMA table_info(docs)")])
         old.commit()
         old.close()
@@ -508,6 +509,22 @@ class MaskVersionTest(TempDB):
         row = {"kind": "doc", "ts": iso(), "title": "t", "content": "c", "metadata": {"host": "tokenbox"}}
         store.replace_rows(self.db, "notes", "tokenbox:Areas/notes-2026-10-27.md", [row])
         self.assertEqual(len(self.ids()), 1, "the row's own host, in its metadata, says how its id is read")
+
+    def test_the_install_prefix_is_checked_apart_from_the_readers_id(self):
+        # Decision 111: ids carry the prefix of the install that read them, "<install>:" or "<install>@<host>:".
+        install = "c-abcdefghijklm"
+        for host in ("desk", "tokenbox", "secret-lab", "studio-pw"):
+            for prefix, names in ((f"{install}:", ("studio",)), (f"{install}@{host}:", (host,))):
+                with self.subTest(prefix=prefix):
+                    self.assertFalse(store.secret_id("notes", f"{prefix}Areas/notes-2026-10-27.md", names))
+                    self.assertFalse(store.secret_id("hermes", f"{prefix}secret-project:20261028_101500_a1b2c3",
+                                                     names + ("secret-project",)), "a profile named for a secret")
+                    self.assertTrue(store.secret_id("notes", f"{prefix}key-{self.TOKEN}.md", names))
+                    self.assertTrue(store.secret_id("notes", f"{prefix}password:walrus2secret9", names))
+        self.assertTrue(store.secret_id("notes", f"{install}@{self.TOKEN}:a.md", ("desk",)), "a host that is a token")
+        row = {"kind": "doc", "ts": iso(), "title": "t", "content": "c", "metadata": {"host": "tokenbox"}}
+        store.replace_rows(self.db, "notes", f"{install}@tokenbox:Areas/notes-2026-10-27.md", [row])
+        self.assertEqual(len(self.ids()), 1, "an item another install read over SSH, as Sync brings it")
 
     def test_a_whole_key_with_short_lines_is_masked(self):
         body = ["MC4CAQAw", "BQYDK2Vw", "BCIEIAAB", "AgMEBQYH", "CAkKCwwN", "Dg8QERIT", "FBUWFxgZ", "GhscHR4f"]
@@ -585,9 +602,9 @@ class MaskVersionTest(TempDB):
         with self.assertRaises(store.NeedsRebuild):
             store.connect(self.path)
         self.db.execute("UPDATE docs SET masked=? WHERE id=?", (store.VERSION, rid))
-        self.db.execute("UPDATE docs SET superseded_by=1 WHERE id=?", (rid,))
+        store.mark_superseded(self.db, "s", "a", ("s", "b"), "c-abcdefghijklm")
         self.assertEqual(store.current(self.db, [rid]), {rid})
-        self.db.execute("UPDATE docs SET superseded_by=NULL WHERE id=?", (rid,))
+        store.clear_superseded(self.db, "s", "a", "c-abcdefghijklm")
         self.assertEqual(store.current(self.db, [rid]), {rid}, "a supersede mark is not the row's text")
 
     def test_a_rebuild_cut_short_after_the_last_batch_is_finished_by_the_next_remask(self):
@@ -797,7 +814,7 @@ class FtsTriggerTest(TempDB):
 
     def test_updating_other_columns_keeps_index_intact(self):
         self.add("a", "kumquat marmalade")
-        self.db.execute("UPDATE docs SET superseded_by=99")
+        self.db.execute("UPDATE docs SET metadata='{\"note\": 1}'")
         self.assertEqual(len(self.fts_ids("kumquat")), 1)
         self.assert_fts_consistent()
 

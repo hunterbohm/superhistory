@@ -152,10 +152,14 @@ class FullTest(HermesCase):
                                ("desk",))
         log = logging.getLogger("varve-test-hermes")
         log.addHandler(logging.NullHandler())
-        ingest.run_unit(db, source, "desk", ingest.LocalReader(), log)
-        self.assertEqual(sorted(r[0] for r in db.execute("SELECT DISTINCT source_id FROM docs")),
-                         ["desk:secret-project:20261028_101500_sec", "desk:token-research:20261028_101500_tok",
-                          "desk:work:20261028_101500_wor"])
+        ingest.run_unit(db, source, "desk", ingest.LocalReader(), log, "c-abcdefghijklm:")
+        kept = ["c-abcdefghijklm:secret-project:20261028_101500_sec", "c-abcdefghijklm:token-research:20261028_101500_tok",
+                "c-abcdefghijklm:work:20261028_101500_wor"]
+        self.assertEqual(sorted(r[0] for r in db.execute("SELECT DISTINCT source_id FROM docs")), kept)
+        db.execute("UPDATE docs SET masked='0123456789abcdef'")  # an earlier mask version: remask reads each id again
+        store.remask(db)
+        self.assertEqual(sorted(r[0] for r in db.execute("SELECT DISTINCT source_id FROM docs")), kept,
+                         "under the install's prefix too, remask reads the profile apart")
 
     def test_injections_and_noise_dropped(self):
         items = self.items()
