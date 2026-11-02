@@ -88,7 +88,7 @@ class RemoteTest(unittest.TestCase):
         self.note("Projects/pelican.md", "Dana approved the pelican quote.")
         failures = ingest.run(self.db, self.config(), LOG, with_summaries=False)
         self.assertEqual(failures, 0)
-        self.assertEqual(self.stored_ids(), ["laptop:Projects/pelican.md"])
+        self.assertEqual(self.stored_ids(), ["desk@laptop:Projects/pelican.md"])
         hit = search.search(self.db, "pelican quote")[0]
         self.assertEqual(hit["meta"]["host"], "laptop")
         self.assertEqual(search.pointer(hit["meta"], "desk"), f"laptop:{self.notes}/Projects/pelican.md")
@@ -115,28 +115,28 @@ class RemoteTest(unittest.TestCase):
         self.note("Work/plan.md", "plan markdown")
         cfg = self.config(extra='exclude = ["Journal"]\nextensions = [".txt"]\n')
         ingest.run(self.db, cfg, LOG, with_summaries=False)
-        self.assertEqual(self.stored_ids(), ["laptop:Work/plan.txt"])
+        self.assertEqual(self.stored_ids(), ["desk@laptop:Work/plan.txt"])
 
     def test_a_renamed_remote_note_is_found_only_under_its_new_name(self):
         self.note("old.md", "budget memo")
         ingest.run(self.db, self.config(), LOG, with_summaries=False)
         os.rename(os.path.join(self.notes, "old.md"), os.path.join(self.notes, "new.md"))
         ingest.run(self.db, self.config(), LOG, with_summaries=False)
-        self.assertEqual(self.stored_ids(), ["laptop:new.md"])
+        self.assertEqual(self.stored_ids(), ["desk@laptop:new.md"])
 
     def test_an_empty_remote_listing_deletes_nothing(self):
         self.note("keep.md", "keep me")
         ingest.run(self.db, self.config(), LOG, with_summaries=False)
         os.remove(os.path.join(self.notes, "keep.md"))
         ingest.run(self.db, self.config(), LOG, with_summaries=False)
-        self.assertEqual(self.stored_ids(), ["laptop:keep.md"])
+        self.assertEqual(self.stored_ids(), ["desk@laptop:keep.md"])
 
     def test_a_listing_cut_off_midway_deletes_nothing_and_keeps_what_was_read(self):
         self.note("a.md", "one")
         self.note("b.md", "two")
         failures = ingest.run(self.db, self.config(("drops",)), LOG, with_summaries=False)
         self.assertEqual(failures, 1)
-        self.assertEqual(self.stored_ids(), ["drops:a.md", "drops:b.md"])
+        self.assertEqual(self.stored_ids(), ["desk@drops:a.md", "desk@drops:b.md"])
         self.assertIn("notes@drops", dict(store.failing(self.db)))
 
     def test_an_unreadable_remote_folder_deletes_nothing(self):
@@ -148,7 +148,7 @@ class RemoteTest(unittest.TestCase):
             self.skipTest("running as a user who can read any folder")
         failures = ingest.run(self.db, self.config(), LOG, with_summaries=False)
         self.assertEqual(failures, 1)
-        self.assertEqual(self.stored_ids(), ["laptop:locked/a.md"])
+        self.assertEqual(self.stored_ids(), ["desk@laptop:locked/a.md"])
 
     def test_an_asleep_computer_is_tried_once_a_run_and_reported_only_after_days(self):
         self.note("a.md", "one")
@@ -182,7 +182,7 @@ class RemoteTest(unittest.TestCase):
         self.note("a.md", "one")
         failures = ingest.run(self.db, self.config(("refused", "laptop")), LOG, with_summaries=False)
         self.assertEqual(failures, 1)
-        self.assertEqual(self.stored_ids(), ["laptop:a.md"])
+        self.assertEqual(self.stored_ids(), ["desk@laptop:a.md"])
 
     def test_a_nonzero_exit_after_output_still_fails_and_moves_no_watermark(self):
         self.note("a.md", "one")
@@ -197,7 +197,7 @@ class RemoteTest(unittest.TestCase):
                            f'[sources.notes]\npath = {json.dumps(self.notes)}\nhosts = ["desk", "laptop"]\n')
         self.assertEqual(cfg.units(), ("notes@desk", "notes@laptop", "summarize"))
         self.assertEqual(ingest.run(self.db, cfg, LOG, with_summaries=False), 0)
-        self.assertEqual(self.stored_ids(), ["desk:a.md", "laptop:a.md"])
+        self.assertEqual(self.stored_ids(), ["desk:a.md", "desk@laptop:a.md"])
         self.assertEqual(self.ssh_aliases(), ["laptop", "laptop"])
 
 

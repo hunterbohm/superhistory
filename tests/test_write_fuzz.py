@@ -139,14 +139,14 @@ def op_ingest(db, r, p):
     """kb's own write, as ingest makes it."""
     sid, title, text = r.choice(IDS), p.title(), p.text()
     p.items[sid] = (title, text)
-    ingest.apply(db, "notes", "desk", Item(sid, TS, title, text, p.meta(sid), 0))
+    ingest.apply(db, "notes", "desk:", Item(sid, TS, title, text, p.meta(sid), 0), "desk")
 
 
 def op_moved(db, r, p):
     """The same text under new metadata, which store_item gives the rows without rewriting them."""
     sid = r.choice(IDS)
     if sid in p.items:
-        ingest.apply(db, "notes", "desk", Item(sid, TS, *p.items[sid], p.meta(sid), 0))
+        ingest.apply(db, "notes", "desk:", Item(sid, TS, *p.items[sid], p.meta(sid), 0), "desk")
 
 
 def _rows(r, p, sid, text):
@@ -231,9 +231,10 @@ def op_delete(db, r, p):
 
 
 def op_supersede(db, r, p):
-    ids = [i for (i,) in db.execute("SELECT id FROM docs")]
-    if len(ids) > 1:
-        db.execute("UPDATE docs SET superseded_by=? WHERE id=?", tuple(r.sample(ids, 2)))
+    items = db.execute("SELECT DISTINCT source, source_id FROM docs").fetchall()
+    if len(items) > 1:
+        (source, source_id), new = r.sample(items, 2)
+        store.mark_superseded(db, source, source_id, tuple(new), "c-abcdefghijklm")
 
 
 OPERATIONS = {name[3:]: fn for name, fn in globals().items() if name.startswith("op_")}

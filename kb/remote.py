@@ -167,5 +167,5 @@ class SshReader:
                 err.seek(0)
                 stderr = mask(err.read().decode(errors="replace"))[-STDERR_TAIL:]
                 away = proc.returncode == 255 and OFF_NETWORK.search(stderr)
-                failed = f"ssh {self.host.name} exited {proc.returncode}: {stderr}"
+                failed = mask(f"ssh {self.host.name} exited {proc.returncode}: {stderr}")
                 raise (HostAway if away else RuntimeError)(failed)

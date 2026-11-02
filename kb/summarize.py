@@ -6,7 +6,7 @@ from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from datetime import datetime, timedelta, timezone
 from typing import NamedTuple, Optional
 
-from kb import ai, store
+from kb import ai, ids, store
 from kb.ai import BadAnswer, Prompt, Refused
 from kb.mask import mask, masked_log
 
@@ -108,12 +108,18 @@ def plan(text, previous, now):
     return None if waits(len(text), previous, now) else previous["of_chars"]
 
 
-def pending(db, scope, limit=None):
+def pending(db, scope, limit=None, owner=None):
     """Long items in scope, quiet for SETTLE_MINUTES, whose latest pass is not of their current hash and that have
-    no recorded failure for it, newest first. Items that waits() holds back are left out before `limit`."""
+    no recorded failure for it, newest first. Items that waits() holds back are left out before `limit`. With
+    `owner`, only items under that install's prefixes (kb.ids): another computer summarizes its own items."""
     if not scope.rules:
         return []
     names = sorted(scope.rules)
+    mine = ""
+    args = list(names)
+    if owner:
+        sql, params = ids.owned_sql("r.source_id", owner)
+        mine, args = "AND " + sql, args + params
     sql = f"""
         SELECT r.source, r.source_id, r.ts, r.title, json_extract(r.metadata, '$.hash') AS h, r.metadata,
                (SELECT sum(length(c.content)) FROM docs c
@@ -123,6 +129,7 @@ def pending(db, scope, limit=None):
                 ORDER BY json_extract(s.metadata, '$.of_chars') DESC LIMIT 1) AS previous
         FROM docs r
         WHERE r.kind='raw' AND json_extract(r.metadata, '$.chunk')=0 AND r.source IN ({','.join('?' * len(names))})
+          {mine}
           AND julianday(r.ts) <= julianday('now', '-{SETTLE_MINUTES} minutes')
           AND json_extract(previous, '$.of_hash') IS NOT h
           AND NOT EXISTS (SELECT 1 FROM ingest_state f WHERE f.source='{FAILED}'
@@ -131,7 +138,7 @@ def pending(db, scope, limit=None):
         ORDER BY r.ts DESC"""
     now = datetime.now(timezone.utc)
     items = (Item(src, sid, ts, title, h, json.loads(meta), chars, json.loads(previous) if previous else None)
-             for src, sid, ts, title, h, meta, chars, previous in db.execute(sql, names))
+             for src, sid, ts, title, h, meta, chars, previous in db.execute(sql, args))
     # A store from before ingest refused such ids can hold an item whose id looks like a secret; remask deletes it.
     return list(itertools.islice((i for i in items if scope.covers(i.source, i.source_id)
                                   and not store.secret_id(i.source, i.source_id,
@@ -165,6 +172,9 @@ def cap(text, limit=MAX_INPUT_CHARS, slices=SLICES):
 
 
 def request(item, text, allowed, start=0):
+    """The model request that summarizes `item` (an Item): `text` is the part to read, `start` where it begins in the
+    item's text (0 for a full pass), `allowed` the atom types its source may yield. Use it with parse() and rows() to
+    summarize an item outside summarize()."""
     text, title = (CLOSING_TAG.sub("</ item>", t) for t in (text, item.title))
     note = (f"The first {start:,} characters of this item are already indexed. The item below repeats the last "
             f"{OVERLAP:,} of them for context, then the line {INDEXED}. Extract only from the text after that line.\n\n"
@@ -285,7 +295,7 @@ def run(db, config, model, log, limit=None, only=None):
     """Summarize up to `limit` pending items (the config's per_run by default), newest first."""
     log = masked_log(log)
     rules = scope(config, only)
-    backlog = pending(db, rules)
+    backlog = pending(db, rules, owner=config.owner)
     items = backlog[:config.summarize.per_run if limit is None else limit]
     log.info("summarize: %d pending, running %d with %s", len(backlog), len(items), model.name)
     return summarize(db, items, rules, model, log)
@@ -294,7 +304,7 @@ def run(db, config, model, log, limit=None, only=None):
 def estimate(db, config, only=None):
     """Per source: (pending items, characters the model would read)."""
     totals = {}
-    for item in pending(db, scope(config, only)):
+    for item in pending(db, scope(config, only), owner=config.owner):
         t = totals.setdefault(item.source, [0, 0])
         t[0] += 1
         t[1] += min(item.chars, MAX_INPUT_CHARS)

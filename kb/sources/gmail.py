@@ -31,6 +31,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from email import policy
+from email.message import EmailMessage
 from email.utils import getaddresses, parseaddr
 from html import unescape
 from typing import Dict, List, Literal, NamedTuple, Optional, Tuple
@@ -562,20 +563,44 @@ def _clean_body(body):
     return mask.clip(text, BODY_CHARS)
 
 
-def _render(address, thread, bodies):
+# Gmail's own labels that drop a message, as Takeout names them. Gmail keeps these names from any label a user makes.
+TAKEOUT_SKIP_LABELS = {"Drafts", "Trash", "Spam"}
+
+
+def _drops(label):
+    """Whether a message's label is Gmail's own draft, trash or spam label, as IMAP's decoded names (_labels) and
+    Gmail's API give it ("DRAFT") or as Takeout names it ("Trash"). Decoding has put Gmail's own flags in capitals, so a
+    label that still starts with a backslash is one the user made, as main's IMAP reader has it; so is any other."""
+    return label in SKIP_MESSAGE_LABELS or label in TAKEOUT_SKIP_LABELS
+
+
+def render_thread(account, thread_id, messages, mark=0):
+    """One Gmail thread as an Item, from its messages as `email.message` objects, each with its Gmail labels and its
+    time in epoch seconds: [(message, labels, epoch), ...]. A message from the `mailbox` module works too. Drafts,
+    trash, spam and sign-in or reset codes are dropped one message at a time; returns None when none is left.
+    `thread_id` is the item's source_id; a decimal X-GM-THRID also gives the item its Gmail link."""
+    messages = list(messages)
+    # The thread's labels, as Gmail's thread holds them: every message's but a draft's, trash's or spam's, even one
+    # whose text is left out.
+    labels_seen = list(dict.fromkeys(label for _, labels, _ in messages if not any(_drops(str(x)) for x in labels)
+                                     for label in labels))
     blocks, people, subject, last = [], [], None, None
-    for m in thread.messages:
-        msg = email.message_from_bytes(bodies.get(m.uid, b""), policy=policy.default)
+    for msg, labels, epoch in sorted(messages, key=lambda m: m[2]):
+        if any(_drops(str(label)) for label in labels):
+            continue
+        if not isinstance(msg, EmailMessage):
+            msg = email.message_from_bytes(msg.as_bytes(), policy=policy.default)
         body, names = _body_and_attachments(msg)
         body = _clean_body(body)
-        if mask.is_auth_noise(f"{m.subject}\n{body}"):
+        msg_subject = _header(msg, "subject")
+        if mask.is_auth_noise(f"{msg_subject}\n{body}"):
             continue
-        subject = m.subject if subject is None else subject
-        last = m
+        subject = msg_subject if subject is None else subject
+        last = epoch
         head = {key: _header(msg, key) for key in ("from", "to", "cc")}
-        lines = [f"From: {head['from'] or m.sender}"]
+        lines = [f"From: {head['from']}"]
         lines += [f"{label}: {head[key]}" for label, key in (("To", "to"), ("Cc", "cc")) if head[key]]
-        lines.append(f"Date: {_iso(m.epoch)}")
+        lines.append(f"Date: {_iso(epoch)}")
         text = "\n".join([body, *(f"[attachment: {n}]" for n in names)]).strip()
         blocks.append("\n".join(lines) + "\n\n" + text)
         for _, addr in getaddresses(list(head.values())):
@@ -584,11 +609,34 @@ def _render(address, thread, bodies):
                 people.append(addr)
     if last is None:
         return None
-    url = f"https://mail.google.com/mail/u/?authuser={quote(address)}#all/{int(thread.id):x}"
-    return Item(thread.id, _iso(last.epoch), PREFIX.sub("", subject).strip() or "(no subject)",
-                "\n\n---\n\n".join(blocks),
-                {"url": url, "account": address, "participants": people[:30], "labels": list(thread.labels)},
-                thread.mark)
+    meta = {"account": account, "participants": people[:30], "labels": labels_seen}
+    if str(thread_id).isdigit():
+        meta["url"] = f"https://mail.google.com/mail/u/?authuser={quote(account)}#all/{int(thread_id):x}"
+    return Item(thread_id, _iso(last), PREFIX.sub("", subject).strip() or "(no subject)", "\n\n---\n\n".join(blocks),
+                meta, mark)
 
 
-TYPE = SourceType(Options, extract, others_wrote=True, needs_model=True)
+def _render(address, thread, bodies):
+    return render_thread(address, thread.id, [(_message(m, bodies.get(m.uid, b"")), m.labels, m.epoch)
+                                              for m in thread.messages], thread.mark)
+
+
+def _message(m, raw):
+    """The fetched message, with the subject and sender already fetched filled in when its body did not come back."""
+    msg = email.message_from_bytes(raw, policy=policy.default)
+    for name, value in (("Subject", m.subject), ("From", m.sender)):
+        if msg.get(name) is None and value:
+            msg[name] = " ".join(value.split())
+    return msg
+
+
+def _account(options):
+    # Gmail ignores dots in a gmail.com name and treats googlemail.com as gmail.com; other domains keep theirs.
+    local, _, domain = options.address.strip().lower().rpartition("@")
+    if domain in ("gmail.com", "googlemail.com"):
+        local, domain = local.replace(".", ""), "gmail.com"
+    return f"gmail:{local}@{domain}"
+
+
+TYPE = SourceType(Options, extract, others_wrote=True, needs_model=True,
+                  account=_account)
