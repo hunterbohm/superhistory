@@ -1082,10 +1082,41 @@ def secret_in_id(text, names=()):
     return _mask_once(text, _ID_RULES) != text
 
 
+# The headers kb reads in text as "name: value", a cookie or a credential: a field so named, or a name and a value
+# held apart under one ({"name": "Cookie", "value": ...}, ["Authorization", ...]), is read so too. And the keys that
+# hold such a name beside "value".
+_HEADER_NAMES = frozenset(("cookie", "set-cookie", "authorization", "proxy-authorization"))
+_PAIR_NAME_KEYS = ("name", "key", "header", "field")
+
+
+def _as_header(name, value):
+    """`value` masked as kb masks it after "name: " in text, or None when `name` is no header _HEADER_NAMES holds."""
+    if name.strip().lower() not in _HEADER_NAMES:
+        return None
+    head = f"{name.strip()}: "
+    masked = mask(head + value)
+    return masked[len(head):] if masked.startswith(head) else "[masked]"
+
+
+def _pair_value(name, value, masked):
+    """A value held apart from its name, `masked` as mask_all masked it alone, read with its name too: as a header's
+    (_as_header), or as a secret's field's when it is shaped like a credential. What either reading hides is hidden."""
+    if not isinstance(name, str) or not isinstance(value, str):
+        return masked
+    paired = _as_header(name, value)
+    if paired is None:
+        paired = "[masked]" if _SECRET_FIELD.match(name.strip()) and _credential_shaped(value.strip()) else value
+    if paired == value or paired == masked:
+        return masked
+    return paired if masked == value else "[masked]"
+
+
 def mask_all(value, key=None):
     """mask() over every string in a value of dicts, lists and strings, such as an item's metadata. Only the
     secret-looking parts change, so a link or a path still points where it did. A value is masked with its key in
-    front, as "key=value", so {"password": "..."} is caught by its field name as it would be in text."""
+    front, as "key=value", so {"password": "..."} is caught by its field name as it would be in text; and under a
+    header's name, as "name: value" too (_as_header), as {"Cookie": "session=..."} is a cookie. A name and a value
+    held apart are read together (_pair_value)."""
     if isinstance(value, str):
         if key is None:
             return mask(value)
@@ -1094,10 +1125,18 @@ def mask_all(value, key=None):
             return "[masked]"  # the whole value, which may hold a space or a quote that would end it in text
         masked = mask(f"{key}={value}")
         head = mask(key) + "="
-        return masked[len(head):] if masked.startswith(head) else mask(value)
+        plain = masked[len(head):] if masked.startswith(head) else mask(value)
+        header = _as_header(key, value)
+        if header is None or header == value or header == plain:
+            return plain
+        return header if plain == value else "[masked]"
     if isinstance(value, dict):
-        return {mask(k) if isinstance(k, str) else k: mask_all(v, k if isinstance(k, str) else None)
-                for k, v in value.items()}
+        out = {mask(k) if isinstance(k, str) else k: mask_all(v, k if isinstance(k, str) else None)
+               for k, v in value.items()}
+        name = next((value[k] for k in _PAIR_NAME_KEYS if isinstance(value.get(k), str)), None)
+        if name is not None and isinstance(value.get("value"), str) and "value" in out:
+            out["value"] = _pair_value(name, value["value"], out["value"])
+        return out
     if isinstance(value, (list, tuple)):
         return _masked_items(value, key)
     if key is not None and isinstance(value, (int, float)) and not isinstance(value, bool) \
@@ -1112,6 +1151,8 @@ def _masked_items(items, key):
     ["login", "--password", "..."] or ["mongosh", "-u", "admin", "-p", "..."] does. Where that line reads more of the
     item as a secret than the item alone does, the item, one argument, is masked whole."""
     out = [mask_all(v, key) for v in items]
+    if len(items) == 2:  # a name and its value, as a list of headers holds them
+        out[1] = _pair_value(items[0], items[1], out[1])
     for i in range(1, len(items)):
         flag, item = items[i - 1], items[i]
         if not (isinstance(flag, str) and isinstance(item, str) and flag.startswith("-") and len(flag) <= 64 and item):
