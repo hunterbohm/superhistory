@@ -4,9 +4,11 @@ anything that checks an id with holds_secret() keep it. A real credential after 
 it. Main's mask is this branch's with that one reading switched off (kb.mask._scheme_words), so the comparison with it
 is exact."""
 import contextlib
+import itertools
 import io
 import os
 import random
+import re
 import string
 import tempfile
 import unittest
@@ -136,6 +138,48 @@ class SchemeWordTest(unittest.TestCase):
                      "Bearer dapi" + "facedeca" * 4 + ".md", "Bearer " + "decafe" * 5 + "/Weekly notes.md"):
             with self.subTest(text=text):
                 self.assertEqual(mask(text), as_on_main(text))
+
+    def test_the_fourth_reviews_credential_is_masked_as_on_main(self):
+        import base64
+        token = base64.b64encode(bytes.fromhex("613a30fe7a2d7acfe7a2d7ac")).decode()
+        for text in (f"Basic {token}/weekly.md", f"Basic {token}/notes/weekly.md", f"Basic {token} Notes/weekly.md"):
+            with self.subTest(text=text):
+                self.assertEqual(mask(text), as_on_main(text))
+
+    def test_a_basic_login_before_a_path_is_masked_as_on_main(self):
+        # The path's words run on from the login with no space: the login is read alone, at each "/" in the run.
+        for seed in range(2000):
+            r = random.Random(f"login-path:{seed}")
+            login = r.choice((lambda: single_byte_login(r), lambda: basic_credential(r)))()
+            for tail in ("/weekly.md", "/notes/Weekly plan.md", "/a/b/c.txt", " Notes/weekly.md"):
+                text = f"Basic {login}{tail}"
+                with self.subTest(text=text):
+                    self.assertEqual(mask(text), as_on_main(text))
+
+    def test_logins_made_to_read_as_path_words_are_masked_as_on_main(self):
+        # As the fourth review built one: a first chunk that decodes to "user:" and path words after it, which base64
+        # decodes to a printable login too, before a path.
+        import base64
+        heads = [c for c in ("".join(t) for t in itertools.product("YTMOdWxy", "TWXZ", "oqow", "w0wx"))
+                 if b":" in base64.b64decode(c + "=" * (-len(c) % 4))]
+        found = 0
+        for seed in range(4000):
+            r = random.Random(f"made-login:{seed}")
+            run = r.choice(heads) + "".join("/" + r.choice(WORDS).lower()[:r.choice((3, 4, 5, 7))] for _ in range(
+                r.randint(1, 4)))
+            run = run[:len(run) - len(run) % 4] if len(run) % 4 == 1 else run
+            try:
+                raw = base64.b64decode(run + "=" * (-len(run) % 4), validate=True)
+            except ValueError:
+                continue
+            if b":" not in raw or re.search(rb"[\x00-\x1f\x7f]", raw):
+                continue
+            found += 1
+            for tail in ("/weekly.md", ".md", "/notes/Weekly plan.md"):
+                text = f"Basic {run}{tail}"
+                with self.subTest(text=text):
+                    self.assertEqual(mask(text), as_on_main(text))
+        self.assertGreater(found, 20)
 
     def test_hex_bodies_after_a_prefix_are_masked_as_on_main(self):
         # A provider's token is often a short prefix and a hex body; one whose body happens to hold no digit is still
