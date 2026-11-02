@@ -501,6 +501,15 @@ class InvisibleTest(unittest.TestCase):
                 self.assertEqual(mask("[masked]" + mark + "_co" + mark + "operate/curl -u sam:walrus2secret9 x"),
                                  "[masked]" + mark + "operate/curl -u sam:[masked] x")
 
+    def test_a_split_names_value_ends_where_main_ends_it_at_a_token(self):
+        self.assertEqual(mask("pass\u200bword=ghp_" + "A1" * 12 + "|notes"), "pass\u200bword=[masked]|notes")
+
+    def test_an_invisible_character_past_a_names_separator_splits_no_name(self):
+        for text in ("password:\n\u200b\n\nNext paragraph is kept.", "api_key:\u200b\n\nNext paragraph is kept."):
+            with self.subTest(text=text):
+                self.assertEqual(mask(text), text)
+        self.assertNotIn("walrus2secret9", mask("password\u200b=walrus2secret9"), "an invisible before the = still splits")
+
     def test_words_that_also_sit_inside_masked_secrets_stay_where_the_view_adds_one(self):
         key = "-----BEGIN PRIVATE KEY----- foo -----END PRIVATE KEY-----"
         split = "ghp_" + "A1" * 6 + "\u200b" + "B2" * 6
@@ -652,6 +661,16 @@ class BareAuthorizationTest(unittest.TestCase):
             text = f"Authorization: request{space}approved{space}2026"
             with self.subTest(space=hex(ord(space))):
                 self.assertEqual(mask(text), text)
+
+    def test_authorization_inside_a_path_or_a_value_is_no_header(self):
+        for text in ("password=/notes:Authorization:A1b2C3d4E5f6/data", "see /docs/Authorization:A1b2C3d4E5f6Qx7",
+                     "x:Authorization: A1b2C3d4E5f6Qx7"):
+            with self.subTest(text=text):
+                self.assertEqual(mask(text), text)
+        for text in ("Authorization: A1b2C3d4E5f6Qx7", "{\"Authorization\": \"A1b2C3d4E5f6Qx7\"}",
+                     "-H 'Authorization: A1b2C3d4E5f6Qx7'", "x\nAuthorization: A1b2C3d4E5f6Qx7", "a; Authorization: A1b2C3d4E5f6Qx7"):
+            with self.subTest(text=text):
+                self.assertNotIn("A1b2C3d4E5f6Qx7", mask(text))
 
     def test_prose_and_identifiers_after_authorization_stay(self):
         for word in self.PROSE:

@@ -404,6 +404,22 @@ class RemaskTest(TempDB):
 
 
 
+class ChunkMaskTest(TempDB):
+    def test_no_chunk_holds_a_token_the_whole_item_glued_to_a_word(self):
+        from kb.mask import mask
+        text = "a" * 4000 + "ghp_" + "A1" * 12
+        self.assertTrue(store.store_item(self.db, "s", "item", iso(), "title", text, {}))
+        rows = self.db.execute("SELECT content, metadata, masked FROM docs WHERE source_id='item' ORDER BY id").fetchall()
+        self.assertGreater(len(rows), 1)
+        for content, meta, version in rows:
+            with self.subTest(content=content[:20]):
+                self.assertEqual(mask(content), content, "a row recorded current masks clean")
+                self.assertEqual(version, store.VERSION)
+        self.assertNotIn("A1A1A1A1", "".join(r[0] for r in rows))
+        self.assertEqual(json.loads(rows[0][1])["hash"], store.item_hash("title", "".join(r[0] for r in rows)))
+        self.assertFalse(store.store_item(self.db, "s", "item", iso(), "title", text, {}), "the same text again is no change")
+
+
 class ItemHashTest(TempDB):
     """An item's rows record the hash of its title and text as stored, masked, never of text a mask has since changed:
     with the masked text beside it, such a hash would confirm a guess at the secret."""
