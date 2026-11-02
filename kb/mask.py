@@ -415,6 +415,11 @@ def _gitleaks_spans(text, rules=None):
     return merged
 
 
+def _gitleaks_edits(text):
+    """gitleaks' rules' secrets in `text` as edits that mask them."""
+    return [(start, end, "[masked]") for start, end in _gitleaks_spans(text)]
+
+
 # Which mask() a stored row was masked with. A row of another version, or of none, is masked again when read and by
 # the next ingest. The patterns change it by themselves; bump REVISION when the code that applies them changes what
 # it masks.
@@ -490,8 +495,10 @@ _PATH_VALUE = re.compile(r"(?:/|~|\.\.?[\\/]|[A-Za-z]:[\\/]|%[A-Za-z_]+%)")
 
 
 def _short_name_secret(value):
-    """Whether a value after "pass" or "pwd" alone is a secret: a credential's shape, and no path. Either word alone
-    names much else, a working directory or a compiler's pass."""
+    """Whether a value after "pass" or "pwd" alone is a secret: a credential's shape, and no path, read without the
+    characters a reader does not see, such as a colour code. Either word alone names much else, a working directory or
+    a compiler's pass."""
+    value = INVISIBLE.sub("", value)
     return not _PATH_VALUE.match(value) and _credential_shaped(value)
 
 
@@ -749,7 +756,8 @@ def _run(text, rules, origin=None, named=None, fired=None):
     # gitleaks' rules last, so a named value holding a provider's token is read whole first; and in text only, as an
     # id is read more narrowly (secret_in_id), and an id one took for a token would drop its item.
     if reading == "named":
-        for edits in (_name_value_edits(text), [(start, end, "[masked]") for start, end in _gitleaks_spans(text)]):
+        for step in (_name_value_edits, _gitleaks_edits):
+            edits = step(text)  # read from the text the step before left
             if edits:
                 note(edits)
             text, origin = _edit(text, origin, edits)
@@ -1160,15 +1168,15 @@ def _pair_secret(name, value, listed=False):
     header read in text hides any of it, or under a secret's field name, when the field's rule says so (mask_all).
     `listed` for a list of the two, which may be two words, as tags are: then the value holds the header's own
     content, a cookie's "name=" or a credential, or is shaped like a credential under a secret's name."""
-    name, value = name.strip(), value.strip()
+    name, value = name.strip(), INVISIBLE.sub("", value).strip()
     lowered = name.lower()
     if lowered in _HEADER_NAMES:
         if listed and not (_COOKIE_CONTENT.search(value) if "cookie" in lowered else
                            value and _credential_shaped(value.split()[-1])):
             return False
         return _as_header(name, value) != value
-    if not _SECRET_FIELD.match(name):
-        return False
+    if not _SECRET_FIELD.match(name) or _ABOUT_A_PASSWORD.search(name):
+        return False  # no secret's name, or one about a password, as "password_policy" and "token_type" are
     if listed:
         return _credential_shaped(value)
     return _looks_secret(name, "=", value) and (lowered not in ("pass", "pwd") or _short_name_secret(value))
@@ -1246,7 +1254,7 @@ _TYPING_TOOL = re.compile(r"(?i)(?:browser_|puppeteer_|playwright_)?(?:type|type
 # camel case or a run of capitals turns ("newPassword", "APIToken"), each in lower case.
 _LABEL_WORD = re.compile(r"[A-Z]+(?=[A-Z][a-z])|[A-Z]?[a-z]+|[A-Z]+|\d+")
 # A label asks for a secret by one of these words, or two of them together, and asks about one, not for it, by any of
-# the second set ("Token name", "PasswordHint", "Secret key description").
+# the second set ("Token name", "PasswordHint", "Secret key description", "Max tokens").
 _SECRET_WORDS = frozenset(("password", "passwords", "passwd", "pwd", "passcode", "passphrase", "pin", "otp", "secret",
                            "secrets", "token", "tokens", "credential", "credentials", "cvc", "cvv", "2fa", "mfa",
                            "apikey", "accesskey", "privatekey"))
@@ -1256,7 +1264,9 @@ _ABOUT_WORDS = frozenset((
     "name", "names", "description", "descriptions", "label", "labels", "note", "notes", "hint", "hints", "question",
     "questions", "type", "types", "id", "ids", "count", "counts", "length", "expiry", "expiration", "expires",
     "expiring", "strength", "policy", "policies", "requirement", "requirements", "reset", "manager", "size", "format",
-    "usage", "created", "updated", "scope", "scopes", "permission", "permissions"))
+    "usage", "created", "updated", "scope", "scopes", "permission", "permissions", "max", "maximum", "min", "minimum",
+    "limit", "limits", "budget", "budgets", "quota", "quotas", "per", "total", "number", "remaining", "used", "window",
+    "context", "cost", "price", "rate", "rates"))
 _SELECTOR_ATTRIBUTE = re.compile(r"(?i)\b(?:name|id|type|for|class|placeholder|aria-label|data-[\w-]+)\s*[~|^$*]?=")
 
 
@@ -1292,7 +1302,7 @@ def typed_secrets(name, args):
         for key in _TYPED_KEYS:
             value = item.get(key)
             if isinstance(value, (str, int)) and not isinstance(value, bool) and str(value) and (
-                    secret or not labels and _credential_shaped(str(value))):
+                    secret or not labels and _credential_shaped(INVISIBLE.sub("", str(value)))):
                 out[key] = "[masked]"
         return out
 
