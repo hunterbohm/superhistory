@@ -847,7 +847,8 @@ class ReviewNineTest(unittest.TestCase):
             with self.subTest(label=label):
                 self.assertEqual(typed_secrets("browser_type", {"element": label, "text": value}),
                                  {"element": label, "text": value})
-        self.assertEqual(typed_secrets("browser_type", {"element": "Enter password to view your account",
+        # A label that names anything besides the secret is about something else (ReviewTwelveTest).
+        self.assertEqual(typed_secrets("browser_type", {"element": "Enter password to continue",
                                                         "text": "x7Kq9mZ2"})["text"], "[masked]")
 
     def test_a_long_label_costs_time_in_proportion(self):
@@ -876,7 +877,7 @@ class ReviewTenTest(unittest.TestCase):
             with self.subTest(label=label):
                 self.assertEqual(typed_secrets("browser_type", {"element": label, "text": value}),
                                  {"element": label, "text": value})
-        for label in ("Password (required)", "Password: show", "Enter API token, then search"):
+        for label in ("Password (required)", "Password: *", "Enter API token (required)"):
             with self.subTest(label=label):
                 self.assertEqual(typed_secrets("browser_type", {"element": label, "text": "x7Kq9mZ2"})["text"], "[masked]")
 
