@@ -652,7 +652,8 @@ class ReviewFourTest(unittest.TestCase):
                      "<token>counterrevolutionaries</token>"):
             with self.subTest(text=text):
                 self.assertEqual(mask(text), text)
-        self.assertEqual(mask("<token>q8Zr2Lm7Xk4Vp9Nt3Bw6Hc1</token>"), "<token>[masked]</token>")
+        # A bare <token> is a tokenizer's or a lexer's as often (ReviewFiveTest); a token's own element is read.
+        self.assertEqual(mask("<auth_token>q8Zr2Lm7Xk4Vp9Nt3Bw6Hc1</auth_token>"), "<auth_token>[masked]</auth_token>")
         self.assertEqual(mask("<password>Tr0ub4dor-Zk9q</password>"), "<password>[masked]</password>")
 
     def test_an_option_after_a_password_flag_is_no_password(self):
@@ -674,13 +675,15 @@ class ReviewFiveTest(unittest.TestCase):
 
     def test_a_token_or_pin_of_another_kind_needs_a_credential(self):
         for label, value in (("CSS color token", "#ff8800"), ("Map pin", "40.7128,-74.0060"), ("Design token", "spacing-4"),
-                             ("Output tokens", "4096"), ("Drop a pin", "Main St"), ("Lexer token", "IDENTIFIER")):
+                             ("Output tokens", "4096"), ("Drop a pin", "Main St"), ("Lexer token", "IDENTIFIER"),
+                             ("Tokens", "4096")):
             with self.subTest(label=label):
                 self.assertEqual(typed_secrets("mcp__playwright__browser_type", {"element": label, "text": value}),
                                  {"element": label, "text": value})
         for label, value in (("Discord token", "q8Zr2Lm7Xk4Vp9Nt3Bw6Hc1"), ("Card PIN", "4821"), ("Bearer token", "abc12"),
                              ("Enter the token", "abc12"), ("PIN", "4821"), ("Your 4-digit PIN", "4821"),
-                             ("Personal access token", "abc12")):
+                             ("Personal access token", "abc12"), ("GitHub token", "abc12"), ("HuggingFace token", "abc12"),
+                             ("API tokens", "abc12")):
             with self.subTest(label=label):
                 self.assertEqual(typed_secrets("mcp__playwright__browser_type", {"element": label, "text": value})["text"],
                                  "[masked]")
