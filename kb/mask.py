@@ -127,8 +127,11 @@ _COMMON_PAIRS = frozenset((
     "ue uf ug ui uk ul um un uo up ur us ut uz va ve vi vo wa we wh wi wl wn wo wr ws xa xc xe xi xp xt ya yb "
     "yc yd ye yi yl ym yn yo yp yr ys yt za ze zi zo zz").split())
 _VOWEL_RUN = re.compile(r"(?i)[aeiou]{4}")
-# A run of the letters of hex alone, as a token in hex with no digit is: no word is so long in them.
-_HEX_LETTERS = re.compile(r"[A-Fa-f]{12,}")
+# A run of the letters of hex alone, as a token's hex body with no digit is, alone or after a provider's prefix: no
+# word in a common English word list holds eight of them in a row. And the longest a path's word may be
+# ("counterrevolutionaries").
+_HEX_LETTERS = re.compile(r"[A-Fa-f]{8,}")
+_LONGEST_WORD = 22
 # The name of a header whose value is a credential, just before the scheme word.
 _AUTHORIZATION_BEFORE = re.compile(r"(?i)authorization[\"']?[ \t]*(?::|=|%(?:25)?3A)[ \t]*[\"']?$")
 
@@ -136,11 +139,11 @@ _AUTHORIZATION_BEFORE = re.compile(r"(?i)authorization[\"']?[ \t]*(?::|=|%(?:25)
 def _scheme_words(m):
     """Whether a match of Basic or Bearer and what follows reads as words in a note's path, as in "Basic
     Statistics/notes.md" or "Ring Bearer responsibilities/notes.md", not a credential. That is: no header's value
-    ("Authorization: Bearer ..."); part of a file's path (_in_a_path); past the file's extension, no digit, "+" or
-    "=", not the letters of hex alone, and parts joined by "/", ".", "_" or "-", each a word (_PATH_WORD) with a vowel
-    and only common English letter pairs (_english), which a run of base64 or of random letters seldom passes; one
-    part alone has a third of its letters vowels, as a word has. After Basic, not base64 of "user:password" either,
-    padded or not, in any single-byte code page or UTF-8. Any other match is no such run."""
+    ("Authorization: Bearer ..."); part of a file's path (_in_a_path); past the file's extension, no digit, "+" or "=",
+    not the letters of hex alone, and parts joined by "/", ".", "_" or "-", each a word (_PATH_WORD) with a vowel, no
+    long run of hex letters and only common English letter pairs (_english), which a run of base64 or of random letters
+    seldom passes; one part alone has a third of its letters vowels, as a word has. After Basic, not base64 of
+    "user:password" either, padded or not, in any single-byte code page or UTF-8. Any other match is no such run."""
     head = _SCHEME_HEAD.match(m.group())
     if not head or _AUTHORIZATION_BEFORE.search(m.string, max(0, m.start() - 64), m.start()):
         return False
@@ -160,10 +163,12 @@ def _scheme_words(m):
 
 def _english(part):
     """Whether a part of a path reads as English words: each word in it, a part run together in capitals ("ApiKey")
-    read word by word, holds only common letter pairs and no four vowels in a row."""
+    read word by word, is at most 22 letters, holds no run of hex letters a token's body would (_HEX_LETTERS), only
+    common letter pairs, and no four vowels in a row."""
     for word in re.findall(r"[A-Z]{2,}(?![a-z])|[A-Z]?[a-z]+|[A-Z]+", part):
         word = word.lower()
-        if _VOWEL_RUN.search(word) or any(word[i:i + 2] not in _COMMON_PAIRS for i in range(len(word) - 1)):
+        if len(word) > _LONGEST_WORD or _HEX_LETTERS.search(word) or _VOWEL_RUN.search(word) \
+                or any(word[i:i + 2] not in _COMMON_PAIRS for i in range(len(word) - 1)):
             return False
     return True
 
