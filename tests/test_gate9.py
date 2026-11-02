@@ -868,6 +868,50 @@ class ReviewNineTest(unittest.TestCase):
                 self.assertLess(large, 20 * small + 0.05, (unit, small, large))
 
 
+class ReviewTenTest(unittest.TestCase):
+    """The tenth review's findings."""
+
+    def test_a_search_reads_on_across_a_mark(self):
+        for label, value in (("Search (passwords)", "billing"), ("Filter (password)", "bank"), ("Search: password", "x9")):
+            with self.subTest(label=label):
+                self.assertEqual(typed_secrets("browser_type", {"element": label, "text": value}),
+                                 {"element": label, "text": value})
+        for label in ("Password (required)", "Password: show", "Enter API token, then search"):
+            with self.subTest(label=label):
+                self.assertEqual(typed_secrets("browser_type", {"element": label, "text": "x7Kq9mZ2"})["text"], "[masked]")
+
+    def test_a_name_split_by_a_colour_code_is_read_strictly(self):
+        for code, reset in (("\x1b[31m", "\x1b[0m"), ("\x1b[01;31m\x1b[K", "\x1b[m\x1b[K"), ("\\u001b[31m", "\\u001b[0m"),
+                            ("\x7f", "\x7f")):
+            for text in (f"password_{code}policy{reset}: uppercase-required", f"secret_{code}name{reset}: production-database-v2",
+                         f"api_key_{code}name{reset}: billing-service-2026", f"x-auth{code}-flow{reset}: implicit-grant-v2"):
+                with self.subTest(text=text):
+                    self.assertEqual(mask(text), text)
+            for text, secret in ((f"DB_{code}PASS{reset}WORD=Tr0ub4dor-Zk9q", "Tr0ub4dor"),
+                                 (f"pass{code}word{reset}=Tr0ub4dor-Zk9q", "Tr0ub4dor"),
+                                 (f"api_{code}key{reset}: q8Zr2Lm7Xk4Vp9Nt3Bw6Hc1", "q8Zr2Lm7")):
+                with self.subTest(text=text):
+                    self.assertNotIn(secret, mask(text))
+        self.assertEqual(mask("password_\u200bpolicy: uppercase-required"), "password_\u200bpolicy: [masked]")  # as main
+
+    def test_a_selector_of_repeated_prefixes_costs_time_in_proportion(self):
+        import time
+
+        def took(selector):
+            best = None
+            for _ in range(3):
+                started = time.process_time()
+                typed_secrets("browser_type", {"selector": selector, "value": "billing"})
+                spent = time.process_time() - started
+                best = spent if best is None else min(best, spent)
+            return best
+
+        for unit in ("data-", "aria-", "name-", "data-x "):
+            with self.subTest(unit=unit):
+                small, large = took(unit * 1000), took(unit * 8000)
+                self.assertLess(large, 20 * small + 0.05, (unit, small, large))
+
+
 # Commands as an argument list, each flag's value its own item: (the list, the items masked).
 ARGV = (
     (["login", "--password", PASSWORD], {2}), (["--token", SUB], {1}), (["--api-key", SUB, "--verbose"], {1}),
