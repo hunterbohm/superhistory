@@ -623,6 +623,52 @@ class ReviewThreeTest(unittest.TestCase):
         self.assertNotIn("Tr0ub4dor", mask("pwd=Tr0ub4dor-Zk9q\x1b[0m"))
 
 
+class ReviewFourTest(unittest.TestCase):
+    """The fourth review's findings."""
+
+    def test_a_label_asks_for_a_secret_by_its_last_word(self):
+        for label, value in (("One-time donation", "50"), ("Secret key algorithm", "RSA"), ("Token decimals", "18"),
+                             ("Password strength meter", "strong"), ("Token symbol", "ETH"), ("PIN length", "6"),
+                             ("Secret Santa list", "Dana"), ("Access token lifetime", "3600")):
+            with self.subTest(label=label):
+                self.assertEqual(typed_secrets("mcp__playwright__browser_type", {"element": label, "text": value}),
+                                 {"element": label, "text": value})
+        for label in ("One-time code", "One time password", "Secret key", "PIN code", "2FA code", "Password field",
+                      "Enter your password here", "API token (required)", "OTP", "Confirm new password",
+                      "input[name=secret_key]", "pinCode"):
+            with self.subTest(label=label):
+                self.assertEqual(typed_secrets("mcp__playwright__browser_type", {"element": label, "text": "x7Kq9mZ2"})["text"],
+                                 "[masked]")
+
+    def test_code_properties_are_no_vault_token(self):
+        for text in ("let s = {}; s.normalizedIdentifier2026 = true;", "s.ConfigurationVersion2026",
+                     "if (s.initializationProgress42) {"):
+            with self.subTest(text=text):
+                self.assertEqual(mask(text), text)
+        self.assertNotIn("hvs.", mask("vault token hvs." + "CAESIa1B2c3D4e5Fg6H7i8J9k0LmNoPq" * 3 + " end"))
+
+    def test_ordinary_words_in_xml_elements_stay(self):
+        for text in ("<tokens><token>internationalization</token></tokens>", "<secret>unbelievably-ordinary</secret>",
+                     "<token>counterrevolutionaries</token>"):
+            with self.subTest(text=text):
+                self.assertEqual(mask(text), text)
+        self.assertEqual(mask("<token>q8Zr2Lm7Xk4Vp9Nt3Bw6Hc1</token>"), "<token>[masked]</token>")
+        self.assertEqual(mask("<password>Tr0ub4dor-Zk9q</password>"), "<password>[masked]</password>")
+
+    def test_an_option_after_a_password_flag_is_no_password(self):
+        for text in ("mongosh -p --quiet", "mongosh -u admin -p --authenticationDatabase admin", "az login -p --help",
+                     "keytool -list -storepass -v"):
+            with self.subTest(text=text):
+                self.assertEqual(mask(text), text)
+        self.assertEqual(mask_all({"args": ["mongosh", "-p", "--quiet"]}), {"args": ["mongosh", "-p", "--quiet"]})
+
+    def test_a_coloured_variable_after_a_command_flag_stays(self):
+        for text in ("keytool -storepass \x1b[31m$STOREPASS\x1b[0m -list",
+                     "aws configure set aws_secret_access_key \x1b[1m$AWS_SECRET_ACCESS_KEY\x1b[0m"):
+            with self.subTest(text=text):
+                self.assertEqual(mask(text), text)
+
+
 # Commands as an argument list, each flag's value its own item: (the list, the items masked).
 ARGV = (
     (["login", "--password", PASSWORD], {2}), (["--token", SUB], {1}), (["--api-key", SUB, "--verbose"], {1}),

@@ -81,6 +81,8 @@ SHAPES = (
                                               r.choice(("text/html", "no-cache", "application/json", "Mozilla/5.0"))),
     lambda r: '["%s","%s %s"]' % (r.choice(("cookie", "Cookie", "password", "token", "authorization")), word(r, PLAIN),
                                   word(r, PLAIN)),
+    lambda r: f"{r.choice('soxe')}.{ident(r, PLAIN)}{r.randint(1, 2099)} = {r.choice(('true', 'null', '0'))};",
+    lambda r: f"<token>{r.choice(('internationalization', 'counterrevolutionaries', 'responsibilities'))}</token>",
 )
 
 
