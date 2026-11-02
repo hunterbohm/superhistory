@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from typing import Tuple
 
 from kb.ai.cli import WORKDIR_PREFIX
-from kb.mask import clip, is_auth_code, mask, mask_all
+from kb.mask import clip, is_auth_code, mask, mask_all, typed_secrets
 from kb.sources import Gone, Item, Progress, SourceType, home_key
 
 
@@ -65,13 +65,16 @@ def _parts_text(parts):
     return " ".join(x.get("text", "") for x in parts or [] if isinstance(x, dict) and x.get("type") != "input_image")
 
 
-def _call_args(arguments):
+def _call_args(arguments, name=None):
     try:
         args = json.loads(arguments) if isinstance(arguments, str) else arguments
     except ValueError:
         return str(arguments)
     if not isinstance(args, dict):
         return str(args)
+    typed = typed_secrets(name, args)
+    if typed is not args:  # what it typed, with the field it typed into
+        return json.dumps(mask_all(typed), ensure_ascii=False)
     for key in ("cmd", "command", "path", "file_path", "pattern", "query", "url", "message", "prompt", "text"):
         if key in args:
             value = args[key]
@@ -181,7 +184,7 @@ def render(paths, mark):
                     fallback_title = fallback_title or text
                 lines.append(f"{label}: {text}")
         elif ptype == "function_call":
-            lines.append(f"TOOL {payload.get('name')}: {_clip(_call_args(payload.get('arguments')), TOOL_CHARS)}")
+            lines.append(f"TOOL {payload.get('name')}: {_clip(_call_args(payload.get('arguments'), payload.get('name')), TOOL_CHARS)}")
         elif ptype == "custom_tool_call":
             lines.append(f"TOOL {payload.get('name')}: {_clip(str(payload.get('input') or ''), TOOL_CHARS)}")
         elif ptype in ("function_call_output", "custom_tool_call_output"):

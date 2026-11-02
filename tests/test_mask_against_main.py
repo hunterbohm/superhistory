@@ -224,6 +224,12 @@ class Generated:
         return "".join(part + r.choice((" ", " ", "\n", "|", "_", "/", ", ", "", r.choice(self.MARKS))) for part in parts)
 
 
+class Coloured(Generated):
+    """Generated's texts with a terminal's colour codes, raw and escaped, DEL and C1 controls for its invisible
+    characters."""
+    MARKS = ("\x1b[0m", "\x1b[01;31m\x1b[K", "\\u001b[32m", "\\x1b[1m", "\\033[0;35m", "\x9b31m", "\x7f", "\x9d")
+
+
 # Texts the reviews of this branch found it masked wrong, each a shape the generator may not reach.
 FOUND = ("sk-proj-" + "C3" * 12 + "\u200dplain_https://sam:walrus2secret9@example.com",
          "ghp_" + "A1" * 12 + "_co\u00adoperate/curl -u sam:walrus2secret9 x",
@@ -244,6 +250,8 @@ def corpus(cases=CASES):
         yield f"found {n}", text
     for n in range(cases * 2):
         yield f"generated {n}", Generated(random.Random(f"diff:{n}")).text()
+    for n in range(cases):
+        yield f"coloured {n}", Coloured(random.Random(f"diff-colour:{n}")).text()
     for seq in range(cases):
         planted = Planted(random.Random(f"diff-fuzz:{seq}"), seq)
         yield f"fuzz {seq} text", planted.text()

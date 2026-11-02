@@ -225,19 +225,23 @@ _AUTH_FIELD = re.compile(rf"(?i)((?:(?<![A-Za-z0-9_.-])|{_AFTER_ESCAPE})auth{_QU
 
 
 # Characters a reader does not see: NUL and the other C0 controls that are not whitespace, as UTF-16 text read as bytes
-# holds them, and Unicode's default ignorable code points: zero-width spaces and joiners, direction marks and isolates,
-# the soft hyphen, the byte order mark, variation selectors, fillers and tag characters. A secret reads through them,
-# and one before a secret parts it from the word before (_once). The vertical tab, the form feed and the four
-# separators from 0x1c are whitespace, as str.split reads them, and part words as a line break does: pdftotext puts a
-# form feed between pages.
-INVISIBLE = re.compile(r"[\x00-\x08\x0e-\x1b\u00ad\u034f\u061c\u115f\u1160\u17b4\u17b5\u180b-\u180f\u200b-\u200f\u202a-\u202e"
-                       r"\u2060-\u206f\u3164\ufe00-\ufe0f\ufeff\uffa0\ufff0-\ufff8\U0001bca0-\U0001bca3"
-                       r"\U0001d173-\U0001d17a\U000e0000-\U000e0fff]")
+# holds them, DEL and the C1 controls, and Unicode's default ignorable code points: zero-width spaces and joiners,
+# direction marks and isolates, the soft hyphen, the byte order mark, variation selectors, fillers and tag characters.
+# A terminal's colour code, a whole CSI sequence ("ESC[" to its final byte, as grep --color and ripgrep write one
+# around a match), is one too, raw, as its eight-bit introducer or escaped as JSON, Python or C write it ("\u001b[",
+# "\x1b[", "\033["), but for ESC before a placeholder, which "[m" would start. A secret reads through them, and one
+# before a secret parts it from the word before (_once), though a colour code ends in a letter. The vertical tab, the
+# form feed, the four separators from 0x1c and NEL are whitespace, as str.split reads them, and part words as a line
+# break does: pdftotext puts a form feed between pages.
+_CSI = r"(?:\x1b\[|\x9b|\\(?:u001[bB]|x1[bB]|033)\[)(?!masked\])[0-?]*[ -/]*[@-~]"
+INVISIBLE = re.compile(_CSI + r"|[\x00-\x08\x0e-\x1b\x7f-\x84\x86-\x9f\u00ad\u034f\u061c\u115f\u1160\u17b4\u17b5"
+                       r"\u180b-\u180f\u200b-\u200f\u202a-\u202e\u2060-\u206f\u3164\ufe00-\ufe0f\ufeff\uffa0"
+                       r"\ufff0-\ufff8\U0001bca0-\U0001bca3\U0001d173-\U0001d17a\U000e0000-\U000e0fff]")
 
 # Which mask() a stored row was masked with. A row of another version, or of none, is masked again when read and by
 # the next ingest. The patterns change it by themselves; bump REVISION when the code that applies them changes what
 # it masks.
-REVISION = 9
+REVISION = 10
 VERSION = hashlib.sha256(repr((REVISION, [p.pattern for p in SECRET_PATTERNS + PREFIXED_SECRETS], KEYED_SECRET.pattern,
                                 ENV_KEY_SECRET.pattern, JSON_SECRET.pattern, FLAG_SECRET.pattern, AUTH_SECRET.pattern,
                                 COMMAND_FLAGS, PASSWORD_NAME.pattern, sorted(PLACEHOLDERS), REFERENCE.pattern,
@@ -531,7 +535,7 @@ _READING_START = re.compile("|".join(_scoped(source) for source in (
     r"(?<![A-Za-z0-9_-])-pass(?:in|out)?[ \t]+['\"]?pass:", "-----BEGIN ")))
 # Where one could start: a letter, a digit or "-" after anything but a letter or digit, as "7token is" starts a name.
 _MAY_START = re.compile(r"(?<![A-Za-z0-9])(?=[A-Za-z0-9-])")
-_INVISIBLE_RUN = re.compile(INVISIBLE.pattern + "+")
+_INVISIBLE_RUN = re.compile(f"(?:{INVISIBLE.pattern})+")
 # How far a token that starts right after a letter, where an invisible character stood, is read before it counts as a
 # longer one: each such start is read once, so repeated starts cost time in proportion to the text.
 _GLUED_START_WINDOW = 512
@@ -635,8 +639,15 @@ def _split_secrets(text, rules):
             end -= 1
         return (start, end) if start < end else None
 
+    def glued_on(start):  # whether, as written, the view's text from `start` follows a letter or digit it does not see
+        at = start + bisect.bisect_right(places, start)
+        return 0 < at and at - 1 in removed and text[at - 1].isalnum()
+
     for start, end in found + glued + rests:
         if not split(start, end):
+            # A colour code ends in a letter, so the text as written reads a token right after one as a longer word.
+            if glued_on(start):
+                spans.append(raw(start, end))
             continue
         start, end = raw(start, end)
         cut = before_reading(start, end, gone[bisect.bisect_left(gone, start)] + 1)
@@ -794,6 +805,50 @@ def mask_all(value, key=None):
             and mask(f"{key}={value}") != f"{mask(key)}={value}":
         return "[masked]"  # a number its field name marks as secret, such as a numeric passcode
     return value
+
+
+# A tool that types into a page or fills a form's fields, as browser automation names one: Playwright's browser_type
+# and browser_fill_form, Chrome DevTools' fill and fill_form, Puppeteer's puppeteer_fill and puppeteer_type, and others.
+_TYPING_TOOL = re.compile(r"(?i)(?:browser_|puppeteer_|playwright_)?(?:type|type_text|fill|fill_form|fill_field|"
+                          r"press_sequentially|input_text|set_value)")
+# A field label that asks for a secret: a password, passcode or passphrase, a PIN, a one-time or security code, a
+# token, a secret, an API or private key.
+_SECRET_LABEL = re.compile(r"(?i)passw(?:or)?d|passcode|passphrase|\bpwd\b|(?<![a-z])pin(?![a-z])|secret|token|"
+                           r"(?<![a-z])otp(?![a-z])|one[ _-]?time|verification[ _-]?code|security[ _-]?code|2fa|mfa|"
+                           r"(?<![a-z])cv[cv]2?(?![a-z])|(?:api|access|private|secret)[ _-]?key|credential")
+# Where a tool names the field it types into, and where it holds what it types.
+_LABEL_KEYS = ("element", "name", "label", "selector", "field", "placeholder", "description", "target", "type",
+               "aria_label", "ariaLabel", "title", "id", "locator")
+_TYPED_KEYS = ("text", "value")
+
+
+def typed_secrets(name, args):
+    """A typing or form-filling tool's input with what it types into a field labelled for a secret, such as
+    "Password textbox", masked whole: a password typed into a page is in no form a mask knows by its shape. A field
+    with no label, as DevTools names one by its uid alone, has its value masked when it reads as a credential. Other
+    tools' input, and other fields, come back as they are."""
+    if not isinstance(name, str) or not _TYPING_TOOL.fullmatch(name.rsplit("__", 1)[-1].rsplit(".", 1)[-1]) \
+            or not isinstance(args, dict):
+        return args
+
+    def field(item):
+        if not isinstance(item, dict):
+            return item
+        labels = [str(item[key]) for key in _LABEL_KEYS if isinstance(item.get(key), str)]
+        secret = any(_SECRET_LABEL.search(label) for label in labels)
+        out = dict(item)
+        for key in _TYPED_KEYS:
+            value = item.get(key)
+            if isinstance(value, (str, int)) and not isinstance(value, bool) and str(value) and (
+                    secret or not labels and _credential_shaped(str(value))):
+                out[key] = "[masked]"
+        return out
+
+    out = field(args)
+    for key, value in args.items():
+        if isinstance(value, list):
+            out[key] = [field(item) for item in value]
+    return out
 
 
 def _exc_text(exc_info):
