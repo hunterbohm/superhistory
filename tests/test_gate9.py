@@ -949,6 +949,47 @@ class ReviewElevenTest(unittest.TestCase):
         self.assertIn("[masked]", codex._call_args({"element": "Password", "ref": "e3", "text": "x7Kq9mZ2"}, "browser_type"))
 
 
+class ReviewTwelveTest(unittest.TestCase):
+    """The twelfth review's findings."""
+
+    def test_a_later_pass_hides_all_main_hides(self):
+        # A new reading masks a part of a split password's value in one pass; main masks all of it in the next.
+        text = "pass\u00adword=Ab3D|redis://:X7y8@Z9q0Secret"
+        for part in ("Ab3D", "X7y8", "Z9q0Secret"):
+            self.assertNotIn(part, mask(text))
+        import kb.mask as m
+        for name in ("pass\u00adword=", "api_k\u200bey: ", "tok\u200ben="):
+            for inner in ("redis://:X7y8@", "pass=X7y8;user=me ", "SK0123456789abcdef0123456789abcdef", "<password>X7y8</password>"):
+                text = f"{name}Ab3D|{inner}Z9q0Secret end"
+                with self.subTest(text=text):
+                    hidden = m._main_hidden(text)
+                    masked, origin = m.mask_with_origin(text)
+                    shown = {c for c in origin if c >= 0}
+                    self.assertFalse([i for i in range(len(text)) if hidden[i] and i in shown], masked)
+                    self.assertEqual(mask(text), masked)
+
+    def test_a_label_names_a_secret_and_nothing_else(self):
+        for label, value in (("Password (algorithm)", "bcrypt"), ("Password (hash)", "sha256"),
+                             ("Password (regex)", "^.{8,}$"), ("Password rotation days", "90")):
+            with self.subTest(label=label):
+                self.assertEqual(typed_secrets("browser_type", {"element": label, "text": value}),
+                                 {"element": label, "text": value})
+        args = json.dumps({"element": "Password (algorithm)", "ref": "e7", "text": "bcrypt"})
+        self.assertEqual(codex._call_args(args, "browser_type"), "bcrypt")
+        for label in ("Password", "Password (required)", "Confirm new password", "Enter your password here",
+                      "Password for admin account", "Enter password to continue", "#login-password",
+                      "input.form-control[name=password]"):
+            with self.subTest(label=label):
+                self.assertEqual(typed_secrets("browser_type", {"element": label, "text": "x7Kq9mZ2"})["text"], "[masked]")
+
+    def test_an_identifier_in_a_header_list_stays(self):
+        for kept in ({"tags": ["Authorization", "OAuth2AuthorizationCode"]}, {"tags": ["authorization", "HTTPStatus200"]}):
+            with self.subTest(kept=kept):
+                self.assertEqual(mask_all(kept), kept)
+        self.assertEqual(mask_all({"headers": [["Authorization", "Bearer q8Zr2Lm7Xk4Vp9Nt3Bw6Hc1"]]}),
+                         {"headers": [["Authorization", "[masked]"]]})
+
+
 # Commands as an argument list, each flag's value its own item: (the list, the items masked).
 ARGV = (
     (["login", "--password", PASSWORD], {2}), (["--token", SUB], {1}), (["--api-key", SUB, "--verbose"], {1}),
