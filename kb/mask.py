@@ -1271,9 +1271,9 @@ _SECRET_WORDS = frozenset(("password", "passwords", "passwd", "pwd", "passcode",
                            "secrets", "token", "tokens", "credential", "credentials", "cvc", "cvv", "2fa", "mfa",
                            "apikey", "accesskey", "privatekey"))
 _SECRET_RUNS = (("api", "key"), ("access", "key"), ("private", "key"), ("one", "time", "code"),
-                ("verification", "code"), ("security", "code"), ("2", "fa"))
+                ("verification", "code"), ("security", "code"), ("2", "fa"), ("recovery", "phrase"), ("seed", "phrase"))
 _AFTER_A_SECRET = frozenset(("key", "keys", "code", "codes", "phrase", "value", "field", "fields", "textbox", "text",
-                             "box", "input", "entry", "area", "here", "required", "optional", "again", "confirm",
+                             "box", "edit", "input", "entry", "area", "here", "required", "optional", "again", "confirm",
                              "confirmation", "repeat"))
 # Where a label's phrase ends: at a mark other than "-" or "_", or at a word that joins phrases ("Password for admin").
 _PHRASE_END = re.compile(r"[^A-Za-z0-9\s_-]+|(?<![A-Za-z0-9])(?:to|for|of|from|in|on|at|with|by|and|or)(?![A-Za-z0-9])",
