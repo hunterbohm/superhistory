@@ -1141,9 +1141,9 @@ _SECRET_PAIRS = frozenset((("api", "key"), ("access", "key"), ("private", "key")
                            ("verification", "code"), ("security", "code"), ("2", "fa")))
 _ABOUT_WORDS = frozenset((
     "name", "names", "description", "descriptions", "label", "labels", "note", "notes", "hint", "hints", "question",
-    "questions", "type", "types", "id", "ids", "count", "counts", "length", "expiry", "expiration", "expires", "expiring",
-    "strength", "policy", "policies", "requirement", "requirements", "reset", "manager", "size", "format", "usage",
-    "created", "updated", "scope", "scopes", "permission", "permissions"))
+    "questions", "type", "types", "id", "ids", "count", "counts", "length", "expiry", "expiration", "expires",
+    "expiring", "strength", "policy", "policies", "requirement", "requirements", "reset", "manager", "size", "format",
+    "usage", "created", "updated", "scope", "scopes", "permission", "permissions"))
 _SELECTOR_ATTRIBUTE = re.compile(r"(?i)\b(?:name|id|type|for|class|placeholder|aria-label|data-[\w-]+)\s*[~|^$*]?=")
 
 
