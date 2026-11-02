@@ -771,19 +771,20 @@ _FIELDS = (re.compile(r'"([^"\\\n]{1,64})"\s*:\s*"((?:[^"\\\n]|\\.){0,2048})"'),
 def _name_value_edits(text):
     """Each value a JSON object in text holds apart from its name, as a request's headers do ({"name": "Cookie",
     "value": ...}), Postman's variables ({"key": "password", "value": ...}) and AWS tags ({"Key": "api_key", "Value":
-    ...}), masked whole where it is a secret by that name (_pair_secret): an object with one name or key field and one
-    value field, in any case."""
+    ...}), masked whole where it is a secret by that name (_pair_secret): an object's value field, in any case, under
+    any of its name or key fields, as {"name": "colour", "key": "password", "value": ...} holds one under its key."""
     edits = []
     if "value" not in text.lower():
         return edits
     for obj in _FLAT_OBJECT.finditer(text):
         for fields in _FIELDS:
             found = list(fields.finditer(obj.group()))
-            names = [f for f in found if f.group(1).lower() in ("name", "key")]
-            values = [f for f in found if f.group(1).lower() == "value"]
-            if len(names) == 1 and len(values) == 1 and values[0].group(2) and _pair_secret(
-                    names[0].group(2), values[0].group(2)):
-                edits.append((obj.start() + values[0].start(2), obj.start() + values[0].end(2), "[masked]"))
+            names = [f.group(2) for f in found if f.group(1).lower() in ("name", "key")]
+            masked = [(obj.start() + f.start(2), obj.start() + f.end(2), "[masked]") for f in found
+                      if f.group(1).lower() == "value" and f.group(2)
+                      and any(_pair_secret(name, f.group(2)) for name in names)]
+            if masked:
+                edits += masked
                 break
     return edits
 
@@ -1204,9 +1205,9 @@ def mask_all(value, key=None):
         out = {mask(k) if isinstance(k, str) else k: mask_all(v, k if isinstance(k, str) else None)
                for k, v in value.items()}
         names = [k for k in value if isinstance(k, str) and k.lower() in ("name", "key")]
-        values = [k for k in value if isinstance(k, str) and k.lower() == "value"]
-        if len(names) == 1 and len(values) == 1 and mask(values[0]) in out:
-            out[mask(values[0])] = _pair_value(value[names[0]], value[values[0]], out[mask(values[0])])
+        for field in (k for k in value if isinstance(k, str) and k.lower() == "value" and mask(k) in out):
+            for name in names:  # under any of its name or key fields
+                out[mask(field)] = _pair_value(value[name], value[field], out[mask(field)])
         return out
     if isinstance(value, (list, tuple)):
         return _masked_items(value, key)
