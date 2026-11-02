@@ -364,6 +364,60 @@ class ReviewOneTest(unittest.TestCase):
         self.assertEqual(mask('password_reset_url="https://x.example/r"'), 'password_reset_url="https://x.example/r"')
 
 
+class ReviewTwoTest(unittest.TestCase):
+    """The second review's findings, and the class the first stood for: a new reading never shows what main's own
+    readings hide, whatever it reads first."""
+
+    def test_a_short_name_inside_a_flags_value_leaves_the_value_whole(self):
+        self.assertEqual(mask("--api-key K!pwd=aZ7xB9mK4qT2"), "--api-key [masked]")
+
+    def test_every_new_shape_inside_mains_readings_hides_all_main_hides(self):
+        from tests.test_mask_against_main import main, reading
+        inner = ("pwd=aZ7xB9mK4qT2", "pass='Tr0ub4dor-Zk9q'", "SK0123456789abcdef0123456789abcdef", "<password>Xk9mP2qL</password>",
+                 "redis://:p4ssW0rdXyz9@cache", 'password="Xk9,mP2;qL7v"', "dop_v1_" + "0a1b2c3d" * 8,
+                 "secret: Ppasswd: Pw7xYzQ9mK2nL4pR", "Ocp-Apim-Subscription-Key: q8Zr2Lm7Xk4Vp9Nt3Bw6Hc1")
+        outer = ("--api-key {}", "--password {}", "api_key={}", "API_KEY={}", '{{"token": "{}"}}', "password: {}",
+                 "Authorization: Token {}", "Cookie: sid={}", "curl -u sam:{} x", "token is {}")
+        for o in outer:
+            for i in inner:
+                for glue in ("", "K!", "x,", "a:"):
+                    text = o.format(glue + i) + " end"
+                    with self.subTest(text=text):
+                        _, main_hidden = reading(text, main.mask(text))
+                        _, head_hidden = reading(text, mask(text))
+                        self.assertEqual(main_hidden - head_hidden, set(), (mask(text), main.mask(text)))
+
+    def test_an_id_split_by_an_invisible_character_reads_no_provider_token(self):
+        from kb.mask import secret_in_id
+        for sid in ("SK0123456789abcdef\u200b0123456789abcdef.md", "notes/dop_v1_" + "0a1b2c3d" * 4 + "\u200b" + "0a1b2c3d" * 4):
+            with self.subTest(sid=sid):
+                self.assertFalse(secret_in_id(sid))
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            db = store.connect(os.path.join(tmp, "kb.sqlite"))
+            try:
+                db.execute("INSERT INTO docs(kind,source,source_id,ts,title,content,metadata,masked) VALUES(?,?,?,?,?,?,?,?)",
+                           ("doc", "notes", "SK0123456789abcdef\u200b0123456789abcdef.md", "2026-11-01", "Plan", "notes",
+                            "{}", "old"))
+                db.commit()
+                store.remask(db)
+                self.assertEqual(db.execute("SELECT count(*) FROM docs").fetchone()[0], 1)
+            finally:
+                db.close()
+
+    def test_labels_in_capitals_and_camel_case(self):
+        for label in ("TOKENIZER", "SECRETARY", "TokenName", "PasswordHint", "SECRET_KEY_NAME", "tokenCount",
+                      "PASSWORD_POLICY", "apiKeyDescription"):
+            with self.subTest(label=label):
+                self.assertEqual(typed_secrets("mcp__playwright__browser_type", {"element": label, "text": "used by staging"}),
+                                 {"element": label, "text": "used by staging"})
+        for label in ("PASSWORD", "SECRET_KEY", "userPassword", "apiKey", "ACCESS_TOKEN", "OneTimeCode", "pinCode",
+                      "input[name=newPassword]"):
+            with self.subTest(label=label):
+                self.assertEqual(typed_secrets("mcp__playwright__browser_type", {"element": label, "text": "x7Kq9mZ2"})["text"],
+                                 "[masked]")
+
+
 # Commands as an argument list, each flag's value its own item: (the list, the items masked).
 ARGV = (
     (["login", "--password", PASSWORD], {2}), (["--token", SUB], {1}), (["--api-key", SUB, "--verbose"], {1}),
