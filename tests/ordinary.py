@@ -87,6 +87,9 @@ SHAPES = (
         f"<token>{r.choice(('HTTP', 'UTF8', 'JSON', 'IPv6', 'Base64', ''))}"
         f"{''.join(word(r, PLAIN).title() for _ in range(r.randint(1, 3)))}{r.randint(0, 2099)}</token>"
         for _ in range(r.randint(1, 3))),
+    # Base64 of a settings object whose first field is "k", as a preference or a key-value store holds one.
+    lambda r: base64.b64encode(('{"k":"%s","v":"%s","description":"%s"}' % (
+        word(r, PLAIN), word(r, PLAIN), " ".join(word(r, PLAIN) for _ in range(r.randint(3, 8))))).encode()).decode(),
     lambda r: 'compiler pass%s"%s%s%s" changed=%d' % (r.choice(("=", ": ")), r.choice(("Convert", "Lower", "Fold", "")),
                                                    r.choice(("BF16", "SCF", "Affine2", "LLVM")),
                                                    r.choice(("ToF32", "2LLVM", "Pass", "To64")), r.randint(0, 1)),

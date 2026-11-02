@@ -801,6 +801,35 @@ class ReviewSevenTest(unittest.TestCase):
         self.assertEqual(mask_all({"login": "sam", "pass": "Tr0ub4dor-Zk9q"}), {"login": "sam", "pass": "[masked]"})
 
 
+class ReviewEightTest(unittest.TestCase):
+    """The eighth review's findings."""
+
+    def test_pass_names_a_password_only_as_the_field_next_to_a_user(self):
+        for text in ('user=builder compiler pass="ConvertBF16ToF32" changed=0',
+                     "user: builder\n\ncompiler pass=ConvertBF16ToF32 changed=1", "login=ci; ran pass=LowerSCF2LLVM"):
+            with self.subTest(text=text):
+                self.assertEqual(mask(text), text)
+        for text, masked in (("User ID=sa;PWD=Tr0ub4dor-Zk9q;", "User ID=sa;PWD=[masked];"),
+                             ("pass: 'Tr0ub4dor-Zk9q', user: 'me@example.com'", "pass: '[masked]', user: 'me@example.com'"),
+                             ('{"user": "sa", "pwd": "Tr0ub4dor-Zk9q"}', '{"user": "sa", "pwd": "[masked]"}')):
+            with self.subTest(text=text):
+                self.assertEqual(mask(text), masked)
+
+    def test_a_field_that_searches_or_names_secrets_is_no_secrets_field(self):
+        for label, value in (("Search secrets", "billing"), ("Filter tokens", "gpt"), ("Find passwords", "bank"),
+                             ("Rename token", "deploy-bot"), ("Generate password", "16")):
+            with self.subTest(label=label):
+                self.assertEqual(typed_secrets("browser_type", {"element": label, "text": value}),
+                                 {"element": label, "text": value})
+        args = json.dumps({"element": "Search secrets", "ref": "e23", "text": "billing"})
+        self.assertIn("billing", codex._call_args(args, "mcp__playwright__browser_type"))
+
+    def test_base64_of_ordinary_json_is_no_grafana_key(self):
+        import base64
+        text = base64.b64encode(b'{"k":"theme","v":"light","description":"ordinary interface preferences"}').decode()
+        self.assertEqual(mask(text), text)
+
+
 # Commands as an argument list, each flag's value its own item: (the list, the items masked).
 ARGV = (
     (["login", "--password", PASSWORD], {2}), (["--token", SUB], {1}), (["--api-key", SUB, "--verbose"], {1}),
