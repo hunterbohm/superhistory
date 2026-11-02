@@ -568,11 +568,10 @@ TAKEOUT_SKIP_LABELS = {"Drafts", "Trash", "Spam"}
 
 
 def _drops(label):
-    """Whether a message's label is Gmail's own draft, trash or spam label: as IMAP's decoded names and Gmail's API
-    give it ("DRAFT"), as a raw IMAP flag ("\\Draft"), or as Takeout names it ("Trash"). A label the user made never
-    is, whatever its case or backslashes, as main's IMAP reader has it."""
-    return (label in SKIP_MESSAGE_LABELS or label in TAKEOUT_SKIP_LABELS
-            or label.startswith("\\") and label[1:].upper() in SKIP_MESSAGE_LABELS)
+    """Whether a message's label is Gmail's own draft, trash or spam label, as IMAP's decoded names (_labels) and
+    Gmail's API give it ("DRAFT") or as Takeout names it ("Trash"). Decoding has put Gmail's own flags in capitals, so a
+    label that still starts with a backslash is one the user made, as main's IMAP reader has it; so is any other."""
+    return label in SKIP_MESSAGE_LABELS or label in TAKEOUT_SKIP_LABELS
 
 
 def render_thread(account, thread_id, messages, mark=0):
