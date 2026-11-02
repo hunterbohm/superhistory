@@ -119,7 +119,8 @@ _COMMON_PAIRS = frozenset((
     "yc yd ye yi yl ym yn yo yp yr ys yt za ze zi zo zz").split())
 _VOWEL_RUN = re.compile(r"(?i)[aeiou]{4}")
 # A run of the letters of hex alone, as a token's hex body with no digit is, alone or after a provider's prefix: no
-# word in a common English word list holds eight of them in a row. And the longest word a path's word may be ("counterrevolutionaries").
+# word in a common English word list holds eight of them in a row. And the longest a path's word may be
+# ("counterrevolutionaries").
 _HEX_LETTERS = re.compile(r"[A-Fa-f]{8,}")
 _LONGEST_WORD = 22
 # The name of a header whose value is a credential, just before the scheme word.
