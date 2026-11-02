@@ -305,10 +305,12 @@ COMMAND_FLAGS = (
     (r"(?:docker|podman|nerdctl|buildah|skopeo|oras)\s+login|helm\s+registry\s+login", r"\s-p[ \t]+['\"]?", False),
     (r"redis-cli", r"\s-a[ \t]+['\"]?", False),
     (r"az\s+login|mongosh|mongo|mongodump|mongorestore|mongoexport|mongoimport|twine", r"\s-p[ \t]+['\"]?", False),
-    (r"keytool|jarsigner", r"\s-(?:src|dest|new)?(?:storepass|keypass)[ \t]+['\"]?", True),
-    # aws configure set's secret settings, and a .netrc line's password after its machine and login.
+    (r"keytool|jarsigner", r"\s-(?:src|dest|new)?(?:storepass|keypass)[ \t]+['\"]?", False),
+    # aws configure set's secret settings, and a .netrc line's password after its machine and login. A setting's name
+    # is read once, its key word looked for ahead: read around the key word, a run of key words took time in the
+    # square of its length.
     (r"aws\s+configure\s+set",
-     r"\s(?:[A-Za-z0-9_-]+\.)?[A-Za-z0-9_]*(?:secret|token|password)[A-Za-z0-9_]*[ \t]+['\"]?", True),
+     r"\s(?:[A-Za-z0-9_-]+\.)?(?=[A-Za-z0-9_]*?(?:secret|token|password))[A-Za-z0-9_]+[ \t]+['\"]?", False),
     (r"(?:machine[ \t]+[^\s]+[ \t]+|default[ \t]+)login[ \t]+[^\s]+", r"\spassword[ \t]+['\"]?", False),
 )
 _COMMANDS = [(re.compile(rf"(?i)(?:(?<![A-Za-z0-9_.-])|{_AFTER_ESCAPE})(?:{command})(?![A-Za-z0-9_.-])"
@@ -365,8 +367,8 @@ _GITLEAKS = [(re.compile(source, re.ASCII), group, entropy, keywords, [re.compil
              for _, source, group, entropy, keywords, allowed, stopwords in gitleaks.RULES]
 _GITLEAKS_ALLOW = [re.compile(a) for a in gitleaks.ALLOW_REGEXES]
 # The same rules with no word boundary before them, for a token right after a letter where an invisible character stood.
-_GITLEAKS_AFTER_A_BREAK = [(re.compile(re.sub(r"^((?:\(\?i\))?)\\b", r"\1", rule[0].pattern), re.ASCII), *rule[1:])
-                           for rule in _GITLEAKS]
+_GITLEAKS_AFTER_A_BREAK = [(re.compile(re.sub(r"^((?:\(\?i\))?)(?:\\b|\(\?<!\[A-Za-z0-9\]\))", r"\1", rule[0].pattern),
+                                       re.ASCII), *rule[1:]) for rule in _GITLEAKS]
 
 
 def _entropy(text):
@@ -483,14 +485,42 @@ def _keyed_span(m):
     return m.start(3), m.end(3)
 
 
+# A path, as a working directory names one: from the root, home or here, or a Windows drive or variable.
+_PATH_VALUE = re.compile(r"(?:/|~|\.\.?[\\/]|[A-Za-z]:[\\/]|%[A-Za-z_]+%)")
+
+
+def _short_name_secret(value):
+    """Whether a value after "pass" or "pwd" alone is a secret: a credential's shape, and no path. Either word alone
+    names much else, a working directory or a compiler's pass."""
+    return not _PATH_VALUE.match(value) and _credential_shaped(value)
+
+
+def _short_password_span(m):
+    """Where "pass" or "pwd"'s value is, when it is a secret (_short_name_secret)."""
+    return _keyed_span(m) if _short_name_secret(m.group(3)) else None
+
+
+# A password's name that names something about it rather than it: its policy, hint, reset, length, rules, file.
+_ABOUT_A_PASSWORD = re.compile(r"(?i)(?:^|[_.-]|(?-i:(?<=[a-z])(?=[A-Z])))(?:polic(?:y|ies)|hints?|reset|length|min|max|"
+                               r"rules?|requirements?|strength|expir\w*|change[ds]?|file|path|url|name|type|id|prompt|label|"
+                               r"field|regex|pattern|format|hash\w*|validat\w*)s?(?=$|[_.-]|(?-i:[A-Z]))")
+
+
 def _password_span(m):
-    """_keyed_span, for a pattern that reads only a password's value."""
-    return _keyed_span(m) if PASSWORD_NAME.search(m.group(1)) else None
+    """_keyed_span, for a pattern that reads only a password's value whole. A name about a password, as
+    "password_policy" or "PASSWORD_HINT" is, is read as KEYED_SECRET reads it."""
+    name = m.group(1)
+    return _keyed_span(m) if PASSWORD_NAME.search(name) and not _ABOUT_A_PASSWORD.search(name) else None
 
 
 def _line_password_span(m):
     """Where a password's line value is, when the line holds more past where _VALUE would end it."""
     return _password_span(m) if re.search(r"[,;<>)\]}].", m.group(3)) else None
+
+
+def _xml_span(m):
+    """Where an XML element's secret is: _keyed_span, but for an element about a password (_ABOUT_A_PASSWORD)."""
+    return None if _ABOUT_A_PASSWORD.search(m.group(1)) else _keyed_span(m)
 
 
 # The schemes an Authorization header names before its credential, as IANA lists them and services use them.
@@ -628,10 +658,10 @@ def _replace(text, spans, replacement):
 # by its name, each with what masks it and how its matches are read. An id reads "Bearer" and "Basic" as words, and a
 # named value only in assignment form, as re.sub reads it; in text a name's value can be the next name (_named).
 # The readings that take a password's value whole where KEYED_SECRET would end it early, so they come before it.
-_WHOLE_VALUES = ((XML_SECRET, _keyed_span), (LINE_PASSWORD, _line_password_span), (APP_PASSWORD, _password_span),
+_WHOLE_VALUES = ((XML_SECRET, _xml_span), (LINE_PASSWORD, _line_password_span), (APP_PASSWORD, _password_span),
                  *((p, _password_span) for p in QUOTED_PASSWORDS))
 _TEXT_RULES = (SECRET_PATTERNS, ((JSON_SECRET, _keyed_span), *_WHOLE_VALUES, (KEYED_SECRET, _keyed_span),
-                                 (ENV_KEY_SECRET, _keyed_span), (SHORT_PASSWORD, _keyed_span),
+                                 (ENV_KEY_SECRET, _keyed_span), (SHORT_PASSWORD, _short_password_span),
                                  (FLAG_SECRET, _keyed_span), (AUTH_SECRET, _authorization_span)), "named")
 _ID_RULES = (_ID_PATTERNS, ((KEYED_ID, _keyed_span), (ENV_KEY_ID, _keyed_span)), "plain")
 
@@ -665,7 +695,6 @@ def _run(text, rules, origin=None, named=None):
     for pattern in patterns:
         text, origin = _edit(text, origin, [(m.start(), m.end(), "[masked]") for m in pattern.finditer(text)
                                             if pattern not in (BASIC, BEARER) or not _scheme_words(m)])
-    text, origin = _edit(text, origin, [(start, end, "[masked]") for start, end in _gitleaks_spans(text)])
     for edits in (_docker_login_edits, _key_rest_edits, _headless_key_edits,
                   lambda text: [(m.start(), m.end(), "[masked]") for m in _GLUED_RUN.finditer(text)]):
         text, origin = _edit(text, origin, edits(text))
@@ -681,6 +710,10 @@ def _run(text, rules, origin=None, named=None):
                 if origin[m.start(1)] >= 0 and origin[m.end(1) - 1] >= 0:
                     named.append((origin[m.start(1)], origin[m.end(1) - 1] + 1, *_back(origin, start, end, size)))
         text, origin = _edit(text, origin, [(start, end, "[masked]") for _, (start, end) in found])
+    # gitleaks' rules last, so a named value holding a provider's token is read whole first; and in text only, as an
+    # id is read more narrowly (secret_in_id), and an id one took for a token would drop its item.
+    if reading == "named":
+        text, origin = _edit(text, origin, [(start, end, "[masked]") for start, end in _gitleaks_spans(text)])
     return text, origin
 
 
@@ -1015,7 +1048,8 @@ def mask_all(value, key=None):
     if isinstance(value, str):
         if key is None:
             return mask(value)
-        if _SECRET_FIELD.match(key) and _looks_secret(key, "=", value.strip()):
+        if _SECRET_FIELD.match(key) and _looks_secret(key, "=", value.strip()) and (
+                key.lower() not in ("pass", "pwd") or _short_name_secret(value.strip())):
             return "[masked]"  # the whole value, which may hold a space or a quote that would end it in text
         masked = mask(f"{key}={value}")
         head = mask(key) + "="
@@ -1055,12 +1089,16 @@ def _masked_items(items, key):
 _TYPING_TOOL = re.compile(r"(?i)(?:browser_|puppeteer_|playwright_)?(?:type|type_text|fill|fill_form|fill_field|"
                           r"press_sequentially|input_text|set_value)")
 # A field label that asks for a secret: a password, passcode or passphrase, a PIN, a one-time or security code, a
-# token, a secret, an API or private key. Not one that asks about it: "Token name", "Password hint".
-_SECRET_LABEL = re.compile(r"(?i)(?:passw(?:or)?d|passcode|passphrase|\bpwd\b|(?<![a-z])pin(?![a-z])|secret|token|"
-                           r"(?<![a-z])otp(?![a-z])|one[ _-]?time|verification[ _-]?code|security[ _-]?code|2fa|mfa|"
-                           r"(?<![a-z])cv[cv]2?(?![a-z])|(?:api|access|private|secret)[ _-]?key|credential)s?"
-                           r"(?![ _-]*(?:name|description|label|note|hint|question|type|id|count|length|expir[a-z]*|"
-                           r"strength|polic[a-z]*|requirements?|reset|manager)(?![a-z]))")
+# token, a secret, an API or private key; each word ending there, as "Tokenizer" and "Secretary" do not, a short one
+# starting there too, as "Spinner"'s "pin" does not. And a label that asks about one instead ("Token name", "Secret
+# key description", "Password hint"), after a selector's own attribute names are taken out ("input[name=password]").
+_SECRET_LABEL = re.compile(r"(?<![A-Za-z])(?i:pin|pwd|otp|cvc|cvv2?|2fa|mfa)(?![a-z])|(?i:passw(?:or)?d|passcode|"
+                           r"passphrase|secret|token|credential|one[ _-]?time[ _-]?(?:code|password|pass)|"
+                           r"verification[ _-]?code|security[ _-]?code|(?:api|access|private)[ _-]?key)(?:s|S)?(?![a-z])")
+_ABOUT_LABEL = re.compile(r"(?<![A-Za-z])(?i:names?|descriptions?|labels?|notes?|hints?|questions?|types?|ids?|counts?|"
+                          r"length|expir[a-z]*|strength|polic(?:y|ies)|requirements?|reset|manager|size|format|usage|"
+                          r"created|updated|scopes?|permissions?)(?![a-z])")
+_SELECTOR_ATTRIBUTE = re.compile(r"(?i)\b(?:name|id|type|for|class|placeholder|aria-label|data-[\w-]+)\s*[~|^$*]?=")
 # Where a tool names the field it types into, and where it holds what it types.
 _LABEL_KEYS = ("element", "name", "label", "selector", "field", "placeholder", "description", "target", "type",
                "aria_label", "ariaLabel", "title", "id", "locator")
@@ -1080,7 +1118,9 @@ def typed_secrets(name, args):
         if not isinstance(item, dict):
             return item
         labels = [str(item[key]) for key in _LABEL_KEYS if isinstance(item.get(key), str)]
-        secret = any(_SECRET_LABEL.search(label) for label in labels)
+        read = [_SELECTOR_ATTRIBUTE.sub(" ", label) for label in labels]
+        secret = any(_SECRET_LABEL.search(label) for label in read) and not any(_ABOUT_LABEL.search(label)
+                                                                                 for label in read)
         out = dict(item)
         for key in _TYPED_KEYS:
             value = item.get(key)

@@ -12,7 +12,7 @@ token by its own shape, a provider's prefix or structure, and leaves:
 - a rule with no example its own pattern matches.
 Each rule's examples are drawn from its own pattern (tests/samples.py), as gitleaks draws its own. The Go regular
 expressions become Python's: a flag set inside a group scoped to the rest of that group, "\\z" as "\\Z", POSIX classes
-spelled out, what ends a token looked at ahead, and compiled ASCII-only, as Go reads \\w, \\d, \\s and \\b. What it took and left, and why, goes to stdout.
+spelled out, what ends a token looked at ahead, a token starting where a word does, and compiled ASCII-only, as Go reads \\w, \\d, \\s and \\b. What it took and left, and why, goes to stdout.
 """
 import os
 import re
@@ -113,6 +113,19 @@ def terminator_ahead(source):
     return source
 
 
+# What a rule may start with that already says where a token starts: a word boundary, the text's start, a lookbehind.
+_STARTS = ("\\b", "^", "(?:^|", "(?<")
+WORD_START = "(?<![A-Za-z0-9])"
+
+
+def word_start(source):
+    """`source` starting where a word does, as a token does, unless it says where it starts already: gitleaks' Twilio
+    rule, "SK" and 32 hex digits, matched inside an ordinary id such as "TASK<hex digest>"."""
+    flags = "(?i)" if source.startswith("(?i)") else ""
+    body = source[len(flags):]
+    return source if body.startswith(_STARTS) else flags + WORD_START + body
+
+
 def secret_group(rule, pattern, drawn):
     """The group that holds the secret, as gitleaks reads it: the rule's secretGroup, else the first group that holds
     anything. Where that is a part of the token, as a link's groups are, more than the mark or two that stand around a
@@ -151,7 +164,7 @@ def main(tree, tag, digest):
         if not go or r"[\w.-]{0,50}?" in go:
             left.append((rule_id, "finds a value by a word near it"))
             continue
-        source = terminator_ahead(python_regex(go))
+        source = word_start(terminator_ahead(python_regex(go)))
         pattern = re.compile(source, re.ASCII)
         drawn = samples.samples(pattern, EXAMPLES, rule_id)
         group = secret_group(rule, pattern, drawn)

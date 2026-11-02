@@ -71,6 +71,9 @@ SHAPES = (
     lambda r: f"max_tokens: {r.randint(256, 200000)}", lambda r: f"{word(r).upper()}_TIMEOUT={r.randint(1, 600)}",
     lambda r: f"fingerprint {':'.join(run(r, HEX, 2) for _ in range(16))}",
     lambda r: f"SHA256:{b64(r, 32)[:43]} sam@studio (ED25519)",
+    lambda r: f"{r.choice(('TASK', 'DISK', 'MASK', 'RISK', 'DESK'))}{run(r, HEX, 32)}",
+    lambda r: f"PWD=/{word(r, PLAIN)}{r.randint(1, 99)} OLDPWD=~/{word(r, PLAIN)}{r.randint(1, 9)}",
+    lambda r: f"opt -passes={word(r, PLAIN)}-{word(r, PLAIN)} pass={word(r, PLAIN)}-{word(r, PLAIN)}",
 )
 
 

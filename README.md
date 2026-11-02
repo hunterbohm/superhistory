@@ -189,12 +189,12 @@ Known limits:
   not masked whole.
 - A private key written as base64 (as a Kubernetes secret holds one) is not masked.
 - Provider tokens kb does not know by itself are masked by rules taken from gitleaks (kb/gitleaks.py, gitleaks v8.30.1,
-  MIT licence), where gitleaks finds one: a few of its rules read only where the provider's name is near the token,
-  as Airtable's and Facebook's do. gitleaks reads Netlify's "nfp_" tokens only by the word "netlify" near a value and
+  MIT licence), where gitleaks finds one in text, as a word of its own: a few of its rules read only where the
+  provider's name is near the token, as Airtable's and Facebook's do. An item's id is read more narrowly, without them. gitleaks reads Netlify's "nfp_" tokens only by the word "netlify" near a value and
   has no rule for Resend's "re_" tokens, so kb does not mask them by themselves.
 - A password an agent types into a web page through a browser tool is masked when the field's label says password,
-  passcode, secret, token, PIN or the like. With no label, as Chrome DevTools names a field by its id alone, it is
-  masked only when it is shaped like a credential.
+  passcode, secret, token, PIN or the like, and not when it asks about one ("Token name", "Password hint"). With no
+  label, as Chrome DevTools names a field by its id alone, it is masked only when it is shaped like a credential.
 - A password with a comma, a semicolon or a bracket in it is masked whole in quotes, in an XML element or on a line of
   its own, as a .env or YAML file writes one; inside a sentence it is masked up to that mark. One with a space, a
   backtick, "<", ">" or a quote in it is masked up to that, but for Google's app passwords (four groups of four
