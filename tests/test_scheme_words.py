@@ -73,6 +73,19 @@ def basic_credential(r):
     return encoded.rstrip("=") if r.random() < 0.5 else encoded
 
 
+def single_byte_login(r):
+    """base64 of "user:password" in a single-byte code page, Windows-1252, Windows-1251, IBM 437 or Latin-1, from any
+    of its printable characters, padded or not."""
+    import base64
+    encoding = r.choice(("cp1252", "cp1251", "cp437", "latin-1"))
+    printable = [c for c in (bytes([b]).decode(encoding, "ignore") for b in range(32, 256)) if c and c.isprintable()
+                 and c != ":"]
+    login = "".join(r.choice(printable) for _ in range(r.randint(1, 6))) + ":" + "".join(
+        r.choice(printable) for _ in range(r.randint(1, 12)))
+    encoded = base64.b64encode(login.encode(encoding)).decode()
+    return encoded.rstrip("=") if r.random() < 0.5 else encoded
+
+
 class SchemeWordTest(unittest.TestCase):
     def test_the_audit_paths_are_ordinary(self):
         for path in ("Basic Statistics/notes.md", "Ring Bearer responsibilities/notes.md", "Ring Bearer duties/list.md",
@@ -110,6 +123,25 @@ class SchemeWordTest(unittest.TestCase):
                      "Bearer aubx/ecjq/ivkx/opzy", "Authorization: Basic Statistics/notes.md"):
             with self.subTest(text=text):
                 self.assertEqual(mask(text), as_on_main(text))
+
+    def test_the_second_reviews_credentials_are_masked_as_on_main(self):
+        for text in ("Bearer fcedccbafeaedfbdfadcecaadddcabab see notes.md", "Basic YTowyi//lutaeboj.md",
+                     "Basic YTowyi//lutaeboj stored in notes.md", "Bearer face/bead/cafe/deed see notes.md",
+                     "Bearer fcedccbafeaedfbdfadcecaadddcabab stored in docs/notes.md"):
+            with self.subTest(text=text):
+                self.assertEqual(mask(text), as_on_main(text))
+
+    def test_credentials_with_a_file_named_after_them_are_masked_as_on_main(self):
+        # A token followed by prose that names a file is no path: the words after it are not its folders.
+        for seed in range(2000):
+            r = random.Random(f"tail:{seed}")
+            token = r.choice((lambda: "".join(r.choice("abcdef") for _ in range(r.randint(16, 40))),
+                              lambda: lowercase_token(r)))()
+            secret = r.choice((lambda: "Bearer " + token, lambda: "Basic " + single_byte_login(r)))()
+            for tail in (" see notes.md", " stored in docs/notes.md", ".md" if secret.startswith("Basic") else ""):
+                text = secret + tail
+                with self.subTest(text=text):
+                    self.assertEqual(mask(text), as_on_main(text))
 
     def test_lower_case_and_basic_credentials_are_masked_as_on_main(self):
         for seed in range(2000):
