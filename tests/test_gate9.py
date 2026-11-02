@@ -17,7 +17,8 @@ TOKENS = ("ghp_Zq7Lm2Xc9Vb4Nn8Kk3Jj6Hh1Gg5Ff0Dd2Ss", "sk_live_51Hq8ZtKx9Lm2Np4Qr
 PASSWORD = "Tr0ub4dor-Zk9q"
 # How a terminal colour code reaches kb: raw, escaped in JSON, written as Python writes it, in octal, and as the
 # eight-bit introducer.
-FORMS = {"raw": "\x1b[", "json": "\\u001b[", "python": "\\x1b[", "octal": "\\033[", "eight-bit": "\x9b"}
+FORMS = {"raw": "\x1b[", "json": "\\u001b[", "python": "\\x1b[", "octal": "\\033[", "eight-bit": "\x9b",
+         "eight-bit json": "\\u009b", "eight-bit python": "\\x9b"}
 
 
 def coloured(form, token):
@@ -1017,6 +1018,33 @@ class ReviewThirteenTest(unittest.TestCase):
                       "Discord bot token", "API token", "2FA code", "Secret key"):
             with self.subTest(label=label):
                 self.assertEqual(typed_secrets("browser_type", {"element": label, "text": "x7Kq9mZ2"})["text"], "[masked]")
+
+
+class ReviewFourteenTest(unittest.TestCase):
+    """The fourteenth review's findings, under the coordinator's bar."""
+
+    def test_a_quoted_password_holds_a_pipe_or_a_semicolon(self):
+        for text, masked in (("az login -u me@example.com -p 'Tr0ub4dor|Zk9q'", "az login -u me@example.com -p '[masked]'"),
+                             ('mongosh -u admin -p "Tr0ub4dor;Zk9q"', 'mongosh -u admin -p "[masked]"'),
+                             ("keytool -list -storepass 'Tr0ub4dor|Zk9q' -v", "keytool -list -storepass '[masked]' -v")):
+            with self.subTest(text=text):
+                self.assertEqual(mask(text), masked)
+        self.assertEqual(mask("az login -u me -p $AZ_PW | tee login.log"), "az login -u me -p $AZ_PW | tee login.log")
+
+    def test_an_escaped_eight_bit_colour_code_before_a_token(self):
+        for printed in (json.dumps("\x9b31mAKIAQX7RZ2MPL4VN8KTB"), repr("\x9b31mAKIAQX7RZ2MPL4VN8KTB")):
+            with self.subTest(printed=printed):
+                self.assertNotIn("AKIAQX7RZ2MPL4VN8KTB", mask(printed))
+
+    def test_a_name_about_a_subscription_key_keeps_its_value(self):
+        for text in ("subscription_key_header_name: Ocp-Apim-Subscription-Key",
+                     "subscription_key_name: billing-service-2026", "subscriptionKeyHeader: Ocp-Apim-Subscription-Key"):
+            with self.subTest(text=text):
+                self.assertEqual(mask(text), text)
+        for text in ("Ocp-Apim-Subscription-Key: q8Zr2Lm7Xk4Vp9Nt3Bw6Hc1", "subscription_key=q8Zr2Lm7Xk4Vp9Nt3Bw6Hc1",
+                     "subscriptionKey: q8Zr2Lm7Xk4Vp9Nt3Bw6Hc1"):
+            with self.subTest(text=text):
+                self.assertNotIn("q8Zr2Lm7", mask(text))
 
 
 # Commands as an argument list, each flag's value its own item: (the list, the items masked).
