@@ -234,7 +234,7 @@ _KEY_NAME = (
     r"(?i)(?<![A-Za-z0-9_.-])("
     r"(?:[A-Za-z0-9_.-]*\.)?(?=[A-Za-z0-9_-]*?(?:api[_-]?key|access[_-]?key|private[_-]?key|"
     r"subscription[_-]?key(?![A-Za-z0-9_-])|"
-    r"secret|token(?!i[sz](?:e|ing|ation))|credentials?|passw(?:or)?d|passcode|session[_-]?(?:token|key|secret|cookie)|bw_session))"
+    r"secret|token(?!i[sz](?:e(?:rs?|d|s)?|ing|ation)(?-i:(?![a-z])))|credentials?|passw(?:or)?d|passcode|session[_-]?(?:token|key|secret|cookie)|bw_session))"
     r"[A-Za-z0-9_-]+"
     r"|[A-Za-z0-9]+(?:[_-][A-Za-z0-9]+)*[_-](?:pass|pwd|pw)"
     r"|x-(?=[A-Za-z0-9-]*?(?<=-)auth(?:-|(?![A-Za-z0-9_.-])))[A-Za-z0-9-]+"
@@ -316,14 +316,30 @@ _NEW_INVISIBLE = re.compile(_CSI + rf"|{_ESCAPED_INVISIBLE}|[\x7f-\x84\x86-\x9f]
 
 # Google's app password, four groups of four lower-case letters, after a password's name and "=" or in quotes. A
 # character a reader does not see may stand anywhere among its letters, as one may in any value read through them.
-_UNSEEN = rf"(?:{INVISIBLE.pattern})*"
+# A colour code is read whole, never its introducer alone, as ESC or 0x9B by themselves, so a letter after one is
+# read one way only and a run of colour codes costs time in proportion.
+_UNSEEN = (rf"(?:{_CSI}|(?!\\(?:u001[bB]|x1[bB]|u009[bB]|x9[bB]))(?:{_ESCAPED_INVISIBLE})"
+           rf"|[\x00-\x08\x0e-\x1a\x7f-\x84\x86-\x9a\x9c-\x9f{_FORMAT_CHARACTERS}])*")
 _APP_GROUP = _UNSEEN.join(["[a-z]"] * 4)
-_APP_GROUPS = rf"({_APP_GROUP}(?:{_UNSEEN} {_UNSEEN}{_APP_GROUP}){{3}})"
+_APP_GROUPS = rf"({_UNSEEN}{_APP_GROUP}(?:{_UNSEEN} {_UNSEEN}{_APP_GROUP}){{3}}{_UNSEEN})"
 # On a line of its own, as YAML writes one, after an unquoted colon too: the four groups and nothing after them but a
-# comment, and not four English words, so a sentence after "password:" is read as main reads it
-# (_app_password_line_span).
+# comment. Neither reading takes a sentence of common words (_app_password_span).
 APP_PASSWORD_LINE = re.compile(r"(?m)(?:^|(?<=\\n))[ \t]*(?:export[ \t]+|-[ \t]+)?(?i:" + _KEY_NAME[4:] + r")([ \t]*:[ \t]*)"
                                + _APP_GROUPS + r"(?=[ \t]+#[^\r\n]*$|[ \t]*\r?$|\\[nr])")
+# Four-letter words common in English: four groups holding two or more of them are a sentence ("password: copy yaml
+# into json"), which a random app password's groups are not, but one time in some hundred thousand.
+_COMMON_WORDS = frozenset("""
+able also area away back bank base been best body book both call came card care case city come copy cost data date
+days deal does done door down draw drop each easy edit else even ever face fact fail fall fast feel file fill find fine
+fire five flow food form four free from full game gave give goes gone good grow half hand hard have head hear held help
+here high hold home hope host hour huge idea into item just keep kept kind knew know last late lead left less life
+like line link list live load lock long look lose lost made mail main make many mark mean meet mind miss mode more
+most move much must name near need news next nice none note okay once only open over page part pass past path pick
+plan play plus post pull push read real rest rich role room rule runs safe said same save seen self send sent show
+shut side sign site size some soon sort stay step stop sure take talk task team tell term test text than that them
+then they this thus time told took tool true turn type unit upon used user uses very view wait walk want week well
+went were what when will wind with word work year your zero yaml json html http cron sudo bash then into onto
+""".split())
 APP_PASSWORD = re.compile(_KEY_NAME + r"""((?:[ \t]*=|[\"']?[ \t]*[:=][ \t]*[\"'])[ \t]*)""" + _APP_GROUPS
                           + r"(?![A-Za-z0-9])")
 # An HTTP Authorization header's credentials: its first word, or after a scheme word ("Token ...", "Bot ...",
@@ -358,7 +374,7 @@ COMMAND_FLAGS = (
 )
 _MAIN_COMMANDS = 5  # main's own rows of COMMAND_FLAGS; the rest are this PR's
 # A command's line runs to a pipe, ";" or a line break, plain or escaped (_LINE). For the rows main's own lack, it is
-# read as the shell reads it (_command_line_end), so a quoted password may hold a pipe ("az login -p 'Tr0ub4dor|Zk9q'").
+# read as the shell reads it (_command_line), so a quoted password may hold a pipe ("az login -p 'Tr0ub4dor|Zk9q'").
 _LINE = r"(?:[^\n|;\\]|\\(?![nr]))*"
 _COMMANDS = [(re.compile(rf"(?i)(?:(?<![A-Za-z0-9_.-])|{_AFTER_ESCAPE})(?:{command})(?![A-Za-z0-9_.-])"
                          + (_LINE if n < _MAIN_COMMANDS else "")),
@@ -496,22 +512,24 @@ def _docker_login_edits(text):
     return [(m.end(1), m.end(), "[masked]") for m in _AUTH_FIELD.finditer(text) if _basic_credential(m.group(2))]
 
 
-def _command_line_end(text, start):
-    """Where a command's line from `start` ends, as the shell reads it: outside quotes at what ends a command or starts
-    another (a pipe, ";", "&", a bracket or a backtick, but not a redirection), at a JSON string's end (a '"' that
-    opens no shell quote, before ",", ":", "}" or "]"), and at a line break, plain, or escaped where it is not inside quotes of plain text. A line whose first
-    double quote comes escaped ('\\"'), as JSON holds a command, is read unescaped: its escaped quotes are the shell's
-    quotes, an escaped backslash escapes the shell character after it, and a bare '"' ends the JSON string; a single
-    quote, which JSON leaves bare, decides nothing. One pass over the line."""
+def _command_line(text, start):
+    """(where a command's line from `start` ends, the stretches of it inside quotes or a command substitution), as the
+    shell reads it: outside those, at what ends a command or starts another (a pipe, ";", "&" but in a redirection
+    such as "2>&1", a bracket), at a JSON string's end (a '"' that opens no shell quote, before ",", ":", "}" or "]"),
+    and at a line break, plain, or escaped where it is not inside quotes of plain text. A line whose first double quote
+    comes escaped ('\\"'), as JSON holds a command, is read unescaped: its escaped quotes are the shell's quotes, an
+    escaped backslash escapes the shell character after it, and a bare '"' ends the JSON string; a single quote, which
+    JSON leaves bare, decides nothing. One pass over the line."""
     i, n = start, len(text)
-    quote, escaped = "", None  # the open quote, and whether this line's double quotes come escaped once
+    quote, escaped, depth = "", None, 0  # the open quote, whether quotes come escaped once, "$(" open
+    inside, opened = [], 0  # stretches inside quotes or a substitution, and where the open one began
     while i < n:
         here, c = i, text[i]
         if c == "\\":
             following = text[i + 1:i + 2]
             if following in ("n", "r"):
                 if not quote or escaped:
-                    return here
+                    return here, inside
                 i += 2  # a backslash and a letter inside quotes of plain text: part of the argument
                 continue
             if following == '"' and escaped is not False or following == "'" and escaped:
@@ -523,20 +541,56 @@ def _command_line_end(text, start):
                 continue
         else:
             if c in "\n\r" or c == '"' and escaped:
-                return here
-            if c == '"' and not quote and _JSON_STRING_END.match(text, i + 1):
-                return here
+                return here, inside
+            if c == '"' and not quote and not depth and _JSON_STRING_END.match(text, i + 1):
+                return here, inside
             if c == '"' and escaped is None:
                 escaped = False
             i += 1
         if quote:
             if c == quote:
                 quote = ""
-        elif c in "|;&()`":
-            return here
-        elif c in "'\"":
+                if not depth:
+                    inside.append((opened, i))
+            continue
+        if c in "'\"`":
             quote = c
-    return n
+            if not depth:
+                opened = here
+        elif c == "$" and text[i:i + 1] == "(":
+            depth += 1
+            if depth == 1:
+                opened = here
+            i += 1
+        elif c == ")" and depth:
+            depth -= 1
+            if not depth:
+                inside.append((opened, i))
+        elif depth:
+            continue  # inside a substitution, its own command's marks
+        elif c in "|;()":
+            return here, inside
+        elif c == "&" and not (here > start and text[here - 1] in "<>" or text[i:i + 1] == ">"):
+            return here, inside
+    if quote or depth:
+        inside.append((opened, n))
+    return n, inside
+
+
+# A variable or a template's slot standing for a value, as a .netrc file shown with its values left out holds one.
+_VARIABLE = re.compile(r"\$[{(A-Za-z_]|%[A-Za-z_]\w*%$|\{\{|<[^>]*>$")
+
+
+def _netrc_password(value):
+    """Whether a .netrc line's value is a password: four or more characters, no placeholder and no variable. A .netrc
+    file expands nothing and calls nothing, so letters only, or a bracket, are a password's too."""
+    return len(value) >= 4 and value.lower() not in PLACEHOLDERS and not _VARIABLE.match(value)
+
+
+def _plain_line_end(text, start):
+    """Where a line from `start` ends: at a line break, plain or escaped, as a .netrc line's does."""
+    m = re.compile(r"\r|\n|\\[nr]").search(text, start)
+    return m.start() if m else len(text)
 
 
 # What follows a '"' that ends a JSON string rather than a shell argument.
@@ -546,20 +600,34 @@ _JSON_STRING_END = re.compile(r"[ \t]*[,:}\]]")
 def _command_password_edits(text, line_pattern, flag, always, unseen=False):
     """Each password one row of COMMAND_FLAGS finds, as an edit that masks it. A command's line is read once from its
     first word, so a line that names the command again and again costs time in proportion to its length. With
-    `unseen`, as the rows main's own lack are read, the line is read as the shell reads it (_command_line_end) and a
+    `unseen`, as the rows main's own lack are read, the line is read as the shell reads it (_command_line) and a
     value is judged without the characters a reader does not see, so a coloured "$STOREPASS" is a variable and a
     coloured "--quiet" the next option."""
     edits, last = [], -1
     for line in line_pattern.finditer(text):
         if line.start() < last:
             continue  # the command named again inside a line already read
-        last = _command_line_end(text, line.end()) if unseen else line.end()
+        inside = []
+        if always == "field":
+            last = _plain_line_end(text, line.end())
+        elif unseen:
+            last, inside = _command_line(text, line.end())
+        else:
+            last = line.end()
+        starts = [a for a, _ in inside]
         for m in flag.finditer(text, line.start(), last):
+            k = bisect.bisect_right(starts, m.start()) - 1
+            if k >= 0 and m.start() < inside[k][1]:
+                continue  # a flag inside a quoted argument or a substitution is another program's
+
             value = INVISIBLE.sub("", m.group(2)) if unseen else m.group(2)
             if unseen and (value.startswith("-") or _ABOUT_A_PASSWORD.search(m.group(1).strip(" \t'\"\\"))):
                 continue  # the next option, or a setting about a secret ("aws configure set token_expiration 3600")
-            # A .netrc line's password is a field's value ("field"), so a run of letters is one too.
-            if always is True or _looks_secret("password", "=" if always == "field" else m.group(1), value):
+            if always == "field":  # a .netrc line's password, which nothing expands: any value but a placeholder
+                if _netrc_password(value):
+                    edits.append((m.start(2), m.end(2), "[masked]"))
+                continue
+            if always is True or _looks_secret("password", m.group(1), value):
                 edits.append((m.start(2), m.end(2), "[masked]"))
     return edits
 
@@ -642,11 +710,11 @@ def _line_password_span(m):
     return _password_span(m) if re.search(r"[,;<>)\]}].", m.group(3)) else None
 
 
-def _app_password_line_span(m):
-    """_password_span for an app password on a line of its own, but where three or four of its groups read as English
-    words ("password: this will work fine", "password: read from yaml file"); at least two groups of a random app
-    password read as none, 96 times in 100."""
-    return None if sum(map(_english, INVISIBLE.sub("", m.group(3)).split())) > 2 else _password_span(m)
+def _app_password_span(m):
+    """_password_span for an app password's four groups, but where two or more are common English words ("password:
+    this will work fine", "password: copy yaml into json"), read as main reads them."""
+    groups = INVISIBLE.sub("", m.group(3)).split()
+    return None if sum(group in _COMMON_WORDS for group in groups) >= 2 else _password_span(m)
 
 
 def _xml_span(m):
@@ -818,8 +886,8 @@ def _replace(text, spans, replacement):
 # by its name, each with what masks it and how its matches are read. An id reads "Bearer" and "Basic" as words, and a
 # named value only in assignment form, as re.sub reads it; in text a name's value can be the next name (_named).
 # The readings that take a password's value whole where KEYED_SECRET would end it early, so they come before it.
-_WHOLE_VALUES = ((XML_SECRET, _xml_span), (LINE_PASSWORD, _line_password_span), (APP_PASSWORD, _password_span),
-                 (APP_PASSWORD_LINE, _app_password_line_span),
+_WHOLE_VALUES = ((XML_SECRET, _xml_span), (LINE_PASSWORD, _line_password_span), (APP_PASSWORD, _app_password_span),
+                 (APP_PASSWORD_LINE, _app_password_span),
                  *((p, _password_span) for p in QUOTED_PASSWORDS))
 # Main's own readings of text, as gate 9 found them: its token shapes, links, commands and named values, each read as
 # main reads it, with the four values gate 9 reads as no secret (a tokenizer's, an ARN's, a date's, a file name's)
