@@ -360,9 +360,12 @@ _AUTH_FIELD = re.compile(rf"(?i)((?:(?<![A-Za-z0-9_.-])|{_AFTER_ESCAPE})auth{_QU
 # form feed, the four separators from 0x1c and NEL are whitespace, as str.split reads them, and part words as a line
 # break does: pdftotext puts a form feed between pages.
 _CSI = r"(?:\x1b\[|\x9b|\\(?:u001[bB]|x1[bB]|033)\[)(?!masked\])[0-?]*[ -/]*[@-~]"
-INVISIBLE = re.compile(_CSI + r"|[\x00-\x08\x0e-\x1b\x7f-\x84\x86-\x9f\u00ad\u034f\u061c\u115f\u1160\u17b4\u17b5"
-                       r"\u180b-\u180f\u200b-\u200f\u202a-\u202e\u2060-\u206f\u3164\ufe00-\ufe0f\ufeff\uffa0"
-                       r"\ufff0-\ufff8\U0001bca0-\U0001bca3\U0001d173-\U0001d17a\U000e0000-\U000e0fff]")
+_FORMAT_CHARACTERS = (r"\u00ad\u034f\u061c\u115f\u1160\u17b4\u17b5\u180b-\u180f\u200b-\u200f\u202a-\u202e\u2060-\u206f"
+                      r"\u3164\ufe00-\ufe0f\ufeff\uffa0\ufff0-\ufff8\U0001bca0-\U0001bca3\U0001d173-\U0001d17a"
+                      r"\U000e0000-\U000e0fff")
+INVISIBLE = re.compile(_CSI + rf"|[\x00-\x08\x0e-\x1b\x7f-\x84\x86-\x9f{_FORMAT_CHARACTERS}]")
+# Main's own: a lone control or format character, not a colour code, DEL or a C1 control.
+_MAIN_INVISIBLE_RUN = re.compile(rf"[\x00-\x08\x0e-\x1b{_FORMAT_CHARACTERS}]+")
 
 # Provider tokens kb takes from gitleaks (kb/gitleaks.py), each a token's own shape: compiled ASCII-only, as Go reads
 # \w and \b; the group holding the secret; the least entropy it has; keywords one of which a text holds before the rule
@@ -474,7 +477,9 @@ def _command_password_edits(text, line_pattern, flag, always, unseen=False):
     for line in line_pattern.finditer(text):
         for m in flag.finditer(text, line.start(), line.end()):
             value = INVISIBLE.sub("", m.group(2)) if unseen else m.group(2)
-            if always or not (unseen and value.startswith("-")) and _looks_secret("password", m.group(1), value):
+            if unseen and (value.startswith("-") or _ABOUT_A_PASSWORD.search(m.group(1).strip(" \t'\""))):
+                continue  # the next option, or a setting about a secret ("aws configure set token_expiration 3600")
+            if always or _looks_secret("password", m.group(1), value):
                 edits.append((m.start(2), m.end(2), "[masked]"))
     return edits
 
@@ -875,8 +880,6 @@ _READING_START = re.compile("|".join(_scoped(source) for source in (
 # Where one could start: a letter, a digit or "-" after anything but a letter or digit, as "7token is" starts a name.
 _MAY_START = re.compile(r"(?<![A-Za-z0-9])(?=[A-Za-z0-9-])")
 _INVISIBLE_RUN = re.compile(f"(?:{INVISIBLE.pattern})+")
-# The characters INVISIBLE holds that main's own does not: a colour code, DEL and the C1 controls.
-_SEEN_BY_MAIN = re.compile(_CSI + r"|[\x7f-\x84\x86-\x9f]")
 # How far a token that starts right after a letter, where an invisible character stood, is read before it counts as a
 # longer one: each such start is read once, so repeated starts cost time in proportion to the text.
 _GLUED_START_WINDOW = 512
@@ -952,14 +955,14 @@ def _split_secrets(text, rules):
     just before where a secret's reading starts stays in the view, as a break. A split token ends before the last of
     them ahead of any reading the text as written starts inside it, such as a link's scheme in the token's tail, and a
     split value ends where such a reading starts: the pass over the text as given reads those."""
-    gone = [i for run in _INVISIBLE_RUN.finditer(text) if not _READING_START.match(text, run.end())
-            for i in range(run.start(), run.end())]
+    # What an older kb, masking only up to an invisible character, left of a token glued to its placeholder, read as
+    # main reads it, across main's own invisible characters: after a colour code, DEL or a C1 control, which main sees,
+    # a leftover ends, and text right after a placeholder is ordinary ("[masked]ESC[0mREADME.md").
+    rests = _main_rests(text)
+    v = _Split(text, _INVISIBLE_RUN)
+    gone, view, places, where, removed = v.gone, v.view, v.places, v.where, v.removed
     if not gone:
-        return []
-    view = "".join(text[a + 1:b] for a, b in zip([-1] + gone, gone + [len(text)]))
-    # The view's i-th character sits after every removed character whose place in the view is i or before.
-    places = [i - n for n, i in enumerate(gone)]
-    where = sorted(set(places))
+        return rests
     tokens, after_a_break = _TOKENS[id(rules)]
     found = [(m.start(), m.end()) for m in tokens.finditer(view) if m.end() > m.start() and not _scheme_words(m)]
     text_only = rules is _TEXT_RULES  # an id is read without gitleaks' rules, as _run reads it
@@ -991,59 +994,28 @@ def _split_secrets(text, rules):
                     glued.append((max(place, span[0]), span[1]))
                     break
 
-    def split(start, end):  # whether a place lies inside
-        n = bisect.bisect_right(where, start)
-        return n < len(where) and where[n] < end
-
-    def raw(start, end):  # the same stretch of the text as written, without the invisibles at either edge
-        return start + bisect.bisect_right(places, start), end + bisect.bisect_left(places, end)
-
-    def reading_inside(start, end):  # where in text[start:end] the text as written starts a reading, or None
-        for m in _MAY_START.finditer(text, start, end):
-            if _READING_START.match(text, m.start()):
-                return m.start()
-        return None
-
-    # What an older kb, masking only up to an invisible character, left of a token glued to its placeholder: across
-    # the characters main reads as invisible, not a colour code, DEL or a C1 control, after which text is ordinary
-    # ("[masked]ESC[0mREADME.md").
-    rests = [(m.start(), m.end()) for m in _GLUED_RUN.finditer(view)
-             if not _SEEN_BY_MAIN.search(text, *raw(m.start(), m.end()))]
-    removed, spans = set(gone), []
-
-    def before_reading(start, end, first):
-        """[start, end) cut before the run of invisible characters last ahead of a reading the text as written starts
-        in it past `first`, which stays as a break; None when no such run lies inside."""
-        at = reading_inside(first, end)
-        if at is None:
-            return start, end
-        end = gone[bisect.bisect_left(gone, at) - 1] if bisect.bisect_left(gone, at) else start
-        while end - 1 in removed:
-            end -= 1
-        return (start, end) if start < end else None
+    spans = list(rests)
 
     def glued_on(start):  # whether, as written, the view's text from `start` follows a letter or digit it does not see
         at = start + bisect.bisect_right(places, start)
         return 0 < at and at - 1 in removed and text[at - 1].isalnum()
 
-    for start, end in found + glued + rests:
-        if not split(start, end):
+    for start, end in found + glued:
+        if not v.split(start, end):
             # A colour code ends in a letter, so the text as written reads a token right after one as a longer word.
             if glued_on(start):
-                spans.append(raw(start, end))
+                spans.append(v.raw(start, end))
             continue
-        start, end = raw(start, end)
-        cut = before_reading(start, end, gone[bisect.bisect_left(gone, start)] + 1)
-        # Still split by one: the text as written reads its first part as main does.
-        if cut and bisect.bisect_left(gone, cut[0]) < bisect.bisect_left(gone, cut[1]):
+        cut = v.cut(start, end)
+        if cut:
             spans.append(cut)
     for name_start, name_end, start, end in _named_spans(view, rules):
         # Only a split name, or one parted from its separator: the text as written reads a value through invisible
         # characters already, and one past the separator, as on a blank line after "password:", splits no name.
-        if not split(name_start, name_end + 1) or start >= end:
+        if not v.split(name_start, name_end + 1) or start >= end:
             continue
-        start, end = raw(start, end)
-        at = reading_inside(start, end)
+        start, end = v.raw(start, end)
+        at = _reading_inside(text, start, end)
         if at is not None:
             end = at
         if start < end:
@@ -1060,10 +1032,71 @@ def _split_secrets(text, rules):
 def _named_spans(view, rules):
     """The named values a pass masks in `view`, as (name start, name end, masked start, masked end) in the view, read as
     _run reads them: after the secrets known by their shape and an older kb's leftovers are masked, each pattern after
-    the one before, so a value ends at a token's placeholder as main ends it."""
-    spans = []
-    _run(view, rules, list(range(len(view))), spans)
+    the one before, so a value ends at a token's placeholder as main ends it. As _read reads the text as written, where
+    a reading main's own lack masked anything, theirs read the view too, so none can take a split name first."""
+    spans, fired = [], []
+    _run(view, rules, list(range(len(view))), spans, fired if rules is _TEXT_RULES else None)
+    if fired:
+        _run(view, _MAIN_RULES, list(range(len(view))), spans)
     return spans
+
+
+def _reading_inside(text, start, end):
+    """Where in text[start:end] the text as written starts a reading, or None."""
+    for m in _MAY_START.finditer(text, start, end):
+        if _READING_START.match(text, m.start()):
+            return m.start()
+    return None
+
+
+class _Split:
+    """`text` read without the runs of characters `runs` finds, but for one right before where a reading starts, which
+    stays as a break: the view, and the way from a stretch of it back to the text as written."""
+
+    def __init__(self, text, runs):
+        self.text = text
+        self.gone = [i for run in runs.finditer(text) if not _READING_START.match(text, run.end())
+                     for i in range(run.start(), run.end())]
+        self.view = "".join(text[a + 1:b] for a, b in zip([-1] + self.gone, self.gone + [len(text)]))
+        # The view's i-th character sits after every removed character whose place in the view is i or before.
+        self.places = [i - n for n, i in enumerate(self.gone)]
+        self.where = sorted(set(self.places))
+        self.removed = set(self.gone)
+
+    def split(self, start, end):
+        """Whether a removed character lies inside the view's [start, end)."""
+        n = bisect.bisect_right(self.where, start)
+        return n < len(self.where) and self.where[n] < end
+
+    def raw(self, start, end):
+        """The view's [start, end) as the text as written holds it, without the removed characters at either edge."""
+        return start + bisect.bisect_right(self.places, start), end + bisect.bisect_left(self.places, end)
+
+    def cut(self, start, end):
+        """The view's split [start, end) as written, cut before the run of removed characters last ahead of a reading
+        the text as written starts in it past the first run, which stays as a break; None where, so cut, no removed
+        character splits it any more, as the text as written then reads its first part as main does."""
+        gone = self.gone
+        start, end = self.raw(start, end)
+        at = _reading_inside(self.text, gone[bisect.bisect_left(gone, start)] + 1, end)
+        if at is not None:
+            end = gone[bisect.bisect_left(gone, at) - 1] if bisect.bisect_left(gone, at) else start
+            while end - 1 in self.removed:
+                end -= 1
+            if start >= end:
+                return None
+        return (start, end) if bisect.bisect_left(gone, start) < bisect.bisect_left(gone, end) else None
+
+
+def _main_rests(text):
+    """What an older kb, masking only up to an invisible character, left of a token glued to its placeholder
+    ("[masked]<ZWSP>rest"), as spans of the text as written, read as main reads them: in the text without main's own
+    invisible characters (_MAIN_INVISIBLE_RUN)."""
+    v = _Split(text, _MAIN_INVISIBLE_RUN)
+    if not v.gone:
+        return []
+    found = ((m.start(), m.end()) for m in _GLUED_RUN.finditer(v.view))
+    return [cut for start, end in found if v.split(start, end) for cut in [v.cut(start, end)] if cut]
 
 
 def _back(origin, start, end, size):
@@ -1285,10 +1318,9 @@ _SECRET_RUNS = (("api", "key"), ("access", "key"), ("private", "key"), ("one", "
 _AFTER_A_SECRET = frozenset(("key", "keys", "code", "codes", "phrase", "value", "field", "fields", "textbox", "text",
                              "box", "edit", "input", "entry", "area", "here", "required", "optional", "again", "confirm",
                              "confirmation", "repeat"))
-# "token" and "pin" also name ordinary things ("CSS color token", "Map pin"): one is a secret's when no word but a form's
-# own comes before it ("Enter your PIN"), or a word naming a credential's kind does ("Discord bot token", "Card PIN").
-# "tokens" alone counts them ("Tokens: 4096"), and needs that word. Otherwise each is a secret's only where what is
-# typed is shaped like a credential.
+# "token" and "pin" also name ordinary things ("CSS color token", "Lexer token", "Map pin"): one is a secret's only when
+# no word but a form's own comes before it ("Enter your PIN"), or a word naming a credential's kind does ("Discord bot
+# token", "Card PIN"). "tokens" alone counts them ("Tokens: 4096"), and needs that word.
 _LOOSE_SECRET_WORDS = frozenset(("token", "tokens", "pin"))
 _FORM_WORDS = frozenset(("enter", "your", "the", "a", "an", "new", "current", "old", "confirm", "re", "repeat", "type",
                          "retype", "paste", "verify", "my", "this", "please", "valid", "digit", "digits", "four", "five",
@@ -1314,9 +1346,8 @@ _SELECTOR_ATTRIBUTE = re.compile(r"(?i)\b(?:name|id|type|for|class|placeholder|a
 
 
 def _names_a_secret(words):
-    """Whether a phrase's words name a secret, a secret's word or run of words with only a form's own words after it:
-    True; None for a token or a PIN after a word of no credential's kind, which may be one; else False."""
-    maybe = False
+    """Whether a phrase's words name a secret: a secret's word or run of words with only a form's own words after it,
+    and for a token or a PIN, no word before it of another kind."""
     for i, word in enumerate(words):
         ends = [i + 1] if word in _SECRET_WORDS else []
         ends += [i + len(run) for run in _SECRET_RUNS if tuple(words[i:i + len(run)]) == run]
@@ -1328,22 +1359,17 @@ def _names_a_secret(words):
             kinds = {words[k], "".join(words[max(0, k - 1):k + 1])} if k is not None else set()
             if end == i + 1 and word in _LOOSE_SECRET_WORDS and (k is not None or word == "tokens") \
                     and not kinds & _SECRET_KINDS:
-                maybe = True
                 continue
             return True
-    return None if maybe else False
+    return False
 
 
 def _asks_for_a_secret(labels):
     """Whether a field's labels ask for a secret, a phrase in one naming it (_names_a_secret), and none asks about one
-    (_ABOUT_WORDS), read word by word after a selector's own attribute names are taken out ("input[name=password]"):
-    True, None where they may (a token or a PIN of another kind), or False."""
+    (_ABOUT_WORDS), read word by word after a selector's own attribute names are taken out ("input[name=password]")."""
     phrases = [[w.lower() for w in _LABEL_WORD.findall(phrase)] for label in labels
                for phrase in _PHRASE_END.split(_SELECTOR_ATTRIBUTE.sub(" ", label))]
-    if any(_ABOUT_WORDS.intersection(words) for words in phrases):
-        return False
-    readings = [_names_a_secret(words) for words in phrases]
-    return True if True in readings else None if None in readings else False
+    return any(map(_names_a_secret, phrases)) and not any(_ABOUT_WORDS.intersection(words) for words in phrases)
 
 
 # Where a tool names the field it types into, and where it holds what it types.
@@ -1365,12 +1391,12 @@ def typed_secrets(name, args):
         if not isinstance(item, dict):
             return item
         labels = [str(item[key]) for key in _LABEL_KEYS if isinstance(item.get(key), str)]
-        secret = _asks_for_a_secret(labels) if labels else None
+        secret = _asks_for_a_secret(labels)
         out = dict(item)
         for key in _TYPED_KEYS:
             value = item.get(key)
             if isinstance(value, (str, int)) and not isinstance(value, bool) and str(value) and (
-                    secret or secret is None and _credential_shaped(INVISIBLE.sub("", str(value)))):
+                    secret or not labels and _credential_shaped(INVISIBLE.sub("", str(value)))):
                 out[key] = "[masked]"
         return out
 
