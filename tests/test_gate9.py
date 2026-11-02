@@ -1139,6 +1139,46 @@ class ReviewSixteenTest(unittest.TestCase):
                          "I asked about the password: [masked] will they come")
 
 
+class ReviewSeventeenTest(unittest.TestCase):
+    """The seventeenth review's findings, under the coordinator's split bar."""
+
+    def test_a_name_that_starts_with_token_is_no_tokenizer(self):
+        self.assertEqual(mask("TokenIssuerSigningKey=Qx7rT2mPa9LkW3vZ8nB4"), "TokenIssuerSigningKey=[masked]")
+        self.assertEqual(mask("tokenizer: cl100k_base"), "tokenizer: cl100k_base")  # the stated exception
+        self.assertEqual(mask("tokenizers=hf2026v1x"), "tokenizers=hf2026v1x")
+
+    def test_a_redirection_does_not_end_a_command(self):
+        for text in ("az login 2>/dev/null -u me@example.com -p Tr0ub4dor9", "mongosh < init.js -p Tr0ub4dor9"):
+            with self.subTest(text=text):
+                self.assertNotIn("Tr0ub4dor9", mask(text))
+
+    def test_a_closing_shell_quote_before_a_colon_is_no_json_end(self):
+        for text in ('mongosh --host "$MONGO_HOST":27017 -p Tr0ub4dor9', "mongosh --host '$H':27017 -p Tr0ub4dor9"):
+            with self.subTest(text=text):
+                self.assertNotIn("Tr0ub4dor9", mask(text))
+        fields = json.dumps({"cmd": "mongosh --quiet", "next": "ssh -p 2222 host"})
+        self.assertEqual(mask(fields), fields)
+
+    def test_a_sentence_after_a_password_line_is_read_as_main_reads_it(self):
+        for text, masked in (("password: read from yaml file", "password: [masked] from yaml file"),
+                             ("password: copy into json file", "password: [masked] into json file")):
+            with self.subTest(text=text):
+                self.assertEqual(mask(text), masked)
+        self.assertEqual(mask("APP_PASSWORD: qjrx vnmw kzpt bhfc"), "APP_PASSWORD: [masked]")
+
+    def test_a_netrc_password_of_letters(self):
+        self.assertEqual(mask("machine api.example.com login deploy password qjrxvnmwkzptbhfc"),
+                         "machine api.example.com login deploy password [masked]")
+
+    def test_an_invisible_character_inside_an_app_password(self):
+        for text in ("APP_PASSWORD: qjrx vn\u200bmw kzpt bhfc", 'APP_PASSWORD="qjrx vnmw\u200b kzpt bhfc"',
+                     "APP_PASSWORD=qjrx vnmw kz\x1b[31mpt bhfc"):
+            with self.subTest(text=text):
+                masked = mask(text)
+                for group in ("qjrx", "mw", "kz", "bhfc"):
+                    self.assertNotIn(group, masked)
+
+
 # Commands as an argument list, each flag's value its own item: (the list, the items masked).
 ARGV = (
     (["login", "--password", PASSWORD], {2}), (["--token", SUB], {1}), (["--api-key", SUB, "--verbose"], {1}),
