@@ -649,6 +649,11 @@ class RenderThreadTest(unittest.TestCase):
         self.assertEqual(item.title, "Q4 pricing")
         self.assertIn("From: Dana Field <dana@example.com>", item.content)
 
+    def test_a_user_label_named_with_leading_backslashes_keeps_its_thread(self):
+        labels = gmail._labels(("X-GM-LABELS (" + gmail._quote("\\\\Draft") + ")").encode())
+        thread = gmail.Thread("123", 0, (gmail.Message(1, 1, labels, "a@example.com", "Plans"),))
+        self.assertIsNotNone(gmail._render(ME, thread, {1: b"From: a@example.com\nSubject: Plans\n\nOrdinary launch plan"}))
+
     def test_a_thread_keeps_the_labels_of_a_message_whose_text_is_left_out(self):
         thread = gmail.Thread("123", 0, (gmail.Message(1, 1, ("INBOX",), "a@example.com", "Plans"),
                                          gmail.Message(2, 2, ("Client/Acme",), "b@example.com", "Re: Plans")))
@@ -658,11 +663,14 @@ class RenderThreadTest(unittest.TestCase):
         self.assertNotIn("482913", item.content)
 
     def test_only_gmails_own_draft_trash_and_spam_labels_drop_a_message(self):
-        for labels in (("\\Draft",), ("DRAFT",), ("\\Trash",), ("TRASH",), ("SPAM",), ("Spam",), ("Trash",), ("Drafts",)):
+        for labels in (("DRAFT",), ("TRASH",), ("SPAM",), ("Spam",), ("Trash",), ("Drafts",)):
             with self.subTest(labels=labels):
                 self.assertIsNone(gmail.render_thread(ME, "x", [(self.message("A <a@example.com>", "hi"), labels, 1.0)]))
         # A label the user made keeps its message, whatever its case or its backslashes.
-        for labels in (("draft\\",), ("Draft",), ("draft",), ("\\\\Draft",), ("spam\\",), ("Trash ideas",)):
+        # A label reaches here decoded (_labels): Gmail's own flags are in capitals by then, so one that starts with a
+        # backslash is a label the user made.
+        for labels in (("draft\\",), ("Draft",), ("draft",), ("\\\\Draft",), ("\\Draft",), ("\\DRAFT",), ("spam\\",),
+                       ("Trash ideas",)):
             with self.subTest(labels=labels):
                 self.assertIsNotNone(gmail.render_thread(ME, "x", [(self.message("A <a@example.com>", "hi"), labels, 1.0)]))
 
