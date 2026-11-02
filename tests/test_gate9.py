@@ -1047,6 +1047,52 @@ class ReviewFourteenTest(unittest.TestCase):
                 self.assertNotIn("q8Zr2Lm7", mask(text))
 
 
+class ReviewFifteenTest(unittest.TestCase):
+    """The fifteenth review's findings, under the coordinator's bar."""
+
+    def test_a_bare_credential_is_judged_as_main_judges_it_too(self):
+        self.assertEqual(mask("Authorization: QmXvLpBrTzNy\x1b[0m"), "Authorization: [masked]")
+        import kb.mask as m
+        for code in FORMS.values():
+            text = f"Authorization: QmXvLpBrTzNy{code}0m and more"
+            with self.subTest(code=code):
+                hidden = m._main_hidden(text)
+                _, origin = m.mask_with_origin(text)
+                self.assertFalse([i for i in range(len(text)) if hidden[i] and i in set(origin)], mask(text))
+
+    def test_a_json_escaped_quote_opens_a_command_password(self):
+        for command, secret in (('az login -p "Tr0ub4dor-Zk9q"', "Tr0ub4dor"), ('mongosh -u admin -p "Tr0ub4dor|Zk9q"', "Zk9q"),
+                                ('keytool -list -storepass "Tr0ub4dor-Zk9q" -v', "Tr0ub4dor"),
+                                ("az login -p 'Tr0ub4dor|Zk9q'", "Zk9q")):
+            with self.subTest(command=command):
+                self.assertNotIn(secret, mask(json.dumps(command)))
+                self.assertNotIn(secret, mask(command))
+
+    def test_an_escaped_quote_does_not_cross_a_pipe(self):
+        for command in ('mongosh --eval "db.stats()" | ssh -p 2222 host', "mongosh --eval 'db.stats()' | ssh -p 2222 host",
+                        'twine upload --comment "a|b" dist/* ; ssh -p 2222 host'):
+            with self.subTest(command=command):
+                self.assertEqual(mask(json.dumps(command)), json.dumps(command))
+                self.assertEqual(mask(command), command)
+
+    def test_a_json_command_line_costs_time_in_proportion(self):
+        import time
+
+        def took(n):
+            text = json.dumps({"cmd": 'mongosh --eval "db.items.insertMany(['
+                               + ",".join('{name:\\"item%d\\"}' % i for i in range(n)) + '])"\n'})
+            best = None
+            for _ in range(3):
+                started = time.process_time()
+                self.assertEqual(mask(text), text)
+                spent = time.process_time() - started
+                best = spent if best is None else min(best, spent)
+            return best
+
+        small, large = took(500), took(4000)
+        self.assertLess(large, 20 * small + 0.05, (small, large))
+
+
 # Commands as an argument list, each flag's value its own item: (the list, the items masked).
 ARGV = (
     (["login", "--password", PASSWORD], {2}), (["--token", SUB], {1}), (["--api-key", SUB, "--verbose"], {1}),
