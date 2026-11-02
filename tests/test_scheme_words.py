@@ -131,6 +131,25 @@ class SchemeWordTest(unittest.TestCase):
             with self.subTest(text=text):
                 self.assertEqual(mask(text), as_on_main(text))
 
+    def test_the_third_reviews_credentials_are_masked_as_on_main(self):
+        for text in ("Bearer dapi" + "facedeca" * 4 + " stored in docs/notes.md", "Bearer " + "face" * 8 + "/notes.md",
+                     "Bearer dapi" + "facedeca" * 4 + ".md", "Bearer " + "decafe" * 5 + "/Weekly notes.md"):
+            with self.subTest(text=text):
+                self.assertEqual(mask(text), as_on_main(text))
+
+    def test_hex_bodies_after_a_prefix_are_masked_as_on_main(self):
+        # A provider's token is often a short prefix and a hex body; one whose body happens to hold no digit is still
+        # a token, in a run of its own or before a path.
+        for seed in range(2000):
+            r = random.Random(f"hex-body:{seed}")
+            prefix = r.choice(("", "dapi", "sk_", "pat-", "key", "tok_", "".join(r.choice(string.ascii_lowercase)
+                                                                                for _ in range(r.randint(2, 5)))))
+            token = prefix + "".join(r.choice("abcdef") for _ in range(r.randint(16, 48)))
+            for tail in (" stored in docs/notes.md", "/notes.md", ".md", " See Docs/notes.md"):
+                text = f"Bearer {token}{tail}"
+                with self.subTest(text=text):
+                    self.assertEqual(mask(text), as_on_main(text))
+
     def test_credentials_with_a_file_named_after_them_are_masked_as_on_main(self):
         # A token followed by prose that names a file is no path: the words after it are not its folders.
         for seed in range(2000):
