@@ -8,7 +8,7 @@ import tempfile
 import unittest
 
 from kb import store
-from kb.mask import mask, mask_all
+from kb.mask import mask, mask_all, typed_secrets
 from kb.sources import claude_code, codex, hermes
 
 TOKENS = ("ghp_Zq7Lm2Xc9Vb4Nn8Kk3Jj6Hh1Gg5Ff0Dd2Ss", "sk_live_51Hq8ZtKx9Lm2Np4Qr6St8Uv", "AKIAQX7RZ2MPL4VN8KTB",
@@ -286,6 +286,82 @@ class NameAfterAValueTest(unittest.TestCase):
                 masked = mask(text)
                 self.assertNotIn(secret, masked)
                 self.assertTrue(masked.endswith(" end"), masked)
+
+
+class ReviewOneTest(unittest.TestCase):
+    """The first review's findings: each text masks as main masks it, or keeps what main keeps."""
+
+    def test_a_password_holding_a_provider_token_is_masked_whole(self):
+        self.assertEqual(mask("password=SK0123456789abcdef0123456789abcdef!tail"), "password=[masked]")
+        self.assertEqual(mask("api_key: dop_v1_" + "0a1b2c3d" * 8 + "~rest"), "api_key: [masked]")
+
+    def test_a_provider_shape_inside_a_word_is_no_token_and_no_id_holds_one(self):
+        from kb.mask import secret_in_id
+        for text in ("TASK0123456789abcdef0123456789abcdef", "DISK0123456789abcdef0123456789abcdef.log",
+                     "notes/TASK0123456789abcdef0123456789abcdef.md"):
+            with self.subTest(text=text):
+                self.assertEqual(mask(text), text)
+                self.assertFalse(secret_in_id(text))
+
+    def test_an_id_shaped_like_a_provider_token_keeps_its_row(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            db = store.connect(os.path.join(tmp, "kb.sqlite"))
+            try:
+                sid = "notes:TASK0123456789abcdef0123456789abcdef"
+                db.execute("INSERT INTO docs(kind,source,source_id,ts,title,content,metadata,masked) "
+                           "VALUES(?,?,?,?,?,?,?,?)", ("doc", "notes", sid, "2026-11-01", "Plan", "task notes", "{}", "old"))
+                db.commit()
+                store.remask(db)
+                self.assertEqual(db.execute("SELECT count(*) FROM docs").fetchone()[0], 1)
+            finally:
+                db.close()
+
+    def test_secret_words_in_a_command_cost_time_in_proportion(self):
+        import time
+        for head in ("aws configure set ", "keytool -list -storepass", "machine x login y password"):
+            took = {}
+            for times in (1000, 8000):
+                text = head + "secret" * times
+                started = time.process_time()
+                mask(text)
+                took[times] = time.process_time() - started
+            with self.subTest(head=head):
+                self.assertLess(took[8000], 16 * max(took[1000], 0.01))
+
+    def test_a_label_about_a_secret_keeps_what_is_typed(self):
+        for label in ("Secret key description", "Tokenizer", "Secretary", "Tokens count", "API token name",
+                      "Password policy text", "secretary_email"):
+            with self.subTest(label=label):
+                self.assertEqual(typed_secrets("mcp__playwright__browser_type", {"element": label, "text": "used by staging"}),
+                                 {"element": label, "text": "used by staging"})
+        for label in ("userPassword", "input[name=password]", "#passwordField", "Enter PIN", "Secret key"):
+            with self.subTest(label=label):
+                self.assertEqual(typed_secrets("mcp__playwright__browser_type", {"element": label, "text": "x7Kq9mZ2"})["text"],
+                                 "[masked]")
+
+    def test_pass_and_pwd_alone_keep_paths_and_words(self):
+        for text in ("PWD=/workspace1", "PWD=C:\\Users\\sam\\work1", "pwd=~/code2", "pass=constant-propagation",
+                     "OLDPWD=/srv2"):
+            with self.subTest(text=text):
+                self.assertEqual(mask(text), text)
+        for kept in ({"pwd": "/workspace1"}, {"pass": "constant-propagation"}):
+            with self.subTest(kept=kept):
+                self.assertEqual(mask_all(kept), kept)
+        self.assertEqual(mask("Server=db;Uid=sa;Pwd=Tr0ub4dor-Zk9q;"), "Server=db;Uid=sa;Pwd=[masked];")
+
+    def test_a_variable_after_a_command_flag_stays(self):
+        for text in ("keytool -list -storepass $STOREPASS", "aws configure set aws_secret_access_key $AWS_SECRET_ACCESS_KEY",
+                     "mongosh -u admin -p $MONGO_PASSWORD", "machine x login y password ${NETRC_PW}"):
+            with self.subTest(text=text):
+                self.assertEqual(mask(text), text)
+        self.assertEqual(mask_all({"args": ["keytool", "-storepass", "$STOREPASS"]}),
+                         {"args": ["keytool", "-storepass", "$STOREPASS"]})
+
+    def test_a_name_about_a_password_reads_as_main_reads_it(self):
+        self.assertEqual(mask("password_policy=lowercase,uppercase,digits"), "password_policy=[masked],uppercase,digits")
+        self.assertEqual(mask('PASSWORD_HINT="some nice kind word"'), 'PASSWORD_HINT="[masked] nice kind word"')
+        self.assertEqual(mask('password_reset_url="https://x.example/r"'), 'password_reset_url="https://x.example/r"')
 
 
 # Commands as an argument list, each flag's value its own item: (the list, the items masked).
