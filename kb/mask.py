@@ -96,6 +96,112 @@ SECRET_PATTERNS = [
 # In an item id, "Bearer" and "Basic" are words: "Ring Bearer duties/plan.md" names a note, and so does an "sk-" slug. A Basic credential still
 # counts there by what it is, "user:password" in base64; a bearer token counts only by a provider's shape above.
 _ID_PATTERNS = [_SK_ID if p is SK_TOKEN else p for p in SECRET_PATTERNS if p not in (BEARER, BASIC)]
+_SCHEME_HEAD = re.compile(rf"(?i)(?:basic|bearer){_SCHEME_GAP}")
+# A word in a note's path: lower case, capitalized, run together in capitals ("ApiKey"), in capitals, or a short
+# capital start before lower case ("OAuth"); a file's extension at the end of a run; and what may follow a run in the
+# same path to the file's extension, its other folders' and the file's own words.
+_PATH_WORD = re.compile(r"[a-z]+|[A-Z][a-z]+|(?:[A-Z][a-z]+){2,}|[A-Z]{2,}|[A-Z]{1,3}[a-z]{2,}")
+_EXTENSION = re.compile(r"\.[A-Za-z][A-Za-z0-9]{0,4}$")
+_PATH_TAIL = re.compile(r"[A-Za-z0-9 _/.-]{0,160}?\.[A-Za-z][A-Za-z0-9]{0,4}(?![A-Za-z0-9])")
+# The letter pairs that make up 99% of those in a common English word list, 367 of the 676: every pair in a word in a
+# path is one of them, as a random run of letters seldom manages. And four vowels in a row, which no such word has.
+_COMMON_PAIRS = frozenset((
+    "ab ac ad ae af ag ah ai ak al am an ap ar as at au av aw ax ay az ba bb be bi bl bo br bs bu by ca cc ce "
+    "ch ci ck cl co cr cs ct cu cy da db dd de dg dh di dl dm dn do dr ds du dv dw dy ea eb ec ed ee ef eg eh "
+    "ei ek el em en eo ep eq er es et eu ev ew ex ey ez fa fe ff fi fl fo fr fs ft fu fy ga ge gg gh gi gl gm "
+    "gn go gr gs gu gy ha he hi hl hm hn ho hr hs ht hu hw hy ia ib ic id ie if ig ik il im in io ip iq ir is "
+    "it iu iv ix iz ja je ji jo ju ka ke kh ki kl kn ko kr ks ku ky la lb lc ld le lf lg li lk ll lm ln lo lp "
+    "ls lt lu lv ly ma mb me mi mm mn mo mp ms mu my na nb nc nd ne nf ng nh ni nj nk nl nm nn no np nq nr ns "
+    "nt nu nv nw ny oa ob oc od oe of og oh oi ok ol om on oo op or os ot ou ov ow ox oy oz pa pe ph pi pl po "
+    "pp pr ps pt pu py qu ra rb rc rd re rf rg rh ri rk rl rm rn ro rp rr rs rt ru rv rw ry sa sb sc se sf sh "
+    "si sk sl sm sn so sp sq ss st su sw sy ta tb tc te tf th ti tl tm tn to tr ts tt tu tw ty tz ua ub uc ud "
+    "ue uf ug ui uk ul um un uo up ur us ut uz va ve vi vo wa we wh wi wl wn wo wr ws xa xc xe xi xp xt ya yb "
+    "yc yd ye yi yl ym yn yo yp yr ys yt za ze zi zo zz").split())
+_VOWEL_RUN = re.compile(r"(?i)[aeiou]{4}")
+# A run of the letters of hex alone, as a token's hex body with no digit is, alone or after a provider's prefix: no
+# word in a common English word list holds eight of them in a row. And the longest a path's word may be
+# ("counterrevolutionaries").
+_HEX_LETTERS = re.compile(r"[A-Fa-f]{8,}")
+_LONGEST_WORD = 22
+# The name of a header whose value is a credential, just before the scheme word.
+_AUTHORIZATION_BEFORE = re.compile(r"(?i)authorization[\"']?[ \t]*(?::|=|%(?:25)?3A)[ \t]*[\"']?$")
+
+
+def _scheme_words(m):
+    """Whether a match of Basic or Bearer and what follows reads as words in a note's path, as in "Basic
+    Statistics/notes.md" or "Ring Bearer responsibilities/notes.md", not a credential. That is: no header's value
+    ("Authorization: Bearer ..."); part of a file's path (_in_a_path); past the file's extension, no digit, "+" or "=",
+    not the letters of hex alone, and parts joined by "/", ".", "_" or "-", each a word (_PATH_WORD) with a vowel, no
+    long run of hex letters and only common English letter pairs (_english), which a run of base64 or of random letters
+    seldom passes; one part alone has a third of its letters vowels, as a word has. After Basic, not base64 of
+    "user:password" either, alone or before a "/" (_holds_a_login), padded or not, in any single-byte code page or
+    UTF-8. Any other match is no such run."""
+    head = _SCHEME_HEAD.match(m.group())
+    if not head or _AUTHORIZATION_BEFORE.search(m.string, max(0, m.start() - 64), m.start()):
+        return False
+    run = m.group()[head.end():]
+    if not _in_a_path(m, run):
+        return False
+    run = _EXTENSION.sub("", run)
+    parts = [part for part in re.split(r"[/._-]+", run) if part]
+    if not parts or re.search(r"[0-9+=]", run) or _HEX_LETTERS.fullmatch("".join(parts)):
+        return False
+    if not all(_PATH_WORD.fullmatch(part) and re.search(r"[aeiouyAEIOUY]", part) and _english(part) for part in parts):
+        return False
+    if len(parts) == 1 and sum(c in "aeiouyAEIOUY" for c in parts[0]) * 3 < len(parts[0]):
+        return False
+    return not (head.group().lower().startswith("basic") and _holds_a_login(run))
+
+
+def _holds_a_login(run):
+    """Whether a Basic run is, or starts with, base64 of "user:password": the whole run, or its part before any "/",
+    as a login written right before a path's words reads ("Basic <login>/weekly.md"), decodes, padded or not, to bytes
+    holding ":" and no control byte, as a login in UTF-8, Latin-1 or any single-byte code page does. The run is decoded
+    once and each part judged from it, so a run of many "/" costs time in proportion to its length."""
+    raw = base64.b64decode(run[:len(run) // 4 * 4]) if re.fullmatch(r"[A-Za-z0-9+/]*", run) else b""
+    if not raw and len(run) >= 4:
+        return False
+    colon = raw.find(b":")
+    control = re.search(rb"[\x00-\x1f\x7f]", raw)
+    colon, control = (len(raw) + 1 if colon < 0 else colon), (control.start() if control else len(raw) + 1)
+    for end in [i for i, c in enumerate(run) if c == "/" and i >= 2] + [len(run)]:
+        end -= end % 4 == 1  # a lone last character holds no byte
+        blocks, rest = end // 4 * 3, run[end // 4 * 4:end]
+        try:
+            tail = base64.b64decode(rest + "=" * (-len(rest) % 4)) if rest else b""
+        except ValueError:
+            continue
+        if (colon < blocks or b":" in tail) and not (control < blocks or re.search(rb"[\x00-\x1f\x7f]", tail)):
+            return True
+    return False
+
+
+def _english(part):
+    """Whether a part of a path reads as English words: each word in it, a part run together in capitals ("ApiKey")
+    read word by word, is at most 22 letters, holds no run of hex letters a token's body would (_HEX_LETTERS), only
+    common letter pairs, and no four vowels in a row."""
+    for word in re.findall(r"[A-Z]{2,}(?![a-z])|[A-Z]?[a-z]+|[A-Z]+", part):
+        word = word.lower()
+        if len(word) > _LONGEST_WORD or _HEX_LETTERS.search(word) or _VOWEL_RUN.search(word) \
+                or any(word[i:i + 2] not in _COMMON_PAIRS for i in range(len(word) - 1)):
+            return False
+    return True
+
+
+def _in_a_path(m, run):
+    """Whether a scheme word's run is part of a file's path: it ends in the file's extension, or the path goes on from
+    it to one (_PATH_TAIL). Past a space, the path goes on only where the run already holds a "/", the next word is
+    capitalized, as a folder's or a file's name often is, or the rest reaches a folder's "/": a token followed by prose
+    that names a file, as in "Bearer <token> see notes.md", is in no path."""
+    if _EXTENSION.search(run):
+        return True
+    tail = _PATH_TAIL.match(m.string, m.end())
+    if not tail:
+        return False
+    rest = tail.group()
+    return " " not in rest or "/" in run or "/" in rest or bool(re.match(r" +[A-Z]", rest))
+
+
 _BASIC_VALUE = re.compile(rf"(?i){_WORD}basic{_SCHEME_GAP}([A-Za-z0-9+/]{{12,}})")
 PREFIXED_SECRETS = [
     re.compile(rf"(?i)({_WORD}(?:set-)?cookie{_QUOTE}?\s*(?::|%(?:25)?3[Aa])\s*{_QUOTE}?)(?:{_CLOSE}[^\"'\n]){{8,}}"),
@@ -211,7 +317,7 @@ INVISIBLE = re.compile(r"[\x00-\x08\x0e-\x1b\u00ad\u034f\u061c\u115f\u1160\u17b4
 # Which mask() a stored row was masked with. A row of another version, or of none, is masked again when read and by
 # the next ingest. The patterns change it by themselves; bump REVISION when the code that applies them changes what
 # it masks.
-REVISION = 8
+REVISION = 9
 VERSION = hashlib.sha256(repr((REVISION, [p.pattern for p in SECRET_PATTERNS + PREFIXED_SECRETS], KEYED_SECRET.pattern,
                                 ENV_KEY_SECRET.pattern, JSON_SECRET.pattern, FLAG_SECRET.pattern, AUTH_SECRET.pattern,
                                 COMMAND_FLAGS, PASSWORD_NAME.pattern, sorted(PLACEHOLDERS), REFERENCE.pattern,
@@ -424,7 +530,8 @@ def _run(text, rules, origin=None, named=None):
     patterns, keyed, reading = rules
     size = len(text)
     for pattern in patterns:
-        text, origin = _edit(text, origin, [(m.start(), m.end(), "[masked]") for m in pattern.finditer(text)])
+        text, origin = _edit(text, origin, [(m.start(), m.end(), "[masked]") for m in pattern.finditer(text)
+                                            if pattern not in (BASIC, BEARER) or not _scheme_words(m)])
     for edits in (_docker_login_edits, _key_rest_edits, _headless_key_edits,
                   lambda text: [(m.start(), m.end(), "[masked]") for m in _GLUED_RUN.finditer(text)]):
         text, origin = _edit(text, origin, edits(text))
@@ -565,7 +672,7 @@ def _split_secrets(text, rules):
     places = [i - n for n, i in enumerate(gone)]
     where = sorted(set(places))
     tokens, after_a_break = _TOKENS[id(rules)]
-    found = [(m.start(), m.end()) for m in tokens.finditer(view) if m.end() > m.start()]
+    found = [(m.start(), m.end()) for m in tokens.finditer(view) if m.end() > m.start() and not _scheme_words(m)]
     glued, inside = [], 0
     for place in where:
         while inside < len(found) and found[inside][1] <= place:
@@ -577,7 +684,7 @@ def _split_secrets(text, rules):
             token = after_a_break.match(view, place, stop)
             if token and token.end() == stop < len(view):
                 token = after_a_break.match(view, place)
-            if token and token.end() > place:
+            if token and token.end() > place and not _scheme_words(token):
                 glued.append((place, token.end()))
 
     def split(start, end):  # whether a place lies inside
