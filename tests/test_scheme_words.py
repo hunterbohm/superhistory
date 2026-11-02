@@ -156,6 +156,25 @@ class SchemeWordTest(unittest.TestCase):
                 with self.subTest(text=text):
                     self.assertEqual(mask(text), as_on_main(text))
 
+    def test_the_fifth_reviews_short_login_is_masked_as_on_main(self):
+        import base64
+        for login in (b":x", b"a:", b":xy", b"ab:", b"a:b"):
+            token = base64.b64encode(login).decode().rstrip("=")
+            for tail in ("/base/weekly.md", "/weekly.md", "/Weekly notes/plan.md"):
+                text = f"Basic {token}{tail}"
+                with self.subTest(text=text):
+                    self.assertEqual(mask(text), as_on_main(text))
+
+    def test_slashes_in_a_basic_run_cost_time_in_proportion(self):
+        import time
+        took = {}
+        for times in (2000, 16000):
+            text = "Basic " + "a/" * times + "weekly.md"
+            started = time.process_time()
+            mask(text)
+            took[times] = time.process_time() - started
+        self.assertLess(took[16000], 16 * max(took[2000], 0.01))
+
     def test_logins_made_to_read_as_path_words_are_masked_as_on_main(self):
         # As the fourth review built one: a first chunk that decodes to "user:" and path words after it, which base64
         # decodes to a printable login too, before a path.
