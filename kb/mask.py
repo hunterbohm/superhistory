@@ -96,6 +96,32 @@ SECRET_PATTERNS = [
 # In an item id, "Bearer" and "Basic" are words: "Ring Bearer duties/plan.md" names a note, and so does an "sk-" slug. A Basic credential still
 # counts there by what it is, "user:password" in base64; a bearer token counts only by a provider's shape above.
 _ID_PATTERNS = [_SK_ID if p is SK_TOKEN else p for p in SECRET_PATTERNS if p not in (BEARER, BASIC)]
+_SCHEME_HEAD = re.compile(rf"(?i)(?:basic|bearer){_SCHEME_GAP}")
+# A word in a note's path: lower case, capitalized, run together in capitals ("ApiKey"), in capitals, or a short
+# capital start before lower case ("OAuth"); and a file's extension at the end.
+_PATH_WORD = re.compile(r"[a-z]+|[A-Z][a-z]+|(?:[A-Z][a-z]+){2,}|[A-Z]{2,}|[A-Z]{1,3}[a-z]{2,}")
+_EXTENSION = re.compile(r"\.[A-Za-z0-9]{1,5}$")
+
+
+def _scheme_words(m):
+    """Whether a match of Basic or Bearer and what follows reads as words: a note's path or a name, as in "Basic
+    Statistics/notes.md" or "Ring Bearer responsibilities notes.md", not a credential. That is, past a file's
+    extension, no digit, "+" or "=", and parts joined by "/", ".", "_" or "-", each a word (_PATH_WORD) with a vowel,
+    which a run of base64 seldom has in every part; one part alone has a third of its letters vowels, as a word has
+    and a random run of letters seldom does. After Basic, not base64 of "user:password" either. Any other match is no
+    such run."""
+    head = _SCHEME_HEAD.match(m.group())
+    if not head:
+        return False
+    run = _EXTENSION.sub("", m.group()[head.end():])
+    parts = [part for part in re.split(r"[/._-]+", run) if part]
+    if not parts or re.search(r"[0-9+=]", run):
+        return False
+    if not all(_PATH_WORD.fullmatch(part) and re.search(r"[aeiouyAEIOUY]", part) for part in parts):
+        return False
+    if len(parts) == 1 and sum(c in "aeiouyAEIOUY" for c in parts[0]) * 3 < len(parts[0]):
+        return False
+    return not (head.group().lower().startswith("basic") and _basic_credential(run))
 _BASIC_VALUE = re.compile(rf"(?i){_WORD}basic{_SCHEME_GAP}([A-Za-z0-9+/]{{12,}})")
 PREFIXED_SECRETS = [
     re.compile(rf"(?i)({_WORD}(?:set-)?cookie{_QUOTE}?\s*(?::|%(?:25)?3[Aa])\s*{_QUOTE}?)(?:{_CLOSE}[^\"'\n]){{8,}}"),
@@ -211,7 +237,7 @@ INVISIBLE = re.compile(r"[\x00-\x08\x0e-\x1b\u00ad\u034f\u061c\u115f\u1160\u17b4
 # Which mask() a stored row was masked with. A row of another version, or of none, is masked again when read and by
 # the next ingest. The patterns change it by themselves; bump REVISION when the code that applies them changes what
 # it masks.
-REVISION = 8
+REVISION = 9
 VERSION = hashlib.sha256(repr((REVISION, [p.pattern for p in SECRET_PATTERNS + PREFIXED_SECRETS], KEYED_SECRET.pattern,
                                 ENV_KEY_SECRET.pattern, JSON_SECRET.pattern, FLAG_SECRET.pattern, AUTH_SECRET.pattern,
                                 COMMAND_FLAGS, PASSWORD_NAME.pattern, sorted(PLACEHOLDERS), REFERENCE.pattern,
@@ -424,7 +450,8 @@ def _run(text, rules, origin=None, named=None):
     patterns, keyed, reading = rules
     size = len(text)
     for pattern in patterns:
-        text, origin = _edit(text, origin, [(m.start(), m.end(), "[masked]") for m in pattern.finditer(text)])
+        text, origin = _edit(text, origin, [(m.start(), m.end(), "[masked]") for m in pattern.finditer(text)
+                                            if pattern not in (BASIC, BEARER) or not _scheme_words(m)])
     for edits in (_docker_login_edits, _key_rest_edits, _headless_key_edits,
                   lambda text: [(m.start(), m.end(), "[masked]") for m in _GLUED_RUN.finditer(text)]):
         text, origin = _edit(text, origin, edits(text))
@@ -565,7 +592,7 @@ def _split_secrets(text, rules):
     places = [i - n for n, i in enumerate(gone)]
     where = sorted(set(places))
     tokens, after_a_break = _TOKENS[id(rules)]
-    found = [(m.start(), m.end()) for m in tokens.finditer(view) if m.end() > m.start()]
+    found = [(m.start(), m.end()) for m in tokens.finditer(view) if m.end() > m.start() and not _scheme_words(m)]
     glued, inside = [], 0
     for place in where:
         while inside < len(found) and found[inside][1] <= place:
@@ -577,7 +604,7 @@ def _split_secrets(text, rules):
             token = after_a_break.match(view, place, stop)
             if token and token.end() == stop < len(view):
                 token = after_a_break.match(view, place)
-            if token and token.end() > place:
+            if token and token.end() > place and not _scheme_words(token):
                 glued.append((place, token.end()))
 
     def split(start, end):  # whether a place lies inside

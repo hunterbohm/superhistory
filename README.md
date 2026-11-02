@@ -189,6 +189,9 @@ Known limits:
   not masked whole.
 - A token right after a terminal color code, and a private key written percent-encoded or as base64 (as a Kubernetes
   secret holds one), are not masked.
+- After "Basic" or "Bearer", words joined by "/", ".", "_" or "-" read as a path or a name, not a credential, so a
+  note in "Basic Statistics/" keeps its path; a credential there has a digit, "+" or "=", a part with no vowel, or
+  decodes as "user:password".
 - A few rare file names are refused as if they held a secret, such as one that names a command's password flag with a
   value ("redis-cli -a auth2.md") or reads as a field ("Cookie: chocolate chip.md").
 - A private key is masked by its structure: from its header through its footer, or, if the footer is missing, through
