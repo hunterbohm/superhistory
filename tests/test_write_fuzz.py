@@ -3,7 +3,8 @@ though its item was not masked whole. Each sequence here mixes the writes that i
 older kb make, on a few items whose text holds canaries split across chunk and call boundaries. After every sequence:
 - no reader shows a piece of a canary: search's hits, their render, the lookup's prompt, `kb get`, and the
   summarizer's input, each as kb sends or prints it;
-- no row reads as current unless its whole item masks clean.
+- no row reads as current unless its whole item masks clean, and no current item's row records a hash of other text
+  than its stored title and text.
 
 KB_FUZZ_SEQUENCES and KB_FUZZ_SEED change the run. A failure names its sequence, which reruns on its own with
 KB_FUZZ_ONLY.
@@ -24,7 +25,7 @@ import unittest
 from unittest import mock
 
 from kb import ai, check, cli, ingest, search, store, summarize
-from kb.mask import mask, mask_all
+from kb.mask import INVISIBLE, mask, mask_all
 from kb.sources import Item
 from tests import legacy_store
 
@@ -64,7 +65,11 @@ class Planted:
         return value
 
     def token(self):
-        return self._value("sk-ant-api03-fz{}" + "Q" * 20)
+        token = self._value("sk-ant-api03-fz{}" + "Q" * 20)
+        if self.r.random() < 0.2:  # split by a character a reader does not see
+            cut = self.r.randint(1, len(token) - 1)
+            token = token[:cut] + self.r.choice(("\u200b", "\u200d", "\u2060", "\u00ad", "\ufeff")) + token[cut:]
+        return token
 
     def keyed(self):
         return self.r.choice(("password=", "api_key: ", "secret_token=", "PASSWORD = ")) + self._value("fz{}Kq12345678")
@@ -254,12 +259,15 @@ def not_masked_whole(db):
     for rid, kind, source, sid, ts, title, content, meta in rows:
         if rid not in fresh:
             continue
+        item_title = title
         if kind == "raw":
-            content = "".join(c for (c,) in db.execute(
-                "SELECT content FROM docs WHERE source=? AND source_id=? AND kind='raw' "
-                "ORDER BY json_extract(metadata, '$.chunk')", (source, sid)))
+            chunks = db.execute("SELECT title, content FROM docs WHERE source=? AND source_id=? AND kind='raw' "
+                                "ORDER BY json_extract(metadata, '$.chunk')", (source, sid)).fetchall()
+            item_title, content = chunks[0][0], "".join(c for _, c in chunks)
         if (mask(content), mask(title), mask(ts), mask_all(json.loads(meta))) != (content, title, ts, json.loads(meta)):
             problems.append(f"row {rid} ({kind} {sid}) reads as current, but its item does not mask clean")
+        if kind in store.ITEM_KINDS and json.loads(meta).get("hash") != store.item_hash(item_title, content):
+            problems.append(f"row {rid} ({kind} {sid}) reads as current, but records a hash of other text")
     return problems
 
 
@@ -316,7 +324,7 @@ def run_sequence(seq, root, ops=None):
                 problems.append("a store with a row of no mask version opened")
             except store.NeedsRebuild:
                 pass
-        text = "\n".join(shown(db, path))
+        text = INVISIBLE.sub("", "\n".join(shown(db, path)))  # as a reader sees it
         problems += [f"a reader shows {piece!r}" for piece in sorted(planted.pieces) if piece in text]
         squeezed = re.sub(r"\s+|\\[nr]", "", text)  # a key's body read through its line breaks
         problems += [f"a reader shows {body[i:i + 12]!r} of a key" for body in planted.bodies

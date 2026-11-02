@@ -121,7 +121,14 @@ _KEY_NAME = (
     r"|x-(?=[A-Za-z0-9-]*?(?<=-)auth(?:-|(?![A-Za-z0-9_.-])))[A-Za-z0-9-]+"
     r")(?![A-Za-z0-9_.-])")
 _ENV_KEY_NAME = rf"(?:(?<![A-Za-z0-9_])|{_AFTER_ESCAPE})([A-Z][A-Z0-9_]*_KEY)(?![A-Za-z0-9_])"
-_VALUE = rf"((?:(?!{_NEXT_NAME}){_CLOSE}[^ \t\n\r\"'`,;<>)\]}}])+)"
+def _value(stop=""):
+    """A secret's value: a run that stops before a space, a quote, a closing mark, the next name after an escape, or
+    what `stop` refuses. It ends inside a placeholder, at its "]", so what follows one is read on its own, as the next
+    header after "Token [masked]|" is."""
+    return rf"((?:{stop}(?!{_NEXT_NAME}){_CLOSE}[^ \t\n\r\"'`,;<>)\]}}])+)"
+
+
+_VALUE = _value()
 # Where the space after a separator crosses a line break, a value never starts with another secret's name and its
 # separator: under a YAML parent key named like a secret, or a key left empty, the next line's name would be taken as
 # the value, and the secret after it left. On one line it may: "password: SecretGarden99 is on the fridge".
@@ -140,9 +147,9 @@ FLAG_SECRET = re.compile(rf"(?i)(?:(?<![A-Za-z0-9_.-])|{_AFTER_ESCAPE})(--" + _K
                          + r"(?<!-stdin)(?<!-file)(?<!-env)(?<!-path)(?<!-name)(?<!-id)(?<!-cmd)(?<!-command)"
                          r"(?<!-helper)(?<!-length)(?<!-type)(?<!-url)((?:[ \t]|%(?:25)?20)+[\"']?)(?!-)" + _VALUE)
 # An HTTP Authorization header's credentials: its first word, or after a scheme word ("Token ...", "Bot ...",
-# "ApiKey ..."), the next. _mask_authorization() reads which is the secret.
+# "ApiKey ..."), the next. _authorization_span() reads which is the secret.
 # Its first word, the scheme, ends at a space a link encodes too, as in "Authorization%3A%20Token%20<credential>".
-_SCHEME_WORD = _VALUE.replace("(?:(?!", "(?:(?!%(?:25)?20)(?!", 1)
+_SCHEME_WORD = _value(r"(?!%(?:25)?20)")
 AUTH_SECRET = re.compile(rf"(?i)((?:(?<![A-Za-z0-9_.-])|{_AFTER_ESCAPE})(?:proxy-)?authorization)"
                          rf"({_QUOTE}?{_LINE_SPACE}*(?::|=|%(?:25)?3[ADad]){_LINE_SPACE}*{_QUOTE}?)"
                          + _SCHEME_WORD + rf"(?:({_LINE_SPACE}+)" + _VALUE + ")?")
@@ -191,14 +198,24 @@ _AUTH_FIELD = re.compile(rf"(?i)((?:(?<![A-Za-z0-9_.-])|{_AFTER_ESCAPE})auth{_QU
                          r"([A-Za-z0-9+/]{4,}={0,2})")
 
 
+# Characters a reader does not see: NUL and the other C0 controls that are not whitespace, as UTF-16 text read as bytes
+# holds them, and Unicode's default ignorable code points: zero-width spaces and joiners, direction marks and isolates,
+# the soft hyphen, the byte order mark, variation selectors, fillers and tag characters. A secret reads through them,
+# and one before a secret parts it from the word before (_once). The vertical tab, the form feed and the four
+# separators from 0x1c are whitespace, as str.split reads them, and part words as a line break does: pdftotext puts a
+# form feed between pages.
+INVISIBLE = re.compile(r"[\x00-\x08\x0e-\x1b\u00ad\u034f\u061c\u115f\u1160\u17b4\u17b5\u180b-\u180f\u200b-\u200f\u202a-\u202e"
+                       r"\u2060-\u206f\u3164\ufe00-\ufe0f\ufeff\uffa0\ufff0-\ufff8\U0001bca0-\U0001bca3"
+                       r"\U0001d173-\U0001d17a\U000e0000-\U000e0fff]")
+
 # Which mask() a stored row was masked with. A row of another version, or of none, is masked again when read and by
 # the next ingest. The patterns change it by themselves; bump REVISION when the code that applies them changes what
 # it masks.
-REVISION = 3
+REVISION = 8
 VERSION = hashlib.sha256(repr((REVISION, [p.pattern for p in SECRET_PATTERNS + PREFIXED_SECRETS], KEYED_SECRET.pattern,
                                 ENV_KEY_SECRET.pattern, JSON_SECRET.pattern, FLAG_SECRET.pattern, AUTH_SECRET.pattern,
-                                COMMAND_FLAGS,
-                                PASSWORD_NAME.pattern, sorted(PLACEHOLDERS), REFERENCE.pattern, _AUTH_FIELD.pattern)).encode()).hexdigest()[:16]
+                                COMMAND_FLAGS, PASSWORD_NAME.pattern, sorted(PLACEHOLDERS), REFERENCE.pattern,
+                                _AUTH_FIELD.pattern, INVISIBLE.pattern)).encode()).hexdigest()[:16]
 
 
 def _looks_secret(name, sep, value):
@@ -222,27 +239,23 @@ def _prose(sep):
     return not _SEP_CHARACTER.search(sep) and ("is" in sep.lower() or sep[-1:].isspace())
 
 
-def _docker_logins(text):
-    """`text` with each Docker "auth" login masked: base64 of "user:password"."""
-    return _AUTH_FIELD.sub(lambda m: m.group(1) + "[masked]" if _basic_credential(m.group(2)) else m.group(0), text)
+def _docker_login_edits(text):
+    """Each Docker "auth" login, base64 of "user:password", as an edit that masks it."""
+    return [(m.end(1), m.end(), "[masked]") for m in _AUTH_FIELD.finditer(text) if _basic_credential(m.group(2))]
 
 
-def _command_passwords(text):
-    """`text` with each password COMMAND_FLAGS finds masked. A command's line is read once from its first word, so a
-    line that names the command again and again costs time in proportion to its length."""
-    if not _ANY_COMMAND.search(text):
-        return text
-    for line_pattern, flag, always in _COMMANDS:
-        spans = [(m.start(2), m.end(2)) for line in line_pattern.finditer(text)
-                 for m in flag.finditer(text, line.start(), line.end())
-                 if always or _looks_secret("password", m.group(1), m.group(2))]
-        text = _replace(text, spans, "[masked]")
-    return text
+def _command_password_edits(text, line_pattern, flag, always):
+    """Each password one row of COMMAND_FLAGS finds, as an edit that masks it. A command's line is read once from its
+    first word, so a line that names the command again and again costs time in proportion to its length."""
+    return [(m.start(2), m.end(2), "[masked]") for line in line_pattern.finditer(text)
+            for m in flag.finditer(text, line.start(), line.end())
+            if always or _looks_secret("password", m.group(1), m.group(2))]
 
 
-def _mask_keyed(m):
+def _keyed_span(m):
+    """Where a named value's secret is, the whole value, or None when it reads as none."""
     name, sep, value = m.groups()
-    return f"{name}{sep}[masked]" if _looks_secret(name, sep, value) else m.group(0)
+    return (m.start(3), m.end(3)) if _looks_secret(name, sep, value) else None
 
 
 # The schemes an Authorization header names before its credential, as IANA lists them and services use them.
@@ -265,15 +278,60 @@ def _credential(name, sep, word):
     return head
 
 
-def _mask_authorization(m):
-    """An Authorization header with its credential masked: the word after a scheme such as Bearer or
-    AWS4-HMAC-SHA256, whose name stays. A first word with no scheme before it stays, as on main: prose such as
-    "ISO-27001 compliance" reads like a credential."""
+_HEADER_SEP = re.compile(r":|%(?:25)?3[Aa]|u003[Aa]")
+# Where a header starts: at the text's start, after a space or a line break, plain or escaped, or after a quote or an
+# opening mark, as a header line, a curl -H argument or a JSON key does; not inside a path or a value, as in
+# "/notes:Authorization:<id>".
+_HEADER_START = re.compile(rf"(?:(?<![^\s\"'`{{\[(,;|>])|{_AFTER_ESCAPE})")
+# A plain word: letters with a letter past "f", so a hex run such as "dead" in a UUID is none, or capitalized words run
+# together with digits after them, as a product's name is ("WindowsServer2022").
+_PLAIN_WORD = re.compile(r"(?=.*[g-zG-Z])[A-Za-z][a-z]{3,}|(?:[A-Z][a-z]{2,}){2,}\d*")
+_NUMBER_DATE_OR_TIME = re.compile(r"[\d:.+TZ-]+")
+
+
+def _random_run(text, shortest=12):
+    """Whether `text` reads as random: `shortest` or more characters mixing letters and digits, of both cases when
+    shorter than 16, and no plain word."""
+    return (len(text) >= shortest and bool(re.search(r"\d", text)) and bool(re.search(r"[A-Za-z]", text))
+            and (len(text) >= 16 or bool(re.search(r"[a-z]", text) and re.search(r"[A-Z]", text)))
+            and not _PLAIN_WORD.fullmatch(text))
+
+
+def _credential_shaped(word):
+    """Whether a lone token reads as a credential: 12 or more characters with no whitespace, mixing letters and digits,
+    not a number, a date or a time, and either holding a random run of 10 or more between its separators ("live_<run>",
+    a three-part token), or holding no plain word and reading as random whole (a UUID). An identifier with a plain word
+    in it stays: "RFC7235-compliant", "WPA2-Enterprise"."""
+    word = word.rstrip(".,;:!?)")
+    if len(word) < 12 or not re.search(r"\d", word) or not re.search(r"[A-Za-z]", word) or re.search(r"\s", word):
+        return False
+    if _NUMBER_DATE_OR_TIME.fullmatch(word):
+        return False
+    parts = re.split(r"[-_./:]", word)
+    if any(_random_run(part, 10) for part in parts):
+        return True
+    return not any(_PLAIN_WORD.fullmatch(part) for part in parts) and _random_run(word)
+
+
+def _bare_credential(word):
+    """The credential-shaped token a header's value starts with, up to an escaped line break or a placeholder, and
+    without a closing mark after it; or "". Judged by its shape alone, as a reader sees it, without the characters a
+    reader does not see, so base64 that starts with "/" counts and "RFC7235-compli<SHY>ant" does not."""
+    head = _CREDENTIAL_END.split(word, 1)[0].rstrip(".,;:!?)")
+    return head if _credential_shaped(INVISIBLE.sub("", head)) else ""
+
+
+def _authorization_span(m):
+    """Where an Authorization header's credential is: the word after a scheme such as Bearer or AWS4-HMAC-SHA256,
+    whose name stays, or, header style ("Authorization: ..."), a credential-shaped first token with no scheme before
+    it; None for prose and identifiers such as "ISO-27001 compliance"."""
     name, sep, first, gap, second = m.groups()
-    credential = _credential(name, sep, second) if second and first.lower() in AUTH_SCHEMES else ""
-    if not credential:
-        return m.group(0)
-    return f"{name}{sep}{first}{gap}[masked]{second[len(credential):]}"
+    if first.lower() in AUTH_SCHEMES:
+        credential = _credential(name, sep, second) if second else ""
+        return (m.start(5), m.start(5) + len(credential)) if credential else None
+    # With no scheme, header style: a credential-shaped first token, by design even where main keeps it.
+    credential = _bare_credential(first) if _HEADER_SEP.search(sep) and _HEADER_START.match(m.string, m.start()) else ""
+    return (m.start(3), m.start(3) + len(credential)) if credential else None
 
 
 KEY_FOOTER = re.compile(_KEY_END)
@@ -303,23 +361,23 @@ _KEY_REST = re.compile(rf"\[masked\]((?:[A-Za-z0-9+/=]+[ \t\r]*(?=\n|\\(?:r\\)?n
                        rf"(?:(?!{_KEY_END}){_IN_PARAGRAPH})*(?:{_KEY_END})?)")
 
 
-def _headless_keys(text):
-    """A private key's footer with no header before it, as an older kb's row-by-row remask or a body pasted alone
-    leaves one: masked from the start of its paragraph through it. Whatever else that paragraph holds before the
+def _headless_key_edits(text):
+    """Each private key's footer with no header before it, as an older kb's row-by-row remask or a body pasted alone
+    leaves one, as an edit that masks it from the start of its paragraph. Whatever else that paragraph holds before the
     footer is masked too, which is the cost, as after a key without a footer."""
     if "-----END" not in text:
-        return text
+        return []
     starts, spans = [m.end() for m in _BLANK_LINE.finditer(text)], []
     for footer in KEY_FOOTER.finditer(text):
         i = bisect.bisect_right(starts, footer.start()) - 1
         start = max(starts[i] if i >= 0 else 0, spans[-1][1] if spans else 0)
         spans.append((start, footer.end()))
-    return _replace(text, spans, "[masked]")
+    return [(start, end, "[masked]") for start, end in spans]
 
 
-def _key_rest(text):
-    """The rest of a key after an older kb's placeholder, as _KEY_REST finds it, removed after the placeholder."""
-    return _replace(text, [(m.start(1), m.end()) for m in _KEY_REST.finditer(text)], "")
+def _key_rest_edits(text):
+    """The rest of a key after an older kb's placeholder, as _KEY_REST finds it, as an edit that removes it."""
+    return [(m.start(1), m.end(), "") for m in _KEY_REST.finditer(text)]
 
 
 def _replace(text, spans, replacement):
@@ -331,40 +389,294 @@ def _replace(text, spans, replacement):
     return "".join(out + [text[last:]])
 
 
-def _mask_once(text):
-    for pattern in SECRET_PATTERNS:
-        text = pattern.sub("[masked]", text)
-    text = _GLUED_RUN.sub("[masked]", _headless_keys(_key_rest(_docker_logins(text))))
+# What a pass reads, in text and in an item id: the secrets known by their shape, then the patterns that read a value
+# by its name, each with what masks it and how its matches are read. An id reads "Bearer" and "Basic" as words, and a
+# named value only in assignment form, as re.sub reads it; in text a name's value can be the next name (_named).
+_TEXT_RULES = (SECRET_PATTERNS, ((JSON_SECRET, _keyed_span), (KEYED_SECRET, _keyed_span), (ENV_KEY_SECRET, _keyed_span),
+                                 (FLAG_SECRET, _keyed_span), (AUTH_SECRET, _authorization_span)), "named")
+_ID_RULES = (_ID_PATTERNS, ((KEYED_ID, _keyed_span), (ENV_KEY_ID, _keyed_span)), "plain")
+
+
+def _edit(text, origin, edits):
+    """`text` with each of the ordered (start, end, insert) edits made, built once, and with it `origin` carried over:
+    where in the first text each character came from, -1 for one an edit inserted. With `origin` None, nothing is
+    tracked."""
+    if not edits:
+        return text, origin
+    out, kept, last = [], [] if origin is not None else None, 0
+    for start, end, insert in edits:
+        out += [text[last:start], insert]
+        if kept is not None:
+            kept += origin[last:start]
+            kept += [-1] * len(insert)
+        last = end
+    out.append(text[last:])
+    if kept is not None:
+        kept += origin[last:]
+    return "".join(out), kept
+
+
+def _run(text, rules, origin=None, named=None):
+    """One pass of every pattern, as (the text masked, where each of its characters came from): the secrets known by
+    their shape, then an older kb's leftovers, links, cookies and commands, then the patterns that read a value by its
+    name. With `origin` None, nothing is tracked and the second is None. With `named` a list, each named value masked
+    is added to it as (name start, name end, masked start, masked end) in the first text, which needs `origin`."""
+    patterns, keyed, reading = rules
+    size = len(text)
+    for pattern in patterns:
+        text, origin = _edit(text, origin, [(m.start(), m.end(), "[masked]") for m in pattern.finditer(text)])
+    for edits in (_docker_login_edits, _key_rest_edits, _headless_key_edits,
+                  lambda text: [(m.start(), m.end(), "[masked]") for m in _GLUED_RUN.finditer(text)]):
+        text, origin = _edit(text, origin, edits(text))
     for pattern in PREFIXED_SECRETS:
-        text = pattern.sub(lambda m: m.group(1) + "[masked]", text)
-    text = _command_passwords(text)
-    for pattern, masker in ((JSON_SECRET, _mask_keyed), (KEYED_SECRET, _mask_keyed), (ENV_KEY_SECRET, _mask_keyed),
-                            (FLAG_SECRET, _mask_keyed), (AUTH_SECRET, _mask_authorization)):
-        text = _sub_named(pattern, masker, text)
-    return text
+        text, origin = _edit(text, origin, [(m.end(1), m.end(), "[masked]") for m in pattern.finditer(text)])
+    if _ANY_COMMAND.search(text):
+        for command in _COMMANDS:
+            text, origin = _edit(text, origin, _command_password_edits(text, *command))
+    for pattern, span_of in keyed:
+        found = list(_named(pattern, span_of, text, reading))
+        if named is not None:
+            for m, (start, end) in found:
+                if origin[m.start(1)] >= 0 and origin[m.end(1) - 1] >= 0:
+                    named.append((origin[m.start(1)], origin[m.end(1) - 1] + 1, *_back(origin, start, end, size)))
+        text, origin = _edit(text, origin, [(start, end, "[masked]") for _, (start, end) in found])
+    return text, origin
 
 
-def _sub_named(pattern, masker, text):
-    """`text` with each of `pattern`'s matches, a name, a separator and a value, given to `masker`. A match left as it
-    was is tried again at its value, which can be the next name, as in "secrets: db_password: <value>"; past that the
-    search goes on after the match, as re.sub's does, so a long value is read once."""
-    out, at = [], 0
+def _pass(text, rules):
+    """One pass of every pattern over `text`, as main reads it."""
+    return _run(text, rules)[0]
+
+
+def _named(pattern, span_of, text, reading):
+    """Each of `pattern`'s matches, a name, a separator and a value, whose secret `span_of` finds, with that span. In
+    text a match that holds none is tried again at its value, which can be the next name, as in "secrets: db_password:
+    <value>"; past that the search goes on after the match, as re.sub's does, so a long value is read once. An id reads
+    as re.sub reads it."""
     m = pattern.search(text)
     while m:
-        masked = masker(m)
-        if masked != m.group(0):
-            out += [text[at:m.start()], masked]
-            at = m.end()
-            m = pattern.search(text, at)
+        span = span_of(m)
+        if span:
+            yield m, span
+            m = pattern.search(text, m.end())
             continue
-        inner = pattern.match(text, m.start(3))
+        inner = pattern.match(text, m.start(3)) if reading == "named" else None
         m = inner if inner else pattern.search(text, m.end())
-    return "".join(out) + text[at:]
+
+
+def _token_shapes(patterns, after_a_break=False):
+    """The token shapes in `patterns` as one pattern. `after_a_break` leaves out the word boundary before each start,
+    for a match where an invisible character stood, which parts a token from the word before it as a space would."""
+    shapes = []
+    for pattern in patterns:
+        source, flags = pattern.pattern, ""
+        if source.startswith("(?i)"):
+            source, flags = source[4:], "i"
+        for boundary in (_NB, _WORD, r"(?<![\d])") if after_a_break else ():
+            if source.startswith(boundary):
+                source = source[len(boundary):]
+                break
+        shapes.append(f"(?{flags}:{source})" if flags else f"(?:{source})")
+    return re.compile("|".join(shapes))
+
+
+_TOKENS = {id(rules): (_token_shapes(rules[0]), _token_shapes(rules[0], after_a_break=True))
+           for rules in (_TEXT_RULES, _ID_RULES)}
+
+
+def _scoped(source):
+    """A pattern's source with its leading "(?i)", if any, scoped to it, so it joins others in one pattern."""
+    return f"(?i:{source[4:]})" if source.startswith("(?i)") else f"(?:{source})"
+
+
+# Where a secret's reading starts, as the patterns that read it start one, lookbehinds and all: a secret's name and
+# what parts it from its value, a scheme word, a link's scheme, a command a password follows, openssl's "-pass" and a
+# key's header.
+_READING_START = re.compile("|".join(_scoped(source) for source in (
+    KEYED_SECRET.pattern[:-len(_VALUE)], ENV_KEY_SECRET.pattern[:-len(_VALUE)], FLAG_SECRET.pattern[:-len(_VALUE)],
+    AUTH_SECRET.pattern[:AUTH_SECRET.pattern.index(_SCHEME_WORD)],
+    PREFIXED_SECRETS[0].pattern[:PREFIXED_SECRETS[0].pattern.index(f"(?:{_CLOSE}")],
+    _AUTH_FIELD.pattern[:_AUTH_FIELD.pattern.rindex("(")], rf"(?i){_WORD}(?:bearer|basic){_SCHEME_GAP}",
+    rf"(?:(?<![A-Za-z0-9+.-])|{_AFTER_ESCAPE})[a-z][a-z0-9+.-]{{0,31}}:(?:\\?/){{2}}",
+    rf"(?i)(?:(?<![A-Za-z0-9+.-])|{_AFTER_ESCAPE})[a-z][a-z0-9+.-]{{0,31}}%(?:25)?3A(?:%(?:25)?2F|/){{2}}",
+    rf"(?i)(?:(?<![A-Za-z0-9_.-])|{_AFTER_ESCAPE})(?:" + "|".join(command for command, _, _ in COMMAND_FLAGS)
+    + r")(?![A-Za-z0-9_.-])",
+    r"(?<![A-Za-z0-9_-])-pass(?:in|out)?[ \t]+['\"]?pass:", "-----BEGIN ")))
+# Where one could start: a letter, a digit or "-" after anything but a letter or digit, as "7token is" starts a name.
+_MAY_START = re.compile(r"(?<![A-Za-z0-9])(?=[A-Za-z0-9-])")
+_INVISIBLE_RUN = re.compile(INVISIBLE.pattern + "+")
+# How far a token that starts right after a letter, where an invisible character stood, is read before it counts as a
+# longer one: each such start is read once, so repeated starts cost time in proportion to the text.
+_GLUED_START_WINDOW = 512
+
+
+def _mask_once(text, rules=_TEXT_RULES):
+    """One pass of every pattern over the text as written, as main reads it, and with it each secret only the text read
+    without its invisible characters holds (_split_secrets)."""
+    return _once(text, rules)[0]
+
+
+def _once(text, rules, origin=None):
+    """_mask_once, and with `origin`, where each character of the result came from in the first text (_edit). The pass
+    reads the text as given, never what the view masked, so what it hides stays hidden: the view only adds. Where it
+    adds, the characters of the pass's own result that came from the view's spans are hidden, a placeholder for each
+    run of them but one beside a placeholder, which takes them in; the rest of the result stays as the pass left it. A
+    text whose invisible characters split no secret masks as main masks it."""
+    spans = _split_secrets(text, rules) if INVISIBLE.search(text) else []
+    if not spans:
+        return _run(text, rules, origin)
+    masked, came = _run(text, rules, list(range(len(text))))
+    added = bytearray(len(text))
+    for start, end in spans:
+        added[start:end] = b"\x01" * (end - start)
+    hide = [c >= 0 and added[c] for c in came]
+    if any(hide):
+        out, kept, k, n = [], [], 0, len(masked)
+        while k < n:
+            j = k
+            while j < n and hide[j] == hide[k]:
+                j += 1
+            if not hide[k]:
+                out.append(masked[k:j])
+                kept += came[k:j]
+            elif not (k > 0 and came[k - 1] < 0 or j < n and came[j] < 0):
+                out.append("[masked]")
+                kept += [-1] * 8
+            k = j
+        masked, came = "".join(out), kept
+    return masked, None if origin is None else [origin[c] if c >= 0 else -1 for c in came]
+
+
+def _split_secrets(text, rules):
+    """Where in `text` a secret reads only across characters a reader does not see, as ordered (start, end) spans of
+    the text as written: a token split or interleaved by them, even where its first part is a token by itself, the
+    rest of one an older kb masked only up to them ("[masked]<ZWSP>rest"), or a secret's name split by them, whose
+    value is masked. The text read without them is the view. In it a token may start right after a letter where one
+    stood, as after a space, so one before a key glued to a word reads it ("budget<ZWSP>s<ZWSP>k-..."). A run of them
+    just before where a secret's reading starts stays in the view, as a break. A split token ends before the last of
+    them ahead of any reading the text as written starts inside it, such as a link's scheme in the token's tail, and a
+    split value ends where such a reading starts: the pass over the text as given reads those."""
+    gone = [i for run in _INVISIBLE_RUN.finditer(text) if not _READING_START.match(text, run.end())
+            for i in range(run.start(), run.end())]
+    if not gone:
+        return []
+    view = "".join(text[a + 1:b] for a, b in zip([-1] + gone, gone + [len(text)]))
+    # The view's i-th character sits after every removed character whose place in the view is i or before.
+    places = [i - n for n, i in enumerate(gone)]
+    where = sorted(set(places))
+    tokens, after_a_break = _TOKENS[id(rules)]
+    found = [(m.start(), m.end()) for m in tokens.finditer(view) if m.end() > m.start()]
+    glued, inside = [], 0
+    for place in where:
+        while inside < len(found) and found[inside][1] <= place:
+            inside += 1
+        if inside < len(found) and found[inside][0] < place:
+            continue
+        if 0 < place < len(view) and (not glued or place >= glued[-1][1]) and view[place - 1].isalnum():
+            stop = min(len(view), place + _GLUED_START_WINDOW)
+            token = after_a_break.match(view, place, stop)
+            if token and token.end() == stop < len(view):
+                token = after_a_break.match(view, place)
+            if token and token.end() > place:
+                glued.append((place, token.end()))
+
+    def split(start, end):  # whether a place lies inside
+        n = bisect.bisect_right(where, start)
+        return n < len(where) and where[n] < end
+
+    def raw(start, end):  # the same stretch of the text as written, without the invisibles at either edge
+        return start + bisect.bisect_right(places, start), end + bisect.bisect_left(places, end)
+
+    def reading_inside(start, end):  # where in text[start:end] the text as written starts a reading, or None
+        for m in _MAY_START.finditer(text, start, end):
+            if _READING_START.match(text, m.start()):
+                return m.start()
+        return None
+
+    # What an older kb, masking only up to an invisible character, left of a token glued to its placeholder.
+    rests = [(m.start(), m.end()) for m in _GLUED_RUN.finditer(view)]
+    removed, spans = set(gone), []
+
+    def before_reading(start, end, first):
+        """[start, end) cut before the run of invisible characters last ahead of a reading the text as written starts
+        in it past `first`, which stays as a break; None when no such run lies inside."""
+        at = reading_inside(first, end)
+        if at is None:
+            return start, end
+        end = gone[bisect.bisect_left(gone, at) - 1] if bisect.bisect_left(gone, at) else start
+        while end - 1 in removed:
+            end -= 1
+        return (start, end) if start < end else None
+
+    for start, end in found + glued + rests:
+        if not split(start, end):
+            continue
+        start, end = raw(start, end)
+        cut = before_reading(start, end, gone[bisect.bisect_left(gone, start)] + 1)
+        # Still split by one: the text as written reads its first part as main does.
+        if cut and bisect.bisect_left(gone, cut[0]) < bisect.bisect_left(gone, cut[1]):
+            spans.append(cut)
+    for name_start, name_end, start, end in _named_spans(view, rules):
+        # Only a split name, or one parted from its separator: the text as written reads a value through invisible
+        # characters already, and one past the separator, as on a blank line after "password:", splits no name.
+        if not split(name_start, name_end + 1) or start >= end:
+            continue
+        start, end = raw(start, end)
+        at = reading_inside(start, end)
+        if at is not None:
+            end = at
+        if start < end:
+            spans.append((start, end))
+    merged = []
+    for start, end in sorted(spans):
+        if merged and start < merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+        else:
+            merged.append((start, end))
+    return merged
+
+
+def _named_spans(view, rules):
+    """The named values a pass masks in `view`, as (name start, name end, masked start, masked end) in the view, read as
+    _run reads them: after the secrets known by their shape and an older kb's leftovers are masked, each pattern after
+    the one before, so a value ends at a token's placeholder as main ends it."""
+    spans = []
+    _run(view, rules, list(range(len(view))), spans)
+    return spans
+
+
+def _back(origin, start, end, size):
+    """The stretch of the first text, `size` long, that text[start:end] came from (_edit): a placeholder's characters
+    stand for the stretch it replaced, from past the character before it to the one after."""
+    i = start
+    while i > 0 and origin[i] < 0:
+        i -= 1
+    head = origin[i] if origin[i] >= 0 and i == start else origin[i] + 1 if origin[i] >= 0 else 0
+    j = end - 1
+    while j < len(origin) - 1 and origin[j] < 0:
+        j += 1
+    tail = origin[j] + 1 if origin[j] >= 0 and j == end - 1 else origin[j] if origin[j] >= 0 else size
+    return head, max(head, tail)
 
 
 # How many passes mask() makes at most, and how often, in this process, a text still changed at the last one.
 MAX_PASSES = 8
 capped = 0
+
+
+def mask_with_origin(text):
+    """mask(), and where each character of the result came from in `text`, -1 for a placeholder's (kb.mask._edit)."""
+    original, origin = text, list(range(len(text)))
+    for _ in range(MAX_PASSES):
+        masked, came = _once(text, _TEXT_RULES, list(range(len(text))))
+        if masked == text:
+            return text, origin
+        text, origin = masked, [origin[c] if c >= 0 else -1 for c in came]
+    # Still changing, as mask() then reads it: the region still changing becomes one placeholder.
+    head = len(os.path.commonprefix([original, text]))
+    tail = len(os.path.commonprefix([original[head:][::-1], text[head:][::-1]]))
+    return (original[:head] + "[masked]" + original[len(original) - tail:],
+            list(range(head)) + [-1] * 8 + list(range(len(original) - tail, len(original))))
 
 
 def mask(text):
@@ -429,16 +741,9 @@ def secret_in_id(text, names=()):
     name = names[0] if names else None
     if isinstance(name, str) and name and text.startswith(f"{name}:") and not text.startswith("//", len(name) + 1):
         return secret_in_id(name) or secret_in_id(text[len(name) + 1:], names[1:])
-    if any(_basic_credential(m.group(1)) for m in _BASIC_VALUE.finditer(text)):
+    if any(_basic_credential(m.group(1)) for m in _BASIC_VALUE.finditer(INVISIBLE.sub("", text))):
         return True
-    masked = text
-    for pattern in _ID_PATTERNS:
-        masked = pattern.sub("[masked]", masked)
-    masked = _GLUED_RUN.sub("[masked]", _headless_keys(_key_rest(_docker_logins(masked))))
-    for pattern in PREFIXED_SECRETS:
-        masked = pattern.sub(lambda m: m.group(1) + "[masked]", masked)
-    masked = _command_passwords(masked)
-    return ENV_KEY_ID.sub(_mask_keyed, KEYED_ID.sub(_mask_keyed, masked)) != text
+    return _mask_once(text, _ID_RULES) != text
 
 
 def mask_all(value, key=None):
