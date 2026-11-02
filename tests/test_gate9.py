@@ -1179,6 +1179,73 @@ class ReviewSeventeenTest(unittest.TestCase):
                     self.assertNotIn(group, masked)
 
 
+class ReviewEighteenTest(unittest.TestCase):
+    """The eighteenth review's findings, under the coordinator's split bar."""
+
+    def test_a_name_that_starts_token_is_is_no_tokenizer(self):
+        self.assertEqual(mask("TokenIsEncryptionKey=Qx7rT2mPa9LkW3vZ8nB4"), "TokenIsEncryptionKey=[masked]")
+        self.assertEqual(mask("tokenizer: cl100k_base"), "tokenizer: cl100k_base")
+
+    def test_repeated_eight_bit_colour_codes_cost_time_in_proportion(self):
+        import time
+        for unit in ("\x9bm", "\\u009bm", "\x1b[m"):
+            took = []
+            for n in (64, 512):
+                text = "APP_PASSWORD=q" + unit * n
+                started = time.process_time()
+                mask(text)
+                took.append(time.process_time() - started)
+            with self.subTest(unit=unit):
+                self.assertLess(took[1], 1.0, took)
+
+    def test_a_redirection_or_a_substitution_does_not_end_a_command(self):
+        for text in ("az login 2>&1 -u me@example.com -p Tr0ub4dor9", "mongosh --host $(hostname) -p Tr0ub4dor9",
+                     "mongosh --host `hostname` -p Tr0ub4dor9", "az login &>/dev/null -u me -p Tr0ub4dor9"):
+            with self.subTest(text=text):
+                self.assertNotIn("Tr0ub4dor9", mask(text))
+        for text in ("mongosh --quiet & ssh -p 2222 host", "mongosh --quiet && ssh -p 2222 host"):
+            with self.subTest(text=text):
+                self.assertEqual(mask(text), text)
+
+    def test_a_netrc_password_holds_shell_marks(self):
+        for mark in ("&", "|", ";", "(", "`"):
+            text = f"machine api.example.com login deploy password qjrx{mark}vnmwkzptbhfc"
+            with self.subTest(mark=mark):
+                self.assertEqual(mask(text), "machine api.example.com login deploy password [masked]")
+
+    def test_every_random_app_password_is_masked_whole(self):
+        r = random.Random(18)
+        for _ in range(3000):
+            password = " ".join("".join(r.choice(string.ascii_lowercase) for _ in range(4)) for _ in range(4))
+            for text in (f"APP_PASSWORD: {password}", f"SMTP_PASS={password}", f'password: "{password}"'):
+                masked = mask(text)
+                self.assertFalse(any(group in masked for group in password.split()), (text, masked))
+
+    def test_a_colour_code_or_invisible_character_beside_an_app_password(self):
+        for text in ("APP_PASSWORD: qjrx vnmw kzpt bhfc\x1b[0m", "APP_PASSWORD: \u200bqjrx vnmw kzpt bhfc",
+                     "APP_PASSWORD: qjrx vnmw kzpt bhfc\u200b",
+                     "APP_PASSWORD: \x1b[01;31m\x1b[Kqjrx vnmw kzpt bhfc\x1b[m\x1b[K"):
+            with self.subTest(text=text):
+                masked = mask(text)
+                self.assertFalse(any(group in masked for group in ("qjrx", "vnmw", "kzpt", "bhfc")), masked)
+
+    def test_four_common_words_are_read_as_main_reads_them(self):
+        for text, masked in (("password: copy yaml into json", "password: [masked] yaml into json"),
+                             ('password: "this will work fine"', 'password: "[masked] will work fine"'),
+                             ('password="send mail from cron"', 'password="[masked] mail from cron"')):
+            with self.subTest(text=text):
+                self.assertEqual(mask(text), masked)
+        self.assertEqual(mask("SMTP_PASS=abcd efgh ijkl mnop"), "SMTP_PASS=[masked]")
+
+    def test_a_flag_inside_a_quoted_argument_is_not_the_commands(self):
+        for text in ("mongosh --eval \"print('ssh -p 2222 host')\"", "mongosh --eval 'db.run(\"ssh -p 2222\")'",
+                     "mongosh --host $(ssh -p 2222 host hostname)"):
+            with self.subTest(text=text):
+                self.assertEqual(mask(text), text)
+                self.assertEqual(mask(json.dumps(text)), json.dumps(text))
+        self.assertNotIn("Tr0ub4dor9", mask("mongosh --eval 'db.x()' -p Tr0ub4dor9"))
+
+
 # Commands as an argument list, each flag's value its own item: (the list, the items masked).
 ARGV = (
     (["login", "--password", PASSWORD], {2}), (["--token", SUB], {1}), (["--api-key", SUB, "--verbose"], {1}),
