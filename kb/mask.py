@@ -272,6 +272,7 @@ SHORT_PASSWORD = re.compile(rf"(?i)(?:(?<![A-Za-z0-9_.-])|{_AFTER_ESCAPE})(pass|
 XML_SECRET = re.compile(r"(?i)<((?:[A-Za-z0-9_.-]+:)?(?:password|passwd|passphrase|passcode|secret|client[_-]?secret|"
                         r"(?:api|access|secret|private|subscription)[_-]?key|(?:access|auth|refresh|api)?[_-]?token|"
                         r"storepass|keypass))(>)([^<\s]{1,512}?)(?=</)")
+_XML_PASSWORD = re.compile(r"(?i)passw(?:or)?d|passphrase|passcode|storepass|keypass")
 # A password's value in quotes, read to the closing quote, so a comma, a semicolon or a bracket inside is part of it
 # ('DB_PASSWORD="Xk9,mP2;qL7v"'); a space is not, as quotes may hold a sentence.
 QUOTED_PASSWORDS = [re.compile(_KEY_NAME + rf"""([\"']?[ \t]*[:=][ \t]*{quote})([^\s{quote}\\]{{4,256}})(?={quote})""")
@@ -304,13 +305,15 @@ COMMAND_FLAGS = (
     (r"sshpass", r"\s-p[ \t]*['\"]?", False),
     (r"(?:docker|podman|nerdctl|buildah|skopeo|oras)\s+login|helm\s+registry\s+login", r"\s-p[ \t]+['\"]?", False),
     (r"redis-cli", r"\s-a[ \t]+['\"]?", False),
-    (r"az\s+login|mongosh|mongo|mongodump|mongorestore|mongoexport|mongoimport|twine", r"\s-p[ \t]+['\"]?", False),
-    (r"keytool|jarsigner", r"\s-(?:src|dest|new)?(?:storepass|keypass)[ \t]+['\"]?", False),
+    # From here on, a value that starts with "-" is the command's next option ("mongosh -p --quiet" asks for one).
+    (r"az\s+login|mongosh|mongo|mongodump|mongorestore|mongoexport|mongoimport|twine", r"\s-p[ \t]+['\"]?(?!-)",
+     False),
+    (r"keytool|jarsigner", r"\s-(?:src|dest|new)?(?:storepass|keypass)[ \t]+['\"]?(?!-)", False),
     # aws configure set's secret settings, and a .netrc line's password after its machine and login. A setting's name
     # is read once, its key word looked for ahead: read around the key word, a run of key words took time in the
     # square of its length.
     (r"aws\s+configure\s+set",
-     r"\s(?:[A-Za-z0-9_-]+\.)?(?=[A-Za-z0-9_]*?(?:secret|token|password))[A-Za-z0-9_]+[ \t]+['\"]?", False),
+     r"\s(?:[A-Za-z0-9_-]+\.)?(?=[A-Za-z0-9_]*?(?:secret|token|password))[A-Za-z0-9_]+[ \t]+['\"]?(?!-)", False),
     (r"(?:machine[ \t]+[^\s]+[ \t]+|default[ \t]+)login[ \t]+[^\s]+", r"\spassword[ \t]+['\"]?", False),
 )
 _COMMANDS = [(re.compile(rf"(?i)(?:(?<![A-Za-z0-9_.-])|{_AFTER_ESCAPE})(?:{command})(?![A-Za-z0-9_.-])"
@@ -461,12 +464,14 @@ def _docker_login_edits(text):
     return [(m.end(1), m.end(), "[masked]") for m in _AUTH_FIELD.finditer(text) if _basic_credential(m.group(2))]
 
 
-def _command_password_edits(text, line_pattern, flag, always):
+def _command_password_edits(text, line_pattern, flag, always, unseen=False):
     """Each password one row of COMMAND_FLAGS finds, as an edit that masks it. A command's line is read once from its
-    first word, so a line that names the command again and again costs time in proportion to its length."""
+    first word, so a line that names the command again and again costs time in proportion to its length. With
+    `unseen`, as the rows main's own lack are read, a value is judged without the characters a reader does not see, so
+    a coloured "$STOREPASS" is a variable."""
     return [(m.start(2), m.end(2), "[masked]") for line in line_pattern.finditer(text)
             for m in flag.finditer(text, line.start(), line.end())
-            if always or _looks_secret("password", m.group(1), m.group(2))]
+            if always or _looks_secret("password", m.group(1), INVISIBLE.sub("", m.group(2)) if unseen else m.group(2))]
 
 
 # Where a name is part of an AWS resource's name, as "secretsmanager" and "secret" are in
@@ -527,8 +532,13 @@ def _line_password_span(m):
 
 
 def _xml_span(m):
-    """Where an XML element's secret is: _keyed_span, but for an element about a password (_ABOUT_A_PASSWORD)."""
-    return None if _ABOUT_A_PASSWORD.search(m.group(1)) else _keyed_span(m)
+    """Where an XML element's secret is: _keyed_span, but for an element about a password (_ABOUT_A_PASSWORD), and for
+    one not named for a password, a value without a credential's shape: an element named "token" or "secret" holds a
+    word as often as a secret ("<tokens><token>internationalization</token></tokens>")."""
+    name, value = m.group(1), INVISIBLE.sub("", m.group(3))
+    if _ABOUT_A_PASSWORD.search(name) or not _XML_PASSWORD.search(name) and not _credential_shaped(value):
+        return None
+    return _keyed_span(m)
 
 
 # The schemes an Authorization header names before its credential, as IANA lists them and services use them.
@@ -738,7 +748,7 @@ def _run(text, rules, origin=None, named=None, fired=None):
         text, origin = _edit(text, origin, [(m.end(1), m.end(), "[masked]") for m in found])
     if _ANY_COMMAND.search(text):
         for n, command in enumerate(_COMMANDS[:_MAIN_COMMANDS] if reading == "main" else _COMMANDS):
-            edits = _command_password_edits(text, *command)
+            edits = _command_password_edits(text, *command, n >= _MAIN_COMMANDS)
             if edits and n >= _MAIN_COMMANDS:
                 note(command)
             text, origin = _edit(text, origin, edits)
@@ -1253,13 +1263,21 @@ _TYPING_TOOL = re.compile(r"(?i)(?:browser_|puppeteer_|playwright_)?(?:type|type
 # A field label's words, as a page or a selector writes them: split at anything but a letter or digit, and where
 # camel case or a run of capitals turns ("newPassword", "APIToken"), each in lower case.
 _LABEL_WORD = re.compile(r"[A-Z]+(?=[A-Z][a-z])|[A-Z]?[a-z]+|[A-Z]+|\d+")
-# A label asks for a secret by one of these words, or two of them together, and asks about one, not for it, by any of
-# the second set ("Token name", "PasswordHint", "Secret key description", "Max tokens").
+# A label asks for a secret by one of these words, or a run of them, as what its phrase names: nothing comes after it in
+# that phrase but a form's own words (_AFTER_A_SECRET: "Password textbox", "API token (required)", "Secret key"). A
+# word after it that is not one names something about the secret instead ("Secret key algorithm", "Token decimals",
+# "One-time donation"), as does any of _ABOUT_WORDS anywhere in the label ("Max tokens", "PasswordHint").
 _SECRET_WORDS = frozenset(("password", "passwords", "passwd", "pwd", "passcode", "passphrase", "pin", "otp", "secret",
                            "secrets", "token", "tokens", "credential", "credentials", "cvc", "cvv", "2fa", "mfa",
                            "apikey", "accesskey", "privatekey"))
-_SECRET_PAIRS = frozenset((("api", "key"), ("access", "key"), ("private", "key"), ("one", "time"),
-                           ("verification", "code"), ("security", "code"), ("2", "fa")))
+_SECRET_RUNS = (("api", "key"), ("access", "key"), ("private", "key"), ("one", "time", "code"),
+                ("verification", "code"), ("security", "code"), ("2", "fa"))
+_AFTER_A_SECRET = frozenset(("key", "keys", "code", "codes", "phrase", "value", "field", "fields", "textbox", "text",
+                             "box", "input", "entry", "area", "here", "required", "optional", "again", "confirm",
+                             "confirmation", "repeat"))
+# Where a label's phrase ends: at a mark other than "-" or "_", or at a word that joins phrases ("Password for admin").
+_PHRASE_END = re.compile(r"[^A-Za-z0-9\s_-]+|(?<![A-Za-z0-9])(?:to|for|of|from|in|on|at|with|by|and|or)(?![A-Za-z0-9])",
+                         re.I)
 _ABOUT_WORDS = frozenset((
     "name", "names", "description", "descriptions", "label", "labels", "note", "notes", "hint", "hints", "question",
     "questions", "type", "types", "id", "ids", "count", "counts", "length", "expiry", "expiration", "expires",
@@ -1270,12 +1288,22 @@ _ABOUT_WORDS = frozenset((
 _SELECTOR_ATTRIBUTE = re.compile(r"(?i)\b(?:name|id|type|for|class|placeholder|aria-label|data-[\w-]+)\s*[~|^$*]?=")
 
 
+def _names_a_secret(words):
+    """Whether a phrase's words name a secret: a secret's word or run of words with only a form's own words after it."""
+    for i, word in enumerate(words):
+        ends = [i + 1] if word in _SECRET_WORDS else []
+        ends += [i + len(run) for run in _SECRET_RUNS if tuple(words[i:i + len(run)]) == run]
+        if any(all(w in _AFTER_A_SECRET or w.isdigit() for w in words[end:]) for end in ends):
+            return True
+    return False
+
+
 def _asks_for_a_secret(labels):
-    """Whether a field's labels ask for a secret (_SECRET_WORDS, _SECRET_PAIRS) and none asks about one
+    """Whether a field's labels ask for a secret, a phrase in one naming it (_names_a_secret), and none asks about one
     (_ABOUT_WORDS), read word by word after a selector's own attribute names are taken out ("input[name=password]")."""
-    words = [w.lower() for label in labels for w in _LABEL_WORD.findall(_SELECTOR_ATTRIBUTE.sub(" ", label))]
-    pairs = set(zip(words, words[1:]))
-    return bool(_SECRET_WORDS.intersection(words) or _SECRET_PAIRS & pairs) and not _ABOUT_WORDS.intersection(words)
+    phrases = [[w.lower() for w in _LABEL_WORD.findall(phrase)] for label in labels
+               for phrase in _PHRASE_END.split(_SELECTOR_ATTRIBUTE.sub(" ", label))]
+    return any(map(_names_a_secret, phrases)) and not any(_ABOUT_WORDS.intersection(words) for words in phrases)
 
 
 # Where a tool names the field it types into, and where it holds what it types.

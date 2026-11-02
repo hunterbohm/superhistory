@@ -129,5 +129,5 @@ RULES = (
     ('stripe-access-token', '\\b((?:sk|rk)_(?:test|live|prod)_[a-zA-Z0-9]{10,99})(?=[\\x60\'"\\s;]|\\\\[nr]|$)', 1, 2.0, ('sk_test', 'sk_live', 'sk_prod', 'rk_test', 'rk_live', 'rk_prod'), (), ()),
     ('twilio-api-key', '(?<![A-Za-z0-9])SK[0-9a-fA-F]{32}', 0, 3.0, ('sk',), (), ()),
     ('vault-batch-token', '\\b(hvb\\.[\\w-]{138,300})(?=[\\x60\'"\\s;]|\\\\[nr]|$)', 1, 4.0, ('hvb.',), (), ()),
-    ('vault-service-token', '\\b((?:hvs\\.[\\w-]{90,120}|s\\.(?i:[a-z0-9]{24})))(?=[\\x60\'"\\s;]|\\\\[nr]|$)', 1, 3.5, ('hvs.', 's.'), ('s\\.[A-Za-z]{24}',), ()),
+    ('vault-service-token', '\\b((?:hvs\\.[\\w-]{90,120}))(?=[\\x60\'"\\s;]|\\\\[nr]|$)', 1, 3.5, ('hvs.',), ('s\\.[A-Za-z]{24}',), ()),
 )

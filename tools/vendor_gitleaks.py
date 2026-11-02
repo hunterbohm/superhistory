@@ -7,6 +7,7 @@ token by its own shape, a provider's prefix or structure, and leaves:
 - a rule that finds a value by a word near it ("adafruit ... = <32 characters>"), which kb's named values cover and
   which would mask ordinary text by a word;
 - the few that read a command, a file or a document around a secret (SKIP);
+- of a rule with an old shape that ordinary code takes too, that shape (NARROW);
 - a rule whose every example kb's mask already hides whole, which kb knows;
 - a rule that matches any of tests/ordinary.py's ordinary texts, which would mask them;
 - a rule with no example its own pattern matches.
@@ -40,6 +41,13 @@ SKIP = {
     "gitlab-session-cookie": "kb reads cookies by name",
     "sidekiq-sensitive-url": "reads a link's host around a credential, which kb's link reading covers",
     "generic-api-key": "finds any value by a word near it",
+}
+# Rules taken without a shape ordinary text takes: the rule, the part of its pattern taken out, the keywords that stay,
+# and why.
+NARROW = {
+    "vault-service-token": (r"|s\.(?i:[a-z0-9]{24})", ("hvs.",),
+                            'Vault\'s legacy token, "s." and any 24 letters and digits, is how code names a property '
+                            '("s.normalizedIdentifier2026"); its current "hvs." token stays'),
 }
 POSIX = {"[:alnum:]": "A-Za-z0-9", "[:alpha:]": "A-Za-z", "[:digit:]": "0-9", "[:xdigit:]": "0-9A-Fa-f",
          "[:upper:]": "A-Z", "[:lower:]": "a-z", "[:space:]": r" \t\r\n\v\f", "[:word:]": r"\w"}
@@ -161,6 +169,12 @@ def main(tree, tag, digest):
         if rule_id in SKIP:
             left.append((rule_id, SKIP[rule_id]))
             continue
+        keywords = rule.get("keywords", [])
+        if rule_id in NARROW:
+            cut, keywords, why = NARROW[rule_id]
+            assert cut in go, rule_id
+            go = go.replace(cut, "")
+            print(f"narrowed {rule_id}: {why}")
         if not go or r"[\w.-]{0,50}?" in go:
             left.append((rule_id, "finds a value by a word near it"))
             continue
@@ -184,7 +198,7 @@ def main(tree, tag, digest):
                    if block.get("regexTarget", "secret") == "secret" and block.get("condition", "OR") == "OR"]
         stopwords = [w for block in rule.get("allowlists", []) for w in block.get("stopwords", [])]
         taken.append((rule_id, source, group, float(rule.get("entropy") or 0),
-                      tuple(k.lower() for k in rule.get("keywords", [])), tuple(allowed), tuple(stopwords)))
+                      tuple(k.lower() for k in keywords), tuple(allowed), tuple(stopwords)))
     write(tag, digest, licence, taken, left, allow)
     print(f"took {len(taken)} of {len(config['rules'])} rules")
     for rule_id, why in left:
