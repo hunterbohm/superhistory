@@ -1,7 +1,7 @@
 import unittest
 from unittest import mock
 
-from kb.mask import is_auth_code, is_auth_noise, mask, secret_in_id
+from kb.mask import INVISIBLE, is_auth_code, is_auth_noise, mask, secret_in_id
 
 
 class MaskTest(unittest.TestCase):
@@ -500,6 +500,22 @@ class InvisibleTest(unittest.TestCase):
                 # written starts in it, so the password after curl is masked.
                 self.assertEqual(mask("[masked]" + mark + "_co" + mark + "operate/curl -u sam:walrus2secret9 x"),
                                  "[masked]" + mark + "operate/curl -u sam:[masked] x")
+
+    def test_words_that_also_sit_inside_masked_secrets_stay_where_the_view_adds_one(self):
+        key = "-----BEGIN PRIVATE KEY----- foo -----END PRIVATE KEY-----"
+        split = "ghp_" + "A1" * 6 + "\u200b" + "B2" * 6
+        self.assertEqual(mask(f"{key} foo {key} {split}"), "[masked] foo [masked] [masked]")
+
+    def test_a_split_token_after_any_text_adds_only_its_own_placeholder_and_changes_nothing_else(self):
+        import random
+        from tests.test_mask_against_main import Generated
+        split = "ghp_" + "A1" * 6 + "\u200b" + "B2" * 6
+        for seed in range(400):
+            text = INVISIBLE.sub("", Generated(random.Random(f"tail:{seed}")).text()).rstrip()
+            if not text:
+                continue
+            with self.subTest(seed=seed):  # on a line of its own: a cookie's value, as main reads it, runs on to the end of one
+                self.assertEqual(mask(f"{text}\n{split}"), mask(text) + "\n[masked]", ascii(text))
 
     def test_repeated_token_starts_between_invisible_characters_cost_time_in_proportion(self):
         import time
