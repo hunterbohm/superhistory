@@ -635,7 +635,7 @@ class ReviewFourTest(unittest.TestCase):
                                  {"element": label, "text": value})
         for label in ("One-time code", "One time password", "Secret key", "PIN code", "2FA code", "Password field",
                       "Enter your password here", "API token (required)", "OTP", "Confirm new password",
-                      "input[name=secret_key]", "pinCode"):
+                      "input[name=secret_key]", "pinCode", "Password edit box", "Secret recovery phrase", "Seed phrase"):
             with self.subTest(label=label):
                 self.assertEqual(typed_secrets("mcp__playwright__browser_type", {"element": label, "text": "x7Kq9mZ2"})["text"],
                                  "[masked]")
