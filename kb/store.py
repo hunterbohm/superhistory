@@ -227,9 +227,15 @@ def _as_stored(rows):
     """`rows` as replace_rows() stores them: masked, a long item's chunks as one text by _whole(), and the item's rows
     recording the hash of its masked title and text, whatever hash they came with. When that differs from the hash
     they came with, summaries among `rows` name the new one as _rehash_summaries() has them do."""
-    rows = [{**r, "ts": mask(str(r["ts"])), "title": mask(r["title"]),
-             "content": r["content"] if r["kind"] == "raw" else mask(r["content"]), "metadata": mask_all(r["metadata"])}
-            for r in _whole(rows)]
+    rows = [{**r, "ts": mask(str(r["ts"])), "title": mask(r["title"]), "metadata": mask_all(r["metadata"])} for r in rows]
+    # A long item's chunks as one text, then each by itself, as main masks them, since a cut can leave a token alone
+    # at a chunk's start that the word it was glued to hid; again until neither changes them.
+    for _ in range(8):
+        rows = [{**r, "content": mask(r["content"])} for r in _whole(rows)]
+        whole = _whole(rows)
+        if whole is rows:
+            break
+        rows = whole
     items = sorted((r for r in rows if r["kind"] in ITEM_KINDS), key=lambda r: r["metadata"].get("chunk", 0))
     if items:
         sent = items[0]["metadata"].get("hash")
@@ -323,8 +329,19 @@ def store_item(db, source, source_id, ts, title, content, meta):
     # The title is cut after masking, so no secret is cut too short to know, then masked again, as the cut can leave
     # the start of something a mask takes: the hash is then of the title as stored.
     ts, title, content = mask(str(ts)), mask(mask(clean(title or ""))[:300]), mask(clean(content or ""))
-    digest = item_hash(title, content)
-    meta = {**mask_all(meta), "hash": digest}
+    meta = mask_all(meta)
+    parts = chunk(content)
+    if len(parts) == 1:
+        rows = [{"kind": "doc", "ts": ts, "title": title, "content": content, "metadata": dict(meta)}]
+        kinds = ITEM_KINDS + SUMMARY_KINDS
+    else:
+        rows = [{"kind": "raw", "ts": ts, "title": title, "content": part,
+                 "metadata": {**meta, "chunk": i, "chunks": len(parts)}} for i, part in enumerate(parts)]
+        kinds = ITEM_KINDS
+    # The rows as replace_rows() stores them, so the hash compared is the one they record.
+    rows = _as_stored(rows)
+    digest = rows[0]["metadata"]["hash"]
+    meta = {**meta, "hash": digest}
     old = db.execute("SELECT metadata FROM docs WHERE source=? AND source_id=? AND kind IN ('doc','raw') LIMIT 1",
                      (source, source_id)).fetchone()
     if old:
@@ -334,14 +351,6 @@ def store_item(db, source, source_id, ts, title, content, meta):
         if stored.get("hash") == digest:
             _repoint(db, source, source_id, meta)
             return True
-    parts = chunk(content)
-    if len(parts) == 1:
-        rows = [{"kind": "doc", "ts": ts, "title": title, "content": content, "metadata": meta}]
-        kinds = ITEM_KINDS + SUMMARY_KINDS
-    else:
-        rows = [{"kind": "raw", "ts": ts, "title": title, "content": part,
-                 "metadata": {**meta, "chunk": i, "chunks": len(parts)}} for i, part in enumerate(parts)]
-        kinds = ITEM_KINDS
     replace_rows(db, source, source_id, rows, kinds)
     return True
 

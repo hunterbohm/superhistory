@@ -176,7 +176,8 @@ Known limits:
   not at all when fewer than four characters come before it. In plain JSON, and in a tool's input that kb writes as
   JSON itself, the whole value is masked.
 - After "Authorization:" or "Proxy-Authorization:", the credential is the word after a scheme such as Bearer, Token
-  or AWS4-HMAC-SHA256. With no scheme, the single token right after the colon is masked when it is shaped like a
+  or AWS4-HMAC-SHA256. With no scheme, header style (the name at a line's start, after a space, a quote or an
+  opening mark, not inside a path), the single token right after the colon is masked when it is shaped like a
   credential: 12 or more characters with no whitespace, mixing letters and digits, not a number, a date or a time,
   and holding either a random run of 10 or more characters between its separators or no plain word. So a random
   token there is masked, and "ISO-27001", "RFC7235-compliant", "WPA2-Enterprise" and "WindowsServer2022" stay.

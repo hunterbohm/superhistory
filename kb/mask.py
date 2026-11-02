@@ -211,7 +211,7 @@ INVISIBLE = re.compile(r"[\x00-\x08\x0e-\x1b\u00ad\u034f\u061c\u115f\u1160\u17b4
 # Which mask() a stored row was masked with. A row of another version, or of none, is masked again when read and by
 # the next ingest. The patterns change it by themselves; bump REVISION when the code that applies them changes what
 # it masks.
-REVISION = 7
+REVISION = 8
 VERSION = hashlib.sha256(repr((REVISION, [p.pattern for p in SECRET_PATTERNS + PREFIXED_SECRETS], KEYED_SECRET.pattern,
                                 ENV_KEY_SECRET.pattern, JSON_SECRET.pattern, FLAG_SECRET.pattern, AUTH_SECRET.pattern,
                                 COMMAND_FLAGS, PASSWORD_NAME.pattern, sorted(PLACEHOLDERS), REFERENCE.pattern,
@@ -279,6 +279,10 @@ def _credential(name, sep, word):
 
 
 _HEADER_SEP = re.compile(r":|%(?:25)?3[Aa]|u003[Aa]")
+# Where a header starts: at the text's start, after a space or a line break, plain or escaped, or after a quote or an
+# opening mark, as a header line, a curl -H argument or a JSON key does; not inside a path or a value, as in
+# "/notes:Authorization:<id>".
+_HEADER_START = re.compile(rf"(?:(?<![^\s\"'`{{\[(,;|>])|{_AFTER_ESCAPE})")
 # A plain word: letters with a letter past "f", so a hex run such as "dead" in a UUID is none, or capitalized words run
 # together with digits after them, as a product's name is ("WindowsServer2022").
 _PLAIN_WORD = re.compile(r"(?=.*[g-zG-Z])[A-Za-z][a-z]{3,}|(?:[A-Z][a-z]{2,}){2,}\d*")
@@ -325,7 +329,7 @@ def _authorization_span(m):
         credential = _credential(name, sep, second) if second else ""
         return (m.start(5), m.start(5) + len(credential)) if credential else None
     # With no scheme, header style: a credential-shaped first token, by design even where main keeps it.
-    credential = _bare_credential(first) if _HEADER_SEP.search(sep) else ""
+    credential = _bare_credential(first) if _HEADER_SEP.search(sep) and _HEADER_START.match(m.string, m.start()) else ""
     return (m.start(3), m.start(3) + len(credential)) if credential else None
 
 
@@ -411,11 +415,13 @@ def _edit(text, origin, edits):
     return "".join(out), kept
 
 
-def _run(text, rules, origin=None):
+def _run(text, rules, origin=None, named=None):
     """One pass of every pattern, as (the text masked, where each of its characters came from): the secrets known by
     their shape, then an older kb's leftovers, links, cookies and commands, then the patterns that read a value by its
-    name. With `origin` None, nothing is tracked and the second is None."""
+    name. With `origin` None, nothing is tracked and the second is None. With `named` a list, each named value masked
+    is added to it as (name start, name end, masked start, masked end) in the first text, which needs `origin`."""
     patterns, keyed, reading = rules
+    size = len(text)
     for pattern in patterns:
         text, origin = _edit(text, origin, [(m.start(), m.end(), "[masked]") for m in pattern.finditer(text)])
     for edits in (_docker_login_edits, _key_rest_edits, _headless_key_edits,
@@ -427,8 +433,12 @@ def _run(text, rules, origin=None):
         for command in _COMMANDS:
             text, origin = _edit(text, origin, _command_password_edits(text, *command))
     for pattern, span_of in keyed:
-        text, origin = _edit(text, origin, [(start, end, "[masked]")
-                                            for _, (start, end) in _named(pattern, span_of, text, reading)])
+        found = list(_named(pattern, span_of, text, reading))
+        if named is not None:
+            for m, (start, end) in found:
+                if origin[m.start(1)] >= 0 and origin[m.end(1) - 1] >= 0:
+                    named.append((origin[m.start(1)], origin[m.end(1) - 1] + 1, *_back(origin, start, end, size)))
+        text, origin = _edit(text, origin, [(start, end, "[masked]") for _, (start, end) in found])
     return text, origin
 
 
@@ -606,7 +616,8 @@ def _split_secrets(text, rules):
         if cut and bisect.bisect_left(gone, cut[0]) < bisect.bisect_left(gone, cut[1]):
             spans.append(cut)
     for name_start, name_end, start, end in _named_spans(view, rules):
-        # Only a split name: the text as written reads a value through invisible characters already.
+        # Only a split name, or one parted from its separator: the text as written reads a value through invisible
+        # characters already, and one past the separator, as on a blank line after "password:", splits no name.
         if not split(name_start, name_end + 1) or start >= end:
             continue
         start, end = raw(start, end)
@@ -625,11 +636,26 @@ def _split_secrets(text, rules):
 
 
 def _named_spans(view, rules):
-    """The named values a pass would mask in `view`, as (name start, value start, masked start, masked end), each read
-    as a pass reads it, each pattern over the view by itself."""
-    _, keyed, reading = rules
-    return [(m.start(), m.start(3), start, end) for pattern, span_of in keyed
-            for m, (start, end) in _named(pattern, span_of, view, reading)]
+    """The named values a pass masks in `view`, as (name start, name end, masked start, masked end) in the view, read as
+    _run reads them: after the secrets known by their shape and an older kb's leftovers are masked, each pattern after
+    the one before, so a value ends at a token's placeholder as main ends it."""
+    spans = []
+    _run(view, rules, list(range(len(view))), spans)
+    return spans
+
+
+def _back(origin, start, end, size):
+    """The stretch of the first text, `size` long, that text[start:end] came from (_edit): a placeholder's characters
+    stand for the stretch it replaced, from past the character before it to the one after."""
+    i = start
+    while i > 0 and origin[i] < 0:
+        i -= 1
+    head = origin[i] if origin[i] >= 0 and i == start else origin[i] + 1 if origin[i] >= 0 else 0
+    j = end - 1
+    while j < len(origin) - 1 and origin[j] < 0:
+        j += 1
+    tail = origin[j] + 1 if origin[j] >= 0 and j == end - 1 else origin[j] if origin[j] >= 0 else size
+    return head, max(head, tail)
 
 
 # How many passes mask() makes at most, and how often, in this process, a text still changed at the last one.
