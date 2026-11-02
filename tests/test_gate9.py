@@ -991,6 +991,32 @@ class ReviewTwelveTest(unittest.TestCase):
                          {"headers": [["Authorization", "[masked]"]]})
 
 
+class ReviewThirteenTest(unittest.TestCase):
+    """The thirteenth review's findings."""
+
+    def test_a_split_token_before_a_colour_code_is_masked_as_main_masks_it(self):
+        from kb.mask import secret_in_id
+        for code in ("\x1b[0m", "\x9b0m", "\\u001b[0m", "\\x1b[0m", "\\033[0m", "\x7f"):
+            text = f"AKIAQX7RZ2\u200bMPL4VN8KTB{code}Suffix"
+            with self.subTest(code=code):
+                self.assertEqual(mask(text), f"[masked]{code}Suffix")
+                self.assertTrue(secret_in_id(text))
+
+    def test_main_own_view_breaks_only_where_main_reads(self):
+        self.assertEqual(mask("sk-Ab3Cd5\u200bsubscription_key=X7y8Z9q0Secret"), "[masked]")
+
+    def test_a_word_after_the_secret_makes_it_a_field_about_it(self):
+        for label, value in (("Token type", "refresh_token"), ("Password type", "text"), ("Token service", "auth-svc"),
+                             ("Token time", "3600"), ("Password recovery", "me@example.com"), ("PIN device", "kiosk-2")):
+            with self.subTest(label=label):
+                self.assertEqual(typed_secrets("browser_type", {"element": label, "text": value}),
+                                 {"element": label, "text": value})
+        for label in ("Bot token (Discord)", "One-time code", "Secret recovery phrase", "Seed phrase", "Password for admin account",
+                      "Discord bot token", "API token", "2FA code", "Secret key"):
+            with self.subTest(label=label):
+                self.assertEqual(typed_secrets("browser_type", {"element": label, "text": "x7Kq9mZ2"})["text"], "[masked]")
+
+
 # Commands as an argument list, each flag's value its own item: (the list, the items masked).
 ARGV = (
     (["login", "--password", PASSWORD], {2}), (["--token", SUB], {1}), (["--api-key", SUB, "--verbose"], {1}),
