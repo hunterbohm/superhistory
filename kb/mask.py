@@ -264,8 +264,9 @@ FLAG_SECRET = re.compile(rf"(?i)(?:(?<![A-Za-z0-9_.-])|{_AFTER_ESCAPE})(--" + _K
                          + r"(?<!-stdin)(?<!-file)(?<!-env)(?<!-path)(?<!-name)(?<!-id)(?<!-cmd)(?<!-command)"
                          r"(?<!-helper)(?<!-length)(?<!-type)(?<!-url)((?:[ \t]|%(?:25)?20)+[\"']?)(?!-)" + _VALUE)
 # "pass" and "pwd" alone name a password where a value plainly follows them: before "=", or ":" and a quote, as a
-# JavaScript object, YAML or a connection string writes one ("pass: '...'", "Uid=sa;Pwd=...;"). Before ":" and a word
-# they are words, or a command: "tests pass: 12", "pwd: /home".
+# JavaScript object, YAML or a connection string writes one ("pass: '...'", "Uid=sa;Pwd=...;"), and only beside a
+# user's name, as a login gives both (_beside_a_user). Before ":" and a word they are words, or a command: "tests pass:
+# 12", "pwd: /home"; and alone, a compiler's pass ("pass=ConvertBF16ToF32").
 SHORT_PASSWORD = re.compile(rf"(?i)(?:(?<![A-Za-z0-9_.-])|{_AFTER_ESCAPE})(pass|pwd)"
                             rf"({_QUOTE}?[ \t]*(?::[ \t]*{_QUOTE}|=[ \t]*{_QUOTE}?))" + _VALUE)
 # A secret in an XML element, as Maven's settings.xml and NuGet's config hold one: "<password>...</password>". Not a
@@ -364,8 +365,9 @@ _FORMAT_CHARACTERS = (r"\u00ad\u034f\u061c\u115f\u1160\u17b4\u17b5\u180b-\u180f\
                       r"\u3164\ufe00-\ufe0f\ufeff\uffa0\ufff0-\ufff8\U0001bca0-\U0001bca3\U0001d173-\U0001d17a"
                       r"\U000e0000-\U000e0fff")
 INVISIBLE = re.compile(_CSI + rf"|[\x00-\x08\x0e-\x1b\x7f-\x84\x86-\x9f{_FORMAT_CHARACTERS}]")
-# Main's own: a lone control or format character, not a colour code, DEL or a C1 control.
+# Main's own: a lone control or format character, not a colour code, DEL or a C1 control (_NEW_INVISIBLE).
 _MAIN_INVISIBLE_RUN = re.compile(rf"[\x00-\x08\x0e-\x1b{_FORMAT_CHARACTERS}]+")
+_NEW_INVISIBLE = re.compile(_CSI + r"|[\x7f-\x84\x86-\x9f]")
 
 # Provider tokens kb takes from gitleaks (kb/gitleaks.py), each a token's own shape: compiled ASCII-only, as Go reads
 # \w and \b; the group holding the secret; the least entropy it has; keywords one of which a text holds before the rule
@@ -518,8 +520,19 @@ def _short_name_secret(value):
 
 
 def _short_password_span(m):
-    """Where "pass" or "pwd"'s value is, when it is a secret (_short_name_secret)."""
-    return _keyed_span(m) if _short_name_secret(m.group(3)) else None
+    """Where "pass" or "pwd"'s value is, when it is a secret (_short_name_secret) beside a user's name."""
+    return _keyed_span(m) if _short_name_secret(m.group(3)) and _beside_a_user(m.string, m.start(1)) else None
+
+
+# A user's name given as a field, which a login gives beside its password: "user: ...", "Uid=...", "login=...".
+_USER_FIELD = re.compile(r"(?i)(?<![A-Za-z0-9])(?:user(?:[_-]?(?:name|id))?|uid|login|e-?mail|account)[\"']?[ \t]*"
+                         r"(?:[:=]|=>)")
+_USER_KEY = re.compile(r"(?i)user(?:[_-]?(?:name|id))?|uid|login|e-?mail|account")
+
+
+def _beside_a_user(text, at):
+    """Whether a user's name is given as a field within 256 characters of `at`."""
+    return bool(_USER_FIELD.search(text, max(0, at - 256), at + 256))
 
 
 # A password's name that names something about it rather than it: its policy, hint, reset, length, rules, file.
@@ -829,7 +842,8 @@ def _named(pattern, span_of, text, reading, note=lambda _: None):
         if span:
             yield m, span
             inner = pattern.match(text, m.start(3)) if reading == "named" else None
-            if inner and inner.start(3) >= span[1]:
+            # Not at a name about a secret, as main shows its value: "password: password_hash: SHA256".
+            if inner and inner.start(3) >= span[1] and not _ABOUT_A_PASSWORD.search(inner.group(1)):
                 note(inner)  # read on at a masked value, as main does not
                 m = inner
             else:
@@ -955,14 +969,13 @@ def _split_secrets(text, rules):
     just before where a secret's reading starts stays in the view, as a break. A split token ends before the last of
     them ahead of any reading the text as written starts inside it, such as a link's scheme in the token's tail, and a
     split value ends where such a reading starts: the pass over the text as given reads those."""
-    # What an older kb, masking only up to an invisible character, left of a token glued to its placeholder, read as
-    # main reads it, across main's own invisible characters: after a colour code, DEL or a C1 control, which main sees,
-    # a leftover ends, and text right after a placeholder is ordinary ("[masked]ESC[0mREADME.md").
-    rests = _main_rests(text)
+    # What main's own view reads, the text without its invisible characters only (_main_view_spans): an older kb's
+    # leftovers, and named values it reads where this view would read a colour code's place otherwise.
+    seen_by_main = _main_view_spans(text, rules)
     v = _Split(text, _INVISIBLE_RUN)
     gone, view, places, where, removed = v.gone, v.view, v.places, v.where, v.removed
     if not gone:
-        return rests
+        return seen_by_main
     tokens, after_a_break = _TOKENS[id(rules)]
     found = [(m.start(), m.end()) for m in tokens.finditer(view) if m.end() > m.start() and not _scheme_words(m)]
     text_only = rules is _TEXT_RULES  # an id is read without gitleaks' rules, as _run reads it
@@ -994,7 +1007,7 @@ def _split_secrets(text, rules):
                     glued.append((max(place, span[0]), span[1]))
                     break
 
-    spans = list(rests)
+    spans = list(seen_by_main)
 
     def glued_on(start):  # whether, as written, the view's text from `start` follows a letter or digit it does not see
         at = start + bisect.bisect_right(places, start)
@@ -1009,17 +1022,7 @@ def _split_secrets(text, rules):
         cut = v.cut(start, end)
         if cut:
             spans.append(cut)
-    for name_start, name_end, start, end in _named_spans(view, rules):
-        # Only a split name, or one parted from its separator: the text as written reads a value through invisible
-        # characters already, and one past the separator, as on a blank line after "password:", splits no name.
-        if not v.split(name_start, name_end + 1) or start >= end:
-            continue
-        start, end = v.raw(start, end)
-        at = _reading_inside(text, start, end)
-        if at is not None:
-            end = at
-        if start < end:
-            spans.append((start, end))
+    spans += v.values(_named_spans(view, rules))
     merged = []
     for start, end in sorted(spans):
         if merged and start < merged[-1][1]:
@@ -1087,16 +1090,38 @@ class _Split:
                 return None
         return (start, end) if bisect.bisect_left(gone, start) < bisect.bisect_left(gone, end) else None
 
+    def values(self, named):
+        """The values of `named`, _named_spans in the view, as the text as written holds them: only of a split name, or
+        one parted from its separator, as the text as written reads a value through invisible characters already, and
+        one past the separator, as on a blank line after "password:", splits no name; and up to where a reading the
+        text as written starts inside."""
+        out = []
+        for name_start, name_end, start, end in named:
+            if not self.split(name_start, name_end + 1) or start >= end:
+                continue
+            start, end = self.raw(start, end)
+            at = _reading_inside(self.text, start, end)
+            if at is not None:
+                end = at
+            if start < end:
+                out.append((start, end))
+        return out
 
-def _main_rests(text):
-    """What an older kb, masking only up to an invisible character, left of a token glued to its placeholder
-    ("[masked]<ZWSP>rest"), as spans of the text as written, read as main reads them: in the text without main's own
-    invisible characters (_MAIN_INVISIBLE_RUN)."""
+
+def _main_view_spans(text, rules):
+    """What main's own view of `text` hides, the text without main's invisible characters only (_MAIN_INVISIBLE_RUN),
+    as spans of the text as written: what an older kb, masking only up to an invisible character, left of a token
+    glued to its placeholder ("[masked]<ZWSP>rest"), and, where the text holds a character only this view removes, a
+    colour code, DEL or a C1 control, each named value main's own readings read there, so none is lost where removing
+    that character glues a name to a placeholder before it ("[masked]ESC[0mapi_k<ZWSP>ey: <value>")."""
     v = _Split(text, _MAIN_INVISIBLE_RUN)
     if not v.gone:
         return []
     found = ((m.start(), m.end()) for m in _GLUED_RUN.finditer(v.view))
-    return [cut for start, end in found if v.split(start, end) for cut in [v.cut(start, end)] if cut]
+    spans = [cut for start, end in found if v.split(start, end) for cut in [v.cut(start, end)] if cut]
+    if _NEW_INVISIBLE.search(text):  # else this view is the one _split_secrets reads, with main's readings too
+        spans += v.values(_named_spans(v.view, _MAIN_RULES if rules is _TEXT_RULES else rules))
+    return spans
 
 
 def _back(origin, start, end, size):
@@ -1228,11 +1253,11 @@ def _pair_secret(name, value, listed=False):
                            value and _credential_shaped(value.split()[-1])):
             return False
         return _as_header(name, value) != value
-    if not _SECRET_FIELD.match(name) or _ABOUT_A_PASSWORD.search(name):
-        return False  # no secret's name, or one about a password, as "password_policy" and "token_type" are
+    if not _SECRET_FIELD.match(name) or lowered in ("pass", "pwd") or _ABOUT_A_PASSWORD.search(name):
+        return False  # no secret's name, a word alone, or one about a password, as "password_policy" is
     if listed:
         return _credential_shaped(value)
-    return _looks_secret(name, "=", value) and (lowered not in ("pass", "pwd") or _short_name_secret(value))
+    return _looks_secret(name, "=", value)
 
 
 def _pair_value(name, value, masked, listed=False):
@@ -1263,7 +1288,10 @@ def mask_all(value, key=None):
             return plain
         return header if plain == value else "[masked]"
     if isinstance(value, dict):
-        out = {mask(k) if isinstance(k, str) else k: mask_all(v, k if isinstance(k, str) else None)
+        # "pass" and "pwd" name a password only beside a user's name, as in text; alone, its value is read alone.
+        user = any(isinstance(k, str) and _USER_KEY.fullmatch(k) for k in value)
+        out = {mask(k) if isinstance(k, str) else k:
+               mask_all(v, k if isinstance(k, str) and (user or k.lower() not in ("pass", "pwd")) else None)
                for k, v in value.items()}
         names = [k for k in value if isinstance(k, str) and k.lower() in ("name", "key")]
         for field in (k for k in value if isinstance(k, str) and k.lower() == "value" and mask(k) in out):

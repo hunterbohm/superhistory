@@ -620,7 +620,7 @@ class ReviewThreeTest(unittest.TestCase):
                 with self.subTest(text=text):
                     self.assertEqual(mask(text), text)
         # A colour code glued to a value goes with it, as main's own reading of "password=" takes it.
-        self.assertNotIn("Tr0ub4dor", mask("pwd=Tr0ub4dor-Zk9q\x1b[0m"))
+        self.assertNotIn("Tr0ub4dor", mask("uid=sa;pwd=Tr0ub4dor-Zk9q\x1b[0m"))  # beside a user (ReviewSevenTest)
 
 
 class ReviewFourTest(unittest.TestCase):
