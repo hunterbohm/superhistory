@@ -198,7 +198,7 @@ class SmallerShapesTest(unittest.TestCase):
         ("REDIS_URL=redis://:p4ssW0rdXyz9@cache:6379/0", "REDIS_URL=redis://:[masked]@cache:6379/0"),
         ("amqp://:Tr0ub4dor-Zk9q@mq.internal:5672", "amqp://:[masked]@mq.internal:5672"),
         ("redis%3A%2F%2F%3Ap4ssW0rdXyz9%40cache%3A6379", "redis%3A%2F%2F%3A[masked]%40cache%3A6379"),
-        ("auth: { user: 'me@gmail.com', pass: 'Tr0ub4dor-Zk9q' }", "auth: { user: 'me@gmail.com', pass: '[masked]' }"),
+        ("auth: { user: 'me@example.com', pass: 'Tr0ub4dor-Zk9q' }", "auth: { user: 'me@example.com', pass: '[masked]' }"),
         ("Server=db;Uid=sa;Pwd=Tr0ub4dor-Zk9q;", "Server=db;Uid=sa;Pwd=[masked];"),
         ('{"user": "sa", "pwd": "Tr0ub4dor-Zk9q"}', '{"user": "sa", "pwd": "[masked]"}'),
         (f"aws configure set aws_secret_access_key {AWS}", "aws configure set aws_secret_access_key [masked]"),
@@ -231,7 +231,7 @@ class SmallerShapesTest(unittest.TestCase):
         ("password: this will work fine", "password: [masked] will work fine"),
     )
     KEPT = (
-        "PWD=/home/llm/code", "OLDPWD=/home/llm", "pwd: /home/llm/code", "run pwd and pass the path", "pass: the build",
+        "PWD=/home/sam/code", "OLDPWD=/home/sam", "pwd: /home/sam/code", "run pwd and pass the path", "pass: the build",
         "tests pass: 12 of 12", "pass = 3", "the -p flag sets the port", "psql -h db -p 5432 -U sam", "ssh -p 2222 host",
         "mongosh --port 27017 shop", "keytool -list -storepass:env STOREPASS", "machine learning login page password",
         "http://[::1]:8080/", "git@github.com:org/repo.git", "ws://:443/socket", "<password>${env.DEPLOY_PASSWORD}</password>",
@@ -262,7 +262,7 @@ class SmallerShapesTest(unittest.TestCase):
                          {"headers": {"Ocp-Apim-Subscription-Key": "[masked]"}})
         self.assertEqual(mask_all({"env": {"REDIS_URL": f"redis://:{PASSWORD}@cache:6379"}}),
                          {"env": {"REDIS_URL": "redis://:[masked]@cache:6379"}})
-        for kept in ({"pwd": "/home/llm"}, {"pass": True}, {"pass": 3}, {"pass": "yes"}, {"result": "pass"}):
+        for kept in ({"pwd": "/home/sam"}, {"pass": True}, {"pass": 3}, {"pass": "yes"}, {"result": "pass"}):
             with self.subTest(kept=kept):
                 self.assertEqual(mask_all(kept), kept)
 
