@@ -267,6 +267,27 @@ class SmallerShapesTest(unittest.TestCase):
                 self.assertEqual(mask_all(kept), kept)
 
 
+class NameAfterAValueTest(unittest.TestCase):
+    """A named value that is itself a name and its separator, as in "passwd: Ppasswd: <password>", is masked, and the
+    name's own value after it is read and masked too (found by the Cloud track)."""
+
+    def test_the_cloud_tracks_text(self):
+        self.assertEqual(mask("passwd: Ppasswd: Pw7xYzQ9mK2nL4pR end"), "passwd: [masked] [masked] end")
+
+    def test_every_name_and_separator(self):
+        names = ("passwd", "password", "db_password", "PASSWORD", "api_key", "token", "client_secret", "Ppasswd")
+        for seed in range(400):
+            r = random.Random(f"name-after:{seed}")
+            secret = "".join(r.choice(string.ascii_letters + string.digits) for _ in range(r.randint(12, 24))) + "7"
+            sep = r.choice((": ", "=", " = ", ":"))
+            first, second = r.choice(names[:3] + names[7:]), r.choice(names)
+            text = f"{first}{sep}{second}{sep}{secret} end"
+            with self.subTest(text=text):
+                masked = mask(text)
+                self.assertNotIn(secret, masked)
+                self.assertTrue(masked.endswith(" end"), masked)
+
+
 # Commands as an argument list, each flag's value its own item: (the list, the items masked).
 ARGV = (
     (["login", "--password", PASSWORD], {2}), (["--token", SUB], {1}), (["--api-key", SUB, "--verbose"], {1}),
