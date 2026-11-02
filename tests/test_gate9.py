@@ -1093,6 +1093,51 @@ class ReviewFifteenTest(unittest.TestCase):
         self.assertLess(large, 20 * small + 0.05, (small, large))
 
 
+class ReviewSixteenTest(unittest.TestCase):
+    """The sixteenth review's findings, under the coordinator's bar."""
+
+    def test_a_command_line_ends_where_the_shell_ends_it(self):
+        for command in ("mongosh --quiet && ssh -p 2222 host", "mongosh --quiet & ssh -p 2222 host",
+                        "(mongosh --quiet) ; ssh -p 2222 host", "mongosh --quiet > out.log; ssh -p 2222 host"):
+            with self.subTest(command=command):
+                self.assertEqual(mask(command), command)
+                self.assertEqual(mask(json.dumps(command)), json.dumps(command))
+        fields = json.dumps({"cmd": "mongosh --quiet", "next": "ssh -p 2222 host"})
+        self.assertEqual(mask(fields), fields)
+
+    def test_a_single_quote_does_not_decide_how_a_line_is_escaped(self):
+        masked = mask(json.dumps("az login -u 'me@example.com' -p \"Tr0ub4dor|Zk9q\""))
+        self.assertNotIn("Tr0ub4dor", masked)
+        self.assertNotIn("Zk9q", masked)
+
+    def test_a_backslash_n_inside_quotes_is_part_of_the_password(self):
+        masked = mask("az login -p 'Tr0ub4dor\\new9'")
+        self.assertNotIn("Tr0ub4dor", masked)
+        self.assertNotIn("ew9", masked)
+
+    def test_an_escaped_invisible_character_splits_a_token(self):
+        token = "ghp_Zq7Lm2Xc9Vb4Nn8Kk3Jj6Hh1Gg5Ff0Dd2Ss"
+        for ch in ("\x7f", "\u200b", "\u00ad", "\x00", "\u2060", "\x81"):
+            split = token[:15] + ch + token[15:]
+            for printed in (json.dumps({"output": split}), repr(split)):
+                with self.subTest(printed=printed):
+                    self.assertNotIn("4Nn8Kk3Jj6", mask(printed))
+                    self.assertNotIn("Zq7Lm2Xc9Vb", mask(printed))
+
+    def test_a_form_encoded_private_key(self):
+        from urllib.parse import quote_plus
+        text = "https://example.test/?data=" + quote_plus("-----BEGIN PRIVATE KEY-----\nQm8Xv2Lp9Br5Tz7Ny3Rf6Ws1\n"
+                                                         "-----END PRIVATE KEY-----")
+        self.assertNotIn("Qm8Xv2Lp9Br5", mask(text))
+
+    def test_an_app_password_after_a_yaml_colon(self):
+        self.assertEqual(mask("APP_PASSWORD: qjrx vnmw kzpt bhfc"), "APP_PASSWORD: [masked]")
+        self.assertEqual(mask("smtp:\n  app_password: qjrx vnmw kzpt bhfc  # mail\n"),
+                         "smtp:\n  app_password: [masked]  # mail\n")
+        self.assertEqual(mask("I asked about the password: when will they come"),
+                         "I asked about the password: when will they come")
+
+
 # Commands as an argument list, each flag's value its own item: (the list, the items masked).
 ARGV = (
     (["login", "--password", PASSWORD], {2}), (["--token", SUB], {1}), (["--api-key", SUB, "--verbose"], {1}),
