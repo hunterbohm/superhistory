@@ -264,8 +264,8 @@ FLAG_SECRET = re.compile(rf"(?i)(?:(?<![A-Za-z0-9_.-])|{_AFTER_ESCAPE})(--" + _K
                          + r"(?<!-stdin)(?<!-file)(?<!-env)(?<!-path)(?<!-name)(?<!-id)(?<!-cmd)(?<!-command)"
                          r"(?<!-helper)(?<!-length)(?<!-type)(?<!-url)((?:[ \t]|%(?:25)?20)+[\"']?)(?!-)" + _VALUE)
 # "pass" and "pwd" alone name a password where a value plainly follows them: before "=", or ":" and a quote, as a
-# JavaScript object, YAML or a connection string writes one ("pass: '...'", "Uid=sa;Pwd=...;"), and only beside a
-# user's name, as a login gives both (_beside_a_user). Before ":" and a word they are words, or a command: "tests pass:
+# JavaScript object, YAML or a connection string writes one ("pass: '...'", "Uid=sa;Pwd=...;"), and only as the field
+# next to a user's name, as a login gives both (_beside_a_user). Before ":" and a word they are words, or a command: "tests pass:
 # 12", "pwd: /home"; and alone, a compiler's pass ("pass=ConvertBF16ToF32").
 SHORT_PASSWORD = re.compile(rf"(?i)(?:(?<![A-Za-z0-9_.-])|{_AFTER_ESCAPE})(pass|pwd)"
                             rf"({_QUOTE}?[ \t]*(?::[ \t]*{_QUOTE}|=[ \t]*{_QUOTE}?))" + _VALUE)
@@ -520,19 +520,25 @@ def _short_name_secret(value):
 
 
 def _short_password_span(m):
-    """Where "pass" or "pwd"'s value is, when it is a secret (_short_name_secret) beside a user's name."""
-    return _keyed_span(m) if _short_name_secret(m.group(3)) and _beside_a_user(m.string, m.start(1)) else None
+    """Where "pass" or "pwd"'s value is, when it is a secret (_short_name_secret) next to a user's name."""
+    return _keyed_span(m) if _short_name_secret(m.group(3)) and _beside_a_user(m) else None
 
 
-# A user's name given as a field, which a login gives beside its password: "user: ...", "Uid=...", "login=...".
-_USER_FIELD = re.compile(r"(?i)(?<![A-Za-z0-9])(?:user(?:[_-]?(?:name|id))?|uid|login|e-?mail|account)[\"']?[ \t]*"
-                         r"(?:[:=]|=>)")
-_USER_KEY = re.compile(r"(?i)user(?:[_-]?(?:name|id))?|uid|login|e-?mail|account")
+# A user's name as a field's name, which a login gives next to its password: "user", "Uid", "User ID", "login".
+_USER_NAME = r"(?:user(?:[ _-]?(?:name|id))?|uid|login|e-?mail|account)"
+_USER_KEY = re.compile(_USER_NAME, re.I)
+# The field right before a name, a user's name and its value with nothing after it but a separator, space and a quote
+# ("Uid=sa;Pwd", "user: 'me@example.com', pass", '"user": "sa", "pwd'); and the field right after a value.
+_USER_BEFORE = re.compile(rf"""(?i)(?<![A-Za-z0-9]){_USER_NAME}["']?[ \t]*(?:[:=]|=>)[ \t]*"""
+                          r"""(?:"[^"\n]{0,256}"|'[^'\n]{0,256}'|[^\s,;&'"]{1,256})[ \t]*[,;&]?\s*["']?\Z""")
+_USER_AFTER = re.compile(rf"""(?i)["']?[ \t]*[,;&]?\s*["']?{_USER_NAME}["']?[ \t]*(?:[:=]|=>)""")
 
 
-def _beside_a_user(text, at):
-    """Whether a user's name is given as a field within 256 characters of `at`."""
-    return bool(_USER_FIELD.search(text, max(0, at - 256), at + 256))
+def _beside_a_user(m):
+    """Whether a named value's field, `m` (name, separator, value), is the one right after or right before a user's
+    name given as a field, as a login gives both; not a word away, as "user=ci compiler pass=..." is."""
+    at = m.start(1)
+    return bool(_USER_BEFORE.search(m.string, max(0, at - 300), at) or _USER_AFTER.match(m.string, m.end()))
 
 
 # A password's name that names something about it rather than it: its policy, hint, reset, length, rules, file.
@@ -1289,7 +1295,7 @@ def mask_all(value, key=None):
         return header if plain == value else "[masked]"
     if isinstance(value, dict):
         # "pass" and "pwd" name a password only beside a user's name, as in text; alone, its value is read alone.
-        user = any(isinstance(k, str) and _USER_KEY.fullmatch(k) for k in value)
+        user = any(isinstance(k, str) and _USER_KEY.fullmatch(k.strip()) for k in value)
         out = {mask(k) if isinstance(k, str) else k:
                mask_all(v, k if isinstance(k, str) and (user or k.lower() not in ("pass", "pwd")) else None)
                for k, v in value.items()}
@@ -1353,6 +1359,11 @@ _LOOSE_SECRET_WORDS = frozenset(("token", "tokens", "pin"))
 _FORM_WORDS = frozenset(("enter", "your", "the", "a", "an", "new", "current", "old", "confirm", "re", "repeat", "type",
                          "retype", "paste", "verify", "my", "this", "please", "valid", "digit", "digits", "four", "five",
                          "six", "eight"))
+# Words before a secret's word that make the field one that finds, shows or names secrets, not one that asks for one:
+# "Search secrets", "Find passwords", "Rename token".
+_NOT_ASKING = frozenset(("search", "find", "filter", "query", "lookup", "look", "browse", "sort", "show", "hide",
+                         "reveal", "generate", "copy", "toggle", "manage", "select", "choose", "pick", "list", "view",
+                         "rename", "delete", "remove", "revoke", "describe"))
 _SECRET_KINDS = frozenset((
     "api", "access", "auth", "authentication", "authorization", "bearer", "personal", "refresh", "session", "security",
     "secret", "bot", "oauth", "csrf", "xsrf", "jwt", "deploy", "deployment", "registry", "service", "app", "application",
@@ -1375,8 +1386,11 @@ _SELECTOR_ATTRIBUTE = re.compile(r"(?i)\b(?:name|id|type|for|class|placeholder|a
 
 def _names_a_secret(words):
     """Whether a phrase's words name a secret: a secret's word or run of words with only a form's own words after it,
-    and for a token or a PIN, no word before it of another kind."""
+    none before it that finds, shows or names secrets (_NOT_ASKING), and for a token or a PIN, no word before it of
+    another kind."""
     for i, word in enumerate(words):
+        if _NOT_ASKING.intersection(words[:i]):
+            continue
         ends = [i + 1] if word in _SECRET_WORDS else []
         ends += [i + len(run) for run in _SECRET_RUNS if tuple(words[i:i + len(run)]) == run]
         for end in ends:
