@@ -830,6 +830,43 @@ class ReviewEightTest(unittest.TestCase):
         self.assertEqual(mask(text), text)
 
 
+class ReviewNineTest(unittest.TestCase):
+    """The ninth review's findings."""
+
+    def test_a_blank_line_parts_a_pass_from_a_user(self):
+        for text in ('user: builder\n\npass="ConvertBF16ToF32" changed=0', 'pass="ConvertBF16ToF32"\n\nuser: builder',
+                     'user: builder\\n\\npass=\\"ConvertBF16ToF32\\"', "user: builder\r\n\r\npass=LowerSCF2LLVM"):
+            with self.subTest(text=text):
+                self.assertEqual(mask(text), text)
+        self.assertEqual(mask("user: me@example.com\npass: 'Tr0ub4dor-Zk9q'"), "user: me@example.com\npass: '[masked]'")
+
+    def test_a_search_before_a_joining_word_still_searches(self):
+        for label, value in (("Search for passwords", "billing"), ("Filter by password", "bank"),
+                             ("Look up tokens by name", "deploy")):
+            with self.subTest(label=label):
+                self.assertEqual(typed_secrets("browser_type", {"element": label, "text": value}),
+                                 {"element": label, "text": value})
+        self.assertEqual(typed_secrets("browser_type", {"element": "Enter password to view your account",
+                                                        "text": "x7Kq9mZ2"})["text"], "[masked]")
+
+    def test_a_long_label_costs_time_in_proportion(self):
+        import time
+
+        def took(label):
+            best = None
+            for _ in range(3):
+                started = time.process_time()
+                typed_secrets("browser_type", {"element": label, "text": "billing"})
+                spent = time.process_time() - started
+                best = spent if best is None else min(best, spent)
+            return best
+
+        for unit in ("ordinary ", "password ", "search password ", "token ", "api key "):
+            with self.subTest(unit=unit):
+                small, large = took(unit * 2000), took(unit * 16000)
+                self.assertLess(large, 20 * small + 0.05, (unit, small, large))
+
+
 # Commands as an argument list, each flag's value its own item: (the list, the items masked).
 ARGV = (
     (["login", "--password", PASSWORD], {2}), (["--token", SUB], {1}), (["--api-key", SUB, "--verbose"], {1}),
