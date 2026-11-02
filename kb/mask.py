@@ -315,9 +315,10 @@ def _credential_shaped(word):
 
 def _bare_credential(word):
     """The credential-shaped token a header's value starts with, up to an escaped line break or a placeholder, and
-    without a closing mark after it; or "". Judged by its shape alone, so base64 that starts with "/" counts."""
+    without a closing mark after it; or "". Judged by its shape alone, as a reader sees it, without the characters a
+    reader does not see, so base64 that starts with "/" counts and "RFC7235-compli<SHY>ant" does not."""
     head = _CREDENTIAL_END.split(word, 1)[0].rstrip(".,;:!?)")
-    return head if _credential_shaped(head) else ""
+    return head if _credential_shaped(INVISIBLE.sub("", head)) else ""
 
 
 def _authorization_span(m):
@@ -661,6 +662,21 @@ def _back(origin, start, end, size):
 # How many passes mask() makes at most, and how often, in this process, a text still changed at the last one.
 MAX_PASSES = 8
 capped = 0
+
+
+def mask_with_origin(text):
+    """mask(), and where each character of the result came from in `text`, -1 for a placeholder's (kb.mask._edit)."""
+    original, origin = text, list(range(len(text)))
+    for _ in range(MAX_PASSES):
+        masked, came = _once(text, _TEXT_RULES, list(range(len(text))))
+        if masked == text:
+            return text, origin
+        text, origin = masked, [origin[c] if c >= 0 else -1 for c in came]
+    # Still changing, as mask() then reads it: the region still changing becomes one placeholder.
+    head = len(os.path.commonprefix([original, text]))
+    tail = len(os.path.commonprefix([original[head:][::-1], text[head:][::-1]]))
+    return (original[:head] + "[masked]" + original[len(original) - tail:],
+            list(range(head)) + [-1] * 8 + list(range(len(original) - tail, len(original))))
 
 
 def mask(text):

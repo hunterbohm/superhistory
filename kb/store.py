@@ -3,9 +3,11 @@
 An item is one `doc` row, or `raw` chunks when its text is long. The summarizer adds `segment` and `atom` rows that
 point back at a long item. `ingest_state` holds each source's watermark and the health of every source on every host.
 """
+import bisect
 import contextlib
 import fcntl
 import hashlib
+import itertools
 import json
 import os
 import pathlib
@@ -15,7 +17,7 @@ from datetime import datetime, timezone
 
 from . import ids
 from .config import NAME_RE
-from .mask import ID_NAMES, KEY_WORD, VERSION, clean, holds_secret, mask, mask_all, masked_log, secret_in_id
+from .mask import ID_NAMES, KEY_WORD, VERSION, clean, holds_secret, mask, mask_all, mask_with_origin, masked_log, secret_in_id
 
 CHUNK = 4000
 ITEM_KINDS = ("doc", "raw")
@@ -265,19 +267,28 @@ def chunk(text, size=CHUNK):
     return chunks
 
 
-def _whole(rows):
-    """`rows` with any raw chunks masked as one text and cut again where it changed: a store that cut an item before
-    masking it, as an older kb did and another store may, can split a secret in two that neither chunk shows."""
-    raw = sorted((r for r in rows if r["kind"] == "raw"), key=lambda r: r["metadata"].get("chunk", 0))
-    text = "".join(r["content"] for r in raw)
-    masked = mask(text)
-    if masked == text:
-        return rows
-    parts = chunk(masked)
-    meta = {k: v for k, v in raw[0]["metadata"].items() if k not in CHUNK_KEYS}
-    return [r for r in rows if r["kind"] != "raw"] + [
-        {**raw[0], "content": part, "metadata": {**meta, "chunk": i, "chunks": len(parts)}}
-        for i, part in enumerate(parts)]
+def _masked_chunks(chunks):
+    """A long item's chunk texts masked so that each masks clean by itself, as a reader shows one, and all of them as
+    one text, as an older kb or another store may have cut an item before masking it and split a secret neither chunk
+    shows: masked as one text, each chunk taking back what came from its own characters (mask_with_origin), then each
+    by itself, until neither changes anything. A chunk keeps its place, so no cut moves to leave another token alone
+    at a chunk's start; a placeholder goes with the chunk its first character came from, and a chunk can be left
+    empty."""
+    for _ in range(16):
+        text = "".join(chunks)
+        masked, origin = mask_with_origin(text)
+        if masked != text:
+            ends, parts, at = list(itertools.accumulate(len(c) for c in chunks)), [[] for _ in chunks], 0
+            for character, came in zip(masked, origin):
+                if came >= 0:
+                    at = bisect.bisect_right(ends, came)
+                parts[at].append(character)
+            chunks = ["".join(part) for part in parts]
+        again = [mask(c) for c in chunks]
+        if again == chunks and masked == text:
+            return chunks
+        chunks = again
+    return [c if mask(c) == c else "[masked]" for c in chunks]  # still changing: what still changes goes whole
 
 
 def item_hash(title, text):
@@ -286,18 +297,17 @@ def item_hash(title, text):
 
 
 def _as_stored(rows):
-    """`rows` as replace_rows() stores them: masked, a long item's chunks as one text by _whole(), and the item's rows
+    """`rows` as replace_rows() stores them: masked, a long item's chunks by _masked_chunks(), and the item's rows
     recording the hash of its masked title and text, whatever hash they came with. When that differs from the hash
     they came with, summaries among `rows` name the new one as _rehash_summaries() has them do."""
     rows = [{**r, "ts": mask(str(r["ts"])), "title": mask(r["title"]), "metadata": mask_all(r["metadata"])} for r in rows]
-    # A long item's chunks as one text, then each by itself, as main masks them, since a cut can leave a token alone
-    # at a chunk's start that the word it was glued to hid; again until neither changes them.
-    for _ in range(8):
-        rows = [{**r, "content": mask(r["content"])} for r in _whole(rows)]
-        whole = _whole(rows)
-        if whole is rows:
-            break
-        rows = whole
+    raw = sorted((r for r in rows if r["kind"] == "raw"), key=lambda r: r["metadata"].get("chunk", 0))
+    rows = [{**r, "content": mask(r["content"])} for r in rows if r["kind"] != "raw"]
+    if raw:
+        # Each chunk keeps its own row and metadata; one left empty goes, and the rest are numbered again.
+        kept = [(r, part) for r, part in zip(raw, _masked_chunks([r["content"] for r in raw])) if part]
+        rows += [{**r, "content": part, "metadata": {**r["metadata"], "chunk": i, "chunks": len(kept)}}
+                 for i, (r, part) in enumerate(kept)]
     items = sorted((r for r in rows if r["kind"] in ITEM_KINDS), key=lambda r: r["metadata"].get("chunk", 0))
     if items:
         sent = items[0]["metadata"].get("hash")
