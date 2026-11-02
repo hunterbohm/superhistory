@@ -299,7 +299,7 @@ class ArgumentListTest(unittest.TestCase):
     def check(self, items, secret):
         masked = mask_all({"args": items})["args"]
         if secret == "header":
-            self.assertEqual(masked, ["-H", "Authorization: Bearer [masked]"])
+            self.assertEqual(masked, ["-H", "Authorization: [masked]"], "as main masks it")
             return
         self.assertEqual([i for i, item in enumerate(masked) if item != items[i]], sorted(secret), masked)
         for i in secret:

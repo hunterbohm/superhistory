@@ -10,6 +10,11 @@ invisible characters holds (mask._split_secrets). So:
 3. Every character this branch hides past its reading of the text as written sits by an invisible character the text
    holds: in the run of characters it is in, or in a value whose name, on the same line just before it, holds one.
 
+Gate 9's readings, new names and shapes, and the four values it reads as no secret, are this branch's only other
+changes. With them switched off (gate9()), the reading as written is held to main's by 1. With the readings on and
+the four off, it hides all it did and more only where a new reading reads; with the four on too, it shows past that
+only the values they name.
+
 The texts: a generator of secrets, words and invisible characters that splits some secrets and not others, the write
 fuzz's planted texts and titles, and the old-row cases with what older kbs' masks left of them. Each text runs as
 written and without its invisible characters. KB_DIFF_CASES sets how many of each.
@@ -42,17 +47,111 @@ def _main():
 main = _main()
 
 
+# Gate 9's new readings, its new names, and the four values it reads as no secret (a name in an AWS resource's name,
+# a file's name of words after "/", a date or a time after a key's name, a tokenizer's name), each switched off.
+_NEVER = re.compile(r"(?!)")
+_NAME_OFF = (("subscription[_-]?key|", ""),)
+_TOKENIZER_OFF = (("token(?!i[sz])", "token"),)
+
+
+def _keyed(rules, fragments, drop=()):
+    """`rules`' keyed patterns, without `drop`, each recompiled with `fragments` of its source replaced."""
+    out = []
+    for pattern, span_of in rules[1]:
+        if pattern in drop:
+            continue
+        source = pattern.pattern
+        for old, new in fragments:
+            source = source.replace(old, new)
+        out.append((re.compile(source, pattern.flags), span_of))
+    return tuple(out)
+
+
+_NEW_READINGS = tuple(p for p, _ in head._WHOLE_VALUES) + (head.SHORT_PASSWORD,)
+_ALL_OFF = ([p for p in head.SECRET_PATTERNS if p is not head.ENCODED_PRIVATE_KEY],
+            _keyed(head._TEXT_RULES, _NAME_OFF + _TOKENIZER_OFF, _NEW_READINGS), "named")
+_FOUR_OFF = (head.SECRET_PATTERNS, _keyed(head._TEXT_RULES, _TOKENIZER_OFF), "named")
+
+
+class gate9:
+    """Within it, mask._run reads as with gate 9's readings off ("all") or the four values it reads as no secret off
+    ("four"): its rules to pass to _run, and the module's own patterns swapped."""
+
+    def __init__(self, what):
+        self.what = what
+
+    def __enter__(self):
+        swap = {"_ARN_HEAD": _NEVER, "_FILE_NAME": _NEVER, "_DATE_OR_TIME": _NEVER}
+        if self.what == "all":
+            links = [re.compile(p.pattern.replace("]*:)", "]+:)").replace("&])*%(?:25)?3A)", "&])+%(?:25)?3A)"),
+                                p.flags) for p in head.PREFIXED_SECRETS[1:3]]
+            swap.update(PREFIXED_SECRETS=[head.PREFIXED_SECRETS[0], *links, *head.PREFIXED_SECRETS[3:]],
+                        _COMMANDS=head._COMMANDS[:5], _ANY_COMMAND=main._ANY_COMMAND)
+        self.saved = {name: getattr(head, name) for name in swap}
+        for name, value in swap.items():
+            setattr(head, name, value)
+        return _ALL_OFF if self.what == "all" else _FOUR_OFF
+
+    def __exit__(self, *exc):
+        for name, value in self.saved.items():
+            setattr(head, name, value)
+
+
+def new_readings(text):
+    """Where gate 9's new readings and names read a secret in `text`, as positions: what this branch may hide past
+    its reading with them off."""
+    out = set()
+    # Read as written and as the pass gives them the text, past the secrets known by their shape.
+    shaped, origin = head._run(text, (head.SECRET_PATTERNS, (), "named"), list(range(len(text))))
+    for pattern in _NEW_READINGS:
+        for m in pattern.finditer(text):
+            out.update(range(m.start(3), m.end(3)))
+        for m in pattern.finditer(shaped):
+            out.update(range(*head._back(origin, m.start(3), m.end(3), len(text))))
+    for m in head.ENCODED_PRIVATE_KEY.finditer(text):
+        out.update(range(m.start(), m.end()))
+    for pattern in head.PREFIXED_SECRETS[1:3]:
+        for m in pattern.finditer(text):
+            out.update(range(m.end(1), m.end()))
+    for line_pattern, flag, _ in head._COMMANDS[5:]:
+        for line in line_pattern.finditer(text):
+            for m in flag.finditer(text, line.start(), line.end()):
+                out.update(range(m.start(2), m.end(2)))
+    for pattern, _ in head._TEXT_RULES[1]:
+        if pattern is not head.AUTH_SECRET:
+            for m in pattern.finditer(text):
+                if re.search(r"(?i)subscription[_-]?key", m.group(1)):
+                    out.update(range(m.start(3), m.end(3)))
+    return out
+
+
+def no_secret_values(text):
+    """Where a value gate 9 reads as no secret sits in `text`: after a name in an AWS resource's name, a file's name of
+    words after "/", a date or a time, or after a tokenizer's name. Positions."""
+    out = set()
+    for pattern, _ in _ALL_OFF[1]:
+        if pattern is head.AUTH_SECRET:
+            continue
+        for m in pattern.finditer(text):
+            name, value = m.group(1), m.group(3)
+            if (head._ARN_HEAD.search(text, max(0, m.start(1) - 128), m.start(1))
+                    or m.start(1) and text[m.start(1) - 1] == "/" and head._FILE_NAME.fullmatch(value)
+                    or head._DATE_OR_TIME.fullmatch(value) or re.search(r"(?i)tokeni[sz]", name)):
+                out.update(range(m.start(3), m.end(3)))
+    return out
+
+
 def as_written(text):
     """This branch's reading of the text as written alone: its passes with no view, until one changes nothing."""
     return tracked(text, head._run)[0]
 
 
-def tracked(text, step):
+def tracked(text, step, rules=None):
     """(passes of `step` over `text` until one changes nothing, the positions of `text` the result shows), each pass
     reporting where every character of its result came from (mask._edit)."""
     origin = list(range(len(text)))
     for _ in range(head.MAX_PASSES):
-        masked, came = step(text, head._TEXT_RULES, list(range(len(text))))
+        masked, came = step(text, rules or head._TEXT_RULES, list(range(len(text))))
         if masked == text:
             break
         text, origin = masked, [origin[c] if c >= 0 else -1 for c in came]
@@ -165,7 +264,9 @@ def by_an_invisible(text, start, end):
     of it: in a split name before the value it masks, or after a scheme word in the token it starts."""
     line, stop = text.rfind("\n", 0, start) + 1, text.find("\n", end)
     stop = len(text) if stop < 0 else stop
-    return bool(INVISIBLE.search(text, max(line, start - 64, 0), min(end + 64, stop)))
+    # A colour code is one, several characters long, and counts where any of it is near.
+    near = max(line, start - 64, 0)
+    return any(m.end() > near for m in INVISIBLE.finditer(text, line, min(end + 64, stop)))
 
 
 class Generated:
@@ -271,25 +372,40 @@ class AgainstMainTest(unittest.TestCase):
     def check(self, where, text):
         ours, ours_shown = tracked(text, head._once)
         written, written_shown = tracked(text, head._run)
+        with gate9("all") as rules:
+            base, base_shown = tracked(text, head._run, rules)
+        with gate9("four") as rules:
+            added, added_shown = tracked(text, head._run, rules)
         theirs = main.mask(text)
         problems = []
-        # 1. The text as written reads as main reads it, but for the Authorization rule; with no invisible character,
-        # that reading is the mask.
+        # 1. The text as written reads as main reads it, with gate 9's readings off, but for the Authorization rule;
+        # with no invisible character, the reading as written is the mask.
         if not INVISIBLE.search(text) and ours != written:
             problems.append(f"with no invisible character, mask() is not the reading as written: {ours!r}")
         if not re.search(r"(?i)authorization", text):
-            if written != theirs:
-                problems.append(f"read as written, {written!r} is not main's {theirs!r}")
+            if base != theirs:
+                problems.append(f"read as written, gate 9 off, {base!r} is not main's {theirs!r}")
         else:  # where they may differ, nothing main surely hides shows, and only the Authorization rule adds, each
             # output read against the text alike (reading)
             main_shown, main_hidden = reading(text, theirs)
-            read_shown, read_hidden = reading(text, written)
+            read_shown, read_hidden = reading(text, base)
             shown_there = sorted(i for i in main_hidden & read_shown if not INVISIBLE.match(text, i))
             if shown_there:
                 problems.append(f"read as written, shows what main hides at {runs(shown_there)[:3]}: {written!r}")
             extra = sorted(read_hidden & main_shown - authorization_tokens(text))
             if extra:
                 problems.append(f"read as written, hides what main shows at {runs(extra)[:3]}: {written!r} vs {theirs!r}")
+        # 4. Gate 9's readings only add, where they read; the four values it reads as no secret are all it shows.
+        lost = sorted(added_shown - base_shown)
+        if lost:
+            problems.append(f"gate 9's readings show what they did not at {runs(lost)[:3]}: {added!r} vs {base!r}")
+        reads = new_readings(text)
+        far = [run for run in runs(base_shown - added_shown) if not reads.intersection(range(*run))]
+        if far:
+            problems.append(f"gate 9's readings hide away from where they read at {far[:3]}: {added!r} vs {base!r}")
+        shown = sorted(written_shown - added_shown - no_secret_values(text))
+        if shown:
+            problems.append(f"shows past the four values at {runs(shown)[:3]}: {written!r} vs {added!r}")
         # 2. Nothing the reading as written hides shows, but an invisible character, which no secret is made of.
         leaked = sorted(i for i in ours_shown - written_shown if not INVISIBLE.match(text, i))
         if leaked:

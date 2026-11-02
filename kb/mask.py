@@ -58,11 +58,16 @@ BASIC = re.compile(rf"(?i){_WORD}basic{_SCHEME_GAP}(?=[A-Za-z0-9+/]*[0-9+/=])[A-
 # A secret's value ends at a space, tab or line break, and the space around its "=" is spaces, tabs and line breaks (a
 # JSON or YAML value can sit on the next line): \s would also take U+2028, U+2029, U+0085, a vertical tab or a form
 # feed, which end a value early or make "password=\u2028password" look like a placeholder.
+# A private key percent-encoded, as a link's parameter holds one: its header, its body and its line breaks encoded,
+# through its footer or the end of the encoded run.
+ENCODED_PRIVATE_KEY = re.compile(r"-----BEGIN(?:%20[A-Z]+)*%20PRIVATE%20KEY-----(?:%0[ADad]|%2[BFbf]|%3[Dd]|[A-Za-z0-9+/=])"
+                                 r"{0,16384}(?:-----END(?:%20[A-Z]+)*%20PRIVATE%20KEY-----)?")
 SECRET_PATTERNS = [
     # A private key, by its structure and not read line by line: from its header through its footer, or, with no
     # footer, through the end of its paragraph. So a key cut off, wrapped at any width or followed at once by other
     # text is masked whole; what follows a key without a footer in its paragraph is masked with it, which is the cost.
     re.compile(rf"-----BEGIN [A-Z ]*PRIVATE KEY-----(?:{_TO_KEY_END}|{_KEY_PARAGRAPH})"),
+    ENCODED_PRIVATE_KEY,
     # A PGP armored private key the same way, whose body comes after a blank line, after any armor headers.
     re.compile(rf"-----BEGIN {_PGP_KEY}-----(?:{_TO_KEY_END}|{_IN_PARAGRAPH}*(?:{_BLANK}{_IN_PARAGRAPH}*)?)"),
     # A PuTTY key file's private lines and its MAC, through the end of their paragraph.
@@ -126,23 +131,25 @@ _BASIC_VALUE = re.compile(rf"(?i){_WORD}basic{_SCHEME_GAP}([A-Za-z0-9+/]{{12,}})
 PREFIXED_SECRETS = [
     re.compile(rf"(?i)({_WORD}(?:set-)?cookie{_QUOTE}?\s*(?::|%(?:25)?3[Aa])\s*{_QUOTE}?)(?:{_CLOSE}[^\"'\n]){{8,}}"),
     # A link's scheme starts a word and is at most 32 characters: read on from every letter of a long run, it took
-    # time in the square of the run's length. Its slashes may be escaped, as some JSON writers write them.
-    re.compile(rf"((?:(?<![A-Za-z0-9+.-])|{_AFTER_ESCAPE})[a-z][a-z0-9+.-]{{0,31}}:(?:\\?/){{2}}[^/ \t\n\r:@'\"]+:)"
+    # time in the square of the run's length. Its slashes may be escaped, as some JSON writers write them. The user
+    # name may be empty, as Redis writes a password alone: "redis://:<password>@host".
+    re.compile(rf"((?:(?<![A-Za-z0-9+.-])|{_AFTER_ESCAPE})[a-z][a-z0-9+.-]{{0,31}}:(?:\\?/){{2}}[^/ \t\n\r:@'\"]*:)"
                r"[^/ \t\n\r@'\"]{3,}(?=@)"),
     # The same link percent-encoded, once or twice, as a parameter of another link, its slashes encoded or not.
     re.compile(rf"(?i)((?:(?<![A-Za-z0-9+.-])|{_AFTER_ESCAPE})[a-z][a-z0-9+.-]{{0,31}}%(?:25)?3A(?:%(?:25)?2F|/){{2}}"
-               r"(?:(?!%(?:25)?(?:3A|2F|40))[^/ \t\n\r@'\"&])+%(?:25)?3A)(?:(?!%(?:25)?(?:2F|40))[^/ \t\n\r@'\"&]){3,}"
+               r"(?:(?!%(?:25)?(?:3A|2F|40))[^/ \t\n\r@'\"&])*%(?:25)?3A)(?:(?!%(?:25)?(?:2F|40))[^/ \t\n\r@'\"&]){3,}"
                r"(?=%(?:25)?40)"),
     # openssl's "-passin pass:..." and "-passout pass:...".
     re.compile(rf"((?<![A-Za-z0-9_-])-pass(?:in|out)?[ \t]+['\"]?pass:)(?:(?!{_NEXT_NAME}){_CLOSE}[^ \t\n\r'\"])+"),
 ]
 # A secret's name is a whole run of name characters whose last dotted part holds a key word, or one ending in "_pw" or
-# the like. Read as that part after the run's last dot, it takes one pass over a long run; read as any characters
+# the like. A tokenizer's name is none. Read as that part after the run's last dot, it takes one pass over a long run; read as any characters
 # around a key word, it went back over the run once for every key word in it.
 _KEY_NAME = (
     r"(?i)(?<![A-Za-z0-9_.-])("
-    r"(?:[A-Za-z0-9_.-]*\.)?(?=[A-Za-z0-9_-]*?(?:api[_-]?key|access[_-]?key|private[_-]?key|secret|token|"
-    r"credentials?|passw(?:or)?d|passcode|session[_-]?(?:token|key|secret|cookie)|bw_session))[A-Za-z0-9_-]+"
+    r"(?:[A-Za-z0-9_.-]*\.)?(?=[A-Za-z0-9_-]*?(?:api[_-]?key|access[_-]?key|private[_-]?key|subscription[_-]?key|"
+    r"secret|token(?!i[sz])|credentials?|passw(?:or)?d|passcode|session[_-]?(?:token|key|secret|cookie)|bw_session))"
+    r"[A-Za-z0-9_-]+"
     r"|[A-Za-z0-9]+(?:[_-][A-Za-z0-9]+)*[_-](?:pass|pwd|pw)"
     r"|x-(?=[A-Za-z0-9-]*?(?<=-)auth(?:-|(?![A-Za-z0-9_.-])))[A-Za-z0-9-]+"
     r")(?![A-Za-z0-9_.-])")
@@ -172,6 +179,29 @@ JSON_SECRET = re.compile(r'(?i)(?<=")(?<!\\")' + _KEY_NAME[4:] + r'("[ \t]*:[ \t
 FLAG_SECRET = re.compile(rf"(?i)(?:(?<![A-Za-z0-9_.-])|{_AFTER_ESCAPE})(--" + _KEY_NAME[len(r"(?i)(?<![A-Za-z0-9_.-])("):]
                          + r"(?<!-stdin)(?<!-file)(?<!-env)(?<!-path)(?<!-name)(?<!-id)(?<!-cmd)(?<!-command)"
                          r"(?<!-helper)(?<!-length)(?<!-type)(?<!-url)((?:[ \t]|%(?:25)?20)+[\"']?)(?!-)" + _VALUE)
+# "pass" and "pwd" alone name a password where a value plainly follows them: before "=", or ":" and a quote, as a
+# JavaScript object, YAML or a connection string writes one ("pass: '...'", "Uid=sa;Pwd=...;"). Before ":" and a word
+# they are words, or a command: "tests pass: 12", "pwd: /home".
+SHORT_PASSWORD = re.compile(rf"(?i)(?:(?<![A-Za-z0-9_.-])|{_AFTER_ESCAPE})(pass|pwd)"
+                            rf"({_QUOTE}?[ \t]*(?::[ \t]*{_QUOTE}|=[ \t]*{_QUOTE}?))" + _VALUE)
+# A secret in an XML element, as Maven's settings.xml and NuGet's config hold one: "<password>...</password>".
+XML_SECRET = re.compile(r"(?i)<((?:[A-Za-z0-9_.-]+:)?(?:password|passwd|passphrase|passcode|secret|client[_-]?secret|"
+                        r"(?:api|access|secret|private|subscription)[_-]?key|(?:access|auth|refresh|api)?[_-]?token|"
+                        r"storepass|keypass))(>)([^<\s]{1,512}?)(?=</)")
+# A password's value in quotes, read to the closing quote, so a comma, a semicolon or a bracket inside is part of it
+# ('DB_PASSWORD="Xk9,mP2;qL7v"'); a space is not, as quotes may hold a sentence.
+QUOTED_PASSWORDS = [re.compile(_KEY_NAME + rf"""([\"']?[ \t]*[:=][ \t]*{quote})([^\s{quote}\\]{{4,256}})(?={quote})""")
+                    for quote in ('"', "'")]
+# A password's whole line, as a .env file or YAML writes one, "NAME=value" or "name: value" with nothing after it but a
+# comment: the value runs to the end of the line, so a comma, a semicolon or a bracket inside is part of it
+# ("DB_PASSWORD=Xk9,mP2;qL7v"). Not where a ";", "," or "&" goes on to another name and "=", as a connection string or
+# a link's query does.
+LINE_PASSWORD = re.compile(
+    r"(?im)(?:^|(?<=\\n))[ \t]*(?:export[ \t]+|-[ \t]+)?" + _KEY_NAME[4:] + r"([ \t]*[:=][ \t]*)"
+    r"((?:(?![;,&][A-Za-z_][A-Za-z0-9_.-]*=)(?!\\[nr])[^\s\"'`]){1,512})(?=[ \t]+#[^\r\n]*$|[ \t]*\r?$|\\[nr])")
+# Google's app password, four groups of four lower-case letters, after a password's name and "=" or in quotes.
+APP_PASSWORD = re.compile(_KEY_NAME + r"""((?:[ \t]*=|[\"']?[ \t]*[:=][ \t]*[\"'])[ \t]*)([a-z]{4}(?: [a-z]{4}){3})"""
+                          r"(?![A-Za-z0-9])")
 # An HTTP Authorization header's credentials: its first word, or after a scheme word ("Token ...", "Bot ...",
 # "ApiKey ..."), the next. _authorization_span() reads which is the secret.
 # Its first word, the scheme, ends at a space a link encodes too, as in "Authorization%3A%20Token%20<credential>".
@@ -190,13 +220,19 @@ COMMAND_FLAGS = (
     (r"sshpass", r"\s-p[ \t]*['\"]?", False),
     (r"(?:docker|podman|nerdctl|buildah|skopeo|oras)\s+login|helm\s+registry\s+login", r"\s-p[ \t]+['\"]?", False),
     (r"redis-cli", r"\s-a[ \t]+['\"]?", False),
+    (r"az\s+login|mongosh|mongo|mongodump|mongorestore|mongoexport|mongoimport|twine", r"\s-p[ \t]+['\"]?", False),
+    (r"keytool|jarsigner", r"\s-(?:src|dest|new)?(?:storepass|keypass)[ \t]+['\"]?", True),
+    # aws configure set's secret settings, and a .netrc line's password after its machine and login.
+    (r"aws\s+configure\s+set",
+     r"\s(?:[A-Za-z0-9_-]+\.)?[A-Za-z0-9_]*(?:secret|token|password)[A-Za-z0-9_]*[ \t]+['\"]?", True),
+    (r"(?:machine[ \t]+[^\s]+[ \t]+|default[ \t]+)login[ \t]+[^\s]+", r"\spassword[ \t]+['\"]?", False),
 )
 _COMMANDS = [(re.compile(rf"(?i)(?:(?<![A-Za-z0-9_.-])|{_AFTER_ESCAPE})(?:{command})(?![A-Za-z0-9_.-])"
                          r"(?:[^\n|;\\]|\\(?![nr]))*"),
               re.compile(rf"({flag})((?:{_CLOSE}[^ \t\n\r'\"])+)"), always) for command, flag, always in COMMAND_FLAGS]
-_ANY_COMMAND = re.compile(r"(?i)curl|mysql|mariadb|sshpass|login|redis-cli")
-# A field name that by itself names a secret, as a dict's key does.
-_SECRET_FIELD = re.compile(rf"(?:{_KEY_NAME[4:]}|{_ENV_KEY_NAME})$", re.I)
+_ANY_COMMAND = re.compile(r"(?i)curl|mysql|mariadb|sshpass|login|redis-cli|mongo|twine|keytool|jarsigner|aws")
+# A field name that by itself names a secret, as a dict's key does, "pass" and "pwd" too.
+_SECRET_FIELD = re.compile(rf"(?:{_KEY_NAME[4:]}|{_ENV_KEY_NAME}|pass|pwd)$", re.I)
 # In an item id, a value counts by its key's name only in assignment form, "token=...", "token=>..." or "token:...",
 # with no space.
 KEYED_ID = re.compile(_KEY_NAME + r"((?:[\"'])?(?:=>|[:=])[\"']?)" + _VALUE)
@@ -257,9 +293,13 @@ def _looks_secret(name, sep, value):
         word = value.rstrip(".!?")
         return len(value) >= 4 and (not _prose(sep) or bool(re.search(r"[^A-Za-z]", word)))
     mixed = re.search(r"\d", value) and re.search(r"[A-Za-z]", value)
+    if _DATE_OR_TIME.fullmatch(value):
+        return False  # a key's expiry or a session's start, as "session_key: 2026-11-01T10:00:00Z" names
     return (len(value) >= 16 and not value.isdigit()) or bool(len(value) >= 8 and mixed)
 
 
+# A value that is a number, a date or a time, which no key or token is.
+_DATE_OR_TIME = re.compile(r"[\d:.+TZ-]+")
 _SEP_CHARACTER = re.compile(r"[:=\uff1a\uff1d]|%(?:25)?3[ADad]|u003[AaDd]")
 
 
@@ -282,10 +322,35 @@ def _command_password_edits(text, line_pattern, flag, always):
             if always or _looks_secret("password", m.group(1), m.group(2))]
 
 
+# Where a name is part of an AWS resource's name, as "secretsmanager" and "secret" are in
+# "arn:aws:secretsmanager:<region>:<account>:secret:<name>".
+_ARN_HEAD = re.compile(r"(?<![A-Za-z0-9])arn:aws(?:-[a-z]+)*:(?:[A-Za-z0-9-]*:){0,4}\Z")
+# A file's name of words joined by "-" or "_", with a version or a number among them: "reset-flow-v2.md".
+_FILE_NAME = re.compile(r"[a-z]{2,}(?:[-_](?:[a-z]{2,}|v?\d{1,4}))+\.[A-Za-z][A-Za-z0-9]{0,4}")
+
+
 def _keyed_span(m):
-    """Where a named value's secret is, the whole value, or None when it reads as none."""
+    """Where a named value's secret is, the whole value, or None when it reads as none: nor in an AWS resource's name,
+    nor in a file's name of words after a "/", as "notes/password=reset-flow-v2.md" is."""
     name, sep, value = m.groups()
-    return (m.start(3), m.end(3)) if _looks_secret(name, sep, value) else None
+    if not _looks_secret(name, sep, value):
+        return None
+    start = m.start(1)
+    if _ARN_HEAD.search(m.string, max(0, start - 128), start):
+        return None
+    if start and m.string[start - 1] == "/" and _FILE_NAME.fullmatch(value):
+        return None
+    return m.start(3), m.end(3)
+
+
+def _password_span(m):
+    """_keyed_span, for a pattern that reads only a password's value."""
+    return _keyed_span(m) if PASSWORD_NAME.search(m.group(1)) else None
+
+
+def _line_password_span(m):
+    """Where a password's line value is, when the line holds more past where _VALUE would end it."""
+    return _password_span(m) if re.search(r"[,;<>)\]}].", m.group(3)) else None
 
 
 # The schemes an Authorization header names before its credential, as IANA lists them and services use them.
@@ -422,8 +487,12 @@ def _replace(text, spans, replacement):
 # What a pass reads, in text and in an item id: the secrets known by their shape, then the patterns that read a value
 # by its name, each with what masks it and how its matches are read. An id reads "Bearer" and "Basic" as words, and a
 # named value only in assignment form, as re.sub reads it; in text a name's value can be the next name (_named).
-_TEXT_RULES = (SECRET_PATTERNS, ((JSON_SECRET, _keyed_span), (KEYED_SECRET, _keyed_span), (ENV_KEY_SECRET, _keyed_span),
-                                 (FLAG_SECRET, _keyed_span), (AUTH_SECRET, _authorization_span)), "named")
+# The readings that take a password's value whole where KEYED_SECRET would end it early, so they come before it.
+_WHOLE_VALUES = ((XML_SECRET, _keyed_span), (LINE_PASSWORD, _line_password_span), (APP_PASSWORD, _password_span),
+                 *((p, _password_span) for p in QUOTED_PASSWORDS))
+_TEXT_RULES = (SECRET_PATTERNS, ((JSON_SECRET, _keyed_span), *_WHOLE_VALUES, (KEYED_SECRET, _keyed_span),
+                                 (ENV_KEY_SECRET, _keyed_span), (SHORT_PASSWORD, _keyed_span), (FLAG_SECRET, _keyed_span),
+                                 (AUTH_SECRET, _authorization_span)), "named")
 _ID_RULES = (_ID_PATTERNS, ((KEYED_ID, _keyed_span), (ENV_KEY_ID, _keyed_span)), "plain")
 
 
@@ -800,11 +869,30 @@ def mask_all(value, key=None):
         return {mask(k) if isinstance(k, str) else k: mask_all(v, k if isinstance(k, str) else None)
                 for k, v in value.items()}
     if isinstance(value, (list, tuple)):
-        return [mask_all(v, key) for v in value]
+        return _masked_items(value, key)
     if key is not None and isinstance(value, (int, float)) and not isinstance(value, bool) \
             and mask(f"{key}={value}") != f"{mask(key)}={value}":
         return "[masked]"  # a number its field name marks as secret, such as a numeric passcode
     return value
+
+
+def _masked_items(items, key):
+    """mask_all over a list's items, each read alone, and an item after a flag read after the command line before it
+    too, up to eight items back: a command given as its arguments holds a flag and its value in two items, as
+    ["login", "--password", "..."] or ["mongosh", "-u", "admin", "-p", "..."] does. Where that line reads more of the
+    item as a secret than the item alone does, the item, one argument, is masked whole."""
+    out = [mask_all(v, key) for v in items]
+    for i in range(1, len(items)):
+        flag, item = items[i - 1], items[i]
+        if not (isinstance(flag, str) and isinstance(item, str) and flag.startswith("-") and len(flag) <= 64 and item):
+            continue
+        start = i - 1
+        while start > 0 and i - start < 8 and isinstance(items[start - 1], str):
+            start -= 1
+        line = " ".join(items[start:i])
+        if not mask(f"{line} {item}").endswith(" " + mask(item)):
+            out[i] = "[masked]"
+    return out
 
 
 # A tool that types into a page or fills a form's fields, as browser automation names one: Playwright's browser_type
