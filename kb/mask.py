@@ -232,7 +232,8 @@ PREFIXED_SECRETS = [
 # read as any characters around a key word, it went back over the run once for every key word in it.
 _KEY_NAME = (
     r"(?i)(?<![A-Za-z0-9_.-])("
-    r"(?:[A-Za-z0-9_.-]*\.)?(?=[A-Za-z0-9_-]*?(?:api[_-]?key|access[_-]?key|private[_-]?key|subscription[_-]?key|"
+    r"(?:[A-Za-z0-9_.-]*\.)?(?=[A-Za-z0-9_-]*?(?:api[_-]?key|access[_-]?key|private[_-]?key|"
+    r"subscription[_-]?key(?![A-Za-z0-9_-])|"
     r"secret|token(?!i[sz])|credentials?|passw(?:or)?d|passcode|session[_-]?(?:token|key|secret|cookie)|bw_session))"
     r"[A-Za-z0-9_-]+"
     r"|[A-Za-z0-9]+(?:[_-][A-Za-z0-9]+)*[_-](?:pass|pwd|pw)"
@@ -319,9 +320,15 @@ COMMAND_FLAGS = (
      r"\s(?:[A-Za-z0-9_-]+\.)?(?=[A-Za-z0-9_]*?(?:secret|token|password))[A-Za-z0-9_]+[ \t]+['\"]?", False),
     (r"(?:machine[ \t]+[^\s]+[ \t]+|default[ \t]+)login[ \t]+[^\s]+", r"\spassword[ \t]+['\"]?", False),
 )
+_MAIN_COMMANDS = 5  # main's own rows of COMMAND_FLAGS; the rest are this PR's
+# A command's line runs to a pipe, ";" or a line break, plain or escaped; for the rows main's own lack, not one inside
+# quotes, where a password may hold one ("az login -p 'Tr0ub4dor|Zk9q'"). Nothing follows the run, so it is read once.
+_LINE = r"(?:[^\n|;\\]|\\(?![nr]))*"
+_QUOTED_LINE = r"""(?:'[^'\n]*'|"(?:[^"\\\n]|\\(?![nr]).)*"|[^\n|;\\'"]|\\(?![nr])|['"])*"""
 _COMMANDS = [(re.compile(rf"(?i)(?:(?<![A-Za-z0-9_.-])|{_AFTER_ESCAPE})(?:{command})(?![A-Za-z0-9_.-])"
-                         r"(?:[^\n|;\\]|\\(?![nr]))*"),
-              re.compile(rf"({flag})((?:{_CLOSE}[^ \t\n\r'\"])+)"), always) for command, flag, always in COMMAND_FLAGS]
+                         + (_LINE if n < _MAIN_COMMANDS else _QUOTED_LINE)),
+              re.compile(rf"({flag})((?:{_CLOSE}[^ \t\n\r'\"])+)"), always)
+             for n, (command, flag, always) in enumerate(COMMAND_FLAGS)]
 _ANY_COMMAND = re.compile(r"(?i)curl|mysql|mariadb|sshpass|login|redis-cli|mongo|twine|keytool|jarsigner|aws")
 # A field name that by itself names a secret, as a dict's key does, "pass" and "pwd" too.
 _SECRET_FIELD = re.compile(rf"(?:{_KEY_NAME[4:]}|{_ENV_KEY_NAME}|pass|pwd)$", re.I)
@@ -361,7 +368,7 @@ _AUTH_FIELD = re.compile(rf"(?i)((?:(?<![A-Za-z0-9_.-])|{_AFTER_ESCAPE})auth{_QU
 # before a secret parts it from the word before (_once), though a colour code ends in a letter. The vertical tab, the
 # form feed, the four separators from 0x1c and NEL are whitespace, as str.split reads them, and part words as a line
 # break does: pdftotext puts a form feed between pages.
-_CSI = r"(?:\x1b\[|\x9b|\\(?:u001[bB]|x1[bB]|033)\[)(?!masked\])[0-?]*[ -/]*[@-~]"
+_CSI = r"(?:\x1b\[|\x9b|\\(?:u001[bB]|x1[bB]|033)\[|\\(?:u009[bB]|x9[bB]|233))(?!masked\])[0-?]*[ -/]*[@-~]"
 _FORMAT_CHARACTERS = (r"\u00ad\u034f\u061c\u115f\u1160\u17b4\u17b5\u180b-\u180f\u200b-\u200f\u202a-\u202e\u2060-\u206f"
                       r"\u3164\ufe00-\ufe0f\ufeff\uffa0\ufff0-\ufff8\U0001bca0-\U0001bca3\U0001d173-\U0001d17a"
                       r"\U000e0000-\U000e0fff")
@@ -740,12 +747,11 @@ _WHOLE_VALUES = ((XML_SECRET, _xml_span), (LINE_PASSWORD, _line_password_span), 
 # whatever it reads first.
 _MAIN_PREFIXED = [PREFIXED_SECRETS[0], *(re.compile(p.pattern.replace("]*:)", "]+:)", 1).replace(
     "&])*%(?:25)?3A)", "&])+%(?:25)?3A)", 1), p.flags) for p in PREFIXED_SECRETS[1:3]), *PREFIXED_SECRETS[3:]]
-_MAIN_COMMANDS = 5
 _SUBSCRIPTION_KEY = re.compile(r"(?i)subscription[_-]?key")
 
 
 def _main_reading(pattern):
-    return re.compile(pattern.pattern.replace("subscription[_-]?key|", ""), pattern.flags)
+    return re.compile(pattern.pattern.replace("subscription[_-]?key(?![A-Za-z0-9_-])|", ""), pattern.flags)
 
 
 _MAIN_RULES = ([p for p in SECRET_PATTERNS if p is not ENCODED_PRIVATE_KEY],
