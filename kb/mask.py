@@ -661,6 +661,22 @@ def _replace(text, spans, replacement):
 # The readings that take a password's value whole where KEYED_SECRET would end it early, so they come before it.
 _WHOLE_VALUES = ((XML_SECRET, _xml_span), (LINE_PASSWORD, _line_password_span), (APP_PASSWORD, _password_span),
                  *((p, _password_span) for p in QUOTED_PASSWORDS))
+# Main's own readings of text, as gate 9 found them: its token shapes, links, commands and named values, each read as
+# main reads it, with the four values gate 9 reads as no secret (a tokenizer's, an ARN's, a date's, a file name's)
+# read so here too. _read hides all these hide, so no reading added since can show what main's own readings hide,
+# whatever it reads first.
+_MAIN_PREFIXED = [PREFIXED_SECRETS[0], *(re.compile(p.pattern.replace("]*:)", "]+:)", 1).replace(
+    "&])*%(?:25)?3A)", "&])+%(?:25)?3A)", 1), p.flags) for p in PREFIXED_SECRETS[1:3]), *PREFIXED_SECRETS[3:]]
+_MAIN_COMMANDS = 5
+
+
+def _main_reading(pattern):
+    return re.compile(pattern.pattern.replace("subscription[_-]?key|", ""), pattern.flags)
+
+
+_MAIN_RULES = ([p for p in SECRET_PATTERNS if p is not ENCODED_PRIVATE_KEY],
+               tuple((_main_reading(p), _keyed_span) for p in (JSON_SECRET, KEYED_SECRET, ENV_KEY_SECRET, FLAG_SECRET))
+               + ((AUTH_SECRET, _authorization_span),), "main")
 _TEXT_RULES = (SECRET_PATTERNS, ((JSON_SECRET, _keyed_span), *_WHOLE_VALUES, (KEYED_SECRET, _keyed_span),
                                  (ENV_KEY_SECRET, _keyed_span), (SHORT_PASSWORD, _short_password_span),
                                  (FLAG_SECRET, _keyed_span), (AUTH_SECRET, _authorization_span)), "named")
@@ -699,10 +715,10 @@ def _run(text, rules, origin=None, named=None):
     for edits in (_docker_login_edits, _key_rest_edits, _headless_key_edits,
                   lambda text: [(m.start(), m.end(), "[masked]") for m in _GLUED_RUN.finditer(text)]):
         text, origin = _edit(text, origin, edits(text))
-    for pattern in PREFIXED_SECRETS:
+    for pattern in (_MAIN_PREFIXED if reading == "main" else PREFIXED_SECRETS):
         text, origin = _edit(text, origin, [(m.end(1), m.end(), "[masked]") for m in pattern.finditer(text)])
     if _ANY_COMMAND.search(text):
-        for command in _COMMANDS:
+        for command in (_COMMANDS[:_MAIN_COMMANDS] if reading == "main" else _COMMANDS):
             text, origin = _edit(text, origin, _command_password_edits(text, *command))
     for pattern, span_of in keyed:
         found = list(_named(pattern, span_of, text, reading))
@@ -737,7 +753,7 @@ def _named(pattern, span_of, text, reading):
             inner = pattern.match(text, m.start(3)) if reading == "named" else None
             m = inner if inner and inner.start(3) >= span[1] else pattern.search(text, m.end())
             continue
-        inner = pattern.match(text, m.start(3)) if reading == "named" else None
+        inner = pattern.match(text, m.start(3)) if reading in ("named", "main") else None
         m = inner if inner else pattern.search(text, m.end())
 
 
@@ -795,17 +811,38 @@ def _mask_once(text, rules=_TEXT_RULES):
 
 def _once(text, rules, origin=None):
     """_mask_once, and with `origin`, where each character of the result came from in the first text (_edit). The pass
-    reads the text as given, never what the view masked, so what it hides stays hidden: the view only adds. Where it
-    adds, the characters of the pass's own result that came from the view's spans are hidden, a placeholder for each
-    run of them but one beside a placeholder, which takes them in; the rest of the result stays as the pass left it. A
-    text whose invisible characters split no secret masks as main masks it."""
+    reads the text as given (_read), never what the view masked, so what it hides stays hidden: the view only adds.
+    Where it adds, the characters of the pass's own result that came from the view's spans are hidden (_hide). A text
+    whose invisible characters split no secret masks as _read reads it."""
     spans = _split_secrets(text, rules) if INVISIBLE.search(text) else []
     if not spans:
-        return _run(text, rules, origin)
-    masked, came = _run(text, rules, list(range(len(text))))
+        return _read(text, rules, origin)
+    masked, came = _read(text, rules, list(range(len(text))))
     added = bytearray(len(text))
     for start, end in spans:
         added[start:end] = b"\x01" * (end - start)
+    masked, came = _hide(masked, came, added)
+    return masked, None if origin is None else [origin[c] if c >= 0 else -1 for c in came]
+
+
+def _read(text, rules, origin=None):
+    """The text as written read (_run), and as main's own readings read it (_MAIN_RULES), each character either hides
+    hidden: no reading added since can show what main's readings hide by reading a part of it first. An id reads as
+    _run reads it."""
+    if rules is not _TEXT_RULES:
+        return _run(text, rules, origin)
+    masked, came = _run(text, rules, list(range(len(text))))
+    added = bytearray(b"\x01") * len(text)
+    for c in _run(text, _MAIN_RULES, list(range(len(text))))[1]:
+        if c >= 0:
+            added[c] = 0
+    masked, came = _hide(masked, came, added)
+    return masked, None if origin is None else [origin[c] if c >= 0 else -1 for c in came]
+
+
+def _hide(masked, came, added):
+    """`masked`, a pass's result, with the characters that came from a place `added` marks hidden: a placeholder for
+    each run of them but one beside a placeholder, which takes them in; the rest stays as the pass left it."""
     hide = [c >= 0 and added[c] for c in came]
     if any(hide):
         out, kept, k, n = [], [], 0, len(masked)
@@ -821,7 +858,7 @@ def _once(text, rules, origin=None):
                 kept += [-1] * 8
             k = j
         masked, came = "".join(out), kept
-    return masked, None if origin is None else [origin[c] if c >= 0 else -1 for c in came]
+    return masked, came
 
 
 def _split_secrets(text, rules):
@@ -843,9 +880,11 @@ def _split_secrets(text, rules):
     where = sorted(set(places))
     tokens, after_a_break = _TOKENS[id(rules)]
     found = [(m.start(), m.end()) for m in tokens.finditer(view) if m.end() > m.start() and not _scheme_words(m)]
-    found = sorted(found + _gitleaks_spans(view))
+    text_only = rules is _TEXT_RULES  # an id is read without gitleaks' rules, as _run reads it
+    found = sorted(found + (_gitleaks_spans(view) if text_only else []))
     lower = view.lower()
-    vendored = [rule for rule in _GITLEAKS_AFTER_A_BREAK if not rule[3] or any(k in lower for k in rule[3])]
+    vendored = [rule for rule in _GITLEAKS_AFTER_A_BREAK
+                if text_only and (not rule[3] or any(k in lower for k in rule[3]))]
     glued, inside = [], 0
     for place in where:
         while inside < len(found) and found[inside][1] <= place:
@@ -1090,18 +1129,32 @@ def _masked_items(items, key):
 # and browser_fill_form, Chrome DevTools' fill and fill_form, Puppeteer's puppeteer_fill and puppeteer_type, and others.
 _TYPING_TOOL = re.compile(r"(?i)(?:browser_|puppeteer_|playwright_)?(?:type|type_text|fill|fill_form|fill_field|"
                           r"press_sequentially|input_text|set_value)")
-# A field label that asks for a secret: a password, passcode or passphrase, a PIN, a one-time or security code, a
-# token, a secret, an API or private key; each word ending there, as "Tokenizer" and "Secretary" do not, a short one
-# starting there too, as "Spinner"'s "pin" does not. And a label that asks about one instead ("Token name", "Secret
-# key description", "Password hint"), after a selector's own attribute names are taken out ("input[name=password]").
-_SECRET_LABEL = re.compile(r"(?<![A-Za-z])(?i:pin|pwd|otp|cvc|cvv2?|2fa|mfa)(?![a-z])|(?i:passw(?:or)?d|passcode|"
-                           r"passphrase|secret|token|credential|one[ _-]?time[ _-]?(?:code|password|pass)|"
-                           r"verification[ _-]?code|security[ _-]?code|(?:api|access|private)[ _-]?key)"
-                           r"(?:s|S)?(?![a-z])")
-_ABOUT_LABEL = re.compile(r"(?<![A-Za-z])(?i:names?|descriptions?|labels?|notes?|hints?|questions?|types?|ids?|counts?|"
-                          r"length|expir[a-z]*|strength|polic(?:y|ies)|requirements?|reset|manager|size|format|usage|"
-                          r"created|updated|scopes?|permissions?)(?![a-z])")
+# A field label's words, as a page or a selector writes them: split at anything but a letter or digit, and where
+# camel case or a run of capitals turns ("newPassword", "APIToken"), each in lower case.
+_LABEL_WORD = re.compile(r"[A-Z]+(?=[A-Z][a-z])|[A-Z]?[a-z]+|[A-Z]+|\d+")
+# A label asks for a secret by one of these words, or two of them together, and asks about one, not for it, by any of
+# the second set ("Token name", "PasswordHint", "Secret key description").
+_SECRET_WORDS = frozenset(("password", "passwords", "passwd", "pwd", "passcode", "passphrase", "pin", "otp", "secret",
+                           "secrets", "token", "tokens", "credential", "credentials", "cvc", "cvv", "2fa", "mfa",
+                           "apikey", "accesskey", "privatekey"))
+_SECRET_PAIRS = frozenset((("api", "key"), ("access", "key"), ("private", "key"), ("one", "time"),
+                           ("verification", "code"), ("security", "code"), ("2", "fa")))
+_ABOUT_WORDS = frozenset((
+    "name", "names", "description", "descriptions", "label", "labels", "note", "notes", "hint", "hints", "question",
+    "questions", "type", "types", "id", "ids", "count", "counts", "length", "expiry", "expiration", "expires", "expiring",
+    "strength", "policy", "policies", "requirement", "requirements", "reset", "manager", "size", "format", "usage",
+    "created", "updated", "scope", "scopes", "permission", "permissions"))
 _SELECTOR_ATTRIBUTE = re.compile(r"(?i)\b(?:name|id|type|for|class|placeholder|aria-label|data-[\w-]+)\s*[~|^$*]?=")
+
+
+def _asks_for_a_secret(labels):
+    """Whether a field's labels ask for a secret (_SECRET_WORDS, _SECRET_PAIRS) and none asks about one
+    (_ABOUT_WORDS), read word by word after a selector's own attribute names are taken out ("input[name=password]")."""
+    words = [w.lower() for label in labels for w in _LABEL_WORD.findall(_SELECTOR_ATTRIBUTE.sub(" ", label))]
+    pairs = set(zip(words, words[1:]))
+    return bool(_SECRET_WORDS.intersection(words) or _SECRET_PAIRS & pairs) and not _ABOUT_WORDS.intersection(words)
+
+
 # Where a tool names the field it types into, and where it holds what it types.
 _LABEL_KEYS = ("element", "name", "label", "selector", "field", "placeholder", "description", "target", "type",
                "aria_label", "ariaLabel", "title", "id", "locator")
@@ -1121,9 +1174,7 @@ def typed_secrets(name, args):
         if not isinstance(item, dict):
             return item
         labels = [str(item[key]) for key in _LABEL_KEYS if isinstance(item.get(key), str)]
-        read = [_SELECTOR_ATTRIBUTE.sub(" ", label) for label in labels]
-        secret = any(_SECRET_LABEL.search(label) for label in read) and not any(_ABOUT_LABEL.search(label)
-                                                                                 for label in read)
+        secret = _asks_for_a_secret(labels)
         out = dict(item)
         for key in _TYPED_KEYS:
             value = item.get(key)

@@ -11,9 +11,9 @@ invisible characters holds (mask._split_secrets). So:
    holds: in the run of characters it is in, or in a value whose name, on the same line just before it, holds one.
 
 Gate 9's readings, new names and shapes, and the four values it reads as no secret, are this branch's only other
-changes. With them switched off (gate9()), the reading as written is held to main's by 1. With the readings on and
-the four off, it hides all it did and more only where a new reading reads; with the four on too, it shows past that
-only the values they name.
+changes. With them switched off (gate9()), the reading as written is held to main's by 1. With them on (mask._read,
+which also hides all main's own readings hide), it hides all that did, but for the four values, and more only where a
+new reading reads.
 
 The texts: a generator of secrets, words and invisible characters that splits some secrets and not others, the write
 fuzz's planted texts and titles, and the old-row cases with what older kbs' masks left of them. Each text runs as
@@ -71,7 +71,6 @@ def _keyed(rules, fragments, drop=()):
 _NEW_READINGS = tuple(p for p, _ in head._WHOLE_VALUES) + (head.SHORT_PASSWORD,)
 _ALL_OFF = ([p for p in head.SECRET_PATTERNS if p is not head.ENCODED_PRIVATE_KEY],
             _keyed(head._TEXT_RULES, _NAME_OFF + _TOKENIZER_OFF, _NEW_READINGS), "named")
-_FOUR_OFF = (head.SECRET_PATTERNS, _keyed(head._TEXT_RULES, _TOKENIZER_OFF), "named")
 
 
 def _main_named(pattern, span_of, text, reading):
@@ -88,10 +87,10 @@ def _main_named(pattern, span_of, text, reading):
 
 
 class gate9:
-    """Within it, mask._run reads as with gate 9's readings off ("all") or the four values it reads as no secret off
-    ("four"): its rules to pass to _run, and the module's own patterns swapped."""
+    """Within it, mask._run reads as main does, gate 9's readings and the four values it reads as no secret off: its
+    rules to pass to _run, and the module's own patterns swapped."""
 
-    def __init__(self, what):
+    def __init__(self, what="all"):
         self.what = what
 
     def __enter__(self):
@@ -106,7 +105,7 @@ class gate9:
         self.saved = {name: getattr(head, name) for name in swap}
         for name, value in swap.items():
             setattr(head, name, value)
-        return _ALL_OFF if self.what == "all" else _FOUR_OFF
+        return _ALL_OFF
 
     def __exit__(self, *exc):
         for name, value in self.saved.items():
@@ -169,7 +168,7 @@ def no_secret_values(text):
 
 def as_written(text):
     """This branch's reading of the text as written alone: its passes with no view, until one changes nothing."""
-    return tracked(text, head._run)[0]
+    return tracked(text, head._read)[0]
 
 
 def tracked(text, step, rules=None):
@@ -397,11 +396,9 @@ def corpus(cases=CASES):
 class AgainstMainTest(unittest.TestCase):
     def check(self, where, text):
         ours, ours_shown = tracked(text, head._once)
-        written, written_shown = tracked(text, head._run)
+        written, written_shown = tracked(text, head._read)
         with gate9("all") as rules:
             base, base_shown = tracked(text, head._run, rules)
-        with gate9("four") as rules:
-            added, added_shown = tracked(text, head._run, rules)
         theirs = main.mask(text)
         problems = []
         # 1. The text as written reads as main reads it, with gate 9's readings off, but for the Authorization rule;
@@ -422,16 +419,14 @@ class AgainstMainTest(unittest.TestCase):
             if extra:
                 problems.append(f"read as written, hides what main shows at {runs(extra)[:3]}: {written!r} vs {theirs!r}")
         # 4. Gate 9's readings only add, where they read; the four values it reads as no secret are all it shows.
-        lost = sorted(added_shown - base_shown)
+        lost = sorted(written_shown - base_shown - no_secret_values(text))
         if lost:
-            problems.append(f"gate 9's readings show what they did not at {runs(lost)[:3]}: {added!r} vs {base!r}")
+            problems.append(f"shows what main's readings hide past the four values at {runs(lost)[:3]}: {written!r} vs "
+                            f"{base!r}")
         reads = new_readings(text)
-        far = [run for run in runs(base_shown - added_shown) if not reads.intersection(range(*run))]
+        far = [run for run in runs(base_shown - written_shown) if not reads.intersection(range(*run))]
         if far:
-            problems.append(f"gate 9's readings hide away from where they read at {far[:3]}: {added!r} vs {base!r}")
-        shown = sorted(written_shown - added_shown - no_secret_values(text))
-        if shown:
-            problems.append(f"shows past the four values at {runs(shown)[:3]}: {written!r} vs {added!r}")
+            problems.append(f"gate 9's readings hide away from where they read at {far[:3]}: {written!r} vs {base!r}")
         # 2. Nothing the reading as written hides shows, but an invisible character, which no secret is made of.
         leaked = sorted(i for i in ours_shown - written_shown if not INVISIBLE.match(text, i))
         if leaked:
