@@ -558,6 +558,22 @@ class NameValueTextTest(unittest.TestCase):
             with self.subTest(reader=reader):
                 self.assertNotIn(self.S, stored(reader, records))
 
+    def test_every_name_or_key_field_is_tried(self):
+        # Cloud's round 9: with both a name and a key field, the value was left whole.
+        for obj, masked_value in (({"name": "Cookie", "key": "Cookie", "value": f"session={self.S}"}, True),
+                                  ({"name": "colour", "key": "password", "value": "Tr0ub4dor-Zk9q"}, True),
+                                  ({"Name": "Authorization", "KEY": "x-trace", "Value": f"{self.S}9q"}, True),
+                                  ({"name": "colour", "key": "shade", "value": "teal"}, False),
+                                  ({"name": "colour", "key": "password", "value": "reset"}, True)):
+            for compact in (True, False):
+                text = json.dumps(obj, separators=(",", ":") if compact else None)
+                value = next(v for k, v in obj.items() if k.lower() == "value")
+                with self.subTest(text=text):
+                    self.assertEqual(value not in mask(text), masked_value)
+            with self.subTest(dict=obj):
+                out = mask_all(obj)
+                self.assertEqual(next(v for k, v in out.items() if k.lower() == "value") == "[masked]", masked_value)
+
     def test_fields_in_any_case_and_two_word_lists(self):
         self.assertEqual(mask_all({"Key": "api_key", "Value": "q8Zr2Lm7Xk4Vp9Nt3Bw6Hc1"}),
                          {"Key": "api_key", "Value": "[masked]"})
