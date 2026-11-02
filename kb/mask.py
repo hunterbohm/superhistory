@@ -311,22 +311,22 @@ COMMAND_FLAGS = (
     (r"redis-cli", r"\s-a[ \t]+['\"]?", False),
     # From here on, rows main's own lack (_MAIN_COMMANDS): a value that starts with "-", read without the characters a
     # reader does not see, is the command's next option ("mongosh -p --quiet" asks for the password).
-    (r"az\s+login|mongosh|mongo|mongodump|mongorestore|mongoexport|mongoimport|twine", r"\s-p[ \t]+['\"]?", False),
-    (r"keytool|jarsigner", r"\s-(?:src|dest|new)?(?:storepass|keypass)[ \t]+['\"]?", False),
+    (r"az\s+login|mongosh|mongo|mongodump|mongorestore|mongoexport|mongoimport|twine", r"\s-p[ \t]+(?:\\?['\"])?",
+     False),
+    (r"keytool|jarsigner", r"\s-(?:src|dest|new)?(?:storepass|keypass)[ \t]+(?:\\?['\"])?", False),
     # aws configure set's secret settings, and a .netrc line's password after its machine and login. A setting's name
     # is read once, its key word looked for ahead: read around the key word, a run of key words took time in the
     # square of its length.
     (r"aws\s+configure\s+set",
-     r"\s(?:[A-Za-z0-9_-]+\.)?(?=[A-Za-z0-9_]*?(?:secret|token|password))[A-Za-z0-9_]+[ \t]+['\"]?", False),
-    (r"(?:machine[ \t]+[^\s]+[ \t]+|default[ \t]+)login[ \t]+[^\s]+", r"\spassword[ \t]+['\"]?", False),
+     r"\s(?:[A-Za-z0-9_-]+\.)?(?=[A-Za-z0-9_]*?(?:secret|token|password))[A-Za-z0-9_]+[ \t]+(?:\\?['\"])?", False),
+    (r"(?:machine[ \t]+[^\s]+[ \t]+|default[ \t]+)login[ \t]+[^\s]+", r"\spassword[ \t]+(?:\\?['\"])?", False),
 )
 _MAIN_COMMANDS = 5  # main's own rows of COMMAND_FLAGS; the rest are this PR's
-# A command's line runs to a pipe, ";" or a line break, plain or escaped; for the rows main's own lack, not one inside
-# quotes, where a password may hold one ("az login -p 'Tr0ub4dor|Zk9q'"). Nothing follows the run, so it is read once.
+# A command's line runs to a pipe, ";" or a line break, plain or escaped (_LINE). For the rows main's own lack, it is
+# read as the shell reads it (_command_line_end), so a quoted password may hold a pipe ("az login -p 'Tr0ub4dor|Zk9q'").
 _LINE = r"(?:[^\n|;\\]|\\(?![nr]))*"
-_QUOTED_LINE = r"""(?:'[^'\n]*'|"(?:[^"\\\n]|\\(?![nr]).)*"|[^\n|;\\'"]|\\(?![nr])|['"])*"""
 _COMMANDS = [(re.compile(rf"(?i)(?:(?<![A-Za-z0-9_.-])|{_AFTER_ESCAPE})(?:{command})(?![A-Za-z0-9_.-])"
-                         + (_LINE if n < _MAIN_COMMANDS else _QUOTED_LINE)),
+                         + (_LINE if n < _MAIN_COMMANDS else "")),
               re.compile(rf"({flag})((?:{_CLOSE}[^ \t\n\r'\"])+)"), always)
              for n, (command, flag, always) in enumerate(COMMAND_FLAGS)]
 _ANY_COMMAND = re.compile(r"(?i)curl|mysql|mariadb|sshpass|login|redis-cli|mongo|twine|keytool|jarsigner|aws")
@@ -478,16 +478,56 @@ def _docker_login_edits(text):
     return [(m.end(1), m.end(), "[masked]") for m in _AUTH_FIELD.finditer(text) if _basic_credential(m.group(2))]
 
 
+def _command_line_end(text, start):
+    """Where a command's line from `start` ends, as the shell reads it: at a pipe or ";" outside quotes, and at a line
+    break, plain or escaped. A line whose first quote comes escaped ('\\"'), as JSON holds a command, is read unescaped:
+    its escaped quotes are the shell's quotes, an escaped backslash escapes the shell character after it, and a bare
+    '"' ends the JSON string. One pass over the line."""
+    i, n = start, len(text)
+    quote, escaped = "", None  # the open quote, and whether this line's quotes come escaped once
+    while i < n:
+        here, c = i, text[i]
+        if c == "\\":
+            following = text[i + 1:i + 2]
+            if following in ("n", "r"):
+                return here
+            if following in ("'", '"') and escaped is not False:
+                escaped, c, i = True, following, i + 2
+            else:  # the shell's own backslash, and the character it escapes
+                i += 2
+                if escaped and following == "\\":
+                    i += 2 if text[i:i + 1] == "\\" else 1
+                continue
+        else:
+            if c in "\n\r" or c == '"' and escaped:
+                return here
+            if c in "'\"" and escaped is None:
+                escaped = False
+            i += 1
+        if quote:
+            if c == quote:
+                quote = ""
+        elif c in "|;":
+            return here
+        elif c in "'\"":
+            quote = c
+    return n
+
+
 def _command_password_edits(text, line_pattern, flag, always, unseen=False):
     """Each password one row of COMMAND_FLAGS finds, as an edit that masks it. A command's line is read once from its
     first word, so a line that names the command again and again costs time in proportion to its length. With
-    `unseen`, as the rows main's own lack are read, a value is judged without the characters a reader does not see, so
-    a coloured "$STOREPASS" is a variable and a coloured "--quiet" the next option."""
-    edits = []
+    `unseen`, as the rows main's own lack are read, the line is read as the shell reads it (_command_line_end) and a
+    value is judged without the characters a reader does not see, so a coloured "$STOREPASS" is a variable and a
+    coloured "--quiet" the next option."""
+    edits, last = [], -1
     for line in line_pattern.finditer(text):
-        for m in flag.finditer(text, line.start(), line.end()):
+        if line.start() < last:
+            continue  # the command named again inside a line already read
+        last = _command_line_end(text, line.end()) if unseen else line.end()
+        for m in flag.finditer(text, line.start(), last):
             value = INVISIBLE.sub("", m.group(2)) if unseen else m.group(2)
-            if unseen and (value.startswith("-") or _ABOUT_A_PASSWORD.search(m.group(1).strip(" \t'\""))):
+            if unseen and (value.startswith("-") or _ABOUT_A_PASSWORD.search(m.group(1).strip(" \t'\"\\"))):
                 continue  # the next option, or a setting about a secret ("aws configure set token_expiration 3600")
             if always or _looks_secret("password", m.group(1), value):
                 edits.append((m.start(2), m.end(2), "[masked]"))
@@ -664,7 +704,9 @@ def _bare_credential(word):
     without a closing mark after it; or "". Judged by its shape alone, as a reader sees it, without the characters a
     reader does not see, so base64 that starts with "/" counts and "RFC7235-compli<SHY>ant" does not."""
     head = _CREDENTIAL_END.split(word, 1)[0].rstrip(".,;:!?)")
-    return head if _credential_shaped(INVISIBLE.sub("", head)) else ""
+    # As this view reads it, and as main's own does, without its own invisible characters only.
+    shaped = _credential_shaped(INVISIBLE.sub("", head)) or _credential_shaped(_MAIN_INVISIBLE_RUN.sub("", head))
+    return head if shaped else ""
 
 
 def _authorization_span(m):
@@ -1364,7 +1406,8 @@ def secret_in_id(text, names=()):
     name = names[0] if names else None
     if isinstance(name, str) and name and text.startswith(f"{name}:") and not text.startswith("//", len(name) + 1):
         return secret_in_id(name) or secret_in_id(text[len(name) + 1:], names[1:])
-    if any(_basic_credential(m.group(1)) for m in _BASIC_VALUE.finditer(INVISIBLE.sub("", text))):
+    if any(_basic_credential(m.group(1)) for view in (INVISIBLE.sub("", text), _MAIN_INVISIBLE_RUN.sub("", text))
+           for m in _BASIC_VALUE.finditer(view)):
         return True
     return _mask_once(text, _ID_RULES) != text
 
