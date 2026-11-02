@@ -104,8 +104,9 @@ one, and a secret's name split by them, whose value goes with it. In the view a 
 letter where one stood, as after a space, so one before a key glued to a word reads it (`budget<ZWSP>s<ZWSP>k-...`).
 A split token ends before any reading the text as written starts inside it, such as a link's scheme, a command or a
 secret's name, and a run of invisibles just before one stays a break. The reading as written never sees what the view
-masked, so the view can only add: where it does, the text is rebuilt from what either hid, a placeholder for each run,
-and the invisible characters inside a run go with it. A text whose invisible characters split no secret masks as on
+masked, so the view can only add. Each pass reports where every character of its result came from, and where the view
+adds, the characters of that result that came from the view's spans are hidden, a placeholder for each run of them but
+one beside a placeholder, which takes them in; the rest stays as the pass left it, invisibles and all. A text whose invisible characters split no secret masks as on
 main and keeps every one of them, an emoji's joiners too. tests/test_mask_against_main.py holds this to a frozen copy
 of main's mask.
 

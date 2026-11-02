@@ -5,7 +5,8 @@ invisible characters holds (mask._split_secrets). So:
 1. A text with no invisible character masks as on main, byte for byte, but for the credential-shaped token after a
    header-style Authorization with no scheme word, which this branch masks by design. The reading of the text as
    written differs from main's by that token alone, for any text.
-2. Every character main hides, this branch hides, but for an invisible character, which no secret is made of.
+2. Every character main hides, this branch hides, but for an invisible character, which no secret is made of. The
+   positions are exact: each pass reports where every character of its result came from.
 3. Every character this branch hides past its reading of the text as written sits by an invisible character the text
    holds: in the run of characters it is in, or in a value whose name, on the same line just before it, holds one.
 
@@ -43,12 +44,19 @@ main = _main()
 
 def as_written(text):
     """This branch's reading of the text as written alone: its passes with no view, until one changes nothing."""
+    return tracked(text, head._run)[0]
+
+
+def tracked(text, step):
+    """(passes of `step` over `text` until one changes nothing, the positions of `text` the result shows), each pass
+    reporting where every character of its result came from (mask._edit)."""
+    origin = list(range(len(text)))
     for _ in range(head.MAX_PASSES):
-        masked = head._pass(text, head._TEXT_RULES)
+        masked, came = step(text, head._TEXT_RULES, list(range(len(text))))
         if masked == text:
-            return text
-        text = masked
-    return text
+            break
+        text, origin = masked, [origin[c] if c >= 0 else -1 for c in came]
+    return text, {i for i in origin if i >= 0}
 
 
 def _fit(text, pieces, brackets):
@@ -216,8 +224,24 @@ class Generated:
         return "".join(part + r.choice((" ", " ", "\n", "|", "_", "/", ", ", "", r.choice(self.MARKS))) for part in parts)
 
 
+# Texts the reviews of this branch found it masked wrong, each a shape the generator may not reach.
+FOUND = ("sk-proj-" + "C3" * 12 + "\u200dplain_https://sam:walrus2secret9@example.com",
+         "ghp_" + "A1" * 12 + "_co\u00adoperate/curl -u sam:walrus2secret9 x",
+         "ghp_" + "A1" * 12 + "_co\u00adoperate/Proxy-Authorization: Token walrus2secret9",
+         "password=walrus2secret9 co\u00adoperate password=walrus2secret9|ghp_" + "B2" * 12,
+         "ghp_" + "A1" * 12 + "\u200bAuthorization: Token walrus2secret9",
+         "Authorization: Token [masked]|Authorization: Token walrus2secret9",
+         "Authorization: ISO-27001\fcompliant",
+         "ghp_" + "A1" * 12 + " family \U0001f468\u200d\U0001f469 ghp_" + "B2" * 12 + "[masked]",
+         "ghp_" + "A1" * 12 + " family \U0001f468\u200d\U0001f469 Authorization: Token walrus2secret9|ghp_" + "B2" * 12,
+         "-----BEGIN PRIVATE KEY----- foo -----END PRIVATE KEY----- foo -----BEGIN PRIVATE KEY----- foo -----END "
+         "PRIVATE KEY----- ghp_" + "A1" * 6 + "\u200b" + "B2" * 6)
+
+
 def corpus(cases=CASES):
     """(where it came from, the text) for every text the properties are checked on."""
+    for n, text in enumerate(FOUND):
+        yield f"found {n}", text
     for n in range(cases * 2):
         yield f"generated {n}", Generated(random.Random(f"diff:{n}")).text()
     for seq in range(cases):
@@ -237,29 +261,33 @@ def corpus(cases=CASES):
 
 class AgainstMainTest(unittest.TestCase):
     def check(self, where, text):
-        ours, theirs, written = head.mask(text), main.mask(text), as_written(text)
-        shown, hidden = reading(text, ours)
-        main_shown, main_hidden = reading(text, theirs)
-        written_shown, _ = reading(text, written)
-        allowed = authorization_tokens(text)
+        ours, ours_shown = tracked(text, head._once)
+        written, written_shown = tracked(text, head._run)
+        theirs = main.mask(text)
         problems = []
-        # 1. The text as written reads as main reads it, but for the Authorization token; with no invisible
-        # character, that reading is the mask.
-        if not INVISIBLE.search(text):
-            if ours != written:
-                problems.append(f"with no invisible character, mask() is not the reading as written: {ours!r}")
-            if not allowed and ours != theirs:
-                problems.append(f"with no invisible character, {ours!r} is not main's {theirs!r}")
-        _, written_hidden = reading(text, written)
-        extra = sorted((written_hidden & main_shown) - allowed)
-        if extra:
-            problems.append(f"read as written, hides what main shows at {runs(extra)[:3]}: {written!r} vs {theirs!r}")
-        # 2. Nothing main hides shows, but for an invisible character, which no secret is made of.
-        leaked = sorted(i for i in main_hidden & shown if not INVISIBLE.match(text, i))
+        # 1. The text as written reads as main reads it, but for the Authorization rule; with no invisible character,
+        # that reading is the mask.
+        if not INVISIBLE.search(text) and ours != written:
+            problems.append(f"with no invisible character, mask() is not the reading as written: {ours!r}")
+        if not re.search(r"(?i)authorization", text):
+            if written != theirs:
+                problems.append(f"read as written, {written!r} is not main's {theirs!r}")
+        else:  # where they may differ, nothing main surely hides shows, and only the Authorization rule adds, each
+            # output read against the text alike (reading)
+            main_shown, main_hidden = reading(text, theirs)
+            read_shown, read_hidden = reading(text, written)
+            shown_there = sorted(i for i in main_hidden & read_shown if not INVISIBLE.match(text, i))
+            if shown_there:
+                problems.append(f"read as written, shows what main hides at {runs(shown_there)[:3]}: {written!r}")
+            extra = sorted(read_hidden & main_shown - authorization_tokens(text))
+            if extra:
+                problems.append(f"read as written, hides what main shows at {runs(extra)[:3]}: {written!r} vs {theirs!r}")
+        # 2. Nothing the reading as written hides shows, but an invisible character, which no secret is made of.
+        leaked = sorted(i for i in ours_shown - written_shown if not INVISIBLE.match(text, i))
         if leaked:
-            problems.append(f"shows what main hides at {runs(leaked)[:3]}: {ours!r} vs main's {theirs!r}")
+            problems.append(f"shows what main's reading hides at {runs(leaked)[:3]}: {ours!r} vs {written!r}")
         # 3. What the view adds sits by an invisible character.
-        far = [run for run in runs(hidden & written_shown) if not by_an_invisible(text, *run)]
+        far = [run for run in runs(written_shown - ours_shown) if not by_an_invisible(text, *run)]
         if far:
             problems.append(f"hides away from any invisible character at {far[:3]}: {ours!r} vs {written!r}")
         return [f"{where}: {problem} (text {text!r})" for problem in problems]

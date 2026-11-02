@@ -511,11 +511,11 @@ class InvisibleTest(unittest.TestCase):
         from tests.test_mask_against_main import Generated
         split = "ghp_" + "A1" * 6 + "\u200b" + "B2" * 6
         for seed in range(400):
-            text = INVISIBLE.sub("", Generated(random.Random(f"tail:{seed}")).text()).rstrip()
-            if not text:
-                continue
-            with self.subTest(seed=seed):  # on a line of its own: a cookie's value, as main reads it, runs on to the end of one
-                self.assertEqual(mask(f"{text}\n{split}"), mask(text) + "\n[masked]", ascii(text))
+            # Ended by a word and then a blank line: a cookie's value reads on to the end of its line, and the rest of a
+            # key an older kb masked reads on through a line break, as main reads them.
+            text = INVISIBLE.sub("", Generated(random.Random(f"tail:{seed}")).text()).rstrip() + " end"
+            with self.subTest(seed=seed):
+                self.assertEqual(mask(f"{text}\n\n{split}"), mask(text) + "\n\n[masked]", ascii(text))
 
     def test_repeated_token_starts_between_invisible_characters_cost_time_in_proportion(self):
         import time
