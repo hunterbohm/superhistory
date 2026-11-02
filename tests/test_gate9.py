@@ -728,6 +728,44 @@ class ReviewFiveTest(unittest.TestCase):
                 db.close()
 
 
+class ReviewSixTest(unittest.TestCase):
+    """The sixth review's findings."""
+
+    def test_an_older_kbs_leftover_before_a_colour_code_is_masked_as_main_masks_it(self):
+        for code in ("\x1b[0m", "\x9b0m", "\\u001b[0m", "\\x1b[0m", "\\033[0m", "\x7f", "\x81"):
+            with self.subTest(code=code):
+                self.assertEqual(mask(f"[masked]\u200bTr0ub4dor-Zk9q{code}done"), f"[masked]{code}done")
+                self.assertEqual(mask(f"[masked]{code}README.md"), f"[masked]{code}README.md")
+        self.assertEqual(mask("[masked]\u200b_key: Tr0ub\x1b[0mdone"), "[masked]")
+
+    def test_a_split_name_after_a_command_value_keeps_its_value_masked(self):
+        for text in ("mongosh -p Tr0ub4dor-Zk9q\x1b[0mapi_k\u200bey: L4terSecret-Xq9",
+                     "mongosh -p Tr0ub4dor-Zk9qapi_k\u200bey: L4terSecret-Xq9",
+                     "aws configure set aws_secret_access_key Tr0ub4dor-Zk9qapi_k\u200bey: L4terSecret-Xq9",
+                     "keytool -storepass Tr0ub4dor-Zk9q\x1b[0mpass\u200bword=L4terSecret-Xq9"):
+            with self.subTest(text=text):
+                self.assertNotIn("L4terSecret", mask(text))
+                self.assertNotIn("Tr0ub4dor", mask(text))
+
+    def test_a_token_of_another_kind_keeps_an_identifier(self):
+        for label, value in (("Lexer token", "HTTPStatus200"), ("Figma token", "Base64Encoder2026"),
+                             ("Map pin", "Pier39Entrance2")):
+            with self.subTest(label=label):
+                self.assertEqual(typed_secrets("browser_type", {"element": label, "text": value}),
+                                 {"element": label, "text": value})
+        call = json.dumps([{"function": {"name": "browser_type",
+                                         "arguments": json.dumps({"element": "Lexer token", "text": "HTTPStatus200"})}}])
+        self.assertIn("HTTPStatus200", hermes._tool_calls(call)[0])
+
+    def test_an_aws_setting_about_a_secret_is_no_secret(self):
+        for text in ("aws configure set password_policy MinimumLength12", "aws configure set token_expiration 3600",
+                     "aws configure set web_identity_token_file /var/run/token", "aws configure set token_type Bearer2"):
+            with self.subTest(text=text):
+                self.assertEqual(mask(text), text)
+        self.assertEqual(mask("aws configure set aws_session_token Tr0ub4dor-Zk9qL4ter"),
+                         "aws configure set aws_session_token [masked]")
+
+
 # Commands as an argument list, each flag's value its own item: (the list, the items masked).
 ARGV = (
     (["login", "--password", PASSWORD], {2}), (["--token", SUB], {1}), (["--api-key", SUB, "--verbose"], {1}),
