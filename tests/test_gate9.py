@@ -1911,7 +1911,6 @@ class ReviewThirtyFourTest(unittest.TestCase):
         "new Uint8Array(16).fill(0x2a); out.fill('Zq7vRt2LmX9kQ3w')",
         'page.get_by_label("Email").fill( # the address\n "me@example.com"\n)',
         'await page.getByLabel(/Search/i).fill("pelican plan");',
-        'await page.getByLabel("Password").fill("sun" + "shine");',
     )
 
     def test_more_layouts_of_a_typed_password_are_masked(self):
@@ -1955,6 +1954,143 @@ class ReviewThirtyFiveTest(unittest.TestCase):
             for text in (code, json.dumps({"code": code})):
                 with self.subTest(text=text[:70]):
                     self.assertEqual(mask(text), text)
+
+
+class ReviewThirtySixTest(unittest.TestCase):
+    """The thirty-sixth review's findings, inside the shapes the coordinator froze: a comment holding a bracket or a
+    Windows path inside a typing call, Python's string prefix after a line break or tab escaped as JSON holds code, and
+    a page whose name is not "page"."""
+
+    TYPED = (
+        ("page.get_by_label(\"Password\").fill( # 1) Enter password\n \"Autofill('42')!\"\n)", "Autofill('42')!"),
+        ("page.get_by_label(\"Password\").fill( # see C:\\notes\n \"sunshine\"\n)", "sunshine"),
+        ("page.get_by_label(\"Password\").fill( # C:\\temp\\run (1)\n \"sunshine\"\n)", "sunshine"),
+        ("await page.getByLabel('Password').fill( // step 2) see C:\\notes\n 'sunshine'\n)", "sunshine"),
+        ("page.get_by_label(\"Password\").fill(\n\tr\"sunshine\"\n)", "sunshine"),
+        ("page.get_by_label(\"Password\").fill(\n    rb'sunshine'\n)", "sunshine"),
+        ("const loginPage = await browser.newPage();\nawait loginPage.type(\"#password\", \"sunshine\");", "sunshine"),
+        ("await login_page.fill(\"#password\", \"sunshine\")", "sunshine"),
+        ("await page2.type(\"#password\", \"sunshine\")", "sunshine"),
+        ("await adminFrame.fill(\"input[name=password]\", \"sunshine\")", "sunshine"),
+    )
+
+    def test_each_typed_password_is_masked_as_written_and_escaped_once_or_twice(self):
+        for code, secret in self.TYPED:
+            for text in (code, json.dumps(code), json.dumps({"code": code}), json.dumps(json.dumps(code))):
+                with self.subTest(text=text[:80]):
+                    self.assertNotIn(secret, mask(text))
+
+    def test_a_comment_keeps_the_code_after_it_read_and_ordinary_code_stays(self):
+        for code in ('page.get_by_label("Search").fill( # see C:\\notes\n "sunshine"\n)',
+                     'homePage.type("#search", "sunshine")', 'pageCount.fill("x")', 'Buffer.from("password").fill("x")',
+                     'subpages.fill("password")', '# see C:\\notes\nprint("sunshine")'):
+            for text in (code, json.dumps(code), json.dumps(json.dumps(code))):
+                with self.subTest(text=text[:80]):
+                    self.assertEqual(mask(text), text)
+
+
+class ReviewThirtySevenTest(unittest.TestCase):
+    """The thirty-seventh review's findings, inside the frozen shapes, which the coordinator's design for typing calls
+    masks by itself: a value in extra brackets, a triple-quoted value holding its own escaped delimiter, a comment
+    whose escaped quotes make a plain line read as escaped, and a page held in any variable."""
+
+    TYPED = (
+        ('page.get_by_label("Password").fill(("Autofill(\'42\')!"))', ("Autofill", "42")),
+        ('page.get_by_label("Password").fill("""sun\\"""shine""")', ("sun", "shine")),
+        ('page.get_by_label("Password").fill(\n # See C:\\notes and \\"example\\"\n "sunshine"\n)', ("sunshine",)),
+        ('const login = await browser.newPage();\nawait login.type("#password", "sunshine");', ("sunshine",)),
+    )
+
+    def test_each_is_masked_as_written_and_escaped_once_or_twice(self):
+        for code, parts in self.TYPED:
+            for text in (code, json.dumps(code), json.dumps({"code": code}), json.dumps(json.dumps(code))):
+                masked = mask(text)
+                for part in parts:
+                    with self.subTest(text=text[:70], part=part):
+                        self.assertNotIn(part, masked)
+
+
+class TypingCallDesignTest(unittest.TestCase):
+    """The coordinator's design for code that types: in a typing call whose field names a secret, the mask runs from
+    the value's first string through the call's last string that is not its field, and to the end of the line after a
+    quote that closes nothing. Its four costs, each pinned to the span and no more, and what must stay."""
+
+    COSTS = (
+        # a comment or code between the value and a later string argument
+        ('page.fill("#password", "sunshine", # note\n timeout="5s")', 'page.fill("#password", "[masked]")'),
+        # a later options string
+        ('page.type("#password", "sunshine", {delay: "50"})', 'page.type("#password", "[masked]"})'),
+        # a two-string call on an object that is no page, its first string naming a secret
+        ('field.type("password", "string")', 'field.type("password", "[masked]")'),
+        # the rest of the line after a quote that closes nothing, and nothing past that line
+        ('page.fill("#password", "sun"shine"); page.click("#login")\nawait done()',
+         'page.fill("#password", "[masked]\nawait done()'),
+        # literals joined with "+", read as one value: kept readable before the design, masked by it
+        ('await page.getByLabel("Password").fill("sun" + "shine");', 'await page.getByLabel("Password").fill("[masked]");'),
+        # a key before the value, as Selenium's send_keys takes them
+        ('driver.find_element(By.ID, "password").send_keys(Keys.HOME, "sunshine")',
+         'driver.find_element(By.ID, "password").send_keys(Keys.HOME, "[masked]")'),
+    )
+    STAY = (
+        'Buffer.from("password").fill("x")', 'new Array(4).fill("password").fill("x")',
+        'homePage.type("#search", "sunshine")', 'secrets.get("password").type("text/plain")', 'subpages.fill("password")',
+        'pageCount.fill("x")', 'page.fill("#password", password)', 'page.fill("#password", f"{pw}")',
+        'page.fill("#password", `${pw}`)', 'page.fill("#password", os.environ["PW"])',
+        'page.get_by_label("Password").fill(decrypt("vault:pw"))', '# see C:\\notes\nprint("sunshine")',
+    )
+
+    def test_each_cost_is_the_span_and_no_more_as_written_and_in_json(self):
+        for code, expected in self.COSTS:
+            with self.subTest(code=code[:60]):
+                self.assertEqual(mask(code), expected)
+            with self.subTest(code=code[:60], wrapped="string"):
+                self.assertEqual(json.loads(mask(json.dumps(code))), expected)
+            with self.subTest(code=code[:60], wrapped="object"):
+                self.assertEqual(json.loads(mask(json.dumps({"code": code, "cwd": "/srv"}))),
+                                 {"code": expected, "cwd": "/srv"})
+            with self.subTest(code=code[:60], wrapped="object twice"):
+                self.assertEqual(json.loads(json.loads(mask(json.dumps(json.dumps({"code": code, "cwd": "/srv"}))))),
+                                 {"code": expected, "cwd": "/srv"})
+
+    def test_what_must_stay_stays(self):
+        for code in self.STAY:
+            for text in (code, json.dumps(code), json.dumps({"code": code}), json.dumps(json.dumps(code))):
+                with self.subTest(text=text[:70]):
+                    self.assertEqual(mask(text), text)
+
+
+class ReviewThirtyEightTest(unittest.TestCase):
+    """The thirty-eighth review's findings: a value read as a selector where options follow it in a call whose locator
+    already names the field, and many code records in one JSON log costing time in the square of their count."""
+
+    TYPED = (
+        'page.getByLabel("Password").fill("sunshine", {timeout: 5000})',
+        'page.get_by_label("Password").fill("sunshine", timeout=5000)',
+        'driver.find_element(By.ID, "password").send_keys("sunshine", Keys.ENTER)',
+        'await page.locator("#password").fill("sunshine", { force: true });',
+    )
+
+    def test_a_value_followed_by_options_is_masked(self):
+        for code in self.TYPED:
+            for text in (code, json.dumps(code), json.dumps({"code": code}), json.dumps(json.dumps(code))):
+                with self.subTest(text=text[:70]):
+                    self.assertNotIn("sunshine", mask(text))
+
+    def test_a_selector_with_a_variable_and_options_stays(self):
+        for code in ('page.fill("#password", password, {timeout: 5000})', 'page.type("#password", pw, {delay: 20})'):
+            for text in (code, json.dumps({"code": code})):
+                with self.subTest(text=text[:70]):
+                    self.assertEqual(mask(text), text)
+
+    def test_many_code_records_in_one_log_cost_time_in_proportion(self):
+        import time
+        took = {}
+        for n in (1000, 4000):
+            text = (json.dumps({"code": 'page.getByLabel("Search").fill("release notes")'}) + "\n") * n
+            started = time.process_time()
+            self.assertEqual(mask(text), text)
+            took[n] = time.process_time() - started
+        self.assertLess(took[4000], 6 * max(took[1000], 0.05), took)
 
 
 # Commands as an argument list, each flag's value its own item: (the list, the items masked).

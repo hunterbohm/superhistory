@@ -261,6 +261,7 @@ def main(argv=None):
     print(f"{name}: {json.dumps(planned)}", file=sys.stderr)
     if args.count:
         return 0
+    gateway.require()
     common.log_held_out("locomo", args, name)
 
     def system(case):
