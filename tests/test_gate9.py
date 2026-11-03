@@ -5,6 +5,7 @@ import os
 import random
 import string
 import tempfile
+import time
 import unittest
 
 from kb import store
@@ -1290,6 +1291,26 @@ class ReviewNineteenTest(unittest.TestCase):
                      "mongosh --host $(mongosh -p Tr0ub4dor9 --eval 'db.host') --quiet"):
             with self.subTest(text=text):
                 self.assertNotIn("Tr0ub4dor9", mask(text))
+
+    def test_a_command_in_backticks_or_deep_inside_substitutions(self):
+        for text in ("mongosh --host `mongosh -p Tr0ub4dor9 --eval x` --quiet",
+                     "mongosh --host $(echo $(mongosh --eval \"$(cat q.js)\" -p Tr0ub4dor9)) --quiet",
+                     "mongosh " + "$(mongosh " * 63 + "-p Tr0ub4dor9" + ")" * 63):
+            with self.subTest(text=text[:60]):
+                self.assertNotIn("Tr0ub4dor9", mask(text))
+
+    def test_commands_in_substitutions_cost_time_in_proportion(self):
+        def took(text):
+            started = time.process_time()
+            mask(text)
+            return time.process_time() - started
+
+        for name, shape in (("backticks", lambda n: "mongosh " + "`mongosh " * n + "`" * n),
+                            ("command words", lambda n: "mongosh $(echo " + "mongosh " * n + ")")):
+            with self.subTest(shape=name):
+                self.assertLess(took(shape(8000)), 16 * max(took(shape(1000)), 0.01))
+        deep = lambda depth: "mongosh " + "$(mongosh " * depth + "x " * 40000 + ")" * depth
+        self.assertLess(took(deep(64)), 3 * max(took(deep(8)), 0.01), "a deeper substitution reads what it holds once")
 
     def test_an_escaped_double_quote_inside_single_quotes_decides_nothing(self):
         text = "mongosh --eval 'db.x.find({name:/\\\"/})' --host \"localhost\" -p Tr0ub4dor9"
