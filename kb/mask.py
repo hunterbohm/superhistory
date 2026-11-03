@@ -293,12 +293,12 @@ LINE_PASSWORD = re.compile(
 # holds them, DEL and the C1 controls, and Unicode's default ignorable code points: zero-width spaces and joiners,
 # direction marks and isolates, the soft hyphen, the byte order mark, variation selectors, fillers and tag characters.
 # A terminal's colour code, a whole CSI sequence ("ESC[" to its final byte, as grep --color and ripgrep write one
-# around a match), is one too, raw, as its eight-bit introducer or escaped as JSON, Python or C write it ("\u001b[",
-# "\x1b[", "\033["), but for ESC before a placeholder, which "[m" would start. A secret reads through them, and one
+# around a match), is one too, raw, as its eight-bit introducer or escaped as JSON, Python, C or Bash write it
+# ("\u001b[", "\x1b[", "\033[", "\E["), but for ESC before a placeholder, which "[m" would start. A secret reads through them, and one
 # before a secret parts it from the word before (_once), though a colour code ends in a letter. The vertical tab, the
 # form feed, the four separators from 0x1c and NEL are whitespace, as str.split reads them, and part words as a line
 # break does: pdftotext puts a form feed between pages.
-_CSI = r"(?:\x1b\[|\x9b|\\(?:u001[bB]|x1[bB]|033)\[|\\(?:u009[bB]|x9[bB]|233))(?!masked\])[0-?]*[ -/]*[@-~]"
+_CSI = r"(?:\x1b\[|\x9b|\\(?:u001[bB]|x1[bB]|033|[eE])\[|\\(?:u009[bB]|x9[bB]|233))(?!masked\])[0-?]*[ -/]*[@-~]"
 _FORMAT_CHARACTERS = (r"\u00ad\u034f\u061c\u115f\u1160\u17b4\u17b5\u180b-\u180f\u200b-\u200f\u202a-\u202e\u2060-\u206f"
                       r"\u3164\ufe00-\ufe0f\ufeff\uffa0\ufff0-\ufff8\U0001bca0-\U0001bca3\U0001d173-\U0001d17a"
                       r"\U000e0000-\U000e0fff")
@@ -373,12 +373,13 @@ COMMAND_FLAGS = (
      rf"\s{_quoted('-p')}[ \t]+{_FLAG_QUOTE}", False),
     (r"keytool|jarsigner", rf"\s{_quoted('-(?:src|dest|new)?(?:storepass|keypass)')}[ \t]+{_FLAG_QUOTE}", "dash"),
     # aws configure set's secret settings, and a .netrc line's password, its fields in any order but with a login
-    # among them, so "the machine room password sheet" is no .netrc line, and "default" only where a line or a quoted
-    # string starts, as a .netrc file writes it ("the default login page password field" is prose). A setting's name is read once, its key word
+    # among them, so "the machine room password sheet" is no .netrc line, "default" only where a line or a quoted
+    # string starts, and every keyword in small letters, as a .netrc file writes them ("Default login page password
+    # field" is prose); a value counts only where a field, a comment or the line's end follows it. A setting's name is read once, its key word
     # looked for ahead: read around the key word, a run of key words took time in the square of its length.
     (rf"aws{_FLAG_QUOTE}\s+configure\s+set", rf"\s{_quoted(_AWS_SETTING)}[ \t]+{_FLAG_QUOTE}", False),
-    (r"(?:machine[ \t]+[^\s]+|(?:^|(?<=\n)|(?<=\\n)|(?<=[\"']))[ \t]*default)"
-     r"(?=(?:[ \t]+(?:password|account)[ \t]+[^\s]+)*[ \t]+login[ \t]+[^\s])",
+    (r"(?-i:(?:machine[ \t]+[^\s]+|(?:^|(?<=\n)|(?<=\\n)|(?<=[\"']))[ \t]*default)"
+     r"(?=(?:[ \t]+(?:password|account)[ \t]+[^\s]+)*[ \t]+login[ \t]+[^\s]))",
      r"\spassword[ \t]+(?:\\?['\"])?", "field"),
 )
 _MAIN_COMMANDS = 5  # main's own rows of COMMAND_FLAGS; the rest are this PR's
@@ -428,21 +429,26 @@ _AUTH_FIELD = re.compile(rf"(?i)((?:(?<![A-Za-z0-9_.-])|{_AFTER_ESCAPE})auth{_QU
 # \w and \b; the group holding the secret; the least entropy it has; keywords one of which a text holds before the rule
 # is read; and what marks a secret as none, the rule's and gitleaks' own for every rule.
 # gitleaks ends many tokens only at a space, a quote, a backtick, ";" or a line break. kb ends them too at a mark no token
-# goes on through, as CSV's comma, a closing bracket, a sentence's full stop, Markdown's "**" and any backslash that
+# goes on through, as CSV's comma, a closing bracket, a sentence's full stop, Markdown's "**", "_" and "~~" and any
+# backslash that
 # starts an escape do ("dop_v1_...,active", "**dop_v1_...**", '"dop_v1_...\\"' in JSON in JSON), and lets
 # Azure's client secret, whose letters take a full stop, stand inside brackets, braces and Markdown's "**" too.
 _TOKEN_EDGES = (
-    (r"""(?=[\x60'"\s;]|\\[nr]|$)""", r"""(?=[\x60'"\s;,.:)\]}>|&!?<*\\]|$)"""),
-    (r"""(?:^|[\\'"\x60\s>=:(,)])""", r"""(?:^|[\\'"\x60\s>=:(,)\[{*])"""),
-    (r"""(?=$|[\\'"\x60\s<),])""", r"""(?=$|[\\'"\x60\s<),\]};|&*])"""),
+    (r"""(?=[\x60'"\s;]|\\[nr]|$)""", r"""(?=[\x60'"\s;,.:)\]}>|&!?<*\\_~]|$)"""),
+    (r"""(?:^|[\\'"\x60\s>=:(,)])""", r"""(?:^|[\\'"\x60\s>=:(,)\[{*_~])"""),
+    (r"""(?=$|[\\'"\x60\s<),])""", r"""(?=$|[\\'"\x60\s<),\]};|&*~_])"""),
+    (r"""(?=[\x60'"\s;]|\\[nr]|$|\b)""", r"""(?![A-Za-z0-9])"""),
+    (r"""(?=[^\w-]|\Z)""", r"""(?![A-Za-z0-9-])"""),
 )
 
 
 def _kb_edges(source):
-    """A gitleaks rule's source with the token's edges kb reads (_TOKEN_EDGES)."""
+    """A gitleaks rule's source with the token's edges kb reads (_TOKEN_EDGES), and a token that starts at a word
+    boundary allowed to start after "_" too, as Markdown's emphasis writes one ("_dapi..._")."""
     for theirs, ours in _TOKEN_EDGES:
         source = source.replace(theirs, ours)
-    return source
+    source = re.sub(r"^((?:\(\?i\))?)\\b", r"\1(?<![A-Za-z0-9])", source)
+    return re.sub(r"\\b(\)*)$", r"(?![A-Za-z0-9])\1", source)  # and end before "_" too ("_AKIA..._")
 
 
 _GITLEAKS = [(re.compile(_kb_edges(source), re.ASCII), group, entropy, keywords, [re.compile(a) for a in allowed],
@@ -669,6 +675,10 @@ def _netrc_password(value):
 _NETRC_LINE_END = re.compile(r"\r|\n|(?<!\S)#|\\[nr](?=[ \t]*(?:(?:machine|default|login|password|account|macdef)\b|[\"\\]|$))")
 
 
+# What follows a .netrc value on its line: another field, a comment, the line's end, or the end of the quoted string
+# that holds the file, so "the login page password field is empty" is prose.
+_NETRC_AFTER_VALUE = re.compile(r"[ \t]*(?:\Z|[\r\n#\"]|\\[nr\"]|(?:machine|default|login|password|account|macdef|port)"
+                                r"(?=[ \t\r\n\\\"]|\Z))")
 _NETRC_FIELD = re.compile(r"(?<!\S)(?:machine|login|password|account|macdef)[ \t]+\Z")
 
 
@@ -746,7 +756,7 @@ def _command_password_edits(text, line_pattern, flag, always, unseen=False):
 
             value = INVISIBLE.sub("", m.group(2)) if unseen else m.group(2)
             if always == "field":  # a .netrc line's password, which nothing expands: any value but a placeholder
-                if _netrc_password(value):
+                if _netrc_password(value) and _NETRC_AFTER_VALUE.match(text, m.end(2)):
                     edits.append((m.start(2), m.end(2), "[masked]"))
                 continue
             if unseen and (value.startswith("-") and (always != "dash" or value[1:].lower() in _JAVA_OPTIONS
