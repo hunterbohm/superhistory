@@ -549,7 +549,7 @@ def _gitleaks_edits(text):
 # Which mask() a stored row was masked with. A row of another version, or of none, is masked again when read and by
 # the next ingest. The patterns change it by themselves; bump REVISION when the code that applies them changes what
 # it masks.
-REVISION = 21
+REVISION = 22
 VERSION = f"r{REVISION}-" + hashlib.sha256(repr((REVISION, [p.pattern for p in SECRET_PATTERNS + PREFIXED_SECRETS], KEYED_SECRET.pattern,
                                 ENV_KEY_SECRET.pattern, JSON_SECRET.pattern, FLAG_SECRET.pattern, AUTH_SECRET.pattern,
                                 COMMAND_FLAGS, PASSWORD_NAME.pattern, sorted(PLACEHOLDERS), REFERENCE.pattern,
@@ -631,7 +631,13 @@ def _frame(joined, starts, found):
         first = lo + m.start() // 3 * 4
         line = bisect.bisect_left(starts, first)
         opens = decoded[m.start() - 1:m.start()] == b"\n" if m.start() else False
-        opens = opens or m.start() % 3 == 0 and (first == opened or line < len(starts) and starts[line] == first)
+        # where the encoded text starts: a line of the block, as a key under a heading's word starts, or past another
+        # stream's padding; but not where the wrapping of encoded text only happens to break, as a sentence that
+        # quotes a header shows, its words and spaces decoding before the header on its line
+        before = decoded[decoded.rfind(b"\n", 0, m.start()) + 1:m.start()]
+        continues = len(before) >= 8 and b" " in before and not _NOT_TEXT.search(before)
+        opens = opens or m.start() % 3 == 0 and not continues and (
+            first == opened or line < len(starts) and starts[line] == first)
         closes = decoded[m.end():m.end() + 1] in (b"\r", b"\n") or m.end() == len(decoded) and closed
         return (m.group(1), first) if opens and closes else None
     return None
@@ -1326,6 +1332,8 @@ def _token_like(run):
         return True
     if re.fullmatch(r"[A-Z]{2,}", run) and not re.search(r"[AEIOUY]", run):
         return True  # "BCDF": no word, as an acronym with a vowel ("API") is
+    if re.search(r"[+/]", run) or re.fullmatch(r"[0-9]{4,}", run):
+        return True  # "0123/567", "20261103": base64's own marks, or a run of digits no word or small number holds
     return (sum(bool(re.search(kind, run)) for kind in ("[A-Z]", "[a-z]", "[0-9+/]")) >= 2
             and not re.fullmatch(r"[A-Z][a-z]*[aeiouy][a-z]*", run))
 
