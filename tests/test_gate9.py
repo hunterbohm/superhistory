@@ -1655,6 +1655,37 @@ class ReviewTwentySevenTest(unittest.TestCase):
                 with self.subTest(text=form):
                     self.assertNotIn("Tr0ub4dor9", mask(form))
 
+
+class ReviewTwentyEightTest(unittest.TestCase):
+    """The twenty-eighth review's findings, under the coordinator's five-item bar."""
+
+    def test_bare_airtable_and_facebook_tokens(self):
+        airtable = "patAb3Cd5Ef7Gh9Ij." + "0123456789abcdef" * 4
+        facebook = "123456789012345|a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5"
+        facebook_url = "123456789012345%7Ca1b2c3d4e5f6g7h8i9j0k1l2m3n4o5"  # its "|" written as a link writes it
+        for secret in (airtable, facebook, facebook_url):
+            for text in (secret, f"{secret}\n", json.dumps({"stdout": secret})):
+                with self.subTest(text=text[:30]):
+                    self.assertNotIn(secret, mask(text))
+            for reader in READERS:
+                with self.subTest(reader=reader, secret=secret[:10]):
+                    self.assertNotIn(secret, stored(reader, tool_call(reader, "Bash", {"command": f"echo {secret}"})))
+
+    def test_prose_that_starts_a_string_with_a_netrc_keyword(self):
+        for text in ("default login page password field.", "machine learning login page password field.",
+                     "default login form password reset", "machine room login desk password sheet."):
+            for form in (text, json.dumps({"description": text})):
+                with self.subTest(text=form):
+                    self.assertEqual(mask(form), form)
+        for text in ("default login deploy password Tr0ub4dor9", "machine api.example.com login deploy password qjrxvnmwkzptbhfc",
+                     "machine api.example.com login me@example.com password sunshine9",
+                     # a host's password in small letters is a .netrc file's, not a sentence's
+                     "machine api.example.com login deploy password sunshine", "machine localhost login deploy password dragon",
+                     "machine 10.0.0.5 login ci password letmein", "machine git.example.com:8443 login ci password letmein"):
+            for form in (text, json.dumps({"content": text})):
+                with self.subTest(text=form):
+                    self.assertNotIn(text.rsplit(" ", 1)[1], mask(form))
+
 # Commands as an argument list, each flag's value its own item: (the list, the items masked).
 ARGV = (
     (["login", "--password", PASSWORD], {2}), (["--token", SUB], {1}), (["--api-key", SUB, "--verbose"], {1}),

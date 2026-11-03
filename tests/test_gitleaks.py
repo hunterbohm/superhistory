@@ -67,6 +67,25 @@ for _index, _rule in enumerate(gitleaks.RULES):
     setattr(RuleTest, "test_" + re.sub(r"\W", "_", _rule[0]), _rule_test(_index))
 
 
+# Slack's keywords are literal parts of every real token ("xoxe.xoxb-", "hooks.slack.com"); the sampler reads their "."
+# as any character, so its examples can lack them.
+_KEYWORDS_IN_EVERY_REAL_TOKEN = {"slack-config-access-token", "slack-webhook-url"}
+
+
+class BareTokenTest(unittest.TestCase):
+    """A token standing alone, as cat or printenv prints one, is masked with no provider's name beside it: every
+    rule is read where its own token is."""
+
+    def test_each_rules_token_alone(self):
+        for index, rule in enumerate(gitleaks.RULES):
+            if rule[0] in _KEYWORDS_IN_EVERY_REAL_TOKEN:
+                continue
+            for secret in examples(index, 2):
+                with self.subTest(rule=rule[0], secret=secret):
+                    self.assertNotIn(secret, mask(secret))
+                    self.assertNotIn(secret, mask(f"value: {secret}\n"))
+
+
 class TableTest(unittest.TestCase):
     def test_no_rule_matches_ordinary_text_and_the_mask_keeps_it(self):
         texts = ordinary.texts(3000, "gitleaks")
