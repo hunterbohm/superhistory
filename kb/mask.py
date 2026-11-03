@@ -528,7 +528,7 @@ def _gitleaks_edits(text):
 # Which mask() a stored row was masked with. A row of another version, or of none, is masked again when read and by
 # the next ingest. The patterns change it by themselves; bump REVISION when the code that applies them changes what
 # it masks.
-REVISION = 15
+REVISION = 16
 VERSION = hashlib.sha256(repr((REVISION, [p.pattern for p in SECRET_PATTERNS + PREFIXED_SECRETS], KEYED_SECRET.pattern,
                                 ENV_KEY_SECRET.pattern, JSON_SECRET.pattern, FLAG_SECRET.pattern, AUTH_SECRET.pattern,
                                 COMMAND_FLAGS, PASSWORD_NAME.pattern, sorted(PLACEHOLDERS), REFERENCE.pattern,
@@ -1153,21 +1153,29 @@ _KEY_BODY_START = r"(?:MI[E-P][A-Za-z0-9+/]|M[A-H][A-Za-z0-9+/][Cw]|b3Bl)"
 # Each alternative takes a character no other does: quotes are _QUOTE's alone, as a run of them read two ways each
 # took time exponential in its length.
 _BEFORE_BODY = rf"(?:\\{{1,7}}[nrt]|{_QUOTE}|<br\s*/?>|[\s#>+,;|*\]])"
+_LINE_OF_BASE64 = (rf"(?:{{}})[A-Za-z0-9+/=]{{{{36,}}}}[ \t\r]*(?:\n|[\\\"'<…]|\Z)")
 _REST_START = re.compile(rf"[A-Za-z0-9+/=]+[ \t\r]*(?=\n|\\(?:r\\)?n)|(?:{_BEFORE_BODY}|{INVISIBLE.pattern}){{0,64}}"
-                         rf"(?:{_KEY_BODY_START}|(?=[A-Za-z0-9+/=]*[A-Z])(?=[A-Za-z0-9+/=]*[a-z])"
-                         rf"(?=[A-Za-z0-9+/=]*[0-9+/]))[A-Za-z0-9+/=]{{36,}}[ \t\r]*(?:\n|[\\\"'<…]|\Z)")
+                         + _LINE_OF_BASE64.format(rf"{_KEY_BODY_START}|(?=[A-Za-z0-9+/=]*[A-Z])(?=[A-Za-z0-9+/=]*[a-z])"
+                                                  r"(?=[A-Za-z0-9+/=]*[0-9+/])"))
+# An item id is read more narrowly (secret_in_id): there a key's rest starts with a key's body start alone, as on main.
+_ID_REST_START = re.compile(rf"[A-Za-z0-9+/=]+[ \t\r]*(?=\n|\\(?:r\\)?n)|(?:{_BEFORE_BODY}){{0,64}}"
+                            + _LINE_OF_BASE64.format(_KEY_BODY_START))
 # A line break, plain or escaped, before a line of words, as "next steps", "tls.crt: none" or "- deploy it" are: past
-# a list's or a quote's marks, a word, then a space and the next word's letter. No line of base64 holds a space, and
-# one in JSON that runs on into the next field ('...8Vk=", "note": "next steps"') starts with base64, not a word. A
-# key's footer, which holds spaces, is no such line.
+# a list's or a quote's marks, a word (a letter, then small letters, as "tls.crt" or "don't" are), then a space and
+# the next word's letter. A line of base64 is no word, even with words after it on its line, as a snippet joins it
+# ("MIIEvQ... notes deploy"), or in JSON that runs on into the next field ('...8Vk=", "note": "next steps"'). A key's
+# footer, which holds spaces, is no such line.
 _WORDS_LINE = (r"(?:\r?\n|\\+(?:r\\+)?n)(?![ \t\"'#>*]*-----)[ \t\"'#>*-]*"
-               r"[A-Za-z][\w.'-]*[,.;:!?)]*[ \t]+[(\"']?[A-Za-z]")
+               r"[A-Za-z][a-z]{0,19}(?:[.'_-][a-z]{1,20})*[,.;:!?)]*[ \t]+[(\"']?[A-Za-z]")
 # Where a JSON string that holds a key's rest ends before the object's next field's name or its end, its quotes
 # escaped at any depth: the field after it ('", "note": "next steps"}') is no part of the key. A list of strings, one
 # line of the body each, goes on, as no field's name follows its comma.
 _NEXT_FIELD = r"\\*\"[ \t]*(?:\}|,[ \t]*\\*\"[\w.-]+\\*\"[ \t]*:)"
 _REST = re.compile(rf"(?:(?!{_KEY_END})(?!{_WORDS_LINE})(?!{_NEXT_FIELD}){_IN_PARAGRAPH})*(?:{_KEY_END})?")
 _KEY_END_TEXT = re.compile(_KEY_END)
+_PEM_HEADER = re.compile("-----BEGIN ")
+_LINE_END = re.compile(r"\r?\n|\\+(?:r\\+)?n|\Z")
+_RUN = re.compile(r"[A-Za-z0-9+/]{16,}")
 _ESCAPE = re.compile(r"\\+(?:[nrt]|u[0-9A-Fa-f]{4})")
 
 
@@ -1239,15 +1247,39 @@ def _public_material(data):
     return tags == [0x30, 0x03] and first[0] == 0x06
 
 
-def _key_rest_edits(text):
-    """The rest of a key after an older kb's placeholder (_REST_START, _REST) as an edit that removes it, unless its
+def _token_like(run):
+    """Whether a run of 16 base64 characters or more mixes two of capitals, small letters, and digits or "+" and "/",
+    as a token does. A word in one case does not; a camel-case name or a hash does, and is read as one, failing
+    closed."""
+    return sum(bool(re.search(kind, run)) for kind in ("[A-Z]", "[a-z]", "[0-9+/]")) >= 2
+
+
+def _token_tail(text):
+    """For a key's rest stopped early, at a line of words or a JSON object's next field, where it ends instead: past
+    the last line holding a token (_token_like) before where main's reading of it ended (its paragraph's end, the next
+    header, or its footer), so that only a tail of ordinary text stays. Read once for the text: each rest then costs a
+    lookup."""
+    tokens = [m.start() for m in _RUN.finditer(text) if _token_like(m.group())]
+    ends = sorted([m.start() for m in _BLANK_LINE.finditer(text)] + [m.start() for m in _PEM_HEADER.finditer(text)]
+                  + [m.end() for m in _KEY_END_TEXT.finditer(text)])
+
+    def through(at):
+        i = bisect.bisect_left(ends, at)
+        last = bisect.bisect_left(tokens, ends[i] if i < len(ends) else len(text)) - 1
+        return _LINE_END.search(text, tokens[last]).start() if last >= 0 and tokens[last] >= at else at
+    return through
+
+
+def _key_rest_edits(text, starts=_REST_START):
+    """The rest of a key after an older kb's placeholder (`starts`, _REST) as an edit that removes it, unless its
     base64 decodes whole as public material. Each placeholder outside the rest before it is read once, and each rest
     runs once to its end, so a paragraph of many costs time in proportion."""
-    edits, end = [], 0
+    edits, end, tail = [], 0, None
     for at in _PLACEHOLDER.finditer(text):
-        if at.start() < end or not _REST_START.match(text, at.end()):
+        if at.start() < end or not starts.match(text, at.end()):
             continue
-        end = _REST.match(text, at.end()).end()
+        tail = tail or _token_tail(text)
+        end = tail(_REST.match(text, at.end()).end())
         rest = text[at.end():end]
         data = None if _KEY_END_TEXT.search(rest) else _decoded(
             re.sub(r"[^A-Za-z0-9+/=]", "", _ESCAPE.sub("", INVISIBLE.sub("", rest))), 0, None)
@@ -1331,7 +1363,8 @@ def _run(text, rules, origin=None, named=None, fired=None):
         if edits and pattern is ENCODED_PRIVATE_KEY:
             note(pattern)
         text, origin = _edit(text, origin, edits)
-    for edits in (_docker_login_edits, _key_rest_edits, _headless_key_edits,
+    rests = (lambda text: _key_rest_edits(text, _ID_REST_START)) if reading == "plain" else _key_rest_edits
+    for edits in (_docker_login_edits, rests, _headless_key_edits,
                   lambda text: [(m.start(), m.end(), "[masked]") for m in _GLUED_RUN.finditer(text)]):
         text, origin = _edit(text, origin, edits(text))
     for pattern, main in zip(PREFIXED_SECRETS if reading != "main" else _MAIN_PREFIXED, _MAIN_PREFIXED):

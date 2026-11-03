@@ -100,6 +100,7 @@ class gate9:
             swap["_named"] = _main_named
             swap["_name_value_edits"] = lambda text: []
             swap["_encoded_key_spans"] = lambda text: []
+            swap["_key_rest_edits"] = main_key_rest
             links = [re.compile(p.pattern.replace("]*:)", "]+:)").replace("&])*%(?:25)?3A)", "&])+%(?:25)?3A)"),
                                 p.flags) for p in head.PREFIXED_SECRETS[1:3]]
             swap.update(PREFIXED_SECRETS=[head.PREFIXED_SECRETS[0], *links, *head.PREFIXED_SECRETS[3:]],
@@ -112,6 +113,39 @@ class gate9:
     def __exit__(self, *exc):
         for name, value in self.saved.items():
             setattr(head, name, value)
+
+
+def main_key_rest(text, starts=None):
+    """main's key-rest reading: base64 after a placeholder, through its footer or the end of its paragraph."""
+    return [(m.start(1), m.end(), "") for m in main._KEY_REST.finditer(text)]
+
+
+_BASE64_RUN = re.compile(r"(?<![A-Za-z0-9+/])(?=[A-Za-z0-9+/]*[A-Z])(?=[A-Za-z0-9+/]*[a-z])[A-Za-z0-9+/]{16,}={0,2}")
+
+
+def key_rest_changes(text):
+    """(where this branch's key-rest reading hides past main's, where main's hides what this branch's shows by design)
+    as positions. By design it shows ordinary text past a key's rest, a line of words or a JSON object's next field,
+    and base64 that decodes whole as public material; any other run of base64 main's hides, four characters of it or
+    more shown, stays a leak."""
+    _, shown = tracked(text, head._read)
+    saved, head._key_rest_edits = head._key_rest_edits, main_key_rest
+    try:
+        _, shown_by_main = tracked(text, head._read)
+    finally:
+        head._key_rest_edits = saved
+    public = set()
+    for block in head._WRAPPED_BASE64.finditer(text):
+        data = re.sub(r"[^A-Za-z0-9+/=]", "", head._ESCAPE.sub("", block.group()))
+        decoded = head._decoded(data, 0, None)
+        if decoded and head._public_material(decoded):
+            public.update(range(block.start(), block.end()))
+    only_here = shown - shown_by_main
+    for m in _BASE64_RUN.finditer(text):  # four characters or more of one shown, past a flag's letter ("-pSecret")
+        seen = only_here.intersection(range(m.start(), m.end())) - public
+        if len(seen) >= 4:
+            only_here -= seen
+    return shown_by_main - shown, only_here
 
 
 def new_readings(text):
@@ -427,11 +461,12 @@ class AgainstMainTest(unittest.TestCase):
             if extra:
                 problems.append(f"read as written, hides what main shows at {runs(extra)[:3]}: {written!r} vs {theirs!r}")
         # 4. Gate 9's readings only add, where they read; the four values it reads as no secret are all it shows.
-        lost = sorted(written_shown - base_shown - no_secret_values(text))
+        hidden_more, shown_by_design = key_rest_changes(text)
+        lost = sorted(written_shown - base_shown - no_secret_values(text) - shown_by_design)
         if lost:
             problems.append(f"shows what main's readings hide past the four values at {runs(lost)[:3]}: {written!r} vs "
                             f"{base!r}")
-        reads = new_readings(text)
+        reads = new_readings(text) | hidden_more
         far = [run for run in runs(base_shown - written_shown) if not reads.intersection(range(*run))]
         if far:
             problems.append(f"gate 9's readings hide away from where they read at {far[:3]}: {written!r} vs {base!r}")
