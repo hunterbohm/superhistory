@@ -1071,6 +1071,40 @@ class ReviewTenTest(unittest.TestCase):
                 self.assertIn(lines[-1], masked)
 
 
+class ReviewElevenTest(unittest.TestCase):
+    """#34's eleventh review: a PGP secret key block whose armour comment holds a control byte, as GnuPG exports one.
+    Between a key's header and its footer, whatever the bytes, is the key."""
+
+    @staticmethod
+    def block(comment):
+        return (b"-----BEGIN PGP PRIVATE KEY BLOCK-----\nComment: " + comment + b"\n\n" + b"Ab3d" * 40
+                + b"\n=Ab3d\n-----END PGP PRIVATE KEY BLOCK-----\n")
+
+    def test_a_block_with_any_byte_in_its_comment_is_masked_whole_to_its_footer(self):
+        import base64
+        import textwrap
+        for comment in (b"fixture\x7fcomment", b"fixture\x00", b"tab\tand\x1b[0m", b"\xff\xfe bytes", b"fixture caf\xc3\xa9"):
+            encoded = base64.b64encode(self.block(comment)).decode()
+            for width in (64, 76, len(encoded)):
+                block = "\n".join(textwrap.wrap(encoded, width))
+                for text in (block, "key.asc: " + block, "Exported:\n\n" + block + "\n\nThanks"):
+                    with self.subTest(comment=comment, width=width, text=text[:10]):
+                        masked = mask(text)
+                        for line in block.splitlines():
+                            self.assertNotIn(line, masked)
+                        self.assertEqual(masked.endswith("Thanks"), text.endswith("Thanks"))
+
+    def test_text_after_the_footer_in_the_same_block_stays(self):
+        import base64
+        import textwrap
+        after = b"Notes for the team: rotate this key every quarter and keep the passphrase offline.\n" * 3
+        data = self.block(b"fixture\x7fcomment") + after
+        encoded = base64.b64encode(data).decode()
+        lines = textwrap.wrap(encoded, 76)
+        masked = mask("\n".join(lines))
+        self.assertIn(lines[-1], masked)
+
+
 class HeadlessKeyTest(unittest.TestCase):
     """A key's body without its header, as an older kb's row-by-row remask leaves the chunk after the header's."""
     LINE = "MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7"
