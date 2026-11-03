@@ -1575,6 +1575,117 @@ class ReviewTwentyFiveTest(unittest.TestCase):
                 with self.subTest(text=form):
                     self.assertNotIn("Tr0ub4dor9", mask(form))
 
+
+class ReviewTwentySixTest(unittest.TestCase):
+    """The twenty-sixth review's findings, under the coordinator's five-item bar."""
+
+    def test_provider_tokens_in_markdown_emphasis_and_strikeout(self):
+        secret = "dapi" + "0123456789abcdef" * 2
+        for text in (f"_{secret}_", f"~~{secret}~~", f"__{secret}__", f"*{secret}*", f"see _{secret}_ there"):
+            with self.subTest(text=text):
+                self.assertNotIn(secret, mask(text))
+        for reader in READERS:
+            with self.subTest(reader=reader):
+                self.assertNotIn(secret, stored(reader, tool_call(reader, "mcp__notes__write", {"text": f"~~{secret}~~"})))
+
+    def test_a_provider_token_ends_at_any_mark_that_is_no_letter_or_digit(self):
+        secret = "dapi" + "0123456789abcdef" * 2
+        for after in ("/x", "=", "+", "%22", "@host", "#", "(", "-tail", "^", "$", "[0]", "'s"):
+            with self.subTest(after=after):
+                self.assertNotIn(secret, mask(secret + after))
+        self.assertEqual(mask("dapi" + "0123456789abcdef" * 2 + "0"), "dapi" + "0123456789abcdef" * 2 + "0",
+                         "a longer run of hex is no Databricks token")
+
+    def test_a_colour_code_as_bash_escapes_it(self):
+        token = "ghp_" + "A1b2C3d4E5f6" * 3
+        for text in (f"$'\\E[31m{token}'", f"$'\\E[01;31m\\E[K{token}\\E[m\\E[K'", f"\\e[1m{token}\\e[0m"):
+            with self.subTest(text=text):
+                self.assertNotIn(token, mask(text))
+        for reader in READERS:
+            with self.subTest(reader=reader):
+                self.assertNotIn(token, stored(reader, tool_call(reader, "Bash", {"command": f"echo $'\\E[31m{token}'"})))
+
+    def test_prose_about_login_pages_is_no_netrc_line(self):
+        for text in ("Default login page password field is empty.", "The machine learning login page password field is empty.",
+                     "machine room login desk password sheet in the drawer"):
+            for form in (text, json.dumps(text)):
+                with self.subTest(text=form):
+                    self.assertEqual(mask(form), form)
+        for text in ("machine api.example.com login deploy password Tr0ub4dor9",
+                     "machine api.example.com login deploy password Tr0ub4dor9 account ops",
+                     "machine api.example.com login deploy password Tr0ub4dor9 # rotated",
+                     "machine a.example.com login u password Tr0ub4dor9 machine b.example.com login v password Qz8rLm2x",
+                     "default login deploy password Tr0ub4dor9"):
+            for form in (text, json.dumps(text), json.dumps(text + "\n")):
+                with self.subTest(text=form):
+                    self.assertNotIn("Tr0ub4dor9", mask(form))
+
+
+class ReviewTwentySevenTest(unittest.TestCase):
+    """The twenty-seventh review's findings, under the coordinator's five-item bar."""
+
+    def test_a_provider_token_after_a_colour_code_that_follows_letters(self):
+        secret = "dapi" + "0123456789abcdef" * 2
+        for text in (f"prefix\x1b[31m{secret}", f"prefix\x1b[01;31m\x1b[K{secret}\x1b[m\x1b[K",
+                     f"key=\x1b[1m{secret}\x1b[0m", json.dumps(f"prefix\x1b[31m{secret}")):
+            with self.subTest(text=text):
+                self.assertNotIn(secret, mask(text))
+        for reader in READERS:
+            with self.subTest(reader=reader):
+                self.assertNotIn(secret, stored(reader, tool_call(reader, "Bash", {"command": f"echo prefix\x1b[31m{secret}"})))
+
+    def test_an_azure_client_secret_right_after_an_escape(self):
+        secret = "AbC7Q~a1B2c3D4e5F6g7H8i9J0k1L2m3N4p5Q6"
+        for text in (json.dumps({"stdout": "ready\n" + secret}), json.dumps({"stdout": "ready\t" + secret}),
+                     repr("ready\n" + secret), "ready%0A" + secret):
+            with self.subTest(text=text):
+                self.assertNotIn(secret, mask(text))
+
+    def test_a_netrc_machine_only_where_a_line_starts(self):
+        for text in ("Focus the machine learning login page password field.",
+                     "Open the machine room login page password field first."):
+            for form in (text, json.dumps(text)):
+                with self.subTest(text=form):
+                    self.assertEqual(mask(form), form)
+        for text in ("machine api.example.com login deploy password Tr0ub4dor9",
+                     "  machine api.example.com login deploy password Tr0ub4dor9",
+                     "$ cat ~/.netrc\nmachine api.example.com login deploy password Tr0ub4dor9",
+                     "machine a.example.com login u password Qz8rLm2xWq machine b.example.com login v password Tr0ub4dor9"):
+            for form in (text, json.dumps(text)):
+                with self.subTest(text=form):
+                    self.assertNotIn("Tr0ub4dor9", mask(form))
+
+
+class ReviewTwentyEightTest(unittest.TestCase):
+    """The twenty-eighth review's findings, under the coordinator's five-item bar."""
+
+    def test_bare_airtable_and_facebook_tokens(self):
+        airtable = "patAb3Cd5Ef7Gh9Ij." + "0123456789abcdef" * 4
+        facebook = "123456789012345|a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5"
+        facebook_url = "123456789012345%7Ca1b2c3d4e5f6g7h8i9j0k1l2m3n4o5"  # its "|" written as a link writes it
+        for secret in (airtable, facebook, facebook_url):
+            for text in (secret, f"{secret}\n", json.dumps({"stdout": secret})):
+                with self.subTest(text=text[:30]):
+                    self.assertNotIn(secret, mask(text))
+            for reader in READERS:
+                with self.subTest(reader=reader, secret=secret[:10]):
+                    self.assertNotIn(secret, stored(reader, tool_call(reader, "Bash", {"command": f"echo {secret}"})))
+
+    def test_prose_that_starts_a_string_with_a_netrc_keyword(self):
+        for text in ("default login page password field.", "machine learning login page password field.",
+                     "default login form password reset", "machine room login desk password sheet."):
+            for form in (text, json.dumps({"description": text})):
+                with self.subTest(text=form):
+                    self.assertEqual(mask(form), form)
+        for text in ("default login deploy password Tr0ub4dor9", "machine api.example.com login deploy password qjrxvnmwkzptbhfc",
+                     "machine api.example.com login me@example.com password sunshine9",
+                     # a host's password in small letters is a .netrc file's, not a sentence's
+                     "machine api.example.com login deploy password sunshine", "machine localhost login deploy password dragon",
+                     "machine 10.0.0.5 login ci password letmein", "machine git.example.com:8443 login ci password letmein"):
+            for form in (text, json.dumps({"content": text})):
+                with self.subTest(text=form):
+                    self.assertNotIn(text.rsplit(" ", 1)[1], mask(form))
+
 # Commands as an argument list, each flag's value its own item: (the list, the items masked).
 ARGV = (
     (["login", "--password", PASSWORD], {2}), (["--token", SUB], {1}), (["--api-key", SUB, "--verbose"], {1}),

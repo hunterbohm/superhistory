@@ -42,7 +42,8 @@ def places(secret, keywords):
         f"use {secret} for the deploy", f"curl 'https://api.example.com/v1?key={secret}'",
         f"key \x1b[1;31m{secret}\x1b[0m done", f"key {secret[:half]}\u200b{secret[half:]} done",
         f"{secret},active\n", f"tokens: [{secret}]", f"(see {secret}).", f"**{secret}**", repr(f"{secret}\tactive"),
-        json.dumps(json.dumps({"cmd": f'echo "{secret}"'}))))
+        json.dumps(json.dumps({"cmd": f'echo "{secret}"'})), f"_{secret}_", f"~~{secret}~~",
+        f"https://example.com/hook/{secret}", f"q={secret}&next=1", f"%22{secret}%22", f"#{secret}#"))
 
 
 class RuleTest(unittest.TestCase):
@@ -64,6 +65,25 @@ def _rule_test(index):
 
 for _index, _rule in enumerate(gitleaks.RULES):
     setattr(RuleTest, "test_" + re.sub(r"\W", "_", _rule[0]), _rule_test(_index))
+
+
+# Slack's keywords are literal parts of every real token ("xoxe.xoxb-", "hooks.slack.com"); the sampler reads their "."
+# as any character, so its examples can lack them.
+_KEYWORDS_IN_EVERY_REAL_TOKEN = {"slack-config-access-token", "slack-webhook-url"}
+
+
+class BareTokenTest(unittest.TestCase):
+    """A token standing alone, as cat or printenv prints one, is masked with no provider's name beside it: every
+    rule is read where its own token is."""
+
+    def test_each_rules_token_alone(self):
+        for index, rule in enumerate(gitleaks.RULES):
+            if rule[0] in _KEYWORDS_IN_EVERY_REAL_TOKEN:
+                continue
+            for secret in examples(index, 2):
+                with self.subTest(rule=rule[0], secret=secret):
+                    self.assertNotIn(secret, mask(secret))
+                    self.assertNotIn(secret, mask(f"value: {secret}\n"))
 
 
 class TableTest(unittest.TestCase):
