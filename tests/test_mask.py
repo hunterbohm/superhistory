@@ -743,6 +743,56 @@ class ReviewThreeTest(unittest.TestCase):
         self.assertEqual(mask(f"private_key: [masked]\n{line}\n"), "private_key: [masked]")
 
 
+class ReviewFourTest(unittest.TestCase):
+    """#34's fourth review: a key's fragment that decodes to printable text after an older kb's placeholder, encoded
+    JSON before a one-word line after a password's placeholder, a long run of backslashes in the tail's reading, and a
+    character a reader does not see between an escaped line break's backslash and its "n"."""
+
+    def test_a_fragment_that_decodes_as_text_after_an_older_placeholder_stays_masked(self):
+        # an older kb's row: its placeholder came with the text
+        for text in ("[masked]\nMHcwIG1hZGUgdXAgcHJpdmF0ZSBzZWVkIDEyMzQ1\n",
+                     "notes\n[masked]\nMHcwIG1hZGUgdXAgcHJpdmF0ZSBzZWVkIDEyMzQ1\nnext steps\n"):
+            with self.subTest(text=text[:20]):
+                self.assertNotIn("MHcwIG1hZGUgdXAgcHJpdmF0ZSBzZWVkIDEyMzQ1", mask(text))
+
+    def test_encoded_json_after_a_passwords_placeholder_stays_before_any_line(self):
+        import base64
+        encoded = base64.b64encode(b'{"note":"next steps","enabled":true,"mode":"normal"}').decode()
+        for after in ("Done", "next steps", "ok", "2026-11-03"):
+            text = f"password: TestValue9!\n{encoded}\n{after}\n"
+            with self.subTest(after=after):
+                self.assertEqual(mask(text), f"password: [masked]\n{encoded}\n{after}\n")
+
+    def test_a_long_run_of_backslashes_after_a_keys_rest_costs_time_in_proportion(self):
+        import json
+        import time
+        took = {}
+        for n in (9, 12):
+            value = {"path": r"C:\tmp\file", "note": "\u200b"}
+            for _ in range(n):
+                value = json.dumps(value)
+            text = "[masked]\nMC4CAQAwBQYDK2VwBCIEIB8fZU0y2GY4kmBqqFAZvcDVa7p01PZM4AlhlsBc\n\n" + value
+            started = time.process_time()
+            self.assertEqual(mask(text), "[masked]\n\n" + value)
+            took[n] = time.process_time() - started
+        # each level doubles the backslashes: 12 levels are eight times the text of 9
+        self.assertLess(took[12], 16 * max(took[9], 0.05), took)
+
+    def test_an_invisible_character_inside_an_escaped_line_break(self):
+        import base64
+        import json
+        import textwrap
+        pem = (b"-----BEGIN PRIVATE KEY-----\n" + base64.b64encode(bytes.fromhex("302e020100300506032b657004220420")
+               + bytes(range(32))) + b"\n-----END PRIVATE KEY-----\n")
+        lines = textwrap.wrap(base64.b64encode(pem).decode(), 64)
+        text = json.dumps("\n".join(lines))
+        at = text.rfind("\\n") + 1
+        text = text[:at] + "\u200b" + text[at:]
+        masked = mask(text)
+        for line in lines:
+            self.assertNotIn(line[8:40], masked)
+
+
 class HeadlessKeyTest(unittest.TestCase):
     """A key's body without its header, as an older kb's row-by-row remask leaves the chunk after the header's."""
     LINE = "MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7"
