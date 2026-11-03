@@ -288,6 +288,36 @@ class PatternTest(SourceCase):
         release = self.build(self.commit(self.base_files()))
         self.assertTrue(release.check("patterns").ok)
 
+    GW = "cli" + "-gateway"
+    PORT = "83" + "17"
+    PROXY = "CLIPr" + "oxyAPI"
+    GATEWAY_SPELLINGS = [GW, "CLI" + "-Gateway", "cli" + "_gateway", "CLI" + "GATEWAY", PORT, PROXY, PROXY.lower(),
+                         "~/.config/" + GW + "/client.key", "$HOME/.config/" + GW, "${HOME}/.config/" + GW,
+                         "/home/someone/.config/" + GW, "/Users/someone/.config/" + GW,
+                         "$XDG_CONFIG_HOME/" + GW + "/client.key", "~/.config//cli" + "_gateway/client.key"]
+
+    def test_the_releases_own_forbidden_strings_hit_whatever_the_patterns_file_holds(self):
+        text = "".join("see %s here\n" % spelling for spelling in self.GATEWAY_SPELLINGS)
+        found = self.build(self.commit(self.base_files(**{"docs/a.md": text}))).check("patterns")
+        self.assertFalse(found.ok)
+        self.assertEqual([f.where for f in found.findings], ["docs/a.md:%d" % n for n in range(1, len(self.GATEWAY_SPELLINGS) + 1)])
+
+    def test_words_near_the_forbidden_ones_do_not_hit(self):
+        text = "an api gateway\nthe cli tool\nport 8318 and 18316\nclient.key alone\n"
+        found = self.build(self.commit(self.base_files(**{"docs/a.md": text}))).check("patterns")
+        self.assertTrue(found.ok, found.findings)
+
+    def test_the_forbidden_strings_hit_in_file_names_the_commit_message_and_the_notes(self):
+        release = self.build(self.commit(self.base_files(**{"docs/%s.md" % self.GW: "fine\n"})))
+        self.assertEqual([f.where for f in release.check("patterns").findings], ["docs/%s.md" % self.GW])
+        found = rs.check_patterns(release.repo, self.patterns, extra={"commit message": "uses " + self.PORT, "RELEASE_NOTES.md": self.PROXY + "\n"})
+        self.assertEqual(sorted(f.where for f in found.findings), ["RELEASE_NOTES.md:1", "commit message:1", "docs/%s.md" % self.GW])
+
+    def test_the_forbidden_strings_can_still_be_excepted_by_an_exact_entry(self):
+        score = "0.%s229747772217" % self.PORT
+        files = {"data.json": "[%s]\n" % score, EXCEPTIONS: tsv(("data.json", score, "a similarity score"))}
+        self.assertTrue(self.build(self.commit(self.base_files(**files))).check("patterns").ok)
+
     def test_a_symlink_target_is_checked(self):
         write(self.src, self.base_files())
         os.symlink("acmecorp.txt", self.src / "link")
