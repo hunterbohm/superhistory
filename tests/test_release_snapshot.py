@@ -1,4 +1,5 @@
 import contextlib
+import copy
 import io
 import os
 import re
@@ -362,6 +363,104 @@ class ArchiveTest(SourceCase):
         bare = {k: v for k, v in self.base_files().items() if k != "install.sh"}
         shutil.rmtree(str(self.out))
         self.assertFalse(self.build(self.commit(bare, remove=["install.sh"])).check("archive").ok)
+
+
+class ArchiveExactTest(SourceCase):
+    def setUp(self):
+        super().setUp()
+        write(self.src, self.base_files(**{"docs/a.md": "alpha\n", "docs/b.md": "bravo\n", "bin/run.sh": "#!/bin/sh\n"}))
+        os.chmod(self.src / "bin" / "run.sh", 0o755)
+        os.symlink("../docs/a.md", self.src / "bin" / "link")
+        git(self.src, "add", "-A")
+        git(self.src, "commit", "-q", "-m", "files")
+        self.release = self.build()
+        self.prefix = "widgetly-1.2.3/"
+
+    def tampered(self, change):
+        with tarfile.open(str(self.release.archive)) as tar:
+            members = [(m, tar.extractfile(m).read() if m.isfile() else None) for m in tar.getmembers()]
+        path = self.tmp / "tampered.tar.gz"
+        with tarfile.open(str(path), "w:gz") as out:
+            for info, data in change(members):
+                out.addfile(info, io.BytesIO(data) if data is not None else None)
+        return path
+
+    def edit(self, member, **fields):
+        def change(members):
+            result = []
+            for info, data in members:
+                if info.name == self.prefix + member:
+                    info = copy.copy(info)
+                    info.name = fields.get("name", info.name)
+                    info.mode = fields.get("mode", info.mode)
+                    if "data" in fields:
+                        data = fields["data"]
+                        info.size = len(data)
+                    if "type" in fields:
+                        info.type, info.linkname, data, info.size = fields["type"], fields.get("linkname", ""), None, 0
+                result.append((info, data))
+            return result
+        return change
+
+    def verdict(self, change):
+        return rs.check_archive(self.release.repo, self.tampered(change), self.prefix)
+
+    def test_the_archive_git_built_passes(self):
+        found = rs.check_archive(self.release.repo, self.release.archive, self.prefix)
+        self.assertTrue(found.ok, found.findings)
+
+    def test_a_file_swapped_for_another_of_the_same_count_fails(self):
+        found = self.verdict(self.edit("docs/b.md", name=self.prefix + "docs/c.md"))
+        self.assertFalse(found.ok)
+        text = "\n".join(f.where + " " + f.text for f in found.findings)
+        self.assertIn("docs/b.md", text)
+        self.assertIn("docs/c.md", text)
+
+    def test_a_file_with_other_contents_fails(self):
+        found = self.verdict(self.edit("docs/b.md", data=b"not bravo\n"))
+        self.assertFalse(found.ok)
+        self.assertIn("docs/b.md", "\n".join(f.where for f in found.findings))
+
+    def test_a_file_with_another_mode_fails(self):
+        for name, mode in (("bin/run.sh", 0o664), ("docs/a.md", 0o775), ("docs/a.md", 0o666)):
+            self.assertFalse(self.verdict(self.edit(name, mode=mode)).ok, (name, oct(mode)))
+
+    def test_a_link_turned_into_a_file_or_pointed_elsewhere_fails(self):
+        self.assertFalse(self.verdict(self.edit("bin/link", type=tarfile.SYMTYPE, linkname="../docs/b.md")).ok)
+
+        def as_file(members):
+            result = []
+            for info, data in members:
+                if info.name.endswith("bin/link"):
+                    info = tarfile.TarInfo(info.name)
+                    info.mode, data, info.size = 0o777, b"../docs/a.md", len(b"../docs/a.md")
+                result.append((info, data))
+            return result
+        self.assertFalse(self.verdict(as_file).ok)
+
+    def test_an_extra_missing_or_doubled_member_fails(self):
+        def extra(members):
+            info = tarfile.TarInfo(self.prefix + "extra.txt")
+            info.size = 1
+            return members + [(info, b"x")]
+        self.assertFalse(self.verdict(extra).ok)
+        self.assertFalse(self.verdict(lambda members: [m for m in members if not m[0].name.endswith("docs/b.md")]).ok)
+        self.assertFalse(self.verdict(lambda members: members + [m for m in members if m[0].name.endswith("docs/b.md")]).ok)
+
+    def test_a_member_outside_the_prefix_or_under_another_one_fails(self):
+        found = self.verdict(self.edit("docs/b.md", name="widgetly-9.9.9/docs/b.md"))
+        self.assertFalse(found.ok)
+        self.assertFalse(self.verdict(self.edit("docs/b.md", name="docs/b.md")).ok)
+
+    def test_a_missing_or_extra_folder_member_fails(self):
+        self.assertFalse(self.verdict(lambda members: [m for m in members if m[0].name != self.prefix + "docs"]).ok)
+
+        def extra(members):
+            info = tarfile.TarInfo(self.prefix + "nothing/")
+            info.type = tarfile.DIRTYPE
+            info.mode = 0o775
+            return members + [(info, None)]
+        self.assertFalse(self.verdict(extra).ok)
 
 
 class CommandTest(SourceCase):
