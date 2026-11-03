@@ -454,9 +454,12 @@ def _kb_edges(source):
     return re.sub(r"\\b(\)*)$", r"(?![A-Za-z0-9])\1", source)  # and end before "_" too ("_AKIA..._")
 
 
-_GITLEAKS = [(re.compile(_kb_edges(source), re.ASCII), group, entropy, keywords, [re.compile(a) for a in allowed],
-              stopwords)
-             for _, source, group, entropy, keywords, allowed, stopwords in gitleaks.RULES]
+# A keyword every token of a rule holds, for the rules whose own keywords are only the provider's name: a token alone,
+# as cat or printenv prints one, holds no name, so these rules are read where their own token's mark is too.
+_TOKEN_KEYWORDS = {"airtable-personnal-access-token": ("pat",), "facebook-access-token": ("|", "%")}
+_GITLEAKS = [(re.compile(_kb_edges(source), re.ASCII), group, entropy, keywords + _TOKEN_KEYWORDS.get(name, ()),
+              [re.compile(a) for a in allowed], stopwords)
+             for name, source, group, entropy, keywords, allowed, stopwords in gitleaks.RULES]
 _GITLEAKS_ALLOW = [re.compile(a) for a in gitleaks.ALLOW_REGEXES]
 # The same rules with no word boundary before them, for a token right after a letter where an invisible character stood.
 def _after_a_break(pattern):
@@ -691,6 +694,21 @@ _NETRC_AFTER_VALUE = re.compile(r"[ \t]*(?:\Z|[\r\n#\"]|\\[nr\"]|(?:machine|defa
 _NETRC_FIELD = re.compile(r"(?<!\S)(?:machine|login|password|account|macdef)[ \t]+\Z")
 
 
+_NETRC_LOGIN = re.compile(r"(?<!\S)login[ \t]+(\S+)")
+_NETRC_HOST = re.compile(r"[ \t]*machine[ \t]+(?:localhost|\S*[.:0-9])")
+
+
+def _netrc_prose(line, value):
+    """Whether a line that reads as a .netrc entry is a sentence: no host after "machine", and its login and its
+    password both short words in small letters ("default login page password field.", "machine learning login page
+    password field."), where a .netrc file names a host and a user and holds a password."""
+    if _NETRC_HOST.match(line):
+        return False
+    login = _NETRC_LOGIN.search(line)
+    return bool(login and re.fullmatch(r"[a-z]{1,12}", login.group(1))
+                and re.fullmatch(r"[a-z]{1,10}[.,;:!?]?", value))
+
+
 def _plain_line_end(text, start):
     """Where a .netrc line from `start` ends: at a line break, at a comment (a "#" that starts a word, but for a field's
     value, as "password #Tr0ub4dor9" holds one), or at an escaped line break before the next field or the text's end,
@@ -765,7 +783,8 @@ def _command_password_edits(text, line_pattern, flag, always, unseen=False):
 
             value = INVISIBLE.sub("", m.group(2)) if unseen else m.group(2)
             if always == "field":  # a .netrc line's password, which nothing expands: any value but a placeholder
-                if _netrc_password(value) and _NETRC_AFTER_VALUE.match(text, m.end(2)):
+                if _netrc_password(value) and _NETRC_AFTER_VALUE.match(text, m.end(2)) \
+                        and not _netrc_prose(text[line.start():end], value):
                     edits.append((m.start(2), m.end(2), "[masked]"))
                 continue
             if unseen and (value.startswith("-") and (always != "dash" or value[1:].lower() in _JAVA_OPTIONS
