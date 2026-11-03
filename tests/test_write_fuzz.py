@@ -289,7 +289,7 @@ def shown(db, path):
     for (rid,) in db.execute("SELECT min(id) FROM docs GROUP BY source, source_id, kind"):
         printed = io.StringIO()
         with contextlib.redirect_stdout(printed), contextlib.suppress(cli.Fail, store.NeedsRebuild):
-            cli.cmd_get(paths, config, types.SimpleNamespace(id=rid, offset=None))
+            cli.cmd_get(paths, config, types.SimpleNamespace(id=rid, offset=0))
         out.append(printed.getvalue())
     for source, sid, title in db.execute("SELECT source, source_id, max(title) FROM docs WHERE kind='raw' "
                                          "GROUP BY source, source_id").fetchall():
