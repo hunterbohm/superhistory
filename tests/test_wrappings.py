@@ -451,6 +451,75 @@ class ReviewTwoTest(unittest.TestCase):
         self.assertLess(took(f"keytool -storepass {run}\"x"), 1.0)
 
 
+class ReviewThreeTest(unittest.TestCase):
+    """#37's third review: a JSON string whose text holds quotes of its own, a backspace beside "-" or ".", a shell's
+    -c script that holds quotes, and a colour code escaped five times or more."""
+
+    def test_the_mask_stays_in_a_string_that_holds_quotes(self):
+        for cmd in (f"echo '[\"x\"]'; keytool -file <(cat cert.pem) -storepass {PASSWORD}",
+                    f'echo "{{\\"a\\": 1}}"; keytool -file <(cat cert.pem) -storepass {PASSWORD}',
+                    f"jq '.[\"k\"], .v' x.json; keytool -file <(jq -r '.[\"cert\"]' c.json) -storepass {PASSWORD}"):
+            value = {"cmd": cmd, "cwd": "/srv/certs", "timeout": 30}
+            for depth in (1, 2, 3):
+                text = json.dumps(value)
+                for _ in range(depth - 1):
+                    text = json.dumps({"output": text})
+                with self.subTest(cmd=cmd[:12], depth=depth):
+                    masked = mask(text)
+                    self.assertNotIn(PASSWORD, masked)
+                    read = json.loads(masked)
+                    for _ in range(depth - 1):
+                        read = json.loads(read["output"])
+                    self.assertEqual(read["cwd"], "/srv/certs")
+                    self.assertEqual(read["timeout"], 30)
+                    self.assertTrue(read["cmd"].startswith(cmd.split(";")[0]), read["cmd"])
+
+    def test_a_backspace_beside_a_tokens_dash_or_dot(self):
+        tokens = ("xoxb-1234567890123-1234567890123-AbCdEfGhIjKlMnOpQrStUvWx",
+                  "glpat-Ab3dE6gH9jK2mN5pQ8sT", "sk_live_51Hq8ZtKx9Lm2Np4Qr6St8Uv")
+        for token in tokens:
+            for at in [i for i, c in enumerate(token) if c in "-._"] + [i + 1 for i, c in enumerate(token) if c in "-._"]:
+                split = token[:at] + "\b" + token[at:]
+                for text in (json.dumps(split), json.dumps(json.dumps(split))):
+                    with self.subTest(token=token[:6], at=at, depth=text.count("\\\\") > 0):
+                        self.assertNotIn(token[-8:], mask(text))
+        for text in (r"re.compile(r'\btoken\b')", json.dumps(r"grep -P '\bv1.2\b' notes.md"),
+                     json.dumps("split on \b-\b or \b.\b"), r"pattern = '-\b' and '\b.'"):
+            with self.subTest(text=text):
+                self.assertEqual(mask(text), text)
+
+    def test_a_shells_script_keeps_its_text_past_the_mask(self):
+        for script, kept in ((f"keytool -alias 'team cert' -storepass {PASSWORD}", "keytool -alias 'team cert' -storepass "),
+                             (f'keytool -alias "team cert" -storepass {PASSWORD} -v', 'keytool -alias "team cert" -storepass '),
+                             (f"cd '/srv/my certs' && mongosh -u admin -p {PASSWORD}", "cd '/srv/my certs' && mongosh -u admin -p ")):
+            items = ["bash", "-c", script]
+            with self.subTest(script=script[:14]):
+                masked = mask_all(items)
+                self.assertNotIn(PASSWORD, masked[2])
+                self.assertTrue(masked[2].startswith(kept), masked[2])
+                for text in (str(subprocess.CalledProcessError(1, items)), json.dumps(items), repr(items)):
+                    shown = mask(text)
+                    self.assertNotIn(PASSWORD, shown)
+                    self.assertIn("team cert" if "team" in script else "my certs", shown)
+
+    def test_a_colour_code_escaped_many_times(self):
+        coloured = "token \x1b[01;31m\x1b[K" + TOKEN + "\x1b[m\x1b[K"
+        for depth in range(1, 9):
+            text = coloured
+            for _ in range(depth):
+                text = json.dumps(text)
+            with self.subTest(depth=depth):
+                self.assertNotIn(TAIL, mask(text))
+
+    def test_a_colour_code_escaped_many_times_costs_time_in_proportion(self):
+        unit = "token \x1b[01;31m\x1b[K" + TOKEN + "\x1b[m\x1b[K"
+        for _ in range(7):
+            unit = json.dumps(unit)
+        small, large = took(unit * (4000 // len(unit) + 1)), took(unit * (16000 // len(unit) + 1))
+        self.assertLess(large, 6 * small + 0.3, (small, large))
+        self.assertLess(took("\\" * 16000 + "u001b[31m"), 1.0)
+
+
 class RevisionTest(unittest.TestCase):
     def test_stored_rows_are_masked_again(self):
         self.assertEqual(masking.REVISION, 11)
