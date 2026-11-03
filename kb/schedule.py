@@ -19,6 +19,7 @@ OLD_UNIT = f"{LEGACY_NAME.lower()}-kb-ingest"
 OLD_SERVICE = f"{OLD_UNIT}.service"
 OLD_TIMER = f"{OLD_UNIT}.timer"
 NOT_SCHEDULED = "Not scheduled."
+ABSENT = object()
 FALLBACK_PATH = "/usr/local/bin:/usr/bin:/bin"
 
 
@@ -84,6 +85,30 @@ def _every(minutes):
     return f"every {minutes} minute" + ("" if minutes == 1 else "s")
 
 
+def _old_note(result, job, stopped):
+    """The sentence about the job named before the rename, or "". `result` is ABSENT, None (it stopped) or why it did
+    not; `stopped` is what to say of a job that did."""
+    if result is ABSENT:
+        return ""
+    if result is None:
+        return stopped
+    return f"The old {job} is still running ({result}), and it was left in place. Fix that, then try again."
+
+
+def _join(*sentences):
+    return " ".join(s for s in sentences if s)
+
+
+def _with_old(message, old, new_job):
+    """Adds the state of the job named before the rename, whatever the new job's state is."""
+    if old == NOT_SCHEDULED:
+        return message
+    moves = f"It moves to {new_job} when you turn the schedule on again."
+    if message == NOT_SCHEDULED:
+        return f"{old} {moves}"
+    return f"{message} Also from the old name: {old} {moves}"
+
+
 def _plist_path(home, label=LABEL):
     return _home(home) / "Library" / "LaunchAgents" / f"{label}.plist"
 
@@ -111,9 +136,8 @@ def _mac_on(paths, config, kb_path, home):
     if code:
         raise ScheduleError(f"launchctl could not load {plist}: {out or 'exit ' + str(code)}")
     message = f"Scheduled ingest {_every(minutes)} with the launchd agent {LABEL}."
-    if _plist_path(home, OLD_LABEL).exists() and _mac_stop(OLD_LABEL, home):
-        message += f" Replaced the old launchd agent {OLD_LABEL}."
-    return message
+    job = f"launchd agent {OLD_LABEL}"
+    return _join(message, _old_note(_mac_retire(home), job, f"Replaced the old {job}."))
 
 
 def _mac_stop(label, home):
@@ -122,22 +146,32 @@ def _mac_stop(label, home):
     return unloaded or removed
 
 
+def _mac_retire(home):
+    """Stops the job named before the rename. Its file goes only once the job has stopped."""
+    plist = _plist_path(home, OLD_LABEL)
+    loaded = _run("launchctl", "print", _target(OLD_LABEL))[0] == 0
+    if not (loaded or plist.exists()):
+        return ABSENT
+    if loaded:
+        code, out = _run("launchctl", "bootout", _target(OLD_LABEL))
+        if code:
+            return out or f"exit {code}"
+    _remove(plist)
+    return None
+
+
 def _mac_off(home):
     stopped = _mac_stop(LABEL, home)
-    stopped_old = _mac_stop(OLD_LABEL, home)
-    if not (stopped or stopped_old):
+    old = _mac_retire(home)
+    if not stopped and old is ABSENT:
         return "Nothing was scheduled."
-    names = f"{LABEL} and {OLD_LABEL}" if stopped and stopped_old else LABEL if stopped else OLD_LABEL
-    return f"Stopped the launchd agent {names} and removed its file."
+    job = f"launchd agent {OLD_LABEL}"
+    return _join(f"Stopped the launchd agent {LABEL} and removed its file." if stopped else "",
+                 _old_note(old, job, f"Stopped the old {job} and removed its file."))
 
 
 def _mac_status(home):
-    message = _mac_job_status(home, LABEL)
-    if message == NOT_SCHEDULED:
-        old = _mac_job_status(home, OLD_LABEL)
-        if old != NOT_SCHEDULED:
-            return f"{old} It moves to {LABEL} when you turn the schedule on again."
-    return message
+    return _with_old(_mac_job_status(home, LABEL), _mac_job_status(home, OLD_LABEL), LABEL)
 
 
 def _mac_job_status(home, label):
@@ -199,10 +233,10 @@ def _linux_on(config, kb_path, home):
         code, out = _run("systemctl", "--user", *argv)
         if code:
             raise ScheduleError(f"systemctl --user {' '.join(argv)} failed: {out or 'exit ' + str(code)}")
-    message = f"Scheduled ingest {_every(minutes)} with the systemd timer {TIMER}. "
-    if (_unit_dir(home) / OLD_TIMER).exists() and _linux_stop(OLD_TIMER, OLD_SERVICE, home):
-        message += f"Replaced the old timer {OLD_TIMER}. "
-    return message + "A user timer stops at logout unless lingering is on (`loginctl enable-linger`)."
+    job = f"timer {OLD_TIMER}"
+    return _join(f"Scheduled ingest {_every(minutes)} with the systemd timer {TIMER}.",
+                 _old_note(_linux_retire(home), job, f"Replaced the old {job}."),
+                 "A user timer stops at logout unless lingering is on (`loginctl enable-linger`).")
 
 
 def _linux_stop(timer, service, home):
@@ -213,22 +247,34 @@ def _linux_stop(timer, service, home):
     return disabled or any(removed)
 
 
+def _linux_retire(home):
+    """Stops the timer named before the rename. Its files go only once the timer has stopped."""
+    unit_dir = _unit_dir(home)
+    active = _run("systemctl", "--user", "is-active", OLD_TIMER)[0] == 0
+    written = [unit_dir / name for name in (OLD_TIMER, OLD_SERVICE) if (unit_dir / name).exists()]
+    if not (active or written):
+        return ABSENT
+    code, out = _run("systemctl", "--user", "disable", "--now", OLD_TIMER)
+    if code and active:
+        return out or f"exit {code}"
+    for path in written:
+        _remove(path)
+    _run("systemctl", "--user", "daemon-reload")
+    return None
+
+
 def _linux_off(home):
     stopped = _linux_stop(TIMER, SERVICE, home)
-    stopped_old = _linux_stop(OLD_TIMER, OLD_SERVICE, home)
-    if not (stopped or stopped_old):
+    old = _linux_retire(home)
+    if not stopped and old is ABSENT:
         return "Nothing was scheduled."
-    names = f"{TIMER} and {OLD_TIMER}" if stopped and stopped_old else TIMER if stopped else OLD_TIMER
-    return f"Stopped the systemd timer {names} and removed its files."
+    job = f"timer {OLD_TIMER}"
+    return _join(f"Stopped the systemd timer {TIMER} and removed its files." if stopped else "",
+                 _old_note(old, job, f"Stopped the old {job} and removed its files."))
 
 
 def _linux_status(home):
-    message = _linux_job_status(home, TIMER)
-    if message == NOT_SCHEDULED:
-        old = _linux_job_status(home, OLD_TIMER)
-        if old != NOT_SCHEDULED:
-            return f"{old} It moves to {TIMER} when you turn the schedule on again."
-    return message
+    return _with_old(_linux_job_status(home, TIMER), _linux_job_status(home, OLD_TIMER), TIMER)
 
 
 def _linux_job_status(home, timer):

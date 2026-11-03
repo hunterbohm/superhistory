@@ -18,9 +18,9 @@ OLD_LABEL = f"{LEGACY_NAME.lower()}.kb.ingest"
 OLD_TIMER = f"{LEGACY_NAME.lower()}-kb-ingest.timer"
 OLD_SERVICE = f"{LEGACY_NAME.lower()}-kb-ingest.service"
 
-# The real tools fail when a job is loaded twice or unloaded while not loaded.
+# The real tools fail when a job is loaded twice or unloaded while not loaded. Each job name has its own state.
 FAKE_TOOL = """#!{python}
-import os, sys
+import os, plistlib, sys
 state = os.environ["FAKE_STATE"]
 tool = os.path.basename(sys.argv[0])
 args = [a for a in sys.argv[1:] if a != "--user"]
@@ -29,9 +29,15 @@ with open(os.path.join(state, "calls"), "a") as fh:
 if any(word in args for word in os.environ.get("FAKE_FAIL_ON", "").split()):
     sys.stderr.write("simulated failure\\n")
     sys.exit(1)
-flag = os.path.join(state, "loaded")
-loaded = os.path.exists(flag)
 verb = args[0]
+if tool == "launchctl" and verb == "bootstrap":
+    job = plistlib.load(open(args[2], "rb"))["Label"] if os.path.exists(args[2]) else ""
+elif tool == "launchctl":
+    job = args[1].rsplit("/", 1)[-1]
+else:
+    job = args[-1]
+flag = os.path.join(state, "loaded-" + job)
+loaded = os.path.exists(flag)
 if tool == "launchctl":
     if verb == "bootstrap":
         if loaded or not os.path.exists(args[2]):
@@ -384,6 +390,14 @@ class OldNameCase(unittest.TestCase):
         os.environ.pop("XDG_CONFIG_HOME", None)
         self.config = Config(schedule=Schedule(every_minutes=15))
 
+    def failing(self, matches, result):
+        """Runs the fake services, except that a call `matches` returns `result`."""
+        real = self.fake.__call__
+
+        def run(*argv):
+            return result if matches(argv) else real(*argv)
+        return mock.patch.object(schedule, "_run", run)
+
 
 class MacOldNameTest(OldNameCase):
     def old_plist(self):
@@ -420,6 +434,51 @@ class MacOldNameTest(OldNameCase):
                 self.on()
         self.assertIn(OLD_LABEL, self.fake.loaded)
         self.assertTrue(self.old_plist().exists())
+
+    def test_on_stops_a_loaded_old_job_whose_file_is_missing(self):
+        self.fake.loaded.add(OLD_LABEL)
+        message = self.on()
+        self.assertEqual(self.fake.loaded, {LABEL})
+        self.assertIn(OLD_LABEL, message)
+
+    def test_an_old_job_that_will_not_stop_keeps_its_file_and_the_new_job_stays(self):
+        self.turn_on_old()
+        with self.failing(lambda argv: argv[1] == "bootout" and argv[2].endswith(OLD_LABEL),
+                          (5, "simulated old stop failure")):
+            message = self.on()
+        self.assertEqual(self.fake.loaded, {OLD_LABEL, LABEL})
+        self.assertTrue(self.old_plist().exists())
+        self.assertTrue(self.new_plist().exists())
+        self.assertNotIn("Replaced", message)
+        self.assertIn(f"old launchd agent {OLD_LABEL} is still running", message)
+        self.assertIn("simulated old stop failure", message)
+
+    def test_off_keeps_the_file_of_an_old_job_that_will_not_stop(self):
+        self.turn_on_old()
+        with self.failing(lambda argv: argv[1] == "bootout" and argv[2].endswith(OLD_LABEL),
+                          (5, "simulated old stop failure")):
+            message = schedule.off(platform="darwin", home=self.home)
+        self.assertIn(OLD_LABEL, self.fake.loaded)
+        self.assertTrue(self.old_plist().exists())
+        self.assertIn(f"old launchd agent {OLD_LABEL} is still running", message)
+        self.assertNotIn("Nothing was scheduled", message)
+
+    def test_status_reports_a_running_old_job_after_the_new_one_fails_to_load(self):
+        self.turn_on_old()
+        with self.failing(lambda argv: argv[1] == "bootstrap", (5, "simulated failure")):
+            with self.assertRaises(schedule.ScheduleError):
+                self.on()
+        message = schedule.status(platform="darwin", home=self.home)
+        self.assertIn(f"launchd agent {OLD_LABEL} is loaded", message)
+        self.assertIn("exists but launchd has not loaded it", message)
+
+    def test_status_reports_a_running_old_job_beside_a_running_new_one(self):
+        self.turn_on_old()
+        self.new_plist().write_bytes(plistlib.dumps({"Label": LABEL}))
+        self.fake.loaded.add(LABEL)
+        message = schedule.status(platform="darwin", home=self.home)
+        self.assertIn(f"launchd agent {LABEL} is loaded", message)
+        self.assertIn(f"launchd agent {OLD_LABEL} is loaded", message)
 
     def test_without_an_old_job_on_says_nothing_about_one(self):
         self.assertNotIn(OLD_LABEL, self.on())
@@ -480,6 +539,50 @@ class LinuxOldNameTest(OldNameCase):
                 self.on()
         self.assertIn(OLD_TIMER, self.fake.loaded)
         self.assertTrue((self.unit_dir() / OLD_TIMER).exists())
+
+    def test_on_stops_an_active_old_timer_whose_file_is_missing(self):
+        self.fake.loaded.add(OLD_TIMER)
+        message = self.on()
+        self.assertEqual(self.fake.loaded, {TIMER})
+        self.assertIn(OLD_TIMER, message)
+
+    def test_an_old_timer_that_will_not_stop_keeps_its_files_and_the_new_timer_stays(self):
+        self.turn_on_old()
+        with self.failing(lambda argv: "disable" in argv and OLD_TIMER in argv, (5, "simulated old stop failure")):
+            message = self.on()
+        self.assertEqual(self.fake.loaded, {OLD_TIMER, TIMER})
+        self.assertTrue((self.unit_dir() / OLD_TIMER).exists())
+        self.assertTrue((self.unit_dir() / OLD_SERVICE).exists())
+        self.assertTrue((self.unit_dir() / TIMER).exists())
+        self.assertNotIn("Replaced", message)
+        self.assertIn(f"old timer {OLD_TIMER} is still running", message)
+        self.assertIn("simulated old stop failure", message)
+
+    def test_off_keeps_the_files_of_an_old_timer_that_will_not_stop(self):
+        self.turn_on_old()
+        with self.failing(lambda argv: "disable" in argv and OLD_TIMER in argv, (5, "simulated old stop failure")):
+            message = schedule.off(platform="linux", home=self.home)
+        self.assertIn(OLD_TIMER, self.fake.loaded)
+        self.assertTrue((self.unit_dir() / OLD_TIMER).exists())
+        self.assertIn(f"old timer {OLD_TIMER} is still running", message)
+        self.assertNotIn("Nothing was scheduled", message)
+
+    def test_status_reports_a_running_old_timer_after_the_new_one_fails_to_start(self):
+        self.turn_on_old()
+        with self.failing(lambda argv: "enable" in argv, (1, "simulated failure")):
+            with self.assertRaises(schedule.ScheduleError):
+                self.on()
+        message = schedule.status(platform="linux", home=self.home)
+        self.assertIn(f"systemd timer {OLD_TIMER} is active", message)
+        self.assertIn(f"{TIMER} is written but not active", message)
+
+    def test_status_reports_an_active_old_timer_beside_an_active_new_one(self):
+        self.turn_on_old()
+        (self.unit_dir() / TIMER).write_text("[Timer]\n")
+        self.fake.loaded.add(TIMER)
+        message = schedule.status(platform="linux", home=self.home)
+        self.assertIn(f"systemd timer {TIMER} is active", message)
+        self.assertIn(f"systemd timer {OLD_TIMER} is active", message)
 
     def test_without_an_old_timer_on_says_nothing_about_one(self):
         self.assertNotIn(OLD_TIMER, self.on())
