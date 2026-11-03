@@ -1,5 +1,6 @@
 import base64
 import bisect
+import contextlib
 import contextvars
 import hashlib
 import itertools
@@ -547,8 +548,8 @@ def _gitleaks_edits(text):
 # Which mask() a stored row was masked with. A row of another version, or of none, is masked again when read and by
 # the next ingest. The patterns change it by themselves; bump REVISION when the code that applies them changes what
 # it masks.
-REVISION = 20
-VERSION = hashlib.sha256(repr((REVISION, [p.pattern for p in SECRET_PATTERNS + PREFIXED_SECRETS], KEYED_SECRET.pattern,
+REVISION = 21
+VERSION = f"r{REVISION}-" + hashlib.sha256(repr((REVISION, [p.pattern for p in SECRET_PATTERNS + PREFIXED_SECRETS], KEYED_SECRET.pattern,
                                 ENV_KEY_SECRET.pattern, JSON_SECRET.pattern, FLAG_SECRET.pattern, AUTH_SECRET.pattern,
                                 COMMAND_FLAGS, PASSWORD_NAME.pattern, sorted(PLACEHOLDERS), REFERENCE.pattern,
                                 _AUTH_FIELD.pattern, INVISIBLE.pattern, _ENCODED_KEY.pattern,
@@ -719,8 +720,13 @@ def _encoded_key_spans(text):
     if INVISIBLE.search(text):
         kept, pieces, last = [], [], 0
         for m in _UNSEEN_ESCAPED.finditer(text):
-            pieces.append(text[last:m.start()])
-            kept += range(last, m.start())
+            # An escaped form takes only its own backslashes: one where a run of them is odd, two (an escape escaped
+            # again, as JSON in JSON writes one) where it is even; the rest escape each other, as a line break's does
+            # in "\\<ZWSP>n" written as JSON.
+            run = len(m.group()) - len(m.group().lstrip("\\"))
+            start = m.start() + (run - 1 if run % 2 else run - 2) if run else m.start()
+            pieces.append(text[last:start])
+            kept += range(last, start)
             last = m.end()
         pieces.append(text[last:])
         kept += range(last, len(text))
@@ -1206,12 +1212,12 @@ _ID_REST_START = re.compile(rf"[A-Za-z0-9+/=]+[ \t\r]*(?=\n|\\(?:r\\)?n)|(?:{_BE
 # the next word's letter. A line of base64 is no word, even with words after it on its line, as a snippet joins it
 # ("MIIEvQ... notes deploy"), or in JSON that runs on into the next field ('...8Vk=", "note": "next steps"'). A key's
 # footer, which holds spaces, is no such line.
-_WORDS_LINE = (r"(?:\r?\n|\\+(?:r\\+)?n)(?![ \t\"'#>*]*-----)[ \t\"'#>*-]*"
+_WORDS_LINE = (r"(?:\r?\n|(?<!\\)\\+(?:r\\+)?n)(?![ \t\"'#>*]*-----)[ \t\"'#>*-]*"
                r"[A-Za-z][a-z]{0,19}(?:[.'_-][a-z]{1,20})*[,.;:!?)]*[ \t]+[(\"']?[A-Za-z]")
 # Where a JSON string that holds a key's rest ends before the object's next field's name or its end, its quotes
 # escaped at any depth: the field after it ('", "note": "next steps"}') is no part of the key. A list of strings, one
 # line of the body each, goes on, as no field's name follows its comma.
-_NEXT_FIELD = r"\\*\"[ \t]*(?:\}|,[ \t]*\\*\"[\w.-]+\\*\"[ \t]*:)"
+_NEXT_FIELD = r"(?<!\\)\\*\"[ \t]*(?:\}|,[ \t]*\\*\"[\w.-]+\\*\"[ \t]*:)"
 _REST = re.compile(rf"(?:(?!{_KEY_END})(?!{_WORDS_LINE})(?!{_NEXT_FIELD}){_IN_PARAGRAPH})*(?:{_KEY_END})?")
 _KEY_END_TEXT = re.compile(_KEY_END)
 _PEM_HEADER = re.compile("-----BEGIN ")
@@ -1221,7 +1227,7 @@ _LINE_BREAK = re.compile(r"\r?\n|(?<!\\)\\+(?:r\\+)?n")
 _WORDS_LINE_AT = re.compile(_WORDS_LINE)
 _BASE64_CHARACTER = re.compile(r"[A-Za-z0-9+/]")
 _RUN = re.compile(r"[A-Za-z0-9+/]{2,}={1,2}|[A-Za-z0-9+/]{4,}")
-_ESCAPE = re.compile(r"\\+(?:[nrt]|u[0-9A-Fa-f]{4})")
+_ESCAPE = re.compile(r"(?<!\\)\\+(?:[nrt]|u[0-9A-Fa-f]{4})")
 
 
 def _headless_key_edits(text):
@@ -1239,14 +1245,24 @@ def _headless_key_edits(text):
 
 
 _PLACEHOLDER = re.compile(r"\[masked\]")
-# The placeholders in the text mask() was given, each by what follows it: an older kb's, after which base64 is a key's
-# rest unless it decodes as public material, as against one a reading of this same call put down (a password's), after
-# which only a key's body start begins one, as on main. None outside mask(): every placeholder is read as an older kb's.
-_GIVEN = contextvars.ContextVar("kb_mask_given_placeholders", default=None)
+# Whether mask() reads a stored row from a kb before keys were masked whole, which may hold an older kb's rest of a
+# key after a placeholder (stored_row): only there does base64 after a placeholder count as a key's rest unless it
+# decodes as public material. In text read fresh kb masks a key whole, so a key's rest starts only at a key's body
+# start, as on main, and base64 after a password's placeholder stays.
+_STORED_ROW = contextvars.ContextVar("kb_mask_stored_row", default=False)
 
 
-def _given_placeholders(text):
-    return frozenset(text[m.end():m.end() + 32] for m in _PLACEHOLDER.finditer(text))
+@contextlib.contextmanager
+def stored_row(*versions):
+    """Within it, mask() reads text as stored rows masked with the mask versions given (each row's `masked`): rows of
+    which any was masked before a version carried its revision ("r<revision>-...") are an older kb's."""
+    marker = _STORED_ROW.set(any(not (isinstance(v, str) and re.match(r"r\d+-", v)) for v in versions))
+    try:
+        yield
+    finally:
+        _STORED_ROW.reset(marker)
+
+
 _OPENSSH_PUBLIC = frozenset((b"ssh-rsa", b"ssh-dss", b"ssh-ed25519", b"ssh-ed448", b"ecdsa-sha2-nistp256",
                              b"ecdsa-sha2-nistp384", b"ecdsa-sha2-nistp521", b"sk-ssh-ed25519@openssh.com",
                              b"sk-ecdsa-sha2-nistp256@openssh.com"))
@@ -1307,6 +1323,8 @@ def _token_like(run):
     camel-case name or a hash does, and is read as one, failing closed, as main's reading hides the whole paragraph."""
     if run.endswith("="):
         return True
+    if re.fullmatch(r"[A-Z]{2,}", run) and not re.search(r"[AEIOUY]", run):
+        return True  # "BCDF": no word, as an acronym with a vowel ("API") is
     return (sum(bool(re.search(kind, run)) for kind in ("[A-Z]", "[a-z]", "[0-9+/]")) >= 2
             and not re.fullmatch(r"[A-Z][a-z]*[aeiouy][a-z]*", run))
 
@@ -1340,10 +1358,9 @@ def _key_rest_edits(text, starts=_REST_START):
     base64 decodes whole as public material. Each placeholder outside the core of the rest before it is read once, and
     each core runs once to its end, so a paragraph of many costs time in proportion."""
     spans, core, covered, tail = [], 0, 0, None
-    given = _GIVEN.get()
+    older = _STORED_ROW.get()
     for at in _PLACEHOLDER.finditer(text):
-        start = (_ID_REST_START if starts is _REST_START and given is not None
-                 and text[at.end():at.end() + 32] not in given else starts)
+        start = _ID_REST_START if starts is _REST_START and not older else starts
         if at.start() < core or not start.match(text, at.end()):
             continue
         core = _REST.match(text, at.end()).end()
@@ -1956,19 +1973,6 @@ def _passes_masked(text):
     return masked, [came[c] if c >= 0 else -1 for c in after], still
 
 
-def _given(read):
-    """`read`, a reading of a text given to kb, with the placeholders the text came with noted for it (_GIVEN)."""
-    def given(text):
-        marker = _GIVEN.set(_given_placeholders(text))
-        try:
-            return read(text)
-        finally:
-            _GIVEN.reset(marker)
-    given.__doc__, given.__name__ = read.__doc__, read.__name__
-    return given
-
-
-@_given
 def mask_with_origin(text):
     """mask(), and where each character of the result came from in `text`, -1 for a placeholder's (kb.mask._edit)."""
     original = text
@@ -1982,7 +1986,6 @@ def mask_with_origin(text):
             list(range(head)) + [-1] * 8 + list(range(len(original) - tail, len(original))))
 
 
-@_given
 def mask(text):
     """The text with every secret replaced by "[masked]". A placeholder can make the text next to it read as a secret
     or as a key's leftovers, so masking repeats until a pass changes nothing: masked text masks to itself, and text

@@ -17,7 +17,8 @@ from datetime import datetime, timezone
 
 from . import ids
 from .config import NAME_RE
-from .mask import ID_NAMES, KEY_WORD, VERSION, clean, holds_secret, mask, mask_all, mask_with_origin, masked_log, secret_in_id
+from .mask import (ID_NAMES, KEY_WORD, VERSION, clean, holds_secret, mask, mask_all, mask_with_origin, masked_log,
+                   secret_in_id, stored_row)
 
 CHUNK = 4000
 ITEM_KINDS = ("doc", "raw")
@@ -672,12 +673,15 @@ def _remask_item(db, source, source_id):
                     "AND kind=?", (source, source_id, kind))]
         if all(r["masked"] == VERSION for r in old):
             continue
-        new = _as_stored(old)
+        versions = [r["masked"] for r in old]  # masked again as the rows they are: an older kb's may hold a key's rest
+        with stored_row(*versions):
+            new = _as_stored(old)
         if new == old:
             db.execute("UPDATE docs SET masked=? WHERE source=? AND source_id=? AND kind=?",
                        (VERSION, source, source_id, kind))
         elif kind == "raw":
-            replace_rows(db, source, source_id, old, ("raw",))
+            with stored_row(*versions):
+                replace_rows(db, source, source_id, old, ("raw",))
             changed += len(old)
         else:
             for r in new:
@@ -688,10 +692,11 @@ def _remask_item(db, source, source_id):
     after = _recorded_hash(db, source, source_id)
     if after != before:
         _rehash_summaries(db, source, source_id, before, after)
-    for rid, ts, title, content, meta in db.execute(
-            "SELECT id, ts, title, content, metadata FROM docs WHERE source=? AND source_id=? AND kind NOT IN (?, ?) "
-            "AND masked IS NOT ?", (source, source_id, *ITEM_KINDS, VERSION)).fetchall():
-        new = (mask(ts), mask(title), mask(content), json.dumps(mask_all(json.loads(meta))))
+    for rid, ts, title, content, meta, version in db.execute(
+            "SELECT id, ts, title, content, metadata, masked FROM docs WHERE source=? AND source_id=? "
+            "AND kind NOT IN (?, ?) AND masked IS NOT ?", (source, source_id, *ITEM_KINDS, VERSION)).fetchall():
+        with stored_row(version):
+            new = (mask(ts), mask(title), mask(content), json.dumps(mask_all(json.loads(meta))))
         if new[:3] == (ts, title, content) and json.loads(new[3]) == json.loads(meta):
             db.execute("UPDATE docs SET masked=? WHERE id=?", (VERSION, rid))
         else:
