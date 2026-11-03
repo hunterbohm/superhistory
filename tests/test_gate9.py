@@ -1387,6 +1387,58 @@ class ReviewTwentyTest(unittest.TestCase):
                 self.assertIn("second", text)
                 self.assertNotIn(first[6:], text)
 
+
+class ReviewTwentyOneTest(unittest.TestCase):
+    """The twenty-first review's findings, under the coordinator's split bar."""
+
+    WEBHOOK_ID = "12345678-1234-1234-1234-123456789abc"
+    WEBHOOK = (f"https://a.webhook.office.com/webhookb2/{WEBHOOK_ID}@{WEBHOOK_ID}/IncomingWebhook/"
+               + "0123456789abcdef" * 2 + "/" + WEBHOOK_ID)
+
+    def test_a_colour_code_inside_a_link_in_every_form(self):
+        url = self.WEBHOOK
+        for form, c in FORMS.items():
+            for at in (1, 5, 12):
+                raw = url[:at] + c + "31m" + url[at:] + c + "0m"
+                for text in (raw, repr(raw), json.dumps(raw)) if form in ("raw", "eight-bit") else (raw,):
+                    with self.subTest(form=form, at=at, text=text[:40]):
+                        masked = mask(text)
+                        self.assertNotIn("0123456789abcdef", masked)
+                        self.assertNotIn("IncomingWebhook/", masked)
+
+    def test_an_apostrophe_or_a_quote_in_a_quoted_programs_path(self):
+        for text in ("\"/opt/team's tools/bin/keytool\" -storepass Tr0ub4dor9",
+                     "'/opt/the \"tools\"/bin/mongosh' -u admin -p Tr0ub4dor9",
+                     "\"C:\\Users\\dev's laptop\\jdk\\bin\\keytool.exe\" -list -storepass Tr0ub4dor9"):
+            for form in (text, json.dumps(text)):
+                with self.subTest(text=form):
+                    self.assertNotIn("Tr0ub4dor9", mask(form))
+
+    def test_a_quoted_password_flag(self):
+        for text in ('mongosh "-p" Tr0ub4dor9', "mongosh '-p' Tr0ub4dor9", 'mongosh -u admin "-p" "Tr0ub4dor9"',
+                     'keytool -list "-storepass" Tr0ub4dor9', "jarsigner '-keypass' Tr0ub4dor9 app.jar k",
+                     'az login -u me@x.com "-p" Tr0ub4dor9',
+                     'aws configure set "aws_secret_access_key" wJx9Rk2Lq7Zp4Mn8Bv3Cx6Tz1Yh5Gf0Ds2Ae7Kq'):
+            for form in (text, json.dumps(text)):
+                with self.subTest(text=form):
+                    masked = mask(form)
+                    self.assertNotIn("Tr0ub4dor9", masked)
+                    self.assertNotIn("wJx9Rk2Lq7Zp4Mn8", masked)
+        for text in ('mongosh "-p" --quiet', "mongosh --eval '\"-p\" is a flag'"):
+            with self.subTest(text=text):
+                self.assertEqual(mask(text), text)
+
+    def test_many_keys_masked_alike_cost_time_in_proportion(self):
+        def took(n):
+            r = random.Random(21)
+            keys = {"ghp_" + "".join(r.choices(string.ascii_letters + string.digits, k=36)): True for _ in range(n)}
+            started = time.process_time()
+            masked = mask_all(keys)
+            self.assertEqual(len(masked), n)
+            return time.process_time() - started
+
+        self.assertLess(took(8000), 16 * max(took(1000), 0.01))
+
 # Commands as an argument list, each flag's value its own item: (the list, the items masked).
 ARGV = (
     (["login", "--password", PASSWORD], {2}), (["--token", SUB], {1}), (["--api-key", SUB, "--verbose"], {1}),
