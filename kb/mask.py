@@ -1274,18 +1274,21 @@ def _key_rest_edits(text, starts=_REST_START):
     """The rest of a key after an older kb's placeholder (`starts`, _REST) as an edit that removes it, unless its
     base64 decodes whole as public material. Each placeholder outside the core of the rest before it is read once, and
     each core runs once to its end, so a paragraph of many costs time in proportion."""
-    spans, core, tail = [], 0, None
+    spans, core, covered, tail = [], 0, 0, None
     for at in _PLACEHOLDER.finditer(text):
         if at.start() < core or not starts.match(text, at.end()):
             continue
         core = _REST.match(text, at.end()).end()
         tail = tail or _token_tail(text)
         end = tail(core)  # a placeholder past the core, in the tail, still reads its own rest
+        if end <= covered:  # which ends inside one already masked
+            continue
         rest = text[at.end():end]
         data = None if _KEY_END_TEXT.search(rest) else _decoded(
             re.sub(r"[^A-Za-z0-9+/=]", "", _ESCAPE.sub("", INVISIBLE.sub("", rest))), 0, None)
         if not (data and _public_material(data)):
             spans.append((at.end(), end))
+            covered = max(covered, end)
     edits = []
     for start, end in spans:  # in order of their starts; one in a tail can run past it
         if edits and start <= edits[-1][1]:
