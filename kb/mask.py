@@ -1,7 +1,9 @@
 import base64
 import bisect
 import contextvars
+import functools
 import hashlib
+import json
 import logging
 import math
 import os
@@ -302,13 +304,17 @@ _CSI = r"(?:\x1b\[|\x9b|\\(?:u001[bB]|x1[bB]|033|[eE])\[|\\(?:u009[bB]|x9[bB]|23
 _FORMAT_CHARACTERS = (r"\u00ad\u034f\u061c\u115f\u1160\u17b4\u17b5\u180b-\u180f\u200b-\u200f\u202a-\u202e\u2060-\u206f"
                       r"\u3164\ufe00-\ufe0f\ufeff\uffa0\ufff0-\ufff8\U0001bca0-\U0001bca3\U0001d173-\U0001d17a"
                       r"\U000e0000-\U000e0fff")
-# The same characters escaped, as JSON ("\u200b", "\u007f") and Python's repr ("\x7f", "\xad", "\u2060") print them.
+# The same characters escaped, as JSON ("\u200b", "\u007f") and Python's repr ("\x7f", "\xad", "\u2060") print them; one
+# past U+FFFF as JSON writes it, a surrogate pair ("\udb40\udc01" for U+E0001); and any of them escaped twice, as a
+# JSON string inside JSON holds one ("\\u200b").
 _ESCAPED_INVISIBLE = (
-    r"\\u(?:000[0-8]|000[eEfF]|001[0-9a-bA-B]|007[fF]|008[0-46-9a-fA-F]|009[0-9a-fA-F]|00[aA][dD]|034[fF]|061[cC]"
+    r"\\?(?:\\u(?:000[0-8]|000[eEfF]|001[0-9a-bA-B]|007[fF]|008[0-46-9a-fA-F]|009[0-9a-fA-F]|00[aA][dD]|034[fF]|061[cC]"
     r"|115[fF]|1160|17[bB][45]|180[b-fB-F]|200[b-fB-F]|202[a-eA-E]|206[0-9a-fA-F]|3164|[fF][eE]0[0-9a-fA-F]"
     r"|[fF][eE][fF][fF]|[fF][fF][aA]0|[fF][fF][fF][0-8])"
     r"|\\x(?:0[0-8]|0[eEfF]|1[0-9a-bA-B]|7[fF]|8[0-46-9a-fA-F]|9[0-9a-fA-F]|[aA][dD])"
-    r"|\\U000(?:1[bB][cC][aA][0-3]|1[dD]17[3-9aA]|[eE]0[0-9a-fA-F]{3})")
+    r"|\\U000(?:1[bB][cC][aA][0-3]|1[dD]17[3-9aA]|[eE]0[0-9a-fA-F]{3})"
+    r"|\\u[dD][bB]4[0-3]\\{1,2}u[dD][c-fC-F][0-9a-fA-F]{2}|\\u[dD]82[fF]\\{1,2}u[dD][cC][aA][0-3]"
+    r"|\\u[dD]834\\{1,2}u[dD][dD]7[3-9aA])")
 INVISIBLE = re.compile(_CSI + rf"|{_ESCAPED_INVISIBLE}|[\x00-\x08\x0e-\x1b\x7f-\x84\x86-\x9f{_FORMAT_CHARACTERS}]")
 # Main's own: a lone control or format character, not a colour code, an escaped one, DEL or a C1 control
 # (_NEW_INVISIBLE).
@@ -319,7 +325,7 @@ _NEW_INVISIBLE = re.compile(_CSI + rf"|{_ESCAPED_INVISIBLE}|[\x7f-\x84\x86-\x9f]
 # character a reader does not see may stand anywhere among its letters, as one may in any value read through them.
 # A colour code is read whole, never its introducer alone, as ESC or 0x9B by themselves, so a letter after one is
 # read one way only and a run of colour codes costs time in proportion.
-_UNSEEN = (rf"(?:{_CSI}|(?!\\(?:u001[bB]|x1[bB]|u009[bB]|x9[bB]))(?:{_ESCAPED_INVISIBLE})"
+_UNSEEN = (rf"(?:{_CSI}|(?!\\{{1,2}}(?:u001[bB]|x1[bB]|u009[bB]|x9[bB]))(?:{_ESCAPED_INVISIBLE})"
            rf"|[\x00-\x08\x0e-\x1a\x7f-\x84\x86-\x9a\x9c-\x9f{_FORMAT_CHARACTERS}])*")
 _APP_GROUP = _UNSEEN.join(["[a-z]"] * 4)
 _APP_GROUPS = rf"({_UNSEEN}{_APP_GROUP}(?:{_UNSEEN} {_UNSEEN}{_APP_GROUP}){{3}}{_UNSEEN})"
@@ -524,7 +530,7 @@ def _gitleaks_edits(text):
 # Which mask() a stored row was masked with. A row of another version, or of none, is masked again when read and by
 # the next ingest. The patterns change it by themselves; bump REVISION when the code that applies them changes what
 # it masks.
-REVISION = 10
+REVISION = 11
 VERSION = hashlib.sha256(repr((REVISION, [p.pattern for p in SECRET_PATTERNS + PREFIXED_SECRETS], KEYED_SECRET.pattern,
                                 ENV_KEY_SECRET.pattern, JSON_SECRET.pattern, FLAG_SECRET.pattern, AUTH_SECRET.pattern,
                                 COMMAND_FLAGS, PASSWORD_NAME.pattern, sorted(PLACEHOLDERS), REFERENCE.pattern,
@@ -787,13 +793,121 @@ def _command_password_edits(text, line_pattern, flag, always, unseen=False):
                         and not _netrc_prose(text[line.start():end], value):
                     edits.append((m.start(2), m.end(2), "[masked]"))
                 continue
-            if unseen and (value.startswith("-") and (always != "dash" or value[1:].lower() in _JAVA_OPTIONS
-                                                      or value.startswith("-J"))
-                           or _ABOUT_A_PASSWORD.search(m.group(1).strip(" \t'\"\\"))):
-                continue  # the next option, or a setting about a secret ("aws configure set token_expiration 3600")
-            if always is True or _looks_secret("password", m.group(1), value):
+            if _flag_value_counts(m, always, unseen):
                 edits.append((m.start(2), m.end(2), "[masked]"))
     return edits
+
+
+def _flag_value_counts(m, always, unseen):
+    """Whether the value one row of COMMAND_FLAGS finds after its flag (`m`) is a password, but on a .netrc line."""
+    value = INVISIBLE.sub("", m.group(2)) if unseen else m.group(2)
+    if unseen and (value.startswith("-") and (always != "dash" or value[1:].lower() in _JAVA_OPTIONS
+                                              or value.startswith("-J"))
+                   or _ABOUT_A_PASSWORD.search(m.group(1).strip(" \t'\"\\"))):
+        return False  # the next option, or a setting about a secret ("aws configure set token_expiration 3600")
+    return always is True or _looks_secret("password", m.group(1), value)
+
+
+# A line break after the shell's continuation mark, a backslash, or a backtick (PowerShell) or a caret (cmd) after a
+# space, as written and escaped once or twice as JSON writes it: the command goes on past it.
+_CONTINUATION = re.compile(r"(?:\\|(?<=[ \t])[`^])\r?\n|(?:\\\\\\\\|(?<=[ \t])[`^])(?:\\\\r)?\\\\n"
+                           r"|(?:\\\\|(?<=[ \t])[`^])(?:\\r)?\\n")
+# What of a command's line kb reads plainly, as _command_line reads it, from where the command's name ends: words,
+# spaces, a redirection, a variable, quotes plain or escaped as JSON holds them, and a substitution with nothing nested.
+_SIMPLE_SUBSTITUTION = r"\$\(\([^()'\"`$\\]*\)\)|\$\([^()'\"`$\\]*\)|`[^`'\"$\\]*`|\$\{\w*\}|\$(?![('{\[])"
+_DOUBLE_QUOTED = rf"(?:[^\"\\$`]|\\[nrt]|{_SIMPLE_SUBSTITUTION})*"
+_PLAIN_ARGUMENTS = re.compile(rf"""(?:[^\s'"`$\\()|;&<>#]+|[ \t]+|\\t|(?<=\S)\#|[<>]+(?!\()|(?<=[<>])&|&(?=>)"""
+                              rf"""|{_SIMPLE_SUBSTITUTION}|'[^']*'|"(?![ \t]*(?:[,:}}\]]|\Z)){_DOUBLE_QUOTED}"|"""
+                              rf"""\\"{_DOUBLE_QUOTED}\\")*""")
+# Where what kb reads plainly ends the command: the text's or the line's end, a pipe, ";", "&", a bracket that closes,
+# a comment, or a JSON string's end.
+_JSON_END = r"""\\{0,3}"(?=[ \t]*(?:[,:}\]]|\Z))"""
+_PLAIN_STOP = re.compile(rf"\Z|[\r\n|;&)#]|\\+[nr]|{_JSON_END}")
+_SEGMENT_END = re.compile(rf"[\r\n]|\\+[nr]|{_JSON_END}")
+
+
+def _unread_flag_edits(text, line_pattern, flag, always, done):
+    """The fail-closed rule, for one of this PR's rows of COMMAND_FLAGS: where a command's line holds a part kb cannot
+    read plainly (_PLAIN_ARGUMENTS), as shell grammar it does not follow ("$'team\\'s cert'", "<(...)", an escaped quote
+    or a nested substitution escaped twice), the first password its flag finds there that no reading masked (`done`,
+    where its value starts) is masked from the value to the end of that line, or of the JSON string holding it: kb
+    cannot tell where a part it does not read ends, so a pipe or ";" there may be quoted."""
+    edits, covered = [], 0
+    for line in line_pattern.finditer(text):
+        if line.start() < covered:
+            continue
+        begin = _past_closing_quote(text, covered, line.start(), line.end())
+        plain = _PLAIN_ARGUMENTS.match(text, begin).end()
+        if _PLAIN_STOP.match(text, plain):
+            covered = plain
+            continue
+        stop = _SEGMENT_END.search(text, plain)
+        covered = end = stop.start() if stop else len(text)
+        for m in flag.finditer(text, max(begin, plain - 1), end):
+            if m.start(2) in done or text.startswith("[masked]", m.start(2)) or not _flag_value_counts(m, always, True):
+                continue
+            edits.append((m.start(2), len(text[:end].rstrip(" \t")), "[masked]"))
+            break
+    return edits
+
+
+@functools.lru_cache(maxsize=1024)
+def _listed_flag_values(items):
+    """_flag_values of a list of strings in text, which each of mask()'s passes reads again."""
+    return _flag_values(items)
+
+
+# A list of strings as JSON writes one, and one of its strings.
+_ARGUMENT_LIST = re.compile(r'\[\s*"(?:[^"\\\r\n]|\\.)*"(?:\s*,\s*"(?:[^"\\\r\n]|\\.)*")+\s*\]')
+_ARGUMENT = re.compile(r'"((?:[^"\\\r\n]|\\.)*)"')
+_NEVER = re.compile(r"(?!)")
+
+
+def _wrapping_edits(text):
+    """Each named command's password the readings before leave, as an edit that masks it: on a line the shell's
+    continuation mark carries on, read as one line (_CONTINUATION); in a line read without the characters a reader
+    does not see, as grep's colour around a program's name, its flag or its value; where the line holds a part kb
+    cannot read plainly (_unread_flag_edits); and in a list of a command's arguments that JSON writes in text, read as
+    mask_all reads the list (_flag_values)."""
+    if not _ANY_COMMAND.search(text):
+        return []
+    view = _CONTINUATION.sub(lambda m: " " * len(m.group()), text)
+    split = _Split(view, _INVISIBLE_RUN, _NEVER) if INVISIBLE.search(view) else None
+    read = split.view if split else view
+    spans = []
+    for n, (line, flag, always) in enumerate(_COMMANDS):
+        unread = n >= _MAIN_COMMANDS and always != "field"
+        found = _command_password_edits(read, line, flag, always, n >= _MAIN_COMMANDS) \
+            if read != text or unread else []
+        if unread:
+            more = _unread_flag_edits(read, line, flag, always, {start for start, _, _ in found})
+            found = found + more if read != text else more  # as written, the pass after reads the rest
+        spans += [(start, end) for start, end, _ in found if not read.startswith("[masked]", start)]
+    if split:  # a value with the colour codes around it, as the reading of the text as written masks one
+        spans = [split.raw(start, end) for start, end in spans]
+        for k, (start, end) in enumerate(spans):
+            while start - 1 in split.removed:
+                start -= 1
+            while end in split.removed:
+                end += 1
+            spans[k] = (start, end)
+    edits = [(start, end, "[masked]") for start, end in spans]
+    for m in _ARGUMENT_LIST.finditer(text):
+        if _ANY_COMMAND.search(m.group()):
+            try:
+                found = _listed_flag_values(tuple(json.loads(m.group())))
+            except ValueError:
+                continue
+            strings = list(_ARGUMENT.finditer(text, m.start(), m.end()))
+            edits += [(strings[i].start(1), strings[i].end(1), json.dumps(masked, ensure_ascii=False)[1:-1])
+                      for i, masked in found.items()]
+    merged = []
+    for start, end, insert in sorted(edits):
+        if merged and start < merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], end), "[masked]")
+        else:
+            merged.append((start, end, insert))
+    return merged
 
 
 # Where a name is part of an AWS resource's name, as "secretsmanager" and "secret" are in
@@ -1121,6 +1235,11 @@ def _run(text, rules, origin=None, named=None, fired=None):
         if pattern is not main and any(not main.fullmatch(text, m.start(), m.end()) for m in found):
             note(pattern)  # a link with no user name
         text, origin = _edit(text, origin, [(m.end(1), m.end(), "[masked]") for m in found])
+    if reading != "main":
+        edits = _wrapping_edits(text)
+        if edits:
+            note(edits)
+        text, origin = _edit(text, origin, edits)
     if _ANY_COMMAND.search(text):
         for n, command in enumerate(_COMMANDS[:_MAIN_COMMANDS] if reading == "main" else _COMMANDS):
             edits = _command_password_edits(text, *command, n >= _MAIN_COMMANDS)
@@ -1779,37 +1898,66 @@ def mask_all(value, key=None):
 
 
 def _masked_items(items, key):
-    """mask_all over a list's items, each read alone, and an item after a flag read after the command line before it
-    too, up to 64 items back: a command given as its arguments holds a flag and its value in two items, as
-    ["login", "--password", "..."] or ["mongosh", "-u", "admin", "-p", "..."] does. The items are joined as a shell
-    quotes them, so each keeps its bounds: a flag inside one ("note: -p release-2026") or an apostrophe ("team's
-    cert") reads as part of it. Where that line reads more of the item as a secret than the item alone does, the item,
-    one argument, is masked whole when what the line masks starts it, as a flag's value; when it starts inside it, as
-    a flag the item only quotes does, the item keeps its text up to the mask, as the line reads it."""
+    """mask_all over a list's items, each read alone, and the items a command given as its arguments holds a secret in
+    read with the command line before them (_flag_values)."""
     out = [mask_all(v, key) for v in items]
     if len(items) == 2:  # a name and its value, as a list of headers holds them
         out[1] = _pair_value(items[0], items[1], out[1], listed=True)
+    for i, masked in _flag_values(items).items():
+        out[i] = masked
+    return out
+
+
+def _flag_values(items):
+    """{index: the item masked} for each item of a list that the command line before it reads more of as a secret than
+    the item alone: an item after a flag, read after the line of up to 64 items before it, and the command named
+    before those, if any: a command given as its arguments holds a flag and its value in two items, as ["login",
+    "--password", "..."] or ["mongosh", "-u", "admin", "-p", "..."] does. The items are joined as a shell quotes them,
+    so each keeps its bounds: a flag inside one ("note: -p release-2026") or an apostrophe ("team's cert") reads as
+    part of it. Where that line reads more of the item as a secret than the item alone does, the item, one argument,
+    is masked whole when what the line masks starts it, as a flag's value; when it starts inside it, as a flag the item
+    only quotes does, the item keeps its text up to the mask, as the line reads it. An item that starts with a flag and
+    holds a space ("-storepass ...") holds a flag and its value in one: read unquoted after that line, it keeps its
+    flag."""
+    found, named = {}, None  # named: the last item that names a command, before the one read
     for i in range(1, len(items)):
         flag, item = items[i - 1], items[i]
-        if not (isinstance(flag, str) and isinstance(item, str) and flag.startswith("-") and len(flag) <= 64 and item):
+        if isinstance(flag, str) and _ANY_COMMAND.search(flag):
+            named = i - 1
+        if not (isinstance(item, str) and item):
             continue
-        start = i - 1
+        after_flag = isinstance(flag, str) and flag.startswith("-") and len(flag) <= 64
+        glued = item.startswith("-") and len(item.split(None, 1)) == 2
+        if not (after_flag or glued):
+            continue
+        start = i
         while start > 0 and i - start < 64 and isinstance(items[start - 1], str):
             start -= 1
-        line, quoted = " ".join(map(shlex.quote, items[start:i])), shlex.quote(item)
-        read, head = mask(f"{line} {quoted}"), mask(line) + " "
-        if read.endswith(" " + mask(quoted)):
-            continue
-        tail = read[len(head):] if read.startswith(head) else None
-        if tail is None or tail.lstrip("'\"").startswith("[masked]"):
-            out[i] = "[masked]"  # the flag's value, one argument, masked whole
-            continue
-        try:  # a flag inside the item ("note: -u feature:preview"): it keeps its text up to what the line masks
-            parts = shlex.split(tail)
-        except ValueError:
-            parts = []
-        out[i] = mask(parts[0]) if len(parts) == 1 else "[masked]"
-    return out
+        lead = list(items[start:i])
+        if named is not None and named < start and start > 0 and isinstance(items[start - 1], str):
+            lead = [v for v in items[max(0, named - 2):min(named + 3, start)] if isinstance(v, str)] + lead
+        line = " ".join(map(shlex.quote, lead))
+        head = mask(line) + " "
+        if after_flag:
+            quoted = shlex.quote(item)
+            read = mask(f"{line} {quoted}")
+            if not read.endswith(" " + mask(quoted)):
+                tail = read[len(head):] if read.startswith(head) else None
+                if tail is None or tail.lstrip("'\"").startswith("[masked]"):
+                    found[i] = "[masked]"  # the flag's value, one argument, masked whole
+                    continue
+                try:  # a flag inside the item ("note: -u feature:preview"): it keeps its text up to what the line masks
+                    parts = shlex.split(tail)
+                except ValueError:
+                    parts = []
+                found[i] = mask(parts[0]) if len(parts) == 1 else "[masked]"
+                continue
+        if glued:
+            read = mask(f"{line} {item}")
+            tail = read[len(head):] if read.startswith(head) else "[masked]"
+            if tail != mask(item):
+                found[i] = tail
+    return found
 
 
 # A tool that types into a page or fills a form's fields, as browser automation names one: Playwright's browser_type

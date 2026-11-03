@@ -186,7 +186,8 @@ Known limits:
   kept on purpose, since what follows "\n" in the same run may be the rest of the secret.
 - A secret is read through characters you cannot see, such as a zero-width space or a NUL, but not through a vertical
   tab, a form feed or the separators from 0x1c, which part words as a line break does. A key split by one of those is
-  not masked whole.
+  not masked whole. Such a character is read raw, escaped as JSON or Python writes it ("​", "\x7f", and the
+  surrogate pair JSON writes for one past U+FFFF, "󠀁"), and escaped twice, as JSON inside JSON holds it.
 - A private key written as base64 (as a Kubernetes secret holds one) is not masked.
 - Provider tokens kb does not know by itself are masked by rules taken from gitleaks (kb/gitleaks.py, gitleaks v8.30.1,
   MIT licence), where gitleaks finds one in text, as a word of its own. An Airtable or Facebook token is masked alone
@@ -237,6 +238,14 @@ Known limits:
   sources into a fresh one, each as far back as its oldest item in the old one. When a source no longer has some of
   the old one's items, such as sessions an agent has since deleted, the rebuild stops, keeps the old one and says how
   many each source would lose; `kb rebuild --accept-loss` replaces it anyway and loses them for good.
+- A command's password flag is read on a line the shell carries on with a continuation mark ("\" at a line's end,
+  or "`" or "^" after a space), through a colour code around the program's name, its flag or its value, and in a list
+  of the command's arguments, as an item's metadata or JSON in text holds one, however long. Where keytool,
+  jarsigner, az login, mongosh and its tools, twine or aws configure set has a password flag past shell grammar kb
+  does not follow ("$'...'", "<(...)", an extended glob, an escaped quote, a substitution nested or escaped twice),
+  kb masks from the value after that flag to the end of the line, or of the JSON string holding it, so the rest of
+  that line, a pipe to another command included, is masked with it. A newline escaped inside "$'...'" ends that
+  line early, and the password after it shows.
 - A YAML list of secrets under a secret's name (`tokens:` followed by `- value` lines) is masked only where an item
   holds a provider's token shape.
 
