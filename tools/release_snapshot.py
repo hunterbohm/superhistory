@@ -48,6 +48,7 @@ import dataclasses
 import gzip
 import hashlib
 import http.server
+import io
 import os
 import posixpath
 import re
@@ -580,7 +581,13 @@ def check_archive(release_repo, archive, prefix):
     def problem(where, text):
         problems.append(Finding(esc(where), text))
 
-    with tarfile.open(str(archive)) as tar:
+    try:
+        with open(str(archive), "rb") as fh:
+            packed = gzip.decompress(fh.read())
+    except (OSError, EOFError, ValueError) as exc:
+        problem(os.path.basename(str(archive)), "is not a clean gzip file: %s" % failure(exc))
+        return result("archive", problems, "", "the archive cannot be read", problems)
+    with tarfile.open(fileobj=io.BytesIO(packed)) as tar:
         for member in tar:
             name = member.name.rstrip("/")
             if name in seen:
@@ -611,6 +618,8 @@ def check_archive(release_repo, archive, prefix):
                 problem(name, "has contents that differ from the tree's")
             elif member.mode != ARCHIVE_MODES[mode]:
                 problem(name, "has mode %s, the tree's %s is written as %s" % (oct(member.mode), mode, oct(ARCHIVE_MODES[mode])))
+        if packed[tar.offset:].strip(b"\0"):
+            problem(os.path.basename(str(archive)), "holds bytes after the end of the tar stream")
     for name in sorted((set(wanted) | folders) - seen):
         problem(name, "is in the tree but missing from the archive")
     if prefix + "install.sh" not in wanted:
@@ -886,14 +895,14 @@ def fingerprint(release):
             "archive": sha256_of(release.archive), "notes": sha256_of(release.notes)}
 
 
-def suites_check(release, suites):
+def watched(release, run_step, step):
     before = fingerprint(release)
-    check = run_suites(release.repo, suites(release.repo))
+    check = run_step()
     after = fingerprint(release)
     changed = [key for key in before if before[key] != after[key]]
     if changed:
         check.status = "FAIL"
-        check.findings.append(Finding("snapshot", "the snapshot changed while the suites ran: %s" % ", ".join(changed)))
+        check.findings.append(Finding("snapshot", "the snapshot changed while the %s ran: %s" % (step, ", ".join(changed))))
         check.summary += "; the snapshot changed (%s)" % ", ".join(changed)
     return check
 
@@ -993,16 +1002,29 @@ def assemble(source, commit, out, name, email, tag, title, repo_name, notes_text
         with gzip.GzipFile(filename="", mode="wb", fileobj=raw, mtime=0) as packed:
             packed.write(tar)
 
-    extra = {"RELEASE_NOTES.md": notes_text, "repo name": repo_name, "tag": tag}
     release = Release(tag, snapshot, Path(repo), Path(notes), Path(archive), Path(out), [], left_out)
-    suites_result = guarded("suites", suites_check, release, suites) if suites else CheckResult("suites", "SKIP", "not run: --no-suites given")
+    install_result = (guarded("install", watched, release, lambda: run_install_check(release, installer), "installer")
+                      if installer else CheckResult("install", "SKIP", "not run: no --installer given"))
+    suites_result = (guarded("suites", watched, release, lambda: run_suites(release.repo, suites(release.repo)), "suites")
+                     if suites else CheckResult("suites", "SKIP", "not run: --no-suites given"))
+
+    def final_text():
+        extra = {"RELEASE_NOTES.md": Path(notes).read_bytes().decode("utf-8", "replace"), "repo name": repo_name, "tag": tag}
+        return extra, dict(extra, **{"commit message": git(repo, "log", "-1", "--format=%B", isolated=True)})
+
+    def final_exceptions():
+        return read_exceptions(commit_file(repo, "HEAD", EXCEPTIONS_PATH))
+
+    def final_rows():
+        return sorted({row[0] for row in table_rows(commit_file(repo, "HEAD", ROWS_PATH) or "", ROWS_PATH, 2)})
+
     release.checks = [
-        guarded("history", check_history, repo, tag),
-        guarded("credential", check_credential, repo, credentials, extra, archive),
-        guarded("patterns", check_patterns, repo, patterns, exceptions, dict(extra, **{"commit message": message}), archive, prefix),
-        guarded("dataset", check_dataset, repo, archive, left_out, prefix),
-        guarded("archive", check_archive, repo, archive, prefix),
-        run_install_check(release, installer) if installer else CheckResult("install", "SKIP", "not run: no --installer given"),
+        guarded("history", lambda: check_history(repo, tag)),
+        guarded("credential", lambda: check_credential(repo, credentials, final_text()[0], archive)),
+        guarded("patterns", lambda: check_patterns(repo, patterns, final_exceptions(), final_text()[1], archive, prefix)),
+        guarded("dataset", lambda: check_dataset(repo, archive, final_rows(), prefix)),
+        guarded("archive", lambda: check_archive(repo, archive, prefix)),
+        install_result,
         suites_result,
     ]
     return release
