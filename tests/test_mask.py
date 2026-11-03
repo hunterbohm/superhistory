@@ -210,6 +210,23 @@ class MaskTest(unittest.TestCase):
         self.assertEqual(out, "key [masked] and more words")
 
 
+class ModuleTest(unittest.TestCase):
+    def test_no_name_in_the_mask_module_is_defined_twice(self):
+        # A second definition replaces the first for every reader that runs after it, as "_HEADER_START" once did.
+        import ast
+        import collections
+        import kb.mask
+        with open(kb.mask.__file__, encoding="utf-8") as source:
+            tree = ast.parse(source.read())
+        names = collections.Counter()
+        for node in tree.body:
+            if isinstance(node, (ast.FunctionDef, ast.ClassDef)):
+                names[node.name] += 1
+            elif isinstance(node, ast.Assign):
+                names.update(t.id for t in node.targets if isinstance(t, ast.Name))
+        self.assertEqual([name for name, n in names.items() if n > 1], [])
+
+
 class OtherKeyFormatTest(unittest.TestCase):
     """Private keys that are not PEM's "PRIVATE KEY": PGP's armored blocks, PuTTY's key files and age's secret keys."""
     PGP_BODY = ("lQOYBGcW1aEBCADTkzY3c2VjcmV0cGdwYm9keWxpbmUxMjM0NTY3ODkw", "WalrusPgpBodySecond2Line3456789abcdefghij")
