@@ -549,7 +549,7 @@ def _gitleaks_edits(text):
 # Which mask() a stored row was masked with. A row of another version, or of none, is masked again when read and by
 # the next ingest. The patterns change it by themselves; bump REVISION when the code that applies them changes what
 # it masks.
-REVISION = 24
+REVISION = 25
 VERSION = f"r{REVISION}-" + hashlib.sha256(repr((REVISION, [p.pattern for p in SECRET_PATTERNS + PREFIXED_SECRETS], KEYED_SECRET.pattern,
                                 ENV_KEY_SECRET.pattern, JSON_SECRET.pattern, FLAG_SECRET.pattern, AUTH_SECRET.pattern,
                                 COMMAND_FLAGS, PASSWORD_NAME.pattern, sorted(PLACEHOLDERS), REFERENCE.pattern,
@@ -598,6 +598,9 @@ _KEY_WORD_AT = {code: (k, -(-8 * k // 6)) for word in _KEY_WORDS for k, code in 
 _KEY_FRAME = re.compile(rb"-----(BEGIN|END) (?:[A-Z0-9 ]*PRIVATE KEY|PGP (?:PRIVATE|SECRET) KEY BLOCK)-----")
 _KEY_FOOTER = re.compile(rb"-----END (?:[A-Z0-9 ]*PRIVATE KEY|PGP (?:PRIVATE|SECRET) KEY BLOCK)-----")
 _NOT_TEXT = re.compile(rb"[^\t\n\r\x20-\x7e]")
+# Inside a key, past its header: text past ASCII too, as UTF-8 writes it, since an armour header such as GnuPG's
+# "Comment:" may hold any letter; another stream's bytes still hold a control character within a line or two.
+_NOT_KEY_TEXT = re.compile(rb"[^\t\n\r\x20-\x7e\x80-\xff]")
 _BYTE_ORDER_MARK = b"\xef\xbb\xbf"
 _LINE_BREAKS = re.compile(rb"[\r\n]*")
 
@@ -680,7 +683,7 @@ def _key_range(joined, starts, ends, found, floor):
         if below is None:
             break
         if not ended:
-            other = _NOT_TEXT.search(below)
+            other = _NOT_KEY_TEXT.search(below)
             footer = _KEY_FOOTER.search(recent + (below[:other.start()] if other else below))
             if footer:  # the key ends with the group holding its footer's last byte
                 after = footer.end() - len(recent)
