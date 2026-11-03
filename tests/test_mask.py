@@ -1034,6 +1034,43 @@ class ReviewNineTest(unittest.TestCase):
         self.assertLess(took[400], 6 * max(took[100], 0.05), took)
 
 
+class ReviewTenTest(unittest.TestCase):
+    """#34's tenth review: a PGP secret key block whose armour comment holds a letter past ASCII, as GnuPG's
+    --comment writes one, written as base64."""
+
+    @staticmethod
+    def block(comment):
+        return ("-----BEGIN PGP PRIVATE KEY BLOCK-----\nComment: " + comment + "\n\n" + "Ab3d" * 40
+                + "\n=Ab3d\n-----END PGP PRIVATE KEY BLOCK-----\n").encode()
+
+    def test_a_pgp_block_with_a_comment_past_ascii_is_masked_whole_as_base64(self):
+        import base64
+        import textwrap
+        for comment in ("fixture caf\u00e9", "\u00fcbung \u2013 test", "\u65e5\u672c"):
+            encoded = base64.b64encode(self.block(comment)).decode()
+            for width in (64, 76, len(encoded)):
+                block = "\n".join(textwrap.wrap(encoded, width))
+                for text in (block, "key.asc: " + block, "Exported:\n\n" + block + "\n\nThanks"):
+                    with self.subTest(comment=comment, width=width, text=text[:10]):
+                        masked = mask(text)
+                        for line in block.splitlines():
+                            self.assertNotIn(line, masked)
+                        self.assertEqual(masked.startswith(("key.asc: ", "Exported:")), text.startswith(("key.asc: ", "Exported:")))
+                        self.assertEqual(masked.endswith("Thanks"), text.endswith("Thanks"))
+
+    def test_a_key_still_ends_where_binary_data_after_it_starts(self):
+        import base64
+        import textwrap
+        pem = (b"-----BEGIN PRIVATE KEY-----\n" + base64.b64encode(bytes.fromhex("302e020100300506032b657004220420")
+               + bytes(range(32))) + b"\n")  # no footer
+        after = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR" + bytes(range(256)) * 2
+        for width in (64, 76):
+            lines = textwrap.wrap(base64.b64encode(pem + after).decode(), width)
+            masked = mask("\n".join(lines))
+            with self.subTest(width=width):
+                self.assertIn(lines[-1], masked)
+
+
 class HeadlessKeyTest(unittest.TestCase):
     """A key's body without its header, as an older kb's row-by-row remask leaves the chunk after the header's."""
     LINE = "MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7"
