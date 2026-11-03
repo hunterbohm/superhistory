@@ -2091,30 +2091,16 @@ def _comment_end(text, at, stop, depth):
     return end
 
 
-def _typed_value_at(text, tokens, first, limit=400):
-    """Whether a string read after tokens[first:], the tokens of its own stretch of code so far, is a typed value
-    itself: inside a typing call's brackets, or after a typed key's separator ("value=", "text": ). Read on tokens, so
-    a bracket inside a comment or a string before it holds nothing back."""
+def _after_a_typed_key(text, tokens, first):
+    """Whether a string read after tokens[first:], the tokens of its own stretch of code so far, follows a typed key's
+    separator ("value=", "text": ), so it is a typed value itself."""
     j = len(tokens) - 1
     if j >= first and tokens[j][0] == "(":
         j -= 1
     if j - 1 >= first and tokens[j][0] in ":=" and tokens[j - 1][0] in "sn":
         key = tokens[j - 1]
         name = text[slice(*_code_text(text, key))] if key[0] == "s" else text[key[1]:key[2]]
-        if name.lower() in ("text", "value"):
-            return True
-    depth, k = 0, len(tokens) - 1
-    while k >= max(first, len(tokens) - limit):
-        kind = tokens[k][0]
-        if kind in ")]}":
-            depth += 1
-        elif kind in "([{":
-            if depth:
-                depth -= 1
-            elif (kind == "(" and k > first and tokens[k - 1][0] == "n"
-                    and _TYPING_NAME.search(text, tokens[k - 1][1], tokens[k - 1][2])):
-                return True  # inside a typing call's brackets, at any depth
-        k -= 1
+        return name.lower() in ("text", "value")
     return False
 
 
@@ -2133,6 +2119,7 @@ def _code_tokens(text):
         i, stop, escaped = spans.pop()
         stretches.append((i, stop, escaped))
         first = len(tokens)
+        opened, typing = [], 0  # the stretch's open brackets, each whether a typing call's, and how many of those
         while True:
             m = _CODE_TOKEN.search(text, i, stop)
             if not m:
@@ -2165,7 +2152,7 @@ def _code_tokens(text):
                 if end:
                     inner = _code_text(text, ("s", at, end))
                     if (_CODE_IN_STRING.search(text, *inner) and _holds_another_quote(text, inner, c[-1])
-                            and not _typed_value_at(text, tokens, first)):
+                            and not typing and not _after_a_typed_key(text, tokens, first)):
                         spans.append(inner + ((_string_open(text, at, end)[2] + 1).bit_length(),))
                     else:
                         tokens.append(("s", at, end))
@@ -2174,7 +2161,15 @@ def _code_tokens(text):
                     loose.append(at)
                     i = at + len(c)
                 continue
-            tokens.append(("n" if c[0].isalpha() or c[0] in "_$" else c, at, m.end()))
+            kind = "n" if c[0].isalpha() or c[0] in "_$" else c
+            if kind in "([{":  # inside a typing call's brackets, at any depth, a string is a value, never code
+                call = (kind == "(" and len(tokens) > first and tokens[-1][0] == "n"
+                        and bool(_TYPING_NAME.search(text, tokens[-1][1], tokens[-1][2])))
+                opened.append(call)
+                typing += call
+            elif kind in ")]}" and opened:
+                typing -= opened.pop()
+            tokens.append((kind, at, m.end()))
             i = m.end()
     tokens.sort(key=lambda t: t[1])
     return tokens, sorted(loose), stretches
@@ -2271,9 +2266,41 @@ def _receiver_strings(text, tokens, k, limit=200):
     return strings, names
 
 
-def _stretch_end(stretches, at):
-    """The end of the innermost stretch of code (_code_tokens) that holds `at`."""
-    return min(stop for i, stop, _ in stretches if i <= at < stop)
+class _Stretches:
+    """The stretches of code _code_tokens read, indexed once, so the one holding a position is found in log time, not
+    by reading them all for each typing call (a JSON log of many code records took time in their count's square)."""
+
+    def __init__(self, text, stretches):
+        self.text, self.items = text, sorted(stretches, key=lambda s: (s[0], -s[1]))
+        self.starts, self.parent, stack = [s[0] for s in self.items], [], []
+        for j, (start, _, _) in enumerate(self.items):
+            while stack and self.items[stack[-1]][1] <= start:
+                stack.pop()
+            self.parent.append(stack[-1] if stack else -1)
+            stack.append(j)
+        self.breaks, self.depths = None, {}
+
+    def holding(self, at):
+        """(start, stop, how often its code is escaped) of the innermost stretch that holds `at`."""
+        j = bisect.bisect_right(self.starts, at) - 1
+        while j > 0 and self.items[j][1] <= at:
+            j = self.parent[j]
+        return self.items[max(j, 0)]
+
+    def line_end(self, at):
+        """Where the line of code holding `at` ends, as often as its code is escaped (_comment_end), and never past
+        the end of the stretch that holds it; the text's own lines show their escaping by their first quote."""
+        _, stop, depth = self.holding(at)
+        if depth is None:
+            if self.breaks is None:
+                self.breaks = [m.start() for m in re.finditer("\n", self.text)]
+            k = bisect.bisect_left(self.breaks, at)
+            line = self.breaks[k - 1] + 1 if k else 0
+            if line not in self.depths:
+                quote = _QUOTE_RUN.search(self.text, line, self.breaks[k] if k < len(self.breaks) else len(self.text))
+                self.depths[line] = (len(quote.group(1)) + 1).bit_length() - 1 if quote else 0
+            depth = self.depths[line]
+        return _comment_end(self.text, at, stop, depth)
 
 
 def _call_span(tokens, k, bound, limit=400):
@@ -2312,23 +2339,6 @@ def _split_arguments(text, arguments):
     return out
 
 
-def _line_end_at(text, at, stretches):
-    """Where the line of code holding `at` ends, as often as its code is escaped (_comment_end), and never past the
-    end of the stretch that holds it."""
-    depth, bound = None, len(text)
-    for i, stop, escaped in stretches:
-        if i <= at <= stop:
-            bound = min(bound, stop)
-            if escaped is not None:
-                depth = max(depth or 0, escaped)
-    if depth is None:
-        line = text.rfind("\n", 0, at) + 1
-        line_end = text.find("\n", line)
-        quote = _QUOTE_RUN.search(text, line, len(text) if line_end < 0 else line_end)
-        depth = (len(quote.group(1)) + 1).bit_length() - 1 if quote else 0
-    return _comment_end(text, at, bound, depth)
-
-
 def _typed_code_edits(text):
     """Each password code types into a page, as an edit that masks it: a typing tool's input written in code, read with
     typed_secrets' rule, and a string typed into a field whose locator's strings (its label, placeholder, role's name or
@@ -2336,6 +2346,7 @@ def _typed_code_edits(text):
     if not _CODE_HINT.search(text):
         return []
     tokens, loose, stretches = _code_tokens(text)
+    stretches = _Stretches(text, stretches)
     starts = [t[1] for t in tokens]
     edits = []
 
@@ -2346,20 +2357,21 @@ def _typed_code_edits(text):
     for call in _CODE_TYPING_CALL.finditer(text):
         k = opening(call)
         if k is not None:
-            edits += _typed_in_objects(text, _call_span(tokens, k, _stretch_end(stretches, tokens[k][1]))[0])
+            edits += _typed_in_objects(text, _call_span(tokens, k, stretches.holding(tokens[k][1])[1])[0])
     for call in _CODE_FILL_CALL.finditer(text):
         k = opening(call)
         if k is None:
             continue
-        arguments, close = _call_span(tokens, k, _stretch_end(stretches, tokens[k][1]))
+        arguments, close = _call_span(tokens, k, stretches.holding(tokens[k][1])[1])
         args = _split_arguments(text, arguments)
         if not any(t[0] == "s" for _, ts in args for t in ts):
             continue
         labels, names = _receiver_strings(text, tokens, bisect.bisect_left(starts, call.start()))
         own = [ts for kw, ts in args if kw in _CODE_FIELD_KEYWORDS]
         positional = [ts for kw, ts in args if kw is None]
-        selector = len(positional) > 1 and [t[0] for t in positional[0]] == ["s"]
-        if selector:  # page.fill(selector, text), on any page or variable holding one
+        selector = (not labels and len(positional) > 1 and [t[0] for t in positional[0]] == ["s"]
+                    and any(t[0] == "s" for t in positional[1]))
+        if selector:  # page.fill(selector, text), on any page or variable holding one; not fill(text, {options})
             own.append(positional[0])
         labels += [text[slice(*_code_text(text, t))] for ts in own for t in ts if t[0] == "s"]
         # the value: a value= keyword's, or the first argument after the field that holds a string (send_keys may
@@ -2386,9 +2398,9 @@ def _typed_code_edits(text):
         stop = tokens[close][1] if close is not None else len(text)
         stray = loose[bisect.bisect_left(loose, start):][:1]
         if stray and stray[0] < stop:  # a quote that closes nothing: on to the end of its line
-            end = max(end, _line_end_at(text, stray[0], stretches))
+            end = max(end, stretches.line_end(stray[0]))
         elif close is None:  # a call read as unclosed: on to the end of its last string's line
-            end = max(end, _line_end_at(text, end, stretches))
+            end = max(end, stretches.line_end(end))
         if end > start:
             edits.append((start, end, "[masked]"))
     merged = []
