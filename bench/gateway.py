@@ -1,6 +1,6 @@
 """Model calls for the benchmarks, through any endpoint that speaks Anthropic's Messages API.
 
-BENCH_BASE_URL defaults to a local CLIProxyAPI gateway; BENCH_API_KEY, or the gateway's key file, authenticates.
+BENCH_BASE_URL names the endpoint and has no default. BENCH_API_KEY, or the file BENCH_KEY_FILE names, authenticates.
 
 The benchmarks share their model plans with other work, so a rate limit is never retried: the first HTTP 429, or a
 reply that says the model is cooling down, raises RateLimited and sets LIMITED, and the runners start no new question
@@ -19,8 +19,8 @@ import urllib.error
 import urllib.request
 import urllib.response
 
-BASE_URL = os.environ.get("BENCH_BASE_URL", "http://127.0.0.1:8317").rstrip("/")
-KEY_FILE = os.path.expanduser("~/.config/cli-gateway/client.key")
+BASE_URL = os.environ.get("BENCH_BASE_URL", "").rstrip("/")
+KEY_FILE = os.path.expanduser(os.environ.get("BENCH_KEY_FILE", ""))
 ATTEMPTS = 6
 # How much of a failed call's reply is read for a rate limit; the messages that quote it stay short.
 ERROR_BYTES = 1 << 16
@@ -30,6 +30,36 @@ WAIT_MINUTES = 30
 # Standing order 22: at most two model calls at once in a run, kb's hedged copies and the summarizer's included. A
 # call waits here for a slot, so a run with more than one worker mostly waits, and a hedge copy can start late.
 SLOTS = threading.BoundedSemaphore(2)
+
+
+class NotConfigured(RuntimeError):
+    """The model endpoint or its key is not set."""
+
+
+def base_url():
+    """The endpoint's address, or NotConfigured when BENCH_BASE_URL is unset."""
+    if not BASE_URL:
+        raise NotConfigured("BENCH_BASE_URL is not set: point it at an endpoint that speaks Anthropic's Messages API "
+                            "(for example https://api.anthropic.com), and set BENCH_API_KEY or BENCH_KEY_FILE")
+    return BASE_URL
+
+
+def key_source():
+    """Where the key is read from, as a kb config secret: env:BENCH_API_KEY, or file:<BENCH_KEY_FILE>."""
+    if os.environ.get("BENCH_API_KEY"):
+        return "env:BENCH_API_KEY"
+    if KEY_FILE:
+        return f"file:{KEY_FILE}"
+    raise NotConfigured("no API key: set BENCH_API_KEY, or BENCH_KEY_FILE to a file that holds the key")
+
+
+def require():
+    """Stops the run with a plain message when the endpoint or key is missing, before any work starts."""
+    try:
+        base_url()
+        key_source()
+    except NotConfigured as exc:
+        raise SystemExit(str(exc)) from None
 
 
 class RateLimited(RuntimeError):
@@ -193,13 +223,15 @@ def _urlopen(request, timeout):
 
 
 def _key():
-    if os.environ.get("BENCH_API_KEY"):
+    source = key_source()
+    if source.startswith("env:"):
         return os.environ["BENCH_API_KEY"]
     with open(KEY_FILE, encoding="utf-8") as fh:
         return fh.read().strip()
 
 
 def post(path, body, timeout=300):
+    base = base_url()
     headers = {"content-type": "application/json", "anthropic-version": "2023-06-01",
                "authorization": "Bearer " + _key()}
     data = json.dumps(body).encode()
@@ -207,16 +239,16 @@ def post(path, body, timeout=300):
         check_limited()
         last = attempt == ATTEMPTS - 1
         try:
-            req = urllib.request.Request(BASE_URL + path, data=data, headers=headers, method="POST")
+            req = urllib.request.Request(base + path, data=data, headers=headers, method="POST")
             with urlopen(req, timeout=timeout) as resp:
                 return json.load(resp)
         except urllib.error.HTTPError as e:
             detail = e.read()[:300].decode(errors="replace")
             if e.code < 500 or last:
-                raise RuntimeError(f"HTTP {e.code} from {BASE_URL}{path}: {detail}")
+                raise RuntimeError(f"HTTP {e.code} from {base}{path}: {detail}")
         except (urllib.error.URLError, TimeoutError, ConnectionError) as e:
             if last:
-                raise RuntimeError(f"cannot reach {BASE_URL}: {e}") from None
+                raise RuntimeError(f"cannot reach {base}: {e}") from None
         time.sleep(min(60.0, 2 ** attempt + random.random()))
 
 

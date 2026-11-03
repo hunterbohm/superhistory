@@ -59,7 +59,7 @@ def gateway_client():
             kept = [(k, v) for k, v in (got or {}).items() if k.lower() not in OWN_HEADERS | {"content-encoding"}]
             return httpx2.Response(status, headers=kept, content=body, request=request)
 
-    return openai.OpenAI(api_key=gateway._key(), base_url=gateway.BASE_URL + "/v1",
+    return openai.OpenAI(api_key=gateway._key(), base_url=gateway.base_url() + "/v1",
                          http_client=httpx2.Client(transport=Transport()))
 
 
@@ -78,7 +78,7 @@ class Mem0(Tool):
         from mem0 import Memory
         self.memory = Memory.from_config({
             "llm": {"provider": "openai", "config": {
-                "model": LLM, "openai_base_url": gateway.BASE_URL + "/v1", "api_key": gateway._key(),
+                "model": LLM, "openai_base_url": gateway.base_url() + "/v1", "api_key": gateway._key(),
                 "temperature": 0}},
             "embedder": {"provider": "huggingface", "config": {"model": EMBEDDER}},
             "vector_store": {"provider": "qdrant", "config": {
