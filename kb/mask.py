@@ -507,7 +507,7 @@ def _gitleaks_edits(text):
 # Which mask() a stored row was masked with. A row of another version, or of none, is masked again when read and by
 # the next ingest. The patterns change it by themselves; bump REVISION when the code that applies them changes what
 # it masks.
-REVISION = 12
+REVISION = 13
 VERSION = hashlib.sha256(repr((REVISION, [p.pattern for p in SECRET_PATTERNS + PREFIXED_SECRETS], KEYED_SECRET.pattern,
                                 ENV_KEY_SECRET.pattern, JSON_SECRET.pattern, FLAG_SECRET.pattern, AUTH_SECRET.pattern,
                                 COMMAND_FLAGS, PASSWORD_NAME.pattern, sorted(PLACEHOLDERS), REFERENCE.pattern,
@@ -567,22 +567,31 @@ def _decoded(joined, start, end):
         return None
 
 
-def _frame(joined, found):
+def _frame(joined, starts, found):
     """The key's header or footer that the encoded word `found` is in, as (b"BEGIN" or b"END", where the base64 group
-    holding its first byte starts), or None when the word is in none, as in a field's name or a sentence about keys."""
+    holding its first byte starts), or None when the word is in none, as in a field's name or a sentence about keys. A
+    header or footer is a line of its own: after a line break or where the encoded text starts (a line of the block, or
+    past another stream's padding), and before a line break or where the encoded text ends."""
     byte, char = _KEY_WORD_AT[found.group()]
     group = found.start() - char
-    lo, hi = max(group - 64, group % 4), min(group + 40, len(joined))
+    lo, hi, opened = max(group - 64, group % 4), min(group + 40, len(joined)), None
     pad = joined.rfind("=", lo, group)  # another stream's end
     if pad >= 0:
-        lo = pad + 1 + (group - pad - 1) % 4
+        lo = opened = pad + 1 + (group - pad - 1) % 4
     pad = joined.find("=", group, hi)
+    closed = pad >= 0 or hi == len(joined)
     hi = pad + (group - pad) % 4 if pad >= 0 else hi - (hi - group) % 4
-    decoded = _decoded(joined, lo, hi)
+    decoded = _decoded(joined, lo, hi) or b""
     at = (group - lo) // 4 * 3 + byte
-    for m in _KEY_FRAME.finditer(decoded or b""):
-        if m.start() <= at < m.end():
-            return m.group(1), lo + m.start() // 3 * 4
+    for m in _KEY_FRAME.finditer(decoded):
+        if not m.start() <= at < m.end():
+            continue
+        first = lo + m.start() // 3 * 4
+        line = bisect.bisect_left(starts, first)
+        opens = decoded[m.start() - 1:m.start()] == b"\n" if m.start() else False
+        opens = opens or m.start() % 3 == 0 and (first == opened or line < len(starts) and starts[line] == first)
+        closes = decoded[m.end():m.end() + 1] in (b"\r", b"\n") or m.end() == len(decoded) and closed
+        return (m.group(1), first) if opens and closes else None
     return None
 
 
@@ -593,7 +602,7 @@ def _key_range(joined, starts, ends, found, floor):
     through it, in the groups `found` fixes, still decodes to text. A key ends at its footer and the line breaks after
     it, or with none where the text it decodes to ends: a heading, a word between two keys or another stream stays,
     however the lines are wrapped."""
-    frame = _frame(joined, found)
+    frame = _frame(joined, starts, found)
     if frame is None:
         return None
     kind, first = frame
@@ -648,13 +657,39 @@ def _key_spans(text, lines):
     return spans
 
 
-def _encoded_key_edits(text):
-    """Each private key in a file written as base64, whole with the lines it wraps onto, as an edit that masks it."""
+def _written_key_spans(text):
+    """Each private key in a file written as base64 in `text`, whole with the lines it wraps onto, as a (start, end)."""
     spans = []
     for m in _WRAPPED_BASE64.finditer(text):
         escape = _ESCAPE_LETTER.match(text, m.start())
         spans += _key_spans(text, _wrapped_lines(text, escape.end() if escape else m.start(), m.end()))
-    return [(start, end, "[masked]") for start, end in spans]
+    return spans
+
+
+# A character a reader does not see, with the backslashes before an escaped one, as JSON in JSON escapes it twice.
+_UNSEEN_ESCAPED = re.compile(rf"\\*(?:{INVISIBLE.pattern})")
+
+
+def _encoded_key_spans(text):
+    """Where each private key in a file written as base64 lies in `text`, as ordered (start, end) spans: read as
+    written, and read without the characters a reader does not see (INVISIBLE), so one inside a line parts nothing."""
+    spans = _written_key_spans(text)
+    if INVISIBLE.search(text):
+        kept, pieces, last = [], [], 0
+        for m in _UNSEEN_ESCAPED.finditer(text):
+            pieces.append(text[last:m.start()])
+            kept += range(last, m.start())
+            last = m.end()
+        pieces.append(text[last:])
+        kept += range(last, len(text))
+        spans += [(kept[start], kept[end - 1] + 1) for start, end in _written_key_spans("".join(pieces))]
+    merged = []
+    for start, end in sorted(spans):
+        if merged and start <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+        else:
+            merged.append((start, end))
+    return merged
 
 
 def _docker_login_edits(text):
@@ -1193,11 +1228,6 @@ def _run(text, rules, origin=None, named=None, fired=None):
         if edits and pattern is ENCODED_PRIVATE_KEY:
             note(pattern)
         text, origin = _edit(text, origin, edits)
-    if reading != "main":
-        edits = _encoded_key_edits(text)
-        if edits:
-            note(_encoded_key_edits)
-        text, origin = _edit(text, origin, edits)
     for edits in (_docker_login_edits, _key_rest_edits, _headless_key_edits,
                   lambda text: [(m.start(), m.end(), "[masked]") for m in _GLUED_RUN.finditer(text)]):
         text, origin = _edit(text, origin, edits(text))
@@ -1662,9 +1692,24 @@ capped = 0
 _NOVEL = contextvars.ContextVar("kb_mask_novel", default=None)
 
 
-def _masked(text):
-    """mask()'s passes: (the text, where each of its characters came from in `text`, whether it still changed after
-    MAX_PASSES). Where a pass read otherwise than main's own could (_once's `novel`), main's own mask is made too
+def _masked(text, keys=None):
+    """mask()'s passes, and each private key written as base64 (_encoded_key_spans, or `keys`) hidden over what they
+    leave: no reading reads that key's placeholder, so it hides the key alone, and everything the passes hide stays
+    hidden. (the text, where each of its characters came from in `text`, whether it still changed after MAX_PASSES)."""
+    masked, origin, still = _passes_masked(text)
+    keys = _encoded_key_spans(text) if keys is None else keys
+    if still or not keys:
+        return masked, origin, still
+    hidden = bytearray(len(text))
+    for start, end in keys:
+        hidden[start:end] = b"\x01" * (end - start)
+    masked, origin = _hide(masked, origin, hidden)
+    return masked, origin, False
+
+
+def _passes_masked(text):
+    """The passes of mask(): (the text, where each of its characters came from in `text`, whether it still changed
+    after MAX_PASSES). Where a pass read otherwise than main's own could (_once's `novel`), main's own mask is made too
     (_main_hidden), and every character it hides is hidden here: no reading added since can show what main hides, in
     a later pass either, where a placeholder one put down ends a value main reads on through."""
     novel = []
@@ -1712,8 +1757,9 @@ def mask(text):
     finally:
         _NOVEL.reset(marker)
     still = text is None
-    if novel:
-        text, _, still = _masked(original)
+    keys = _encoded_key_spans(original)
+    if novel or keys:
+        text, _, still = _masked(original, keys)
     elif still:
         text = masked
     if not still:
@@ -1771,7 +1817,7 @@ def secret_in_id(text, names=()):
     if any(_basic_credential(m.group(1)) for view in (INVISIBLE.sub("", text), _MAIN_INVISIBLE_RUN.sub("", text))
            for m in _BASIC_VALUE.finditer(view)):
         return True
-    return _mask_once(text, _ID_RULES) != text
+    return _mask_once(text, _ID_RULES) != text or bool(_encoded_key_spans(text))
 
 
 # The headers kb reads in text as "name: value", a cookie or a credential: a field so named, or a name and a value
