@@ -445,6 +445,53 @@ class OtherKeyFormatTest(unittest.TestCase):
                     self.assertEqual(mask(f"{k}\n{after}\nnext steps"), f"[masked]\n{after}\nnext steps")
                     self.assertEqual(mask(json.dumps({"k": k, "c": after})), json.dumps({"k": "[masked]", "c": after}))
 
+    def test_a_masked_base64_key_and_the_base64_after_it_mask_to_themselves(self):
+        # kb masks stored text again when it shows it; the key's placeholder then stood before the certificate.
+        import base64
+        import random
+        import textwrap
+        r = random.Random(29)
+        body = base64.b64encode(bytes(r.randrange(256) for _ in range(48))).decode()
+        key = base64.b64encode(f"-----BEGIN PRIVATE KEY-----\n{body}\n-----END PRIVATE KEY-----\n".encode()).decode()
+        der = bytes([0x30, 0x82, 0x01, 0x22, 0x30, 0x82, 0x01, 0x0a, 0xa0, 0x03, 0x02, 0x01, 0x02])
+        cert = base64.b64encode(der + bytes(r.randrange(256) for _ in range(280))).decode()
+        for after in (cert, "\n".join(textwrap.wrap(cert, 76))):
+            for k in (key, "\n".join(textwrap.wrap(key, 76))):
+                with self.subTest(wrapped="\n" in k, after="\n" in after):
+                    once = mask(f"{k}\n{after}\nnext steps")
+                    self.assertEqual(once, f"[masked]\n{after}\nnext steps")
+                    self.assertEqual(mask(once), once)
+
+    def test_after_a_placeholder_only_a_keys_body_reads_as_the_keys_rest(self):
+        # An older kb's mask left a key's body after its placeholder: DER that starts with a version (an INTEGER),
+        # an encrypted key's PBES2 or PKCS#12 algorithm, or OpenSSH's. A certificate, a public key or a request stays.
+        import base64
+        import random
+        import textwrap
+        r = random.Random(31)
+        tail = bytes(r.randrange(256) for _ in range(300))
+        keys = {"PKCS#8": "3082 04bd 020100 300d06092a864886f70d0101010500", "PKCS#1": "3082 04a4 020100 02820101",
+                "SEC1": "3077 020101 0420", "Ed25519": "302e 020100 300506032b6570",
+                "PBES2": "3082 051c 304e 06092a864886f70d01050d",
+                "PKCS#12 PBE": "3082 02a1 301b 060a2a864886f70d010c0103"}
+        others = {"certificate": "3082 0313 3082 01fb a003 020102",
+                  "public key": "3082 0122 300d 06092a864886f70d010101", "request": "3082 0256 3082 013e 020100"}
+
+        def body(prefix):
+            der = bytes.fromhex(prefix.replace(" ", "")) + tail
+            return "\n".join(textwrap.wrap(base64.b64encode(der).decode(), 64))
+
+        openssh = "\n".join(textwrap.wrap(base64.b64encode(b"openssh-key-v1\0" + tail).decode(), 70))
+        for name, lines in [*((n, body(p)) for n, p in keys.items()), ("OpenSSH", openssh)]:
+            with self.subTest(key=name):
+                masked = mask(f"[masked]\n{lines}\n-----END PRIVATE KEY-----\n\nnext paragraph")
+                self.assertEqual([line for line in lines.split("\n") if line in masked], [])
+                self.assertTrue(masked.startswith("[masked]") and masked.endswith("\n\nnext paragraph"), masked)
+        for name, prefix in others.items():
+            with self.subTest(other=name):
+                text = f"[masked]\n{body(prefix)}\nnext steps"
+                self.assertEqual(mask(text), text)
+
     def test_base64_of_prose_that_quotes_a_key_delimiter_stays(self):
         import base64
         import textwrap
