@@ -1265,6 +1265,15 @@ class T(unittest.TestCase):
         found = self.built(files={"tests/test_t.py": "x = 1\n"}).check("suites")
         self.assertFalse(found.ok)
 
+    def test_a_test_that_runs_a_runner_of_its_own_is_counted_by_the_outer_summary(self):
+        # a test may run unittest itself, which prints its own "Ran 0 tests" before the suite's own summary
+        body = ("    def test_empty_suite(self):\n        result = unittest.TextTestRunner().run(unittest.TestSuite())\n"
+                "        self.assertEqual(result.testsRun, 0)\n\n"
+                "    @unittest.skip('a reason')\n    def test_skipped(self):\n        pass\n")
+        found = self.built(body).check("suites")
+        self.assertTrue(found.ok, found.findings)
+        self.assertIn("skipped", found.summary)
+
     def test_the_tests_run_inside_the_snapshot_where_the_left_out_files_are_absent(self):
         body = "    def test_absent(self):\n        self.assertFalse(os.path.exists('bench/rows.jsonl'))\n" \
                "        self.assertTrue(os.path.exists('README.md'))\n"
