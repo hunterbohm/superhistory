@@ -2,6 +2,7 @@
 named command's password where kb cannot read the command plainly: shell grammar it does not follow, a line carried on
 by a continuation, a program name or flag inside a colour code, and a command given as a list of arguments. Made-up
 secrets only."""
+import ast
 import json
 import shlex
 import subprocess
@@ -672,6 +673,49 @@ class ReviewFiveTest(unittest.TestCase):
             with self.subTest(twice=twice):
                 small, large = took(make(200, twice)), took(make(800, twice))
                 self.assertLess(large, 6 * small + 0.5, (small, large))
+
+
+class ReviewSixTest(unittest.TestCase):
+    """#37's sixth review: a Python repr string bounds the mask as a JSON string does, and a character past U+FFFF,
+    escaped as a surrogate pair, decodes to one character, and a mask one reading cannot place stops no other."""
+
+    def test_the_mask_stays_in_a_python_string(self):
+        for cmd in (f"keytool -file <(cat c) -storepass {PASSWORD}", f"keytool -alias 'team cert' -file <(cat c) -storepass {PASSWORD}",
+                    f'"keytool" -file <(cat c) -storepass {PASSWORD}', f"mongosh -f <(cat init.js) -u admin -p {PASSWORD}"):
+            value = {"cmd": cmd, "cwd": "/srv", "exit": 1}
+            for text in (repr(value), str([value]), repr({"output": repr(value)}), f"result={value!r} done"):
+                with self.subTest(cmd=cmd[:12], text=text[:14]):
+                    masked = mask(text)
+                    self.assertNotIn(PASSWORD, masked)
+                    start = masked.index("{")
+                    read = ast.literal_eval(masked[start:masked.rindex("}") + 1])
+                    if "output" in read:
+                        read = ast.literal_eval(read["output"])
+                    if isinstance(read, list):
+                        read = read[0]
+                    self.assertEqual((read["cwd"], read["exit"]), ("/srv", 1))
+                    self.assertEqual(read["cmd"], cmd.replace(PASSWORD, "[masked]"))
+
+    def test_a_character_past_ffff_before_the_password(self):
+        for char in ("\U0001f600", "\U00020000", "\U0001d400"):
+            script = f"keytool -file <(cat /srv/{char}.pem) -storepass {PASSWORD}"
+            items = ["bash", "-c", script]
+            for text in (json.dumps(items), json.dumps(items, ensure_ascii=False), json.dumps(json.dumps(items)),
+                         json.dumps({"cmd": script, "cwd": "/srv"})):
+                with self.subTest(char=hex(ord(char)), text=text[:16]):
+                    masked = mask(text)
+                    self.assertNotIn(PASSWORD, masked)
+                    read = json.loads(masked)
+                    while isinstance(read, str):
+                        read = json.loads(read)
+                    self.assertIn(script.replace(PASSWORD, "[masked]"), read if isinstance(read, list) else [read["cmd"]])
+            self.assertEqual(mask_all(items)[2], script.replace(PASSWORD, "[masked]"))
+
+    def test_python_strings_in_prose_stay(self):
+        for text in ("it's the team's cert, isn't it", "keytool's -list shows 'alias' and 'cert' entries",
+                     repr({"cmd": "keytool -list -v", "cwd": "/srv"}), repr(["mongosh", "--eval", "print('ssh -p 2222 host')"])):
+            with self.subTest(text=text[:20]):
+                self.assertEqual(mask(text), text)
 
 
 class RevisionTest(unittest.TestCase):
