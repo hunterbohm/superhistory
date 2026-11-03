@@ -2011,6 +2011,10 @@ _CODE_LOCATOR_NAMES = frozenset((
     "get_by_label", "get_by_placeholder", "get_by_role", "get_by_test_id", "get_by_text", "get_by_alt_text",
     "get_by_title", "find_element", "find_elements", "findElement", "findElements", "querySelector", "query_selector"))
 _CODE_VALUE_KEYWORDS = frozenset(("value", "text", "keys"))
+# What a call's own selector argument needs: a page's or a frame's fill or type (page.fill(selector, value)), not an
+# element's, a locator's or the keyboard's, which take the text first (send_keys("...", "\\n"), keyboard.type).
+_CODE_SELECTOR_METHODS = frozenset(("fill", "type"))
+_CODE_ELEMENT_NAMES = _CODE_LOCATOR_NAMES - {"page", "frame", "mainFrame", "main_frame"}
 # A variable for a page, a frame or a driver, by its name's last word ("loginPage", "login_page", "page2").
 _CODE_PAGE_WORDS = frozenset(("page", "frame", "driver", "browser", "element", "locator", "keyboard"))
 
@@ -2235,7 +2239,8 @@ def _typed_values(text, labels, typed):
             if b > a and (secret or not labels and _password_shaped(INVISIBLE.sub("", text[a:b])))]
 
 
-_REGEX_LABEL = re.compile(r"\s*/((?:\\.|[^/\\\n])+)/[a-z]*\s*")
+# A regex literal where a value starts inside a locator's brackets: first, or after ",", ":" or "=".
+_REGEX_IN_BRACKETS = re.compile(r"(?<=[(,:=])\s*/((?:\\.|[^/\\\n])+)/[a-z]*(?=\s*(?:[,})\]]|$))")
 
 
 def _receiver_strings(text, tokens, k, limit=200):
@@ -2253,9 +2258,8 @@ def _receiver_strings(text, tokens, k, limit=200):
             depth -= kind in "([{"
             if kind == "s" and not (k + 1 < len(tokens) and tokens[k + 1][0] == ":"):
                 strings.append(text[slice(*_code_text(text, tokens[k]))])
-            if not depth:  # a regex literal in the brackets ("getByLabel(/Password/i)") names the field too
-                regex = _REGEX_LABEL.fullmatch(text, tokens[k][2], close)
-                if regex:
+            if not depth:  # a regex literal in the brackets ("getByLabel(/Password/i)", {name: /Password/i}) too
+                for regex in _REGEX_IN_BRACKETS.finditer(text, tokens[k][2], close):
                     strings.append(re.sub(r"\\.|[\^$.*+?()\[\]{}|]", " ", regex.group(1)).strip())
                 if k == 0 or tokens[k - 1][0] not in ("n", ")", "]"):
                     break  # a bracket that calls or indexes nothing starts no chain
@@ -2378,9 +2382,12 @@ def _typed_code_edits(text):
         # the call's own selector, page.fill(selector, text) on any page or variable holding one: a lone string first,
         # then a value holding a string, by position or as value=; not fill(text, {options}) or send_keys(text, Keys.ENTER)
         second = positional[1] if len(positional) > 1 else []
-        selector = bool(positional) and [t[0] for t in positional[0]] == ["s"] and (
+        method = text[call.start() + 1:call.end() - 1].strip()
+        selector = (method in _CODE_SELECTOR_METHODS and not _CODE_ELEMENT_NAMES.intersection(names)
+                    and bool(positional) and [t[0] for t in positional[0] if t[0] not in "()"] == ["s"]
+                    and {t[0] for t in positional[0]} <= {"s", "(", ")"} and (
             bool(second) and (second[0][0] == "s" or second[0][0] == "(" and any(t[0] == "s" for t in second))
-            or any(kw in _CODE_VALUE_KEYWORDS and any(t[0] == "s" for t in ts) for kw, ts in args))
+            or any(kw in _CODE_VALUE_KEYWORDS and any(t[0] == "s" for t in ts) for kw, ts in args)))
         if selector:
             own.append(positional[0])
         labels += [text[slice(*_code_text(text, t))] for ts in own for t in ts if t[0] == "s"]
