@@ -1743,6 +1743,59 @@ class ReviewThirtyTest(unittest.TestCase):
                     self.assertIn("SHELL=/bin/bash", text)
 
 
+class ReviewThirtyOneTest(unittest.TestCase):
+    """The thirty-first review's finding: a password typed into a page by code, as Codex's code mode calls a typing
+    tool from JavaScript and as Playwright's own calls fill a field, was stored readable."""
+
+    SECRET = "Tr0ub4dor-Zk9q"
+    TYPED = (
+        'text(await tools.mcp__playwright__browser_type({"element":"Password","ref":"e7","text":"Tr0ub4dor-Zk9q"}));',
+        "await tools.mcp__playwright__browser_type({element: 'Password textbox', ref: 'e7', text: 'Tr0ub4dor-Zk9q'});",
+        'await tools.mcp__playwright__browser_fill_form({"fields":[{"name":"Email","type":"textbox","ref":"e3",'
+        '"value":"me@example.com"},{"name":"Password","type":"textbox","ref":"e7","value":"Tr0ub4dor-Zk9q"}]});',
+        "await page.getByLabel('Password').fill('Tr0ub4dor-Zk9q');",
+        'await page.getByRole("textbox", { name: "Password" }).fill("Tr0ub4dor-Zk9q");',
+        "await page.getByPlaceholder('Enter your password').type('Tr0ub4dor-Zk9q');",
+        "await page.fill('#password', 'Tr0ub4dor-Zk9q');",
+        "await page.locator('input[type=\"password\"]').fill('Tr0ub4dor-Zk9q');",
+        "await page.getByLabel('PIN').pressSequentially('Tr0ub4dor-Zk9q');",
+    )
+    ORDINARY = (
+        "await page.getByLabel('Email').fill('me@example.com');",
+        "await page.fill('#search', 'pelican plan');",
+        'await tools.mcp__playwright__browser_type({"element":"Search","ref":"e2","text":"pelican plan"});',
+        "await page.getByLabel('Password').fill(password);",
+        "await page.getByRole('button', { name: 'Sign in' }).click();",
+        "const fill = (field, value) => field.fill(value);",
+    )
+
+    def test_a_password_typed_by_code_is_masked(self):
+        for code in self.TYPED:
+            for text in (code, f"TOOL functions.exec: {code}", json.dumps({"code": code})):
+                with self.subTest(text=text[:60]):
+                    masked = mask(text)
+                    self.assertNotIn(self.SECRET, masked)
+                    self.assertIn("me@example.com" if "Email" in code else "Password" if "Password" in code else "",
+                                  masked)
+        records = codex_session({"type": "custom_tool_call", "name": "exec", "input": self.TYPED[0]})
+        self.assertNotIn(self.SECRET, stored("codex", records))
+
+    def test_a_facebook_shaped_record_is_masked_only_beside_the_word_facebook(self):
+        # Pinned by the coordinator's decision (a): a pipe record of 16 digits and 32 hex has the shape of a Facebook
+        # app token, so with "facebook" in the text it is masked, as gitleaks' own rule finds it there (a residual
+        # over-masking, in the README's known limits); without the word it stays, as on main.
+        record = "1700000000000000|0123456789abcdef0123456789abcdef"
+        self.assertEqual(mask(f"{record}|200|GET /health|facebook\n"), "[masked]|200|GET /health|facebook\n")
+        for text in (f"{record}|200|GET /health\n", f"{record}|200|GET /health|graph-api\n"):
+            self.assertEqual(mask(text), text)
+
+    def test_ordinary_code_that_types_into_a_page_stays(self):
+        for code in self.ORDINARY:
+            for text in (code, json.dumps({"code": code})):
+                with self.subTest(text=text[:60]):
+                    self.assertEqual(mask(text), text)
+
+
 # Commands as an argument list, each flag's value its own item: (the list, the items masked).
 ARGV = (
     (["login", "--password", PASSWORD], {2}), (["--token", SUB], {1}), (["--api-key", SUB, "--verbose"], {1}),
