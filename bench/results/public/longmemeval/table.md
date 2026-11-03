@@ -1,8 +1,8 @@
 | Run | Questions | Overall | Task-averaged | single-session-user | single-session-assistant | single-session-preference | multi-session | knowledge-update | temporal-reasoning | Abstention |
 |---|---|---|---|---|---|---|---|---|---|---|
-| Varve oracle-with-summaries | 500 | 94.8% | 96.0% | 100.0% | 100.0% | 96.7% | 89.5% | 94.9% | 94.7% | 93.3% |
-| Varve s-with-summaries-sample50-seed0 | 50 | 84.0% | 91.4% | 87.5% | 100.0% | 100.0% | 61.1% | 100.0% | 100.0% | 85.7% |
-| Varve s-without-summaries | 500 | 92.6% | 93.6% | 100.0% | 100.0% | 90.0% | 85.0% | 93.6% | 93.2% | 83.3% |
+| Superhistory oracle-with-summaries | 500 | 94.8% | 96.0% | 100.0% | 100.0% | 96.7% | 89.5% | 94.9% | 94.7% | 93.3% |
+| Superhistory s-with-summaries-sample50-seed0 | 50 | 84.0% | 91.4% | 87.5% | 100.0% | 100.0% | 61.1% | 100.0% | 100.0% | 85.7% |
+| Superhistory s-without-summaries | 500 | 92.6% | 93.6% | 100.0% | 100.0% | 90.0% | 85.0% | 93.6% | 93.2% | 83.3% |
 
 | Run | rows | stores | empty stores | items summarized | summary failures | check searched | check made no search | lookup errors | lookup added records | searched, added nothing | answers that ran kb tools | empty replies asked again | empty answers | evidence in lookup | evidence in lookup or tools | lookup p50 s |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|

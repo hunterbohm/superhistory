@@ -1,6 +1,6 @@
 | Run | Score | Overall (1540) | single-hop (841) | multi-hop (282) | temporal (321) | open-domain (96) |
 |---|---|---|---|---|---|---|
-| Varve locomo10-with-summaries | J | 90.4% | 93.1% | 91.8% | 87.5% | 71.9% |
+| Superhistory locomo10-with-summaries | J | 90.4% | 93.1% | 91.8% | 87.5% | 71.9% |
 |  | F1 | 65.8 | 72.0 | 54.5 | 67.1 | 39.4 |
 
 | Run | rows | stores | empty stores | items summarized | summary failures | check searched | check made no search | lookup errors | lookup added records | searched, added nothing | answers that ran kb tools | empty replies asked again | empty answers | evidence in lookup | evidence in lookup or tools | lookup p50 s |
