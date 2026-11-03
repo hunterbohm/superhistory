@@ -207,8 +207,10 @@ Known limits:
   is masked only when it is shaped like a credential and not like a code identifier. Code that types into a page is
   read the same way: a typing tool called with its input written as an object, as Codex's code mode calls one, and a
   string typed into a field a locator found (Playwright's fill, type and press_sequentially in JavaScript or Python,
-  Selenium's send_keys, WebdriverIO's setValue, Puppeteer's page.type), whose locator's strings name the field. A
-  value typed from a variable, or built at run time, stays, and other ways of writing such code are not read.
+  Selenium's send_keys, WebdriverIO's setValue, Puppeteer's page.type), whose locator's strings or regex name the
+  field, with comments and keyword arguments read past. With no label, only typing into the focused field
+  (keyboard.type) is read, by the value's shape. A value typed from a variable, or built at run time (joined,
+  templated), stays, and other ways of writing such code are not read.
 - kb reads a secret that one colour code or one invisible character splits, or glues to a word, and still hides all
   that kb's earlier mask hid. Shapes built from more than that are not all read: a secret split by two kinds of
   invisible character at once ("pass<soft hyphen>word=..." with a link inside the value), what an older kb left
