@@ -373,12 +373,12 @@ COMMAND_FLAGS = (
      rf"\s{_quoted('-p')}[ \t]+{_FLAG_QUOTE}", False),
     (r"keytool|jarsigner", rf"\s{_quoted('-(?:src|dest|new)?(?:storepass|keypass)')}[ \t]+{_FLAG_QUOTE}", "dash"),
     # aws configure set's secret settings, and a .netrc line's password, its fields in any order but with a login
-    # among them, so "the machine room password sheet" is no .netrc line, "default" only where a line or a quoted
-    # string starts, and every keyword in small letters, as a .netrc file writes them ("Default login page password
+    # among them, so "the machine room password sheet" is no .netrc line, "machine" and "default" only where a line or a
+    # quoted string starts, and every keyword in small letters, as a .netrc file writes them ("Default login page password
     # field" is prose); a value counts only where a field, a comment or the line's end follows it. A setting's name is read once, its key word
     # looked for ahead: read around the key word, a run of key words took time in the square of its length.
     (rf"aws{_FLAG_QUOTE}\s+configure\s+set", rf"\s{_quoted(_AWS_SETTING)}[ \t]+{_FLAG_QUOTE}", False),
-    (r"(?-i:(?:machine[ \t]+[^\s]+|(?:^|(?<=\n)|(?<=\\n)|(?<=[\"']))[ \t]*default)"
+    (r"(?-i:(?:^|(?<=\n)|(?<=\\n)|(?<=[\"']))[ \t]*(?:machine[ \t]+[^\s]+|default)"
      r"(?=(?:[ \t]+(?:password|account)[ \t]+[^\s]+)*[ \t]+login[ \t]+[^\s]))",
      r"\spassword[ \t]+(?:\\?['\"])?", "field"),
 )
@@ -433,9 +433,11 @@ _AUTH_FIELD = re.compile(rf"(?i)((?:(?<![A-Za-z0-9_.-])|{_AFTER_ESCAPE})auth{_QU
 # backslash that
 # starts an escape do ("dop_v1_...,active", "**dop_v1_...**", '"dop_v1_...\\"' in JSON in JSON), and lets
 # Azure's client secret, whose letters take a full stop, stand inside brackets, braces and Markdown's "**" too.
+# Where a token kb reads starts: after anything that is no letter or digit, or right after an escape or an encoded byte.
+_TOKEN_START = rf"(?:(?<![A-Za-z0-9])|{_AFTER_ESCAPE})"
 _TOKEN_EDGES = (
     (r"""(?=[\x60'"\s;]|\\[nr]|$)""", r"""(?![A-Za-z0-9])"""),
-    (r"""(?:^|[\\'"\x60\s>=:(,)])""", r"""(?:^|[^A-Za-z0-9]|(?<=%[0-9A-Fa-f]{2}))"""),
+    (r"""(?:^|[\\'"\x60\s>=:(,)])""", rf"""(?:^|[^A-Za-z0-9]|{_AFTER_ESCAPE})"""),
     (r"""(?=$|[\\'"\x60\s<),])""", r"""(?=$|[^A-Za-z0-9])"""),
     (r"""(?=[\x60'"\s;]|\\[nr]|$|\b)""", r"""(?![A-Za-z0-9])"""),
     (r"""(?=[^\w-]|\Z)""", r"""(?![A-Za-z0-9-])"""),
@@ -448,8 +450,7 @@ def _kb_edges(source):
     byte ("%22dapi...%22"), and one that ends at a word boundary ends before any mark."""
     for theirs, ours in _TOKEN_EDGES:
         source = source.replace(theirs, ours)
-    source = re.sub(r"^((?:\(\?i\))?)(?:\\b|\(\?<!\[A-Za-z0-9\]\))",
-                    lambda m: m.group(1) + rf"(?:(?<![A-Za-z0-9])|{_AFTER_ESCAPE})", source)
+    source = re.sub(r"^((?:\(\?i\))?)(?:\\b|\(\?<!\[A-Za-z0-9\]\))", lambda m: m.group(1) + _TOKEN_START, source)
     return re.sub(r"\\b(\)*)$", r"(?![A-Za-z0-9])\1", source)  # and end before "_" too ("_AKIA..._")
 
 
@@ -458,8 +459,14 @@ _GITLEAKS = [(re.compile(_kb_edges(source), re.ASCII), group, entropy, keywords,
              for _, source, group, entropy, keywords, allowed, stopwords in gitleaks.RULES]
 _GITLEAKS_ALLOW = [re.compile(a) for a in gitleaks.ALLOW_REGEXES]
 # The same rules with no word boundary before them, for a token right after a letter where an invisible character stood.
-_GITLEAKS_AFTER_A_BREAK = [(re.compile(re.sub(r"^((?:\(\?i\))?)(?:\\b|\(\?<!\[A-Za-z0-9\]\))", r"\1", rule[0].pattern),
-                                       re.ASCII), *rule[1:]) for rule in _GITLEAKS]
+def _after_a_break(pattern):
+    """A rule's pattern with nothing asked of what stands before the token: its start edge taken off."""
+    head = "(?i)" if pattern.startswith("(?i)") else ""
+    body = pattern[len(head):]
+    return head + (body[len(_TOKEN_START):] if body.startswith(_TOKEN_START) else body)
+
+
+_GITLEAKS_AFTER_A_BREAK = [(re.compile(_after_a_break(rule[0].pattern), re.ASCII), *rule[1:]) for rule in _GITLEAKS]
 
 
 def _entropy(text):
