@@ -318,6 +318,47 @@ class PatternTest(SourceCase):
         files = {"data.json": "[%s]\n" % score, EXCEPTIONS: tsv(("data.json", score, "a similarity score"))}
         self.assertTrue(self.build(self.commit(self.base_files(**files))).check("patterns").ok)
 
+    def test_a_working_tree_encoding_cannot_hide_a_hit_from_the_scan(self):
+        write(self.src, self.base_files())
+        (self.src / ".gitattributes").write_text("hidden.txt working-tree-encoding=UTF-16\n")
+        (self.src / "hidden.txt").write_bytes("fine\nsee Acmecorp today\n".encode("utf-16"))
+        git(self.src, "add", "-A")
+        git(self.src, "commit", "-q", "-m", "encoded")
+        release = self.build()
+        self.assertNotIn(b"Acmecorp", (release.repo / "hidden.txt").read_bytes())
+        found = release.check("patterns")
+        self.assertEqual([f.where for f in found.findings], ["hidden.txt:2"])
+
+    def test_the_committed_blob_is_scanned_not_the_checkout(self):
+        release = self.build(self.commit(self.base_files(**{"docs/a.md": "see Acmecorp\n", "docs/b.md": "fine\n"})))
+        os.remove(str(release.repo / "docs" / "a.md"))
+        (release.repo / "docs" / "b.md").write_text("see Acmecorp now\n")
+        found = rs.check_patterns(release.repo, self.patterns)
+        self.assertEqual([f.where for f in found.findings], ["docs/a.md:1"])
+
+    def test_an_archive_member_that_differs_from_the_tree_is_scanned_by_name_and_contents(self):
+        release = self.build(self.commit(self.base_files(**{"docs/a.md": "fine\n"})))
+        prefix = "widgetly-1.2.3/"
+        path = self.tmp / "tampered.tar.gz"
+        with tarfile.open(str(release.archive)) as tar:
+            members = [(m, tar.extractfile(m).read() if m.isfile() else None) for m in tar.getmembers()]
+        with tarfile.open(str(path), "w:gz") as out:
+            for info, data in members:
+                if info.name == prefix + "docs/a.md":
+                    data = b"fine\nsee Acmecorp\n"
+                    info.size = len(data)
+                out.addfile(info, io.BytesIO(data) if data is not None else None)
+            extra = tarfile.TarInfo(prefix + "boxroom.txt")
+            extra.size = 1
+            out.addfile(extra, io.BytesIO(b"x"))
+        found = rs.check_patterns(release.repo, self.patterns, archive=path, prefix=prefix)
+        self.assertEqual(sorted(f.where for f in found.findings), ["boxroom.txt", "docs/a.md:2"])
+
+    def test_the_same_hit_in_the_tree_and_in_the_archive_is_reported_once(self):
+        release = self.build(self.commit(self.base_files(**{"docs/a.md": "see Acmecorp\n"})))
+        found = rs.check_patterns(release.repo, self.patterns, archive=release.archive, prefix="widgetly-1.2.3/")
+        self.assertEqual([f.where for f in found.findings], ["docs/a.md:1"])
+
     def test_a_symlink_target_is_checked(self):
         write(self.src, self.base_files())
         os.symlink("acmecorp.txt", self.src / "link")
