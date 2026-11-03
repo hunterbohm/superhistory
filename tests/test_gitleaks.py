@@ -40,7 +40,9 @@ def places(secret, keywords):
     return tuple(word + text for text in (
         secret, f"token: {secret}\n", f"export DEPLOY_TOKEN={secret}", json.dumps({"value": secret}),
         f"use {secret} for the deploy", f"curl 'https://api.example.com/v1?key={secret}'",
-        f"key \x1b[1;31m{secret}\x1b[0m done", f"key {secret[:half]}\u200b{secret[half:]} done"))
+        f"key \x1b[1;31m{secret}\x1b[0m done", f"key {secret[:half]}\u200b{secret[half:]} done",
+        f"{secret},active\n", f"tokens: [{secret}]", f"(see {secret}).", f"**{secret}**", repr(f"{secret}\tactive"),
+        json.dumps(json.dumps({"cmd": f'echo "{secret}"'}))))
 
 
 class RuleTest(unittest.TestCase):

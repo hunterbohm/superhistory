@@ -374,10 +374,12 @@ COMMAND_FLAGS = (
      rf"\s{_quoted('-p')}[ \t]+{_FLAG_QUOTE}", False),
     (r"keytool|jarsigner", rf"\s{_quoted('-(?:src|dest|new)?(?:storepass|keypass)')}[ \t]+{_FLAG_QUOTE}", "dash"),
     # aws configure set's secret settings, and a .netrc line's password, its fields in any order but with a login
-    # among them, so "the machine room password sheet" is no .netrc line. A setting's name is read once, its key word
+    # among them, so "the machine room password sheet" is no .netrc line, and "default" only where a line or a quoted
+    # string starts, as a .netrc file writes it ("the default login page password field" is prose). A setting's name is read once, its key word
     # looked for ahead: read around the key word, a run of key words took time in the square of its length.
     (rf"aws{_FLAG_QUOTE}\s+configure\s+set", rf"\s{_quoted(_AWS_SETTING)}[ \t]+{_FLAG_QUOTE}", False),
-    (r"(?:machine[ \t]+[^\s]+|default)(?=(?:[ \t]+(?:password|account)[ \t]+[^\s]+)*[ \t]+login[ \t]+[^\s])",
+    (r"(?:machine[ \t]+[^\s]+|(?:^|(?<=\n)|(?<=\\n)|(?<=[\"']))[ \t]*default)"
+     r"(?=(?:[ \t]+(?:password|account)[ \t]+[^\s]+)*[ \t]+login[ \t]+[^\s])",
      r"\spassword[ \t]+(?:\\?['\"])?", "field"),
 )
 _MAIN_COMMANDS = 5  # main's own rows of COMMAND_FLAGS; the rest are this PR's
@@ -447,7 +449,26 @@ _AUTH_FIELD = re.compile(rf"(?i)((?:(?<![A-Za-z0-9_.-])|{_AFTER_ESCAPE})auth{_QU
 # Provider tokens kb takes from gitleaks (kb/gitleaks.py), each a token's own shape: compiled ASCII-only, as Go reads
 # \w and \b; the group holding the secret; the least entropy it has; keywords one of which a text holds before the rule
 # is read; and what marks a secret as none, the rule's and gitleaks' own for every rule.
-_GITLEAKS = [(re.compile(source, re.ASCII), group, entropy, keywords, [re.compile(a) for a in allowed], stopwords)
+# gitleaks ends many tokens only at a space, a quote, a backtick, ";" or a line break. kb ends them too at a mark no token
+# goes on through, as CSV's comma, a closing bracket, a sentence's full stop, Markdown's "**" and any backslash that
+# starts an escape do ("dop_v1_...,active", "**dop_v1_...**", '"dop_v1_...\\"' in JSON in JSON), and lets
+# Azure's client secret, whose letters take a full stop, stand inside brackets, braces and Markdown's "**" too.
+_TOKEN_EDGES = (
+    (r"""(?=[\x60'"\s;]|\\[nr]|$)""", r"""(?=[\x60'"\s;,.:)\]}>|&!?<*\\]|$)"""),
+    (r"""(?:^|[\\'"\x60\s>=:(,)])""", r"""(?:^|[\\'"\x60\s>=:(,)\[{*])"""),
+    (r"""(?=$|[\\'"\x60\s<),])""", r"""(?=$|[\\'"\x60\s<),\]};|&*])"""),
+)
+
+
+def _kb_edges(source):
+    """A gitleaks rule's source with the token's edges kb reads (_TOKEN_EDGES)."""
+    for theirs, ours in _TOKEN_EDGES:
+        source = source.replace(theirs, ours)
+    return source
+
+
+_GITLEAKS = [(re.compile(_kb_edges(source), re.ASCII), group, entropy, keywords, [re.compile(a) for a in allowed],
+              stopwords)
              for _, source, group, entropy, keywords, allowed, stopwords in gitleaks.RULES]
 _GITLEAKS_ALLOW = [re.compile(a) for a in gitleaks.ALLOW_REGEXES]
 # The same rules with no word boundary before them, for a token right after a letter where an invisible character stood.
@@ -1946,7 +1967,8 @@ def _masked_items(items, key):
     ["login", "--password", "..."] or ["mongosh", "-u", "admin", "-p", "..."] does. The items are joined as a shell
     quotes them, so each keeps its bounds: a flag inside one ("note: -p release-2026") or an apostrophe ("team's
     cert") reads as part of it. Where that line reads more of the item as a secret than the item alone does, the item,
-    one argument, is masked whole."""
+    one argument, is masked whole when what the line masks starts it, as a flag's value; when it starts inside it, as
+    a flag the item only quotes does, the item keeps its text up to the mask, as the line reads it."""
     out = [mask_all(v, key) for v in items]
     if len(items) == 2:  # a name and its value, as a list of headers holds them
         out[1] = _pair_value(items[0], items[1], out[1], listed=True)
@@ -1958,8 +1980,18 @@ def _masked_items(items, key):
         while start > 0 and i - start < 64 and isinstance(items[start - 1], str):
             start -= 1
         line, quoted = " ".join(map(shlex.quote, items[start:i])), shlex.quote(item)
-        if not mask(f"{line} {quoted}").endswith(" " + mask(quoted)):
-            out[i] = "[masked]"
+        read, head = mask(f"{line} {quoted}"), mask(line) + " "
+        if read.endswith(" " + mask(quoted)):
+            continue
+        tail = read[len(head):] if read.startswith(head) else None
+        if tail is None or tail.lstrip("'\"").startswith("[masked]"):
+            out[i] = "[masked]"  # the flag's value, one argument, masked whole
+            continue
+        try:  # a flag inside the item ("note: -u feature:preview"): it keeps its text up to what the line masks
+            parts = shlex.split(tail)
+        except ValueError:
+            parts = []
+        out[i] = mask(parts[0]) if len(parts) == 1 else "[masked]"
     return out
 
 
@@ -2077,15 +2109,19 @@ def _asks_for_a_secret(labels):
 _LABEL_KEYS = ("element", "name", "label", "selector", "field", "placeholder", "description", "target", "type",
                "aria_label", "ariaLabel", "title", "id", "locator")
 _TYPED_KEYS = ("text", "value")
+# A computer-use tool, whose "type" action types its text wherever the screen's focus is: no field names it.
+_COMPUTER_TOOL = re.compile(r"(?i)computer(?:_\d+)?")
 
 
 def typed_secrets(name, args):
     """A typing or form-filling tool's input with what it types into a field labelled for a secret, such as
     "Password textbox", masked whole: a password typed into a page is in no form a mask knows by its shape. A field
     with no label, as DevTools names one by its uid alone, has its value masked when it reads as a credential. Other
-    tools' input, and other fields, come back as they are."""
-    if not isinstance(name, str) or not _TYPING_TOOL.fullmatch(name.rsplit("__", 1)[-1].rsplit(".", 1)[-1]) \
-            or not isinstance(args, dict):
+    tools' input, and other fields, come back as they are. A computer-use tool's "type" action is read as typing
+    into a field with no label."""
+    tool = name.rsplit("__", 1)[-1].rsplit(".", 1)[-1] if isinstance(name, str) else ""
+    if not isinstance(args, dict) or not (_TYPING_TOOL.fullmatch(tool) or _COMPUTER_TOOL.fullmatch(tool)
+                                          and args.get("action") == "type"):
         return args
 
     def field(item):
