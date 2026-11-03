@@ -83,7 +83,7 @@ ROWS_PATH = "bench/DATASET_ROWS.txt"
 SUITE_TIMEOUT = 3600
 BINARIES_PATH = "tools/release_binaries.tsv"
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
-OVERLAP_ROUNDS = 64
+OVERLAP_CHECKS = 4096  # positions inside one line's matches read for one pattern before the search fails
 MAX_LINK_HOPS = 40
 ARCHIVE_MODES = {"100644": 0o664, "100755": 0o775, "120000": 0o777}
 ARCHIVE_DIR = 0o775
@@ -209,6 +209,9 @@ def read_patterns(path):
     for number, line in enumerate(lines, 1):
         if not line:
             raise ReleaseError("the patterns file has a blank line at line %d, which grep reads as matching every line" % number)
+        if re.search(rb"\\[1-9]", line):
+            raise ReleaseError("the patterns file uses a backreference at line %d, which the search for overlapping "
+                               "matches cannot read" % number)
     return lines
 
 
@@ -539,32 +542,39 @@ def one_pattern_spans(pattern, text):
     return spans
 
 
-def matches_at(pattern, line, start, end):
-    """Whether pattern matches line exactly over [start, end), with the line's own bytes on either side as context."""
-    if re.search(rb"\\[1-9]", pattern):
-        return True
-    left, right = line[start - 1:start], line[end:end + 1]
-    wrapped = b"^" + b"." * len(left) + b"(" + pattern + b")" + b"." * len(right) + b"$"
-    out = grep_run(["grep", "-a", "-i", "-E", "-c", "-e", wrapped], input=left + line[start:end] + right + b"\n")
-    return out.strip() != b"0"
+def match_at(pattern, line, start):
+    """The longest match of pattern that starts at `start` (1 or more) in line, read on the line as it is with the byte
+    before it as context, so a word boundary or an anchor reads as it does in the line; None if none starts there."""
+    out = grep_run(["grep", "-a", "-i", "-E", "-o", "-b", "-e", b"^.(" + pattern + b")"], input=line[start - 1:] + b"\n")
+    for row in out.split(b"\n"):
+        offset, _, match = row.partition(b":")
+        if row and int(offset) == 0 and len(match) > 1:
+            return start, start - 1 + len(match)
+    return None
 
 
-def every_span(patterns, line, rounds=OVERLAP_ROUNDS):
+def every_span(patterns, line):
+    """Every match of every pattern in line, overlapping ones included, and whether the search finished. grep -o
+    reports matches that do not overlap, each the longest at its start, so any other match starts inside one found:
+    each position inside a found match is read on the line itself, and a search that would read more than
+    OVERLAP_CHECKS positions for one pattern stops and says so."""
     spans, finished = set(), True
     for pattern in pattern_lines(patterns):
-        seen, text = set(), line
-        for _ in range(rounds):
-            fresh = one_pattern_spans(pattern, text) - seen
-            if not fresh:
+        found = one_pattern_spans(pattern, line)
+        todo, read = sorted({p for s, e in found for p in range(s + 1, e)}, reverse=True), set()
+        while todo:
+            at = todo.pop()
+            if at in read:
+                continue
+            if len(read) >= OVERLAP_CHECKS:
+                finished = False
                 break
-            spans.update(span for span in fresh if text is line or matches_at(pattern, line, *span))
-            seen |= fresh
-            blanked = bytearray(text)
-            for start, _end in fresh:
-                blanked[start] = 0
-            text = bytes(blanked)
-        else:
-            finished = False
+            read.add(at)
+            span = match_at(pattern, line, at)
+            if span and span not in found:
+                found.add(span)
+                todo.extend(p for p in range(span[0] + 1, span[1]) if p not in read)
+        spans |= found
     return sorted(spans), finished
 
 
@@ -627,7 +637,7 @@ def scan_patterns(repo, patterns, exceptions, extra):
             uncovered = uncovered or not over
         text = show(line)[:LINE_WIDTH]
         if not finished:
-            text = "the search for overlapping matches stopped after %d rounds, so not every match was checked: %s" % (OVERLAP_ROUNDS, text)
+            text = "the search for overlapping matches stopped after %d positions, so not every match was checked: %s" % (OVERLAP_CHECKS, text)
         (findings if uncovered else allowed).append(Finding("%s:%d" % (esc(path), number), text))
     findings.extend(Finding(esc(name), "(a file name)") for name in bad_paths)
     findings.sort(key=where_key)
