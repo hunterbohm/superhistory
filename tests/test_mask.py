@@ -1015,6 +1015,25 @@ class ReviewEightTest(unittest.TestCase):
                     self.assertEqual(mask(text), text)
 
 
+class ReviewNineTest(unittest.TestCase):
+    """#34's ninth review: many key rests before one long line, as a JSON log of old fragments with a base64
+    attachment, each read to that line's end."""
+
+    def test_many_key_rests_before_one_long_line_cost_time_in_proportion(self):
+        import base64
+        import time
+        took = {}
+        for n in (100, 400):
+            text = json.dumps({"events": [{"key": "[masked]\nMC4CAQAwBQYDK2VwBCIEIAABAgMEBQYHCAkKCwwNDg8QERIT",
+                                           "status": "next steps"}] * n,
+                               "image": base64.b64encode(b"\x89PNG\r\n\x1a\n" + bytes(range(256)) * (n * 2)).decode()})
+            started = time.process_time()
+            self.assertEqual(mask(text), '{"events": [{"key": "[masked]')
+            took[n] = time.process_time() - started
+        # four times the text
+        self.assertLess(took[400], 6 * max(took[100], 0.05), took)
+
+
 class HeadlessKeyTest(unittest.TestCase):
     """A key's body without its header, as an older kb's row-by-row remask leaves the chunk after the header's."""
     LINE = "MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7"
