@@ -42,6 +42,8 @@ The checks:
                 and the run must leave the snapshot as it found it. --no-suites skips this check.
 """
 import argparse
+import binascii
+import bz2
 import concurrent.futures
 import contextlib
 import dataclasses
@@ -50,6 +52,7 @@ import gzip
 import hashlib
 import http.server
 import io
+import lzma
 import os
 import posixpath
 import re
@@ -62,6 +65,8 @@ import sys
 import tarfile
 import tempfile
 import threading
+import zipfile
+import zlib
 from pathlib import Path
 
 SHOWN_FILES = 40
@@ -71,6 +76,15 @@ VERSION_FILE = "kb/__init__.py"
 EXCEPTIONS_PATH = "tools/release_exceptions.tsv"
 ROWS_PATH = "bench/DATASET_ROWS.txt"
 SUITE_TIMEOUT = 3600
+MAX_DECODED = 512 * 1024 * 1024
+MAX_DEPTH = 8
+UNSUPPORTED = ((b"\x28\xb5\x2f\xfd", "zstd"), (b"\x04\x22\x4d\x18", "lz4"), (b"7z\xbc\xaf\x27\x1c", "7z"),
+               (b"Rar!\x1a\x07", "rar"), (b"\x1f\x9d", "compress"), (b"\x1f\xa0", "compress"), (b"LZIP", "lzip"),
+               (b"MSCF", "cab"))
+BASE64_RUN = re.compile(rb"[A-Za-z0-9+/_-]{16,}={0,2}")
+BASE64_LINES = re.compile(rb"(?<=[A-Za-z0-9+/_=-])\r?\n(?=[A-Za-z0-9+/_-])")
+URLSAFE = bytes.maketrans(b"-_", b"+/")
+TEXT_ENCODINGS = ("utf-16-le", "utf-16-be", "utf-32-le", "utf-32-be")
 ARCHIVE_MODES = {"100644": 0o664, "100755": 0o775, "120000": 0o777}
 ARCHIVE_DIR = 0o775
 INTERPRETERS = (("3.12", ("python3.12", "python3")), ("3.9", ("python3.9", "python3")))
@@ -375,6 +389,138 @@ def check_history(repo, tag):
     return result("history", problems, "1 commit with no parent, refs main and %s, no remote" % tag, "")
 
 
+class Unreadable(Exception):
+    pass
+
+
+def inflate(factory, data, budget, kind):
+    out, rest = [], data
+    while rest:
+        decoder, pending = factory(), rest
+        while True:
+            chunk = decoder.decompress(pending, budget[0] + 1)
+            budget[0] -= len(chunk)
+            if budget[0] < 0:
+                raise Unreadable("%s data inflates to something larger than %d bytes" % (kind, MAX_DECODED))
+            out.append(chunk)
+            if decoder.eof:
+                break
+            if hasattr(decoder, "unconsumed_tail"):
+                pending = decoder.unconsumed_tail
+                if not pending:
+                    raise Unreadable("%s data is cut off" % kind)
+            elif decoder.needs_input:
+                raise Unreadable("%s data is cut off" % kind)
+            else:
+                pending = b""
+        rest = decoder.unused_data
+    return b"".join(out)
+
+
+def printable_or_wide(part):
+    if not part:
+        return False
+    text = sum(1 for byte in part if 9 <= byte <= 13 or 32 <= byte < 127)
+    return text / len(part) >= 0.8 or part.count(0) / len(part) >= 0.25 or part[:2] in (b"\x1f\x8b", b"PK", b"BZ") \
+        or part[:6] == b"\xfd7zXZ\x00" or part[257:262] == b"ustar"
+
+
+def base64_parts(blob):
+    parts = []
+    texts = [blob] + ([BASE64_LINES.sub(b"", blob)] if b"\n" in blob else [])
+    for text in texts:
+        for found in BASE64_RUN.finditer(text):
+            run = found.group().rstrip(b"=").translate(URLSAFE)
+            for skip in range(4):
+                chunk = run[skip:]
+                chunk = chunk[:len(chunk) - (1 if len(chunk) % 4 == 1 else 0)]
+                try:
+                    part = binascii.a2b_base64(chunk + b"=" * (-len(chunk) % 4))
+                except binascii.Error:
+                    continue
+                if printable_or_wide(part):
+                    parts.append(part)
+    return parts
+
+
+def derive(blob, budget):
+    kids = []
+
+    def take(kind, child):
+        budget[0] -= len(child)
+        if budget[0] < 0:
+            raise Unreadable("it decodes to something larger than %d bytes" % MAX_DECODED)
+        kids.append((kind, child))
+
+    for magic, name in UNSUPPORTED:
+        if blob.startswith(magic):
+            raise Unreadable("it is %s-compressed, which this tool cannot read" % name)
+    if blob[:2] == b"\x1f\x8b":
+        take("gzip", inflate(lambda: zlib.decompressobj(31), blob, budget, "gzip"))
+    elif blob[:1] == b"x" and blob[1:2] in (b"\x01", b"\x5e", b"\x9c", b"\xda") and (blob[0] * 256 + blob[1]) % 31 == 0:
+        take("zlib", inflate(lambda: zlib.decompressobj(15), blob, budget, "zlib"))
+    elif blob[:3] == b"BZh" and blob[4:10] == b"1AY&SY":
+        take("bz2", inflate(bz2.BZ2Decompressor, blob, budget, "bz2"))
+    elif blob[:6] == b"\xfd7zXZ\x00":
+        take("xz", inflate(lambda: lzma.LZMADecompressor(lzma.FORMAT_XZ), blob, budget, "xz"))
+    elif blob[:4] in (b"PK\x03\x04", b"PK\x05\x06"):
+        archive = zipfile.ZipFile(io.BytesIO(blob))
+        take("zip", "\n".join(info.filename for info in archive.infolist()).encode("utf-8", "surrogateescape"))
+        for info in archive.infolist():
+            if info.is_dir():
+                continue
+            if info.flag_bits & 1:
+                raise Unreadable("zip member %s is encrypted" % info.filename)
+            if info.file_size > budget[0]:
+                raise Unreadable("zip member %s is larger than %d bytes" % (info.filename, MAX_DECODED))
+            with archive.open(info) as member:
+                take("zip", member.read(budget[0] + 1))
+    elif blob[257:262] == b"ustar":
+        with tarfile.open(fileobj=io.BytesIO(blob), mode="r:") as archive:
+            names = []
+            for member in archive:
+                names.extend([member.name, member.linkname] if member.issym() or member.islnk() else [member.name])
+                if member.isreg():
+                    if member.size > budget[0]:
+                        raise Unreadable("tar member %s is larger than %d bytes" % (member.name, MAX_DECODED))
+                    take("tar", archive.extractfile(member).read())
+            take("tar", "\n".join(names).encode("utf-8", "surrogateescape"))
+    else:
+        if b"\0" in blob:
+            for encoding in TEXT_ENCODINGS:
+                text = blob.decode(encoding, "replace").encode("utf-8")
+                if text != blob:
+                    take(encoding, text)
+        parts = base64_parts(blob)
+        if parts:
+            take("base64", b"\n".join(parts))
+    return kids
+
+
+def decode_views(data):
+    views, problems, budget = [("", data)], [], [MAX_DECODED]
+    queue = [("", data, 0)]
+    while queue:
+        label, blob, depth = queue.pop(0)
+        try:
+            kids = derive(blob, budget)
+        except Exception as exc:
+            problems.append("%s%s" % (exc if isinstance(exc, Unreadable) else failure(exc), " (inside %s)" % label if label else ""))
+            continue
+        for kind, child in kids:
+            if depth + 1 > MAX_DEPTH:
+                problems.append("it nests more than %d levels deep" % MAX_DEPTH)
+                continue
+            name = label + ">" + kind if label else kind
+            views.append((name, child))
+            queue.append((name, child, depth + 1))
+    return views, list(dict.fromkeys(problems))
+
+
+def via(label):
+    return " [%s]" % label if label else ""
+
+
 def check_credential(repo, credentials, extra=None, archive=None, tag=None):
     needles = [c.lower().encode() for c in credentials]
     entries = tree_entries(repo)
@@ -392,11 +538,16 @@ def check_credential(repo, credentials, extra=None, archive=None, tag=None):
             findings.append(Finding(esc(name), "in the file's name"))
     for sha, kind, body in object_stream(repo):
         scanned += 1
-        if kind == "tree" or not has(body):
+        if kind == "tree":
             continue
         if kind == "blob":
-            findings.extend(Finding(esc(where), "in the file's text") for where in sorted(names.get(sha, ["unreferenced " + sha[:8]])))
-        else:
+            wheres = sorted(names.get(sha, ["unreferenced " + sha[:8]]))
+            seen, problems = decode_views(body)
+            for label, view in seen:
+                if has(view):
+                    findings.extend(Finding(esc(where) + via(label), "in the file's text") for where in wheres)
+            findings.extend(Finding(esc(where), "cannot be read: %s" % why) for where in wheres for why in problems)
+        elif has(body):
             findings.append(Finding("%s %s" % (kind, sha[:8]), "in the %s" % ("commit message or author" if kind == "commit" else "object")))
     for name, text in (extra or {}).items():
         if has(text.encode()):
@@ -405,8 +556,12 @@ def check_credential(repo, credentials, extra=None, archive=None, tag=None):
         with tarfile.open(str(archive)) as tar:
             for member in tar:
                 data = tar.extractfile(member).read() if member.isfile() else b""
-                if has(member.name.encode()) or has(data):
-                    findings.append(Finding(esc("%s:%s" % (os.path.basename(str(archive)), member.name)), "in the archive"))
+                where = esc("%s:%s" % (os.path.basename(str(archive)), member.name))
+                seen, problems = decode_views(data)
+                if has(member.name.encode()):
+                    findings.append(Finding(where, "in the archive"))
+                findings.extend(Finding(where + via(label), "in the archive") for label, view in seen if has(view))
+                findings.extend(Finding(where, "cannot be read: %s" % why) for why in problems)
     where_text = "%d objects%s%s" % (scanned, ", the notes" if extra else "", ", the archive" if archive is not None else "")
     return result("credential", findings, "no trace of %d made-up credential%s in %s, in any case" % (len(needles), "" if len(needles) == 1 else "s", where_text),
                   "a made-up credential is still here: %d place%s" % (len(findings), "" if len(findings) == 1 else "s"), findings)
@@ -497,11 +652,11 @@ def check_patterns(repo, patterns, exceptions=(), extra=None, archive=None, pref
 
 def archive_candidates(patterns, archive, prefix, entries):
     known = {member_key(name): sha for mode, sha, name in entries}
-    found = []
+    found, unreadable = [], []
     folder = prefix.rstrip("/").encode("utf-8", "surrogateescape")
     in_folder = bool(grep_text(patterns, folder))
     if in_folder:
-        found.append(("archive folder " + prefix.rstrip("/"), 0, folder, []))
+        found.append(("archive folder " + prefix.rstrip("/"), 0, folder, [], ""))
     with tarfile.open(str(archive)) as tar:
         for member in tar:
             raw = member.name.rstrip("/")
@@ -509,15 +664,22 @@ def archive_candidates(patterns, archive, prefix, entries):
             if not member.isdir():
                 own = grep_text(patterns, name.encode("utf-8", "surrogateescape"))
                 if name not in known and own:
-                    found.append((name, 0, name.encode("utf-8", "surrogateescape"), []))
+                    found.append((name, 0, name.encode("utf-8", "surrogateescape"), [], ""))
                 elif not own and not in_folder and grep_text(patterns, raw.encode("utf-8", "surrogateescape")):
-                    found.append((raw, 0, raw.encode("utf-8", "surrogateescape"), []))
+                    found.append((raw, 0, raw.encode("utf-8", "surrogateescape"), [], ""))
             if member.isdir():
                 continue
             data = tar.extractfile(member).read() if member.isreg() else member.linkname.encode("utf-8", "surrogateescape")
             if known.get(name) != blob_id(data):
-                found.extend((name,) + hit for hit in grep_matches(patterns, data))
-    return found
+                hits, why = scan_views(patterns, data)
+                found.extend((name, number, line, spans, label) for label, number, line, spans in hits)
+                unreadable.extend((name, reason) for reason in why)
+    return found, unreadable
+
+
+def scan_views(patterns, data):
+    views, problems = decode_views(data)
+    return [(label,) + hit for label, view in views for hit in grep_matches(patterns, view)], problems
 
 
 def occurrences(line, string):
@@ -530,21 +692,26 @@ def occurrences(line, string):
 def scan_patterns(repo, patterns, exceptions, extra, archive=None, prefix=None):
     entries = tree_entries(repo)
     blobs = read_blobs(repo, {sha for mode, sha, name in entries if mode in ARCHIVE_MODES})
-    candidates = []
+    candidates, unreadable = [], []
     for mode, sha, name in entries:
         if mode in ARCHIVE_MODES and show(name) != EXCEPTIONS_PATH:
-            candidates.extend((show(name),) + hit for hit in grep_matches(patterns, blobs[sha]))
+            hits, why = scan_views(patterns, blobs[sha])
+            candidates.extend((show(name), number, line, spans, label) for label, number, line, spans in hits)
+            unreadable.extend((show(name), reason) for reason in why)
     if archive is not None:
-        candidates.extend(archive_candidates(patterns, archive, prefix, entries))
+        found, more = archive_candidates(patterns, archive, prefix, entries)
+        candidates.extend(found)
+        unreadable.extend(more)
     for name, text in sorted((extra or {}).items()):
-        candidates.extend((name,) + hit for hit in grep_matches(patterns, text.encode()))
-    candidates = list({(path, number, line): (path, number, line, spans) for path, number, line, spans in candidates}.values())
+        candidates.extend((name, number, line, spans, "") for number, line, spans in grep_matches(patterns, text.encode()))
+    candidates = list({(path, label, number, line): (path, number, line, spans, label)
+                       for path, number, line, spans, label in candidates}.values())
     bad_paths = [name for _, _, name in entries if grep_text(patterns, name)]
     strings = {}
     for path, string, _ in exceptions:
         strings.setdefault(path, []).append(string)
     used, findings, allowed = set(), [], []
-    for path, number, line, spans in candidates:
+    for path, number, line, spans, label in candidates:
         covers = [(start, end, (path, string)) for string in strings.get(path, ())
                   for start, end in occurrences(line, string.encode())]
         uncovered = not spans
@@ -552,9 +719,10 @@ def scan_patterns(repo, patterns, exceptions, extra, archive=None, prefix=None):
             over = [key for s, e, key in covers if s <= start and end <= e]
             used.update(over)
             uncovered = uncovered or not over
-        row = Finding("%s:%d" % (esc(path), number) if number else esc(path), show(line)[:LINE_WIDTH])
+        row = Finding("%s%s:%d" % (esc(path), via(label), number) if number else esc(path), show(line)[:LINE_WIDTH])
         (findings if uncovered else allowed).append(row)
     findings.extend(Finding(esc(name), "(a file name)") for name in bad_paths)
+    findings.extend(Finding(esc(path), "cannot be read: %s" % reason) for path, reason in dict.fromkeys(unreadable))
     findings.sort(key=where_key)
     allowed.sort(key=where_key)
     stale = ["stale: %s: %s" % (path, string) for path, string, _ in exceptions if (path, string) not in used]
