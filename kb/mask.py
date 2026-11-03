@@ -1376,10 +1376,16 @@ def _token_tail(text):
     ends = sorted([m.start() for m in _BLANK_LINE.finditer(text)] + [m.start() for m in _PEM_HEADER.finditer(text)]
                   + [m.end() for m in _KEY_END_TEXT.finditer(text)])
 
+    line_ends = {}  # each token's line's end, found once: many rests can end on one long line
+
     def through(at):
         i = bisect.bisect_left(ends, at)
         last = bisect.bisect_left(tokens, ends[i] if i < len(ends) else len(text)) - 1
-        return _LINE_END.search(text, tokens[last]).start() if last >= 0 and tokens[last] >= at else at
+        if last < 0 or tokens[last] < at:
+            return at
+        if tokens[last] not in line_ends:
+            line_ends[tokens[last]] = _LINE_END.search(text, tokens[last]).start()
+        return line_ends[tokens[last]]
     return through
 
 
