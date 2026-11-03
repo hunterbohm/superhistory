@@ -595,6 +595,51 @@ class AwkwardNamesTest(SourceCase):
         self.assertEqual((self.out / "CHECKS.txt").read_text(), text)
 
 
+class ForbiddenNamesTest(SourceCase):
+    GW = "cli" + "-gateway"
+    PROXY = "CLIPr" + "oxyAPI"
+
+    def test_a_forbidden_string_in_the_repo_name_fails_the_release_and_does_not_flood_the_report(self):
+        name = "%s-%s-%s" % (self.GW, PORT, self.PROXY)
+        release = self.build(self.commit(self.base_files()), repo_name=name)
+        self.assertFalse(release.ok)
+        found = release.check("patterns")
+        wheres = [f.where for f in found.findings]
+        self.assertIn("repo name:1", wheres)
+        self.assertTrue(any("archive folder" in w for w in wheres), wheres)
+        self.assertLess(len(found.findings), 6, wheres)
+
+    def test_the_credential_in_the_repo_name_fails_the_credential_check(self):
+        release = self.build(self.commit(self.base_files()), repo_name=CREDENTIAL)
+        found = release.check("credential")
+        self.assertFalse(found.ok)
+        self.assertIn("repo name", [f.where for f in found.findings])
+
+    def test_a_forbidden_string_in_the_tag_fails_the_release(self):
+        files = self.base_files(**{"kb/__init__.py": '__version__ = "1.2.3-%s"\n' % PORT})
+        release = self.build(self.commit(files))
+        self.assertFalse(release.ok)
+        self.assertIn("tag:1", [f.where for f in release.check("patterns").findings])
+
+    def test_an_archive_folder_name_is_scanned_from_the_archive_itself(self):
+        release = self.build(self.commit(self.base_files()))
+        prefix = "widgetly-%s/" % PORT
+        path = self.tmp / "renamed.tar.gz"
+        with tarfile.open(str(release.archive)) as tar:
+            members = [(m, tar.extractfile(m).read() if m.isfile() else None) for m in tar.getmembers()]
+        with tarfile.open(str(path), "w:gz") as out:
+            for info, data in members:
+                info.name = prefix + info.name.split("/", 1)[1] if "/" in info.name else prefix.rstrip("/")
+                out.addfile(info, io.BytesIO(data) if data is not None else None)
+        found = rs.check_patterns(release.repo, self.patterns, archive=path, prefix=prefix)
+        self.assertEqual([f.where for f in found.findings], ["archive folder %s" % prefix.rstrip("/")])
+
+    def test_a_clean_repo_name_and_tag_pass(self):
+        release = self.build(self.commit(self.base_files()))
+        self.assertTrue(release.check("patterns").ok)
+        self.assertTrue(release.check("credential").ok)
+
+
 class CommandTest(SourceCase):
     def test_a_clean_snapshot_exits_zero_and_reports_each_check(self):
         self.commit(self.base_files())
