@@ -2195,6 +2195,42 @@ class ReviewFortyTwoTest(unittest.TestCase):
                     self.assertEqual(mask(text), text)
 
 
+class ReviewFortyThreeTest(unittest.TestCase):
+    """The forty-third review's findings: a container's selector read as the field's label, a comment mark inside a
+    JavaScript regex read as a comment, and the comments indexed again for each typing call."""
+
+    TYPED = (
+        'page.locator("#reset-form").getByLabel("New password").fill("sunshine")',
+        'page.locator("form.reset").get_by_label("Password").fill("sunshine")',
+        'const path = page.url().split(/#/)[0]; await page.getByLabel("Password").fill("sunshine");',
+        'const s = x.replace(/\\/\\//g, "/"); await page.getByLabel("Password").fill("sunshine");',
+        'page.frame(name="reset").fill("#password", "sunshine")',
+    )
+
+    def test_each_password_is_masked(self):
+        for code in self.TYPED:
+            for text in (code, json.dumps(code), json.dumps({"code": code}), json.dumps(json.dumps(code))):
+                with self.subTest(text=text[:70]):
+                    self.assertNotIn("sunshine", mask(text))
+
+    def test_a_containers_name_is_not_its_childs(self):
+        for code in ('page.locator("#password-form").getByLabel("Email").fill("me@example.com")',
+                     'page.get_by_test_id("password-reset").get_by_label("Email").fill("me@example.com")'):
+            for text in (code, json.dumps(code), json.dumps({"code": code})):
+                with self.subTest(text=text[:70]):
+                    self.assertEqual(mask(text), text)
+
+    def test_many_commented_records_cost_time_in_proportion(self):
+        import time
+        took = {}
+        for n in (500, 8000):
+            text = "\n".join(json.dumps({"code": f'// Search entry {i}\npage.fill("#search", "garden");'}) for i in range(n))
+            started = time.process_time()
+            self.assertEqual(mask(text), text)
+            took[n] = time.process_time() - started
+        self.assertLess(took[8000], 24 * max(took[500], 0.05), took)  # sixteen times the text
+
+
 # Commands as an argument list, each flag's value its own item: (the list, the items masked).
 ARGV = (
     (["login", "--password", PASSWORD], {2}), (["--token", SUB], {1}), (["--api-key", SUB, "--verbose"], {1}),
