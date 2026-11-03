@@ -414,45 +414,72 @@ def grep_run(cmd, cwd=None, input=None):
     return done.stdout
 
 
-def grep_lines(patterns, lines):
-    if not lines:
+def grep_text(patterns, data):
+    if not data:
         return []
-    out = grep_run(grep_command(patterns), input=b"\n".join(lines) + b"\n")
-    return [int(row.split(b":", 1)[0]) - 1 for row in out.split(b"\n") if row]
-
-
-def grep_tree(patterns, root):
-    out = grep_run(grep_command(patterns, "-r", "--null", "--exclude-dir=.git", "--", "."), cwd=root)
     hits = []
-    for row in out.split(b"\n"):
+    for row in grep_run(grep_command(patterns), input=data).split(b"\n"):
         if row:
-            path, _, rest = row.partition(b"\0")
-            number, _, text = rest.partition(b":")
-            hits.append((show(path[2:]), int(number), text))
+            number, _, text = row.partition(b":")
+            hits.append((int(number), text))
     return hits
 
 
-def check_patterns(repo, patterns, exceptions=(), extra=None):
+def read_blobs(repo, shas):
+    if not shas:
+        return {}
+    out = git_bytes(repo, "cat-file", "--batch", isolated=True, input=("\n".join(sorted(shas)) + "\n").encode())
+    blobs, at = {}, 0
+    while at < len(out):
+        end = out.index(b"\n", at)
+        header = out[at:end].split()
+        if len(header) != 3:
+            raise ReleaseError("git cat-file could not read %s" % show(out[at:end]))
+        size = int(header[2])
+        blobs[header[0].decode()] = out[end + 1:end + 1 + size]
+        at = end + 1 + size + 1
+    return blobs
+
+
+def check_patterns(repo, patterns, exceptions=(), extra=None, archive=None, prefix=None):
     with tempfile.TemporaryDirectory(prefix="release-patterns-") as folder:
         combined = os.path.join(folder, "patterns.txt")
         with open(combined, "wb") as fh:
             fh.write(b"\n".join(read_patterns(patterns) + [p.encode() for p in FORBIDDEN]) + b"\n")
-        return scan_patterns(repo, combined, exceptions, extra)
+        return scan_patterns(repo, combined, exceptions, extra, archive, prefix)
 
 
-def scan_patterns(repo, patterns, exceptions, extra):
+def archive_candidates(patterns, archive, prefix, entries):
+    known = {member_key(name): sha for mode, sha, name in entries}
+    found = []
+    with tarfile.open(str(archive)) as tar:
+        for member in tar:
+            raw = member.name.rstrip("/")
+            name = raw[len(prefix):] if raw.startswith(prefix) else raw
+            if member.isdir():
+                continue
+            if name not in known and grep_text(patterns, raw.encode("utf-8", "surrogateescape")):
+                found.append((name, 0, raw.encode("utf-8", "surrogateescape")))
+            data = tar.extractfile(member).read() if member.isreg() else member.linkname.encode("utf-8", "surrogateescape")
+            if known.get(name) != blob_id(data):
+                found.extend((name, number, text) for number, text in grep_text(patterns, data))
+    return found
+
+
+def scan_patterns(repo, patterns, exceptions, extra, archive=None, prefix=None):
     entries = tree_entries(repo)
-    candidates = [c for c in grep_tree(patterns, repo) if c[0] != EXCEPTIONS_PATH]
-    links = [(show(name), git_bytes(repo, "cat-file", "blob", sha, isolated=True)) for mode, sha, name in entries if mode == "120000"]
-    for index in grep_lines(patterns, [target for _, target in links]):
-        candidates.append((links[index][0], 0, links[index][1]))
+    blobs = read_blobs(repo, {sha for mode, sha, name in entries if mode in ARCHIVE_MODES})
+    candidates = []
+    for mode, sha, name in entries:
+        if mode in ARCHIVE_MODES and show(name) != EXCEPTIONS_PATH:
+            candidates.extend((show(name), number, text) for number, text in grep_text(patterns, blobs[sha]))
+    if archive is not None:
+        candidates.extend(archive_candidates(patterns, archive, prefix, entries))
+    candidates = list(dict.fromkeys(candidates))
     for name, text in sorted((extra or {}).items()):
-        lines = text.encode().splitlines()
-        candidates.extend((name, index + 1, lines[index]) for index in grep_lines(patterns, lines))
+        candidates.extend((name, number, line) for number, line in grep_text(patterns, text.encode()))
     paths = [name for _, _, name in entries]
-    if any(b"\n" in name for name in paths):
-        raise ReleaseError("a file name holds a line break, which this check cannot read")
-    bad_paths = [paths[i] for i in grep_lines(patterns, paths)]
+    bad_paths = [name for name in paths if grep_text(patterns, name)]
     strings = {}
     for path, string, _ in exceptions:
         strings.setdefault(path, []).append(string.encode())
@@ -465,7 +492,7 @@ def scan_patterns(repo, patterns, exceptions, extra):
                 text = text.replace(string, b" ")
         rest.append(text)
     changed = [i for i, (c, text) in enumerate(zip(candidates, rest)) if text != c[2]]
-    still = {changed[i] for i in grep_lines(patterns, [rest[i] for i in changed])}
+    still = {changed[number - 1] for number, _ in grep_text(patterns, b"\n".join(rest[i] for i in changed) + b"\n")} if changed else set()
     findings, allowed = [], []
     for position, (path, number, original) in enumerate(candidates):
         row = Finding("%s:%d" % (path, number) if number else path, show(original)[:LINE_WIDTH])
@@ -919,7 +946,7 @@ def assemble(source, commit, out, name, email, tag, title, repo_name, notes_text
     release.checks = [
         check_history(repo, tag),
         check_credential(repo, credentials, extra, archive),
-        check_patterns(repo, patterns, exceptions, dict(extra, **{"commit message": message})),
+        check_patterns(repo, patterns, exceptions, dict(extra, **{"commit message": message}), archive, prefix),
         check_dataset(repo, archive, left_out, prefix),
         check_archive(repo, archive, prefix),
         run_install_check(release, installer) if installer else CheckResult("install", "SKIP", "not run: no --installer given"),
