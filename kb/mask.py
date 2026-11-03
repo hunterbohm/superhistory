@@ -302,14 +302,14 @@ LINE_PASSWORD = re.compile(
 # before a secret parts it from the word before (_once), though a colour code ends in a letter. The vertical tab, the
 # form feed, the four separators from 0x1c and NEL are whitespace, as str.split reads them, and part words as a line
 # break does: pdftotext puts a form feed between pages.
-_CSI = r"(?:\x1b\[|\x9b|\\(?:u001[bB]|x1[bB]|033|[eE])\[|\\(?:u009[bB]|x9[bB]|233))(?!masked\])[0-?]*[ -/]*[@-~]"
+_CSI = r"(?:\x1b\[|\x9b|(?<!\\)\\{1,8}(?:u001[bB]|x1[bB]|033|[eE])\[|(?<!\\)\\{1,8}(?:u009[bB]|x9[bB]|233))(?!masked\])[0-?]*[ -/]*[@-~]"
 _FORMAT_CHARACTERS = (r"\u00ad\u034f\u061c\u115f\u1160\u17b4\u17b5\u180b-\u180f\u200b-\u200f\u202a-\u202e\u2060-\u206f"
                       r"\u3164\ufe00-\ufe0f\ufeff\uffa0\ufff0-\ufff8\U0001bca0-\U0001bca3\U0001d173-\U0001d17a"
                       r"\U000e0000-\U000e0fff")
 # The same characters escaped, as JSON ("\u200b", "\u007f") and Python's repr ("\x7f", "\xad", "\u2060") print them; one
 # past U+FFFF as JSON writes it, a surrogate pair ("\udb40\udc01" for U+E0001); and any of them escaped twice, as a
-# JSON string inside JSON holds one ("\\u200b"); and JSON's short escape for the backspace, between letters or digits,
-# where a regular expression's word boundary ("\\btoken\\b") does not stand.
+# JSON string inside JSON holds one ("\\u200b"); and JSON's short escape for the backspace, between word characters,
+# "_" among them, where a regular expression's word boundary ("\\btoken\\b", a non-word character beside it) does not.
 _ESCAPED_INVISIBLE = (
     r"\\?(?:\\u(?:000[0-8]|000[eEfF]|001[0-9a-bA-B]|007[fF]|008[0-46-9a-fA-F]|009[0-9a-fA-F]|00[aA][dD]|034[fF]|061[cC]"
     r"|115[fF]|1160|17[bB][45]|180[b-fB-F]|200[b-fB-F]|202[a-eA-E]|206[0-9a-fA-F]|3164|[fF][eE]0[0-9a-fA-F]"
@@ -318,7 +318,7 @@ _ESCAPED_INVISIBLE = (
     r"|\\U000(?:1[bB][cC][aA][0-3]|1[dD]17[3-9aA]|[eE]0[0-9a-fA-F]{3})"
     r"|\\u[dD][bB]4[0-3]\\{1,2}u[dD][c-fC-F][0-9a-fA-F]{2}|\\u[dD]82[fF]\\{1,2}u[dD][cC][aA][0-3]"
     r"|\\u[dD]834\\{1,2}u[dD][dD]7[3-9aA])"
-    r"|(?<=[A-Za-z0-9])\\{1,2}b(?=[A-Za-z0-9])")
+    r"|(?<=[A-Za-z0-9_])\\{1,2}b(?=[A-Za-z0-9_])")
 INVISIBLE = re.compile(_CSI + rf"|{_ESCAPED_INVISIBLE}|[\x00-\x08\x0e-\x1b\x7f-\x84\x86-\x9f{_FORMAT_CHARACTERS}]")
 # Main's own: a lone control or format character, not a colour code, an escaped one, DEL or a C1 control
 # (_NEW_INVISIBLE).
@@ -367,6 +367,18 @@ def _quoted(flag):
 # aws configure set's setting about a secret, its key word looked for ahead (Python before 3.12 takes no backslash in
 # an f-string's braces, so it stands apart).
 _AWS_SETTING = r"(?:[A-Za-z0-9_-]+\.)?(?=[A-Za-z0-9_]*?(?:secret|token|password))[A-Za-z0-9_]+"
+_AWS_SETTING_NAME = re.compile(_AWS_SETTING + r"\Z")
+_SHELL = re.compile(r"(?:^|/)(?:ba|z|a|k)?sh\Z")
+_SHELL_SCRIPT_FLAG = re.compile(r"-[a-z]*c[a-z]*\Z")
+
+
+def _aws_setting_item(items, i):
+    """Whether items[i] is aws configure set's secret-setting name, with "aws", "configure" and "set" among the items
+    just before it: then items[i + 1] is the secret, though the name starts with no "-"."""
+    if not _AWS_SETTING_NAME.match(items[i]):
+        return False
+    before = [v.lower() for v in items[max(0, i - 6):i] if isinstance(v, str)]
+    return any(v.startswith("aws") for v in before) and "configure" in before and "set" in before
 
 
 COMMAND_FLAGS = (
@@ -832,7 +844,7 @@ _PLAIN_ARGUMENTS = re.compile(rf"""(?:[^\s'"`$\\()|;&<>#]+|[ \t]+|\\t|(?<=\S)\#|
 # holds it), that string's end, a quote escaped as many times before a JSON mark, an outer string's end or the text's
 # end; a quote inside it, as a jq selector holds one, is none.
 # Each by the backslashes before the string's opening quote, None where no JSON string holds the line.
-_LINE_END = r"[\r\n]|\\+[nr]"
+_LINE_END = r"[\r\n]|(?<!\\)\\+[nr]"
 _JSON_HELD = re.compile(r'(?:^|(?<=[\[{,:"]))[ \t]*(\\{0,3})"', re.M)
 _STRING_ENDS = {k: rf"""|(?<!\\)\\{{{k}}}"(?=[ \t]*(?:[,:}}\]]|\\*"|\Z))""" for k in range(4)}
 _PLAIN_STOP = {k: re.compile(rf"\Z|[|;&)#]|{_LINE_END}{_STRING_ENDS.get(k, '')}") for k in (None, 0, 1, 2, 3)}
@@ -846,17 +858,20 @@ def _unread_flag_edits(text, line_pattern, flag, always, done):
     where its value starts) is masked from the value to the end of that line, or of the JSON string holding it, where
     JSON holds the line: kb cannot tell where a part it does not read ends, so a pipe or ";" there may be quoted."""
     edits, covered = [], 0
+    # The JSON strings opened in the text, and the line breaks, each found once, so a line naming a command again and
+    # again costs time in proportion to the text, not its square.
+    openings = [(m.start(), len(m.group(1))) for m in _JSON_HELD.finditer(text)]
+    opening_at = [o[0] for o in openings]
+    breaks = [m.start() for m in re.finditer(r"[\r\n]", text)]
     for line in line_pattern.finditer(text):
         if line.start() < covered:
             continue
         begin = _past_closing_quote(text, covered, line.start(), line.end())
         plain = _PLAIN_ARGUMENTS.match(text, begin).end()
-        reach = max(0, line.start() - 4096)
-        start = max(text.rfind("\n", reach, line.start()), text.rfind("\r", reach, line.start()), reach - 1) + 1
-        opening = None
-        for opening in _JSON_HELD.finditer(text, start, line.start()):
-            pass  # the last string opened before the command, the one that holds it
-        held = len(opening.group(1)) if opening else None
+        b = bisect.bisect_left(breaks, line.start()) - 1
+        line_start = breaks[b] + 1 if b >= 0 else 0
+        k = bisect.bisect_left(opening_at, line.start()) - 1  # the last JSON string opened before the command
+        held = openings[k][1] if k >= 0 and opening_at[k] >= line_start else None  # on the command's own line
         if _PLAIN_STOP[held].match(text, plain):
             covered = plain
             continue
@@ -884,9 +899,10 @@ _NEVER = re.compile(r"(?!)")
 
 
 def _unescaped(levels):
-    """What a view of a command leaves out to read it `levels` times unescaped as JSON unescapes a string: the
-    characters a reader does not see, and of each run of backslashes before a double quote, those the unescaping
-    takes: each time, a run of k keeps k // 2, so a quote escaped twice (three backslashes) is escaped once (one)."""
+    """What a view of a command leaves out to read it `levels` times unescaped as a string unescapes: the characters
+    a reader does not see, and of each run of backslashes before a quote (a double quote JSON escapes, either quote
+    Python's repr does), those the unescaping takes: each time, a run of k keeps k // 2, so a quote escaped twice
+    (three backslashes) is escaped once (one)."""
     if not levels:
         return re.compile(f"(?:{INVISIBLE.pattern})+")
     takes = []
@@ -894,13 +910,13 @@ def _unescaped(levels):
         kept = k
         for _ in range(levels):
             kept //= 2  # (k - 1) // 2 for an escaped quote, k // 2 for an escaped backslash before a closing one
-        takes.append(rf"\\{{{k - kept}}}(?=\\{{{kept}}}\")" if kept else rf"\\{{{k}}}(?=\")")
+        takes.append(rf"\\{{{k - kept}}}(?=\\{{{kept}}}[\"'])" if kept else rf"\\{{{k}}}(?=[\"'])")
     return re.compile(rf"(?:{INVISIBLE.pattern})+|(?<!\\)(?:{'|'.join(reversed(takes))})")
 
 
 # The views of a command, deepest first: unescaped four times down to as written.
 _UNESCAPED = [_unescaped(levels) for levels in (4, 3, 2, 1, 0)]
-_QUOTE_ESCAPE = re.compile(r'\\+(?=")')
+_QUOTE_ESCAPE = re.compile(r'(?<!\\)\\+(?=["'"'"'])')
 _NEEDS_ESCAPE = re.compile(r"[\"'\\\x00-\x1f\x7f]")
 
 
@@ -2036,6 +2052,16 @@ def _flag_values(items):
         if not (isinstance(item, str) and item):
             continue
         after_flag = isinstance(flag, str) and flag.startswith("-") and len(flag) <= 64
+        # A shell's -c script is a command line of its own, read as one.
+        if after_flag and _SHELL_SCRIPT_FLAG.match(flag) and i >= 2 and isinstance(items[i - 2], str) \
+                and _SHELL.search(items[i - 2]):
+            read = mask(item)
+            if read != item:
+                found[i] = read
+            continue
+        # aws configure set's secret setting names its value a secret though the name starts with no "-", so it
+        # counts as a flag.
+        after_flag = after_flag or (isinstance(flag, str) and _aws_setting_item(items, i - 1))
         glued = not after_flag and item.startswith("-") and len(item.split(None, 1)) == 2
         if not (after_flag or glued):
             continue
