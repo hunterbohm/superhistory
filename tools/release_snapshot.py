@@ -190,10 +190,17 @@ def stop_group(pgid):
         os.killpg(pgid, 0)
     except ProcessLookupError:
         return []
-    listed = subprocess.run(["ps", "-A", "-o", "pid=,pgid=,stat=,command="], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL).stdout
-    rows = [row.split(None, 3) for row in show(listed).splitlines()]
+    try:
+        listed = subprocess.run(["ps", "-A", "-o", "pid=,pgid=,stat=,command="], stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE, timeout=60)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        listed = subprocess.CompletedProcess(["ps"], 1, b"", str(exc).encode())
     with contextlib.suppress(ProcessLookupError):
         os.killpg(pgid, signal.SIGKILL)
+    if listed.returncode or not listed.stdout.strip():  # a list that could not be made is no proof that none is left
+        raise ReleaseError("could not list the processes left in a command's group, so the check fails; the group is "
+                           "stopped: ps exited %d: %s" % (listed.returncode, show(listed.stderr).strip()[:200]))
+    rows = [row.split(None, 3) for row in show(listed.stdout).splitlines()]
     return [" ".join(row[:1] + row[3:])[:120] for row in rows if row[1:2] == [str(pgid)] and not row[2].startswith("Z")]
 
 
