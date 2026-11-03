@@ -914,6 +914,31 @@ class ReviewFiveTest(unittest.TestCase):
         self.assertLess(took[14], 16 * max(took[11], 0.05), took)
 
 
+class ReviewSixTest(unittest.TestCase):
+    """#34's sixth review: a fragment of digits and "/" after a line of words, and base64 of a sentence that quotes a
+    key's header where its wrapping happens to break."""
+
+    def test_a_fragment_of_digits_and_slashes_after_a_line_of_words_stays_masked(self):
+        import base64
+        tail = base64.b64decode("0123/567")
+        body = base64.b64encode(bytes.fromhex("302e020100300506032b657004220420") + bytes(range(26)) + tail).decode()
+        for fragment in (body[-8:], "0123+567", "20261103", "ab/cd"):
+            with self.subTest(fragment=fragment):
+                self.assertNotIn(fragment, mask(f"[masked]\n{body[:-8]}\nnotes deploy {fragment}"))
+
+    def test_base64_of_a_sentence_quoting_a_header_at_a_wrap_stays(self):
+        import base64
+        import textwrap
+        for sentence in (b"PEM files often start with this exact opening delimiter: -----BEGIN PRIVATE KEY-----\n"
+                         b"Read the documentation before importing.\n",
+                         b"A key file's last line is the closing delimiter, -----END PRIVATE KEY-----\nas shown.\n"):
+            encoded = base64.b64encode(sentence).decode()
+            for width in range(40, 81, 4):
+                text = "\n".join(textwrap.wrap(encoded, width))
+                with self.subTest(sentence=sentence[:20], width=width):
+                    self.assertEqual(mask(text), text)
+
+
 class HeadlessKeyTest(unittest.TestCase):
     """A key's body without its header, as an older kb's row-by-row remask leaves the chunk after the header's."""
     LINE = "MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7"
