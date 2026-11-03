@@ -851,10 +851,12 @@ _PLAIN_ARGUMENTS = re.compile(rf"""(?:[^\s'"`$\\()|;&<>#]+|[ \t]+|\\t|(?<=\S)\#|
 _LINE_END = r"[\r\n]|(?<!\\)\\+[nr]"
 _PLAIN_STOP = re.compile(r"\Z|[|;&)#]|" + _LINE_END)
 _SEGMENT_END = re.compile(_LINE_END)
-# A JSON string as written: from a quote no backslash escapes to the next such quote on its line.
-_STRING_LITERAL = re.compile(r'(?<!\\)"((?:[^"\\\r\n]|\\.)*)"')
+# A JSON string as written, or a Python one as repr and print(dict) write it in single quotes: from a quote no
+# backslash escapes to the next such quote of its kind on its line. Its body is group 1 or 2.
+_STRING_LITERAL = re.compile(r'''(?<!\\)(?:"((?:[^"\\\r\n]|\\.)*)"|'((?:[^'\\\r\n]|\\.)*)')''')
 # An escape in a string's body, as JSON or Python writes one.
-_ESCAPE = re.compile(r"\\(?:u([0-9a-fA-F]{4})|U([0-9a-fA-F]{8})|x([0-9a-fA-F]{2})|(.))", re.S)
+_ESCAPE = re.compile(r"\\(?:u([dD][89abAB][0-9a-fA-F]{2})\\u([dD][c-fC-F][0-9a-fA-F]{2})"
+                     r"|u([0-9a-fA-F]{4})|U([0-9a-fA-F]{8})|x([0-9a-fA-F]{2})|(.))", re.S)
 _SIMPLE_ESCAPES = {"n": "\n", "r": "\r", "t": "\t", "b": "\b", "f": "\f", "v": "\v", "a": "\a", "0": "\0"}
 
 
@@ -867,9 +869,14 @@ def _decoded(text, start, end):
             out.append(text[at:m.start()])
             starts.extend(range(at, m.start()))
             ends.extend(range(at + 1, m.start() + 1))
-        code = m.group(1) or m.group(2) or m.group(3)
-        value = int(code, 16) if code else None
-        out.append(chr(value) if value is not None and value < 0x110000 else _SIMPLE_ESCAPES.get(m.group(4), m.group(4) or ""))
+        if m.group(1):  # a surrogate pair, one character past U+FFFF
+            high, low = int(m.group(1), 16), int(m.group(2), 16)
+            out.append(chr(0x10000 + ((high - 0xD800) << 10) + (low - 0xDC00)))
+        else:
+            code = m.group(3) or m.group(4) or m.group(5)
+            value = int(code, 16) if code else None
+            out.append(chr(value) if value is not None and value < 0x110000
+                       else _SIMPLE_ESCAPES.get(m.group(6), m.group(6) or ""))
         starts.append(m.start())
         ends.append(m.end())
         at = m.end()
@@ -947,9 +954,10 @@ def _string_edits(text, depth=0):
         return ()  # deeper than any real JSON nesting; a cap keeps a crafted chain bounded
     spans = []
     for m in _STRING_LITERAL.finditer(text):
-        if not _ANY_COMMAND.search(text, m.start(1), m.end(1)):
+        body = 1 if m.group(1) is not None else 2
+        if not _ANY_COMMAND.search(text, m.start(body), m.end(body)):
             continue
-        decoded, starts, ends = _decoded(text, m.start(1), m.end(1))
+        decoded, starts, ends = _decoded(text, m.start(body), m.end(body))
         if not _ANY_COMMAND.search(decoded):
             continue
         found = _command_spans(decoded, _literals(decoded)) + list(_string_edits(decoded, depth + 1))
@@ -1038,8 +1046,7 @@ def _view_edits(text, view, split, base):
     for m in _ARGUMENT_LIST.finditer(read):
         items = _argument_items(m.group()) if _ANY_COMMAND.search(m.group()) else None
         if items:
-            lists.append((m.start(), m.end()))
-            strings = list(_ARGUMENT.finditer(read, m.start(), m.end()))
+            strings, placed_all = list(_ARGUMENT.finditer(read, m.start(), m.end())), True
             for i, masked in _listed_flag_values(items).items():
                 k = 1 if strings[i].group(1) is not None else 2
                 decoded, starts, ends = _decoded(read, strings[i].start(k), strings[i].end(k))
@@ -1048,6 +1055,10 @@ def _view_edits(text, view, split, base):
                     parts = _masked_parts(items[i], masked)  # placed by the exact decoding, mapped by this view's
                 if parts is not None:
                     listed += _back_to(starts, ends, parts)
+                else:
+                    placed_all = False
+            if placed_all:  # where it is read exactly, a line read across the list in another view reads it wrongly
+                lists.append((m.start(), m.end()))
     if base:  # the fail-closed rule, on the text as written and in each JSON string it holds, read as its own text
         literals = _literals(read)
         if read != text:
