@@ -10,6 +10,11 @@ bench/month/stories_b/client2.py	720-555-0186	a made-up phone number in the 555-
 bench/month/stories_b/client3.py	720 555 0192	a made-up phone number in the 555-01xx block reserved for fiction, from the fictional month
 bench/month/stories_b/client3.py	720 555 0193	a made-up phone number in the 555-01xx block reserved for fiction, from the fictional month
 bench/month/stories_b/client3.py	720-555-0177	a made-up phone number in the 555-01xx block reserved for fiction, from the fictional month
+bench/outside/results/sample/op/none.jsonl.gz	a mini food crawl	"mini food crawl" in a model's own reply: ordinary words, and the rows hold no outside dataset text
+bench/outside/results/sample/op/none.jsonl.gz	a mini reset	"mini reset" in a model's own reply: ordinary words, and the rows hold no outside dataset text
+bench/outside/results/sample/op/none.jsonl.gz	bowling, mini golf	"mini golf" in a model's own reply: ordinary words, and the rows hold no outside dataset text
+bench/outside/results/sample/op/none.jsonl.gz	funny mini-event	"mini-event" in a model's own reply: an ordinary word, and the rows hold no outside dataset text
+bench/outside/results/sample/op/none.jsonl.gz	or mini golf	"mini golf" in a model's own reply: ordinary words, and the rows hold no outside dataset text
 bench/outside/results/sample/op/repetition.json	0.583171010017395	a similarity score whose digits hold the gateway's old port number; not the gateway
 bench/outside/results/sample/op/repetition.json	0.6883170008659363	a similarity score whose digits hold the gateway's old port number; not the gateway
 bench/outside/results/sample/op/repetition.json	0.8317229747772217	a similarity score whose digits hold the gateway's old port number; not the gateway
