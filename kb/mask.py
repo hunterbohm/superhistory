@@ -6,6 +6,7 @@ import logging
 import math
 import os
 import re
+import shlex
 import sys
 import traceback
 
@@ -368,13 +369,13 @@ COMMAND_FLAGS = (
     # commands' parsers read one. keytool and jarsigner take whatever follows as the password ("dash"), so there only
     # one of their own options (_JAVA_OPTIONS: "-keystore", "-v") is the next option.
     # A flag in quotes is the flag ('mongosh "-p" ...'), as the shell takes the quotes away.
-    (r"az\s+login|mongosh|mongo|mongodump|mongorestore|mongoexport|mongoimport|twine",
+    (rf"az{_FLAG_QUOTE}\s+login|mongosh|mongo|mongodump|mongorestore|mongoexport|mongoimport|twine",
      rf"\s{_quoted('-p')}[ \t]+{_FLAG_QUOTE}", False),
     (r"keytool|jarsigner", rf"\s{_quoted('-(?:src|dest|new)?(?:storepass|keypass)')}[ \t]+{_FLAG_QUOTE}", "dash"),
     # aws configure set's secret settings, and a .netrc line's password, its fields in any order but with a login
     # among them, so "the machine room password sheet" is no .netrc line. A setting's name is read once, its key word
     # looked for ahead: read around the key word, a run of key words took time in the square of its length.
-    (r"aws\s+configure\s+set", rf"\s{_quoted(_AWS_SETTING)}[ \t]+{_FLAG_QUOTE}", False),
+    (rf"aws{_FLAG_QUOTE}\s+configure\s+set", rf"\s{_quoted(_AWS_SETTING)}[ \t]+{_FLAG_QUOTE}", False),
     (r"(?:machine[ \t]+[^\s]+|default)(?=(?:[ \t]+(?:password|account)[ \t]+[^\s]+)*[ \t]+login[ \t]+[^\s])",
      r"\spassword[ \t]+(?:\\?['\"])?", "field"),
 )
@@ -382,8 +383,12 @@ _MAIN_COMMANDS = 5  # main's own rows of COMMAND_FLAGS; the rest are this PR's
 # A command's line runs to a pipe, ";" or a line break, plain or escaped (_LINE). For the rows main's own lack, it is
 # read as the shell reads it (_command_line), so a quoted password may hold a pipe ("az login -p 'Tr0ub4dor|Zk9q'").
 _LINE = r"(?:[^\n|;\\]|\\(?![nr]))*"
+# Where the name of one of this PR's commands ends: past a ".exe", and not before a path's next part, as
+# "/opt/keytool/bin/keytool" names a folder first ("/", a backslash, or one escaped as "\\\\"), though a backslash
+# that escapes a line break, a tab or a quote ends the name.
+_PROGRAM_END = r"(?:\.exe)?(?![A-Za-z0-9_.-])(?!/|\\(?![nrt\"']))"
 _COMMANDS = [(re.compile(rf"(?i)(?:(?<![A-Za-z0-9_.-])|{_AFTER_ESCAPE})(?:{command})"
-                         + (rf"(?![A-Za-z0-9_.-]){_LINE}" if n < _MAIN_COMMANDS else r"(?:\.exe)?(?![A-Za-z0-9_.-])")),
+                         + (rf"(?![A-Za-z0-9_.-]){_LINE}" if n < _MAIN_COMMANDS else _PROGRAM_END)),
               re.compile(rf"({flag})((?:{_CLOSE}[^ \t\n\r'\"])+)"), always)
              for n, (command, flag, always) in enumerate(COMMAND_FLAGS)]
 _ANY_COMMAND = re.compile(r"(?i)curl|mysql|mariadb|sshpass|login|redis-cli|mongo|twine|keytool|jarsigner|aws")
@@ -1717,8 +1722,10 @@ def mask_all(value, key=None):
 def _masked_items(items, key):
     """mask_all over a list's items, each read alone, and an item after a flag read after the command line before it
     too, up to 64 items back: a command given as its arguments holds a flag and its value in two items, as
-    ["login", "--password", "..."] or ["mongosh", "-u", "admin", "-p", "..."] does. Where that line reads more of the
-    item as a secret than the item alone does, the item, one argument, is masked whole."""
+    ["login", "--password", "..."] or ["mongosh", "-u", "admin", "-p", "..."] does. The items are joined as a shell
+    quotes them, so each keeps its bounds: a flag inside one ("note: -p release-2026") or an apostrophe ("team's
+    cert") reads as part of it. Where that line reads more of the item as a secret than the item alone does, the item,
+    one argument, is masked whole."""
     out = [mask_all(v, key) for v in items]
     if len(items) == 2:  # a name and its value, as a list of headers holds them
         out[1] = _pair_value(items[0], items[1], out[1], listed=True)
@@ -1729,8 +1736,8 @@ def _masked_items(items, key):
         start = i - 1
         while start > 0 and i - start < 64 and isinstance(items[start - 1], str):
             start -= 1
-        line = " ".join(items[start:i])
-        if not mask(f"{line} {item}").endswith(" " + mask(item)):
+        line, quoted = " ".join(map(shlex.quote, items[start:i])), shlex.quote(item)
+        if not mask(f"{line} {quoted}").endswith(" " + mask(quoted)):
             out[i] = "[masked]"
     return out
 
