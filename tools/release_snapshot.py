@@ -29,7 +29,10 @@ The checks:
     credential  no object in the repo, the notes or the archive holds a made-up credential, in any case
     patterns    no file's text or name, no symlink target, no note and no commit message matches a line of the
                 patterns file, read as `grep -i -E -f` reads it, unless the exceptions list excepts the hit. The
-                list's own lines are not scanned. An entry that matches nothing is reported as stale.
+                list's own lines are not scanned. An entry that matches nothing is reported as stale. Whatever the
+                patterns file holds, the release's own forbidden strings always count too: the local gateway's
+                name in any spelling (so also in the key file's path under any home), its old port number and
+                its proxy's name, in any case.
     dataset     no file named in DATASET_ROWS.txt is in the tree or the archive
     archive     the archive holds the same files as the tree, under one folder, with install.sh in it
     install     --installer: the site's installer, run against a local https server of this folder (a throwaway
@@ -72,6 +75,7 @@ INTERPRETERS = (("3.12", ("python3.12", "python3")), ("3.9", ("python3.9", "pyth
 VERSION_PROBE = "import sys; print('%d.%d' % sys.version_info[:2])"
 SKIPPED = re.compile(r"\.\.\. skipped ('.*'|\".*\")\s*$", re.M)
 TAG_REF = "refs/tags/"
+FORBIDDEN = ["cli[-_]?" + "gateway", "83" + "17", "cli" + "proxy" + "api"]
 ISOLATED = {"GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1"}
 
 
@@ -429,6 +433,14 @@ def grep_tree(patterns, root):
 
 
 def check_patterns(repo, patterns, exceptions=(), extra=None):
+    with tempfile.TemporaryDirectory(prefix="release-patterns-") as folder:
+        combined = os.path.join(folder, "patterns.txt")
+        with open(combined, "wb") as fh:
+            fh.write(b"\n".join(read_patterns(patterns) + [p.encode() for p in FORBIDDEN]) + b"\n")
+        return scan_patterns(repo, combined, exceptions, extra)
+
+
+def scan_patterns(repo, patterns, exceptions, extra):
     entries = tree_entries(repo)
     candidates = [c for c in grep_tree(patterns, repo) if c[0] != EXCEPTIONS_PATH]
     links = [(show(name), git_bytes(repo, "cat-file", "blob", sha, isolated=True)) for mode, sha, name in entries if mode == "120000"]
