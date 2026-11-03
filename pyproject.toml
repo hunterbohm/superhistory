@@ -3,8 +3,8 @@ requires = ["setuptools>=61"]
 build-backend = "setuptools.build_meta"
 
 [project]
-# The distribution name is open: PyPI's "varve" and "kb" belong to other projects.
-name = "kb-knowledge-base"
+# The command is `kb`. PyPI's "kb" belongs to another project, so the distribution is named for the product.
+name = "superhistory"
 dynamic = ["version"]
 description = "The knowledge base your agents check first."
 readme = "README.md"

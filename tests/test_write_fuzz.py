@@ -1,5 +1,5 @@
 """A seeded fuzz of write sequences. Rounds 8 and 9 each found writes that, in some order, left a row marked current
-though its item was not masked whole. Each sequence here mixes the writes that ingest, Sync, Cloud, remask and an
+though its item was not masked whole. Each sequence here mixes the writes that ingest, Sync, remask and an
 older kb make, on a few items whose text holds canaries split across chunk and call boundaries. After every sequence:
 - no reader shows a piece of a canary: search's hits, their render, the lookup's prompt, `kb get`, and the
   summarizer's input, each as kb sends or prints it;

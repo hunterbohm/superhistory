@@ -145,7 +145,7 @@ class MaskTest(unittest.TestCase):
                 self.assertEqual(mask(text), text)
 
     def test_text_that_starts_like_a_sync_code_reads_as_any_other(self):
-        # kb masks no Sync codes: Cloud's egress masks them before anything leaves the computer.
+        # kb masks no Sync codes: the Sync client's egress masks them before anything leaves the computer.
         self.assertEqual(mask('{"VP1ApplicationPassword12":"walrus2secret9"}'), '{"VP1ApplicationPassword12":"[masked]"}')
         for text in ("VP1 sent them back next week", "VRC2 rollout plan for the team"):
             with self.subTest(text):
@@ -577,7 +577,7 @@ class InvisibleTest(unittest.TestCase):
                         self.assertTrue(readable.endswith(" paid"), readable)
                         if shape.startswith("glue") or shape.startswith("word"):
                             self.assertTrue(readable.startswith("budget"), readable)
-            # Cloud's two: a key whose interior is a key, and a key whose tail runs past a whole key.
+            # The sync relay's two: a key whose interior is a key, and a key whose tail runs past a whole key.
             with self.subTest(ch=hex(ord(ch)), shape="a key inside a key"):
                 self.assert_masked("sk-proj-" + "a1" * 7 + "ghp_" + "a1" * 16,
                                    "sk-proj-" + "a1" * 7 + ch + "ghp_" + "a1" * 16)

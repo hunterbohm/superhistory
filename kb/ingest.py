@@ -195,7 +195,7 @@ def run(db, config, log, only=(), with_summaries=True, model_factory=None):
 
 
 def after(paths, config, db, log):
-    """Calls kb.sync.after_ingest(paths, config, db, log) when [sync] or [cloud] is in the config. A failure is
+    """Calls kb.sync.after_ingest(paths, config, db, log) when [sync] (or the older [cloud]) is in the config. A failure is
     recorded as the "sync" unit. Returns the number of failures."""
     if "sync" not in config.units():
         return 0

@@ -1,7 +1,7 @@
 """The canary harness. A different secret is planted in every kind of input kb takes from outside: config secrets,
 an environment variable, `cmd:` secrets that fail or time out, item text and metadata, file and repository paths,
 the output and errors of ssh, gh and git, and HTTP and IMAP answers, malformed ones included. Then every kb command
-and every library entry point the Sync client and the Cloud engine call runs, and no canary may reach stdout,
+and every library entry point the Sync client and the sync relay call runs, and no canary may reach stdout,
 stderr, a log record, a file kb writes under its data, log or cache folders, check.log, or the text of an exception.
 
 Each canary has a secret's shape, because mask() can only mask what looks like a secret. A path this harness does
@@ -499,8 +499,8 @@ password = "cmd:echo {CANARY['cmdfail']} >&2; exit 3"
             fh.write(kept)
 
     def drive_stored_rows(self):
-        """Rows that reach the store without store_item: an item another store sent, written as Sync and Cloud
-        write it, and rows an earlier version of mask() stored, which today's changes. Search, get and summarize read
+        """Rows that reach the store without store_item: an item another store sent, written as Sync
+        writes it, and rows an earlier version of mask() stored, which today's changes. Search, get and summarize read
         both, and an old row's text is cut at a title, a snippet, a page, a summarizer slice and between two chunks,
         which remask has to join to mask."""
         db = store.connect(self.paths.db)

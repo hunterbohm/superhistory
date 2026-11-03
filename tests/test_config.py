@@ -107,6 +107,13 @@ class ExtensionTest(unittest.TestCase):
         self.assertIn("sync", cfg.units())
         self.assertNotIn("sync", config.parse("").units())
 
+    def test_a_config_with_the_older_cloud_table_still_reads_as_sync_is_on(self):
+        cfg = config.parse('[cloud]\nrelay = "https://relay.example"\n')
+        self.assertEqual(cfg.extra, {"cloud": {"relay": "https://relay.example"}})
+        self.assertIn("sync", cfg.units())
+        with self.assertRaisesRegex(ConfigError, 'sources.github: with \\[sync\\] on, name the account'):
+            config.parse("[cloud]\n[sources.github]\n")
+
     def test_a_sync_key_that_is_not_a_table_is_refused(self):
         with self.assertRaisesRegex(ConfigError, "sync: expected a table"):
             config.parse('sync = "on"\n')
@@ -128,7 +135,7 @@ class ExtensionTest(unittest.TestCase):
 
     def test_with_sync_on_an_account_the_config_cannot_name_is_refused(self):
         self.assertEqual(config.parse("[sources.github]\n").account_keys(), {}, '"@me" names no account by itself')
-        with self.assertRaisesRegex(ConfigError, 'sources.github: with \\[sync\\] or \\[cloud\\] on, name the account'):
+        with self.assertRaisesRegex(ConfigError, 'sources.github: with \\[sync\\] on, name the account'):
             config.parse("[sync]\n[sources.github]\n")
 
 

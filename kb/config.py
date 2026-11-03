@@ -40,7 +40,8 @@ KEY_WORD_NAME = ('{where}: "{name}" is a word for a secret, such as "password" o
 NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,39}$")
 SOURCE_KEYS = {"type", "enabled", "exclude", "exclude_defaults", "summarize", "hosts"}
 MAX_CHECK_BUDGET = 25.0
-# Tables kb keeps as they are for the packages that read them: [sync] for the Sync client (kb/sync), [cloud] for Cloud.
+# Tables kb keeps as they are for the packages that read them: [sync] for the Sync client (kb/sync), and [cloud], an
+# older name for the same table that is still read.
 EXTENSION_TABLES = ("sync", "cloud")
 SECRET_TIMEOUT = 60.0
 
@@ -164,8 +165,8 @@ class Config:
     schedule: Schedule = Schedule()
     sources: Tuple[Source, ...] = ()
     hosts: Tuple[Host, ...] = ()
-    # Whose items these are: the install id kb fills in when it writes (kb.ids). A Config built elsewhere, such as a
-    # hosted store's, may leave it empty; its items are then prefixed by `machine`.
+    # Whose items these are: the install id kb fills in when it writes (kb.ids). A Config built elsewhere, such as the
+    # sync relay's, may leave it empty; its items are then prefixed by `machine`.
     install: str = ""
     extra: Mapping[str, Any] = dataclasses.field(default_factory=dict)
 
@@ -265,7 +266,7 @@ def parse(text):
             sources.append(source)
     problems += [f"{key}: expected a table" for key, value in extra.items() if not isinstance(value, dict)]
     if extra:
-        problems += [f"sources.{s.name}: with [sync] or [cloud] on, name the account it reads (for GitHub, set "
+        problems += [f"sources.{s.name}: with [sync] on, name the account it reads (for GitHub, set "
                      f'involves to your login instead of "@me"), so a second computer reading it is caught'
                      for s in sources if s.type.account and not s.type.account(s.options)]
     if problems:

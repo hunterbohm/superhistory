@@ -1,7 +1,8 @@
 # How the package is laid out
 
 The Python package is `kb`, named after the command. The product name lives in one constant, `kb.NAME`, and the
-folder names, job labels and printed text come from it, so a rename is one edit.
+folder names, job labels and printed text come from it, so a rename is one edit. `kb.LEGACY_NAME` is the name before the last rename: folders and scheduled jobs
+written under it are still read (`kb/paths.py`, `kb/schedule.py`).
 
 ## Modules
 
@@ -33,7 +34,7 @@ The Sync client goes in `kb/sync/`, imported as `kb.sync`.
 - `ingest.apply(db, source, prefix, event, host)` is the one write path for read data, and applying an event twice
   changes nothing. A prune deletes only under the prefix it read, and the summarizer summarizes only this install's
   items.
-- After `kb ingest`, when the config has a `[sync]` or `[cloud]` table, kb calls
+- After `kb ingest`, when the config has a `[sync]` table, or a `[cloud]` table (an older name kb still reads), kb calls
   `kb.sync.after_ingest(paths, config, db, log)`, which runs `kb sync` and `kb push`. `config.extra` holds those
   tables as parsed TOML, and `config.install` holds this install's id. It runs even when no source is configured, so
   a forgotten reader's deletions still go out. A failure, a missing client included, is the `sync` health unit and
@@ -50,7 +51,7 @@ The Sync client goes in `kb/sync/`, imported as `kb.sync`.
 
 Each online account has one reader. Gmail and GitHub read an account, not a computer, so two computers reading one
 would store every thread twice under two prefixes. `config.account_keys()` names the account each source reads, one
-key however the config spells it (case, a leading `@`, dots in a gmail.com name). With `[sync]` or `[cloud]` on, a
+key however the config spells it (case, a leading `@`, dots in a gmail.com name). With `[sync]` (or `[cloud]`) on, a
 source whose config does not name its account, such as GitHub left at `"@me"`, is a config error. The Sync client
 refuses a second reader: at `kb sync join`, and on every `after_ingest`, because a member can add a
 source after joining. An account key holds a mail address, so it goes only where item text goes. To move a reader to
@@ -158,8 +159,8 @@ on the next ingest. The header counts the rows left, and `kb remask` does them a
 than kb reads is left out of the error.
 
 An item's rows record a hash of its title and text as stored, masked (`store.item_hash`), whatever hash rows another
-store sent came with: Sync and Cloud send it with the masked text, and a hash of the text before a mask changed it
-would let either confirm a guess at the secret. When remask changes an item's text, its rows record the new hash, a
+store sent came with: Sync sends it with the masked text, and a hash of the text before a mask changed it
+would let the relay confirm a guess at the secret. When remask changes an item's text, its rows record the new hash, a
 summary of that text names it, and no hash of the text before stays: an older summary's hash and every summary's
 prefix hash go, so the item's next growth gets a full pass, and a failed summary's mark moves to the new hash.
 

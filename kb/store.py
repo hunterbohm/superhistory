@@ -386,7 +386,7 @@ def replace_rows(db, source, source_id, rows, kinds=ITEM_KINDS):
     if "raw" not in kinds and any(r["kind"] == "raw" for r in rows):
         # Chunks added one write at a time would be masked apart, and a secret could run from one into the next.
         raise ValueError("an item's chunks are replaced all at once, with the raw kind")
-    # Masked here too, since Sync and Cloud write rows another store sent; for rows store_item made it changes nothing.
+    # Masked here too, since Sync writes rows another store sent; for rows store_item made it changes nothing.
     rows = _as_stored(rows)
     marks = ",".join("?" * len(kinds))
     if db.execute(f"SELECT 1 FROM docs WHERE source=? AND source_id=? AND kind IN ({marks}) AND masked IS NOT ? LIMIT 1",
