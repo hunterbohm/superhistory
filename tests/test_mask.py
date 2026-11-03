@@ -1,3 +1,4 @@
+import json
 import unittest
 from unittest import mock
 
@@ -791,6 +792,92 @@ class ReviewFourTest(unittest.TestCase):
         masked = mask(text)
         for line in lines:
             self.assertNotIn(line[8:40], masked)
+
+
+class ReviewFiveTest(unittest.TestCase):
+    """#34's fifth review and the coordinator's rule after it: a key's rest after a placeholder fails closed only in a
+    stored row from a kb before keys were masked whole; in text read fresh a key is masked whole, so nothing of it
+    follows its placeholder."""
+
+    def pem(self, body_lines):
+        return "-----BEGIN PRIVATE KEY-----\n" + "\n".join(body_lines) + "\n-----END PRIVATE KEY-----\n"
+
+    def test_a_split_or_rewrapped_key_read_fresh_is_masked_whole_in_one_pass(self):
+        import base64
+        import random
+        import textwrap
+        from kb import mask as mask_module
+        body = base64.b64encode(made_up_private_key(random.Random(83))).decode()
+        half = len(body) // 2
+        shapes = {"split by a zero-width space": textwrap.wrap(body[:half] + "\u200b" + body[half:], 64),
+                  "re-wrapped at 76": textwrap.wrap(body, 76), "on one line": [body],
+                  "re-wrapped, then split": textwrap.wrap(body[:half], 40) + ["\u200b" + body[half:]]}
+        for name, lines in shapes.items():
+            text = self.pem(lines)
+            for form in (text, json.dumps(text)):
+                with self.subTest(shape=name, json=form != text):
+                    once = mask_module._mask_once(form)
+                    for piece in (body[:24], body[half - 12:half], body[half:half + 24], body[-24:]):
+                        self.assertNotIn(piece, once)
+                    # the key whole, its footer's own line break kept
+                    self.assertEqual(mask(form), json.dumps("[masked]\n") if form != text else "[masked]\n")
+
+    def test_base64_json_after_a_passwords_placeholder_stays_through_storage(self):
+        import base64
+        import tempfile
+        from kb import store
+        encoded = base64.b64encode(b'{"note":"next steps","enabled":true,"mode":"normal"}').decode()
+        text = f"password: TestValue9!\n{encoded}\nDone\n"
+        with tempfile.TemporaryDirectory() as folder:
+            db = store.connect(folder + "/kb.sqlite")
+            try:
+                store.store_item(db, "notes", "example", "2026-11-03", "Plan", text, {})
+                content = db.execute("SELECT content FROM docs").fetchone()[0]
+            finally:
+                db.close()
+        self.assertEqual(content, f"password: [masked]\n{encoded}\nDone\n")
+
+    def test_an_older_rows_placeholder_still_fails_closed(self):
+        from kb import mask as mask_module
+        rest = "QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVphYmNkZWZnaGlqa2xtbm9wcXJzdHV2d3h5ejAxMjM0"
+        with mask_module.stored_row("0123456789abcdef"):  # a version from before keys were masked whole
+            self.assertNotIn(rest, mask(f"[masked]\n{rest}\n"))
+        with mask_module.stored_row(mask_module.VERSION):
+            self.assertIn(rest, mask(f"[masked]\n{rest}\n"))
+
+    def test_an_all_capitals_fragment_with_no_vowel_inside_a_line_of_words(self):
+        text = "[masked]\nMC4CAQAwBQYDK2VwBCIEIAAABCDFAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\nnotes BCDF"
+        self.assertNotIn("BCDF", mask(text))
+
+    def test_an_escaped_invisible_character_inside_an_escaped_line_break(self):
+        import base64
+        import io
+        import textwrap
+        from kb.mask import MaskedStream
+        body = base64.b64encode(bytes.fromhex("302e020100300506032b657004220420") + bytes(range(32)))
+        pem = b"-----BEGIN PRIVATE KEY-----\n" + body + b"\n-----END PRIVATE KEY-----\n"
+        lines = textwrap.wrap(base64.b64encode(pem).decode(), 64)
+        joined = "\\n".join(lines)
+        at = joined.rfind("\\n") + 1
+        text = json.dumps(joined[:at] + "\u200b" + joined[at:])
+        out = io.StringIO()
+        MaskedStream(out).write(text)
+        for line in lines:
+            self.assertNotIn(line[8:40], out.getvalue())
+            self.assertNotIn(line[8:40], mask(text))
+
+    def test_a_long_run_of_backslashes_in_a_keys_rest_costs_time_in_proportion(self):
+        import functools
+        import time
+        took = {}
+        for n in (11, 14):
+            value = functools.reduce(lambda x, _: json.dumps(x), range(n), {"path": r"C:\tmp\file"})
+            text = "[masked]\nMC4CAQAwBQYDK2VwBCIEIAABAgMEBQYHCAkKCwwNDg8QERITFBUWFxgZGhscHR4f\n" + value
+            started = time.process_time()
+            mask(text)
+            took[n] = time.process_time() - started
+        # each level doubles the backslashes: 14 levels are eight times the text of 11
+        self.assertLess(took[14], 16 * max(took[11], 0.05), took)
 
 
 class HeadlessKeyTest(unittest.TestCase):
