@@ -755,8 +755,11 @@ def run_suites(repo, suites, timeout=SUITE_TIMEOUT):
         env = {k: v for k, v in os.environ.items() if k not in ("PYTHONPATH", "KB_HOME")}
         env.setdefault("PYTHONUSERBASE", site.getuserbase())
         env.update({"HOME": home, "PYTHONDONTWRITEBYTECODE": "1"})
+        copy = os.path.join(home, "repo")
+        shutil.copytree(str(repo), copy, symlinks=True)
         with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, len(suites))) as pool:
-            runs = list(pool.map(lambda suite: run_suite(suite, repo, env, timeout), suites))
+            runs = list(pool.map(lambda suite: run_suite(suite, copy, env, timeout), suites))
+        left = git_bytes(copy, "status", "--porcelain", "-z", isolated=True)
     findings, notes, total, skipped = [], [], 0, 0
     for label, code, count, reasons, problems in runs:
         total += count
@@ -767,12 +770,40 @@ def run_suites(repo, suites, timeout=SUITE_TIMEOUT):
             tally[reason] = tally.get(reason, 0) + 1
         notes.extend("  %s skipped %d: %s" % (label, n, r) for r, n in sorted(tally.items(), key=lambda kv: -kv[1])[:15])
         findings.extend(Finding(label, p) for p in problems)
-    left = git(repo, "status", "--porcelain", isolated=True)
-    findings.extend(Finding("snapshot", "left behind: %s" % line) for line in left.splitlines())
+    left = [show(entry) for entry in left.split(b"\0") if entry]
+    findings.extend(Finding("copy", "left behind: %s" % esc(entry)) for entry in left)
     failed = sum(1 for run_ in runs if run_[4])
     count = "%d suite%s, %d tests, %d skipped, each with a reason" % (len(runs), "" if len(runs) == 1 else "s", total, skipped)
-    return result("suites", findings, count + ", 0 failed", "%s; %d failed%s" % (count, failed, ", files left behind" if left else ""),
+    return result("suites", findings, count + ", 0 failed", "%s; %d failed%s" % (count, failed, ", files left behind in the copy" if left else ""),
                   findings, (), notes)
+
+
+def sha256_of(path):
+    with open(str(path), "rb") as fh:
+        return hashlib.sha256(fh.read()).hexdigest()
+
+
+def fingerprint(release):
+    repo = release.repo
+    objects = git(repo, "cat-file", "--batch-all-objects", "--batch-check", isolated=True)
+    return {"refs": git(repo, "for-each-ref", "--format=%(objectname) %(refname)", isolated=True)
+                    + "\n" + git(repo, "symbolic-ref", "HEAD", isolated=True),
+            "objects": "\n".join(sorted(objects.splitlines())),
+            "tree": git(repo, "rev-parse", "HEAD^{tree}", isolated=True),
+            "working tree": git(repo, "status", "--porcelain", "-z", "--ignored", isolated=True),
+            "archive": sha256_of(release.archive), "notes": sha256_of(release.notes)}
+
+
+def suites_check(release, suites):
+    before = fingerprint(release)
+    check = run_suites(release.repo, suites(release.repo))
+    after = fingerprint(release)
+    changed = [key for key in before if before[key] != after[key]]
+    if changed:
+        check.status = "FAIL"
+        check.findings.append(Finding("snapshot", "the snapshot changed while the suites ran: %s" % ", ".join(changed)))
+        check.summary += "; the snapshot changed (%s)" % ", ".join(changed)
+    return check
 
 
 def clear(path, created):
@@ -872,6 +903,7 @@ def assemble(source, commit, out, name, email, tag, title, repo_name, notes_text
 
     extra = {"RELEASE_NOTES.md": notes_text}
     release = Release(tag, snapshot, Path(repo), Path(notes), Path(archive), Path(out), [], left_out)
+    suites_result = suites_check(release, suites) if suites else CheckResult("suites", "SKIP", "not run: --no-suites given")
     release.checks = [
         check_history(repo, tag),
         check_credential(repo, credentials, extra, archive),
@@ -879,7 +911,7 @@ def assemble(source, commit, out, name, email, tag, title, repo_name, notes_text
         check_dataset(repo, archive, left_out, prefix),
         check_archive(repo, archive, prefix),
         run_install_check(release, installer) if installer else CheckResult("install", "SKIP", "not run: no --installer given"),
-        run_suites(repo, suites(repo)) if suites else CheckResult("suites", "SKIP", "not run: --no-suites given"),
+        suites_result,
     ]
     return release
 
