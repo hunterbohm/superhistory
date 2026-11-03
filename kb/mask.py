@@ -2240,7 +2240,10 @@ _REGEX_LABEL = re.compile(r"\s*/((?:\\.|[^/\\\n])+)/[a-z]*\s*")
 
 def _receiver_strings(text, tokens, k, limit=200):
     """The strings in the chain of calls before tokens[k], read back over names, dots and whole brackets, as
-    'page.getByRole("textbox", {name: "Password"})' or 'driver.find_element(By.ID, "password")' gives a field's labels."""
+    'page.getByRole("textbox", {name: "Password"})' or 'driver.find_element(By.ID, "password")' gives a field's labels.
+    A chain is joined by dots: it reads no further back than a name with no dot before it, or a bracket that follows
+    no name or bracket, so another statement's strings are never this field's. An object's key ({"name": ...}) names
+    an option, not the field."""
     strings, names, depth, stop, close = [], [], 0, max(-1, k - limit), None
     k -= 1
     while k > stop:
@@ -2248,18 +2251,20 @@ def _receiver_strings(text, tokens, k, limit=200):
         if depth:
             depth += kind in ")]}"
             depth -= kind in "([{"
-            if kind == "s":
+            if kind == "s" and not (k + 1 < len(tokens) and tokens[k + 1][0] == ":"):
                 strings.append(text[slice(*_code_text(text, tokens[k]))])
             if not depth:  # a regex literal in the brackets ("getByLabel(/Password/i)") names the field too
                 regex = _REGEX_LABEL.fullmatch(text, tokens[k][2], close)
                 if regex:
                     strings.append(re.sub(r"\\.|[\^$.*+?()\[\]{}|]", " ", regex.group(1)).strip())
+                if k == 0 or tokens[k - 1][0] not in ("n", ")", "]"):
+                    break  # a bracket that calls or indexes nothing starts no chain
         elif kind in ")]":
             depth, close = 1, tokens[k][1]
         elif kind == "n":
             names.append(text[tokens[k][1]:tokens[k][2]])
-            if k > 0 and tokens[k - 1][0] == "n":
-                break  # "await page": the chain starts at its first name
+            if k == 0 or tokens[k - 1][0] != ".":
+                break  # "await page", or a name after another statement: the chain starts at its first name
         elif kind != ".":
             break
         k -= 1
@@ -2372,8 +2377,9 @@ def _typed_code_edits(text):
         positional = [ts for kw, ts in args if kw is None]
         # the call's own selector, page.fill(selector, text) on any page or variable holding one: a lone string first,
         # then a value holding a string, by position or as value=; not fill(text, {options}) or send_keys(text, Keys.ENTER)
+        second = positional[1] if len(positional) > 1 else []
         selector = bool(positional) and [t[0] for t in positional[0]] == ["s"] and (
-            len(positional) > 1 and any(t[0] == "s" for t in positional[1])
+            bool(second) and (second[0][0] == "s" or second[0][0] == "(" and any(t[0] == "s" for t in second))
             or any(kw in _CODE_VALUE_KEYWORDS and any(t[0] == "s" for t in ts) for kw, ts in args))
         if selector:
             own.append(positional[0])
