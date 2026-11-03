@@ -2145,6 +2145,31 @@ class ReviewFortyTest(unittest.TestCase):
                     self.assertEqual(mask(text), text)
 
 
+class ReviewFortyOneTest(unittest.TestCase):
+    """The forty-first review's findings, all in reading the field inside the coordinator's rule: a key typed after
+    the value in Selenium's send_keys, a regex inside a locator's options, and brackets around a call's own selector."""
+
+    TYPED = (
+        'driver.find_element(By.ID, "password").send_keys("sunshine", "\\n")',
+        'driver.find_element(By.ID, "password").send_keys("sunshine", Keys.ENTER, "x")',
+        'await page.getByRole("textbox", {name: /Password/i}).fill("sunshine");',
+        'await page.getByRole("textbox", { name: /^password$/i, exact: true }).fill("sunshine");',
+        'page.fill(("#password"), "sunshine")',
+        'page.fill(\n    ("#password"),\n    "sunshine",\n)',
+    )
+
+    def test_each_password_is_masked(self):
+        for code in self.TYPED:
+            for text in (code, json.dumps(code), json.dumps({"code": code}), json.dumps(json.dumps(code))):
+                with self.subTest(text=text[:70]):
+                    self.assertNotIn("sunshine", mask(text))
+
+    def test_an_element_typed_into_has_no_selector_and_a_page_keeps_one(self):
+        self.assertEqual(mask('page.keyboard.type("sunshine", "x")'), 'page.keyboard.type("sunshine", "x")')
+        self.assertEqual(mask('page.type("#search", "sunshine")'), 'page.type("#search", "sunshine")')
+        self.assertNotIn("sunshine", mask('page.frame(name="login").type("#password", "sunshine")'))
+
+
 # Commands as an argument list, each flag's value its own item: (the list, the items masked).
 ARGV = (
     (["login", "--password", PASSWORD], {2}), (["--token", SUB], {1}), (["--api-key", SUB, "--verbose"], {1}),
