@@ -714,6 +714,61 @@ class ForbiddenNamesTest(SourceCase):
         self.assertTrue(release.check("credential").ok)
 
 
+class IdentityTest(SourceCase):
+    def test_a_forbidden_string_or_a_pattern_in_the_author_fails_the_patterns_check(self):
+        head = self.commit(self.base_files())
+        for author in ("cli" + "-gateway <test@example.invalid>", "Builds <acme" + "corp@example.invalid>"):
+            shutil.rmtree(str(self.out), ignore_errors=True)
+            found = self.build(head, author=author).check("patterns")
+            self.assertEqual([f.where for f in found.findings], ["commit identity:1", "commit identity:2"], author)
+
+    def test_the_credential_in_the_author_fails_the_credential_check(self):
+        found = self.build(self.commit(self.base_files()), author="Builds <%s@example.invalid>" % CREDENTIAL).check("credential")
+        self.assertIn("commit identity", [f.where for f in found.findings])
+
+    def test_an_exact_entry_for_the_whole_identity_excuses_it(self):
+        author = "Acme" + "corp Builds <builds@example.invalid>"
+        files = self.base_files(**{EXCEPTIONS: tsv(("commit identity", author, "the made-up author"))})
+        found = self.build(self.commit(files), author=author).check("patterns")
+        self.assertTrue(found.ok, found.findings)
+        self.assertEqual([f.where for f in found.allowed], ["commit identity:1", "commit identity:2"])
+        self.assertEqual(found.notes, [])
+
+
+class GitFailureTest(SourceCase):
+    def shimmed(self, body):
+        folder = self.tmp / "shim"
+        folder.mkdir(exist_ok=True)
+        script = folder / "git"
+        script.write_text('#!/bin/sh\ncase "$*" in\n  *"--batch-all-objects --batch") %s ;;\nesac\nexec %s "$@"\n'
+                          % (body, shutil.which("git")))
+        script.chmod(0o755)
+        return mock.patch.dict(os.environ, {"PATH": "%s%s%s" % (folder, os.pathsep, os.environ["PATH"])})
+
+    def credential(self, body):
+        release = self.build(self.commit(self.base_files()))
+        with self.shimmed(body):
+            return rs.guarded("credential", rs.check_credential, release.repo, [CREDENTIAL])
+
+    def test_an_object_reader_that_fails_fails_the_check_with_its_detail(self):
+        found = self.credential("echo reader broke on purpose >&2; exit 3")
+        self.assertFalse(found.ok)
+        self.assertIn("reader broke on purpose", "\n".join(f.text for f in found.findings))
+
+    def test_an_object_reader_that_reads_fewer_objects_than_the_repo_holds_fails(self):
+        found = self.credential("exit 0")
+        self.assertFalse(found.ok)
+        self.assertIn("read 0 objects", "\n".join(f.text for f in found.findings))
+
+    def test_a_git_command_that_runs_past_its_time_fails(self):
+        started = time.time()
+        with mock.patch.object(rs, "COMMAND_TIMEOUT", 2):
+            found = self.credential("exec sleep 30")
+        self.assertLess(time.time() - started, 25)
+        self.assertFalse(found.ok)
+        self.assertIn("ran past 2 seconds", "\n".join(f.text for f in found.findings))
+
+
 class CommandTest(SourceCase):
     def test_a_clean_snapshot_exits_zero_and_reports_each_check(self):
         self.commit(self.base_files())
@@ -929,6 +984,12 @@ class ExceptionsTest(SourceCase):
         found = self.patterns_of({"a.md": "Acmecorp boxroom\n"}, [("a.md", "Acmecorp", "a made-up firm")])
         self.assertFalse(found.ok)
         self.assertEqual(found.notes, [])
+
+    def test_the_lists_comments_paths_and_reasons_are_scanned_and_only_each_entrys_string_is_left_out(self):
+        listed = "# about acme" + "corp\n" + tsv(("a.md", "Acmecorp", "a made-up firm"), ("a.md", "zzz", "the boxroom too"))
+        found = self.patterns_of({"a.md": "Acmecorp\n"}, listed)
+        self.assertEqual([f.where for f in found.findings], [EXCEPTIONS + ":1", EXCEPTIONS + ":3"])
+        self.assertEqual([f.where for f in found.allowed], ["a.md:1"])
 
     def test_the_lists_own_lines_are_not_scanned_but_its_name_still_is(self):
         found = self.patterns_of({"a.md": "Acmecorp\n"}, [("a.md", "Acmecorp", "a made-up firm")])
@@ -1214,6 +1275,33 @@ class T(unittest.TestCase):
         found = self.built(body, files={"target/a.txt": "fine\n"}).check("suites")
         self.assert_changed(found, "working tree")
 
+    def test_a_new_hook_a_mode_change_on_the_notes_or_assume_unchanged_is_a_change(self):
+        self.assert_changed(self.tampered("""
+            os.makedirs(os.path.join(snap, '.git', 'hooks'), exist_ok=True)
+            open(os.path.join(snap, '.git', 'hooks', 'pre-commit'), 'w').write('#!/bin/sh\\n')
+            """), "other .git files")
+        self.out = self.tmp / "out2"
+        self.assert_changed(self.tampered("os.chmod(os.path.join(os.path.dirname(snap), 'RELEASE_NOTES.md'), 0o755)"), "notes")
+        self.out = self.tmp / "out3"
+        self.assert_changed(self.tampered("subprocess.run(['git', '-C', snap, 'update-index', '--assume-unchanged', 'README.md'], check=True)"), "index")
+
+    def test_a_link_out_of_the_tree_stops_the_installer_and_the_suites_before_they_run(self):
+        outside = self.tmp / "outside"
+        outside.mkdir()
+        os.symlink(str(outside), str(self.src / "cache-link"))
+        installer = self.tmp / "marker.sh"
+        installer.write_text("#!/bin/sh\ntouch %s\n" % (outside / "installed"))
+        body = "    def test_write(self):\n        open(os.path.join('cache-link', 'marker.txt'), 'w').write('x')\n"
+        release = self.built(body, installer=installer)
+        self.assertFalse(release.ok)
+        self.assertEqual([f.where for f in release.check("links").findings], ["cache-link"])
+        for name in ("install", "suites"):
+            found = release.check(name)
+            self.assertEqual(found.status, "SKIP", found.findings)
+            self.assertIn("not run", found.summary)
+        self.assertEqual(os.listdir(str(outside)), [])
+        self.assertFalse(release.check("files").ok)
+
     def test_a_suite_that_edits_the_notes_fails_the_credential_check_on_what_is_on_disk(self):
         notes = str(self.out / "RELEASE_NOTES.md")
         body = ("    def test_edit(self):\n        open(%r, 'a').write(%r + %r + '\\n')\n" % (notes, CREDENTIAL[:6], CREDENTIAL[6:]))
@@ -1412,6 +1500,29 @@ class InstallTest(SourceCase):
         script = self.tmp / "fake_installer.sh"
         script.write_text("#!/bin/sh\nmkdir -p \"$HOME/.local/bin\"\ncat > \"$HOME/.local/bin/kb\" <<'KB'\n%s\nKB\nchmod +x \"$HOME/.local/bin/kb\"\n" % kb_body)
         return script
+
+    def scripted(self, steps, kb_body):
+        script = self.tmp / "scripted.sh"
+        script.write_text('#!/bin/sh\nset -e\nrepo="$SUPERHISTORY_REPO"\n%s\nmkdir -p "$HOME/.local/bin"\n'
+                          'cat > "$HOME/.local/bin/kb" <<\'KB\'\n%s\nKB\nchmod +x "$HOME/.local/bin/kb"\n' % (steps, kb_body))
+        return script
+
+    def test_an_installer_that_never_downloads_the_whole_archive_fails(self):
+        release = self.build()
+        steps = ('curl -fsS -o /dev/null "$repo/releases/latest"\n'
+                 'curl -fsSI -o /dev/null "$repo/archive/refs/tags/%s.tar.gz"' % release.tag)
+        result = rs.run_install_check(release, self.scripted(steps, "#!/bin/sh\necho usage: kb"), timeout=60)
+        self.assertFalse(result.ok)
+        self.assertTrue(any("whole archive" in f.text for f in result.findings), result.findings)
+
+    def test_a_kb_that_prints_another_version_than_the_snapshots_code_fails(self):
+        release = self.build()
+        steps = ('curl -fsS -o /dev/null "$repo/releases/latest"\n'
+                 'curl -fsS -o "$TMPDIR/a.tar.gz" "$repo/archive/refs/tags/%s.tar.gz"' % release.tag)
+        kb = '#!/bin/sh\ncase "$1" in --version) echo "Varve 9.9.9" ;; *) echo "usage: kb" ;; esac'
+        result = rs.run_install_check(release, self.scripted(steps, kb), timeout=60)
+        self.assertFalse(result.ok)
+        self.assertEqual([f.where for f in result.findings], ["kb --version"], result.findings)
 
     def test_a_kb_that_hangs_fails_the_check_instead_of_raising(self):
         release = self.build()
