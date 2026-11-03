@@ -8,10 +8,12 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import time
 import unittest
 import urllib.error
 import urllib.request
 from pathlib import Path
+from unittest import mock
 
 from tools import release_snapshot as rs
 
@@ -770,6 +772,64 @@ class InstallTest(SourceCase):
         existed = before.exists()
         rs.run_install_check(release, INSTALLER)
         self.assertEqual(before.exists(), existed)
+
+    def fake_installer(self, kb_body):
+        script = self.tmp / "fake_installer.sh"
+        script.write_text("#!/bin/sh\nmkdir -p \"$HOME/.local/bin\"\ncat > \"$HOME/.local/bin/kb\" <<'KB'\n%s\nKB\nchmod +x \"$HOME/.local/bin/kb\"\n" % kb_body)
+        return script
+
+    def test_a_kb_that_hangs_fails_the_check_instead_of_raising(self):
+        release = self.build()
+        started = time.time()
+        result = rs.run_install_check(release, self.fake_installer("#!/bin/sh\nsleep 30"), timeout=2)
+        self.assertLess(time.time() - started, 25)
+        self.assertFalse(result.ok)
+        self.assertTrue(any(f.where == "kb --help" and "ran past 2 seconds" in f.text for f in result.findings), result.findings)
+
+    def test_a_kb_that_cannot_run_fails_the_check_with_the_reason(self):
+        release = self.build()
+        result = rs.run_install_check(release, self.fake_installer("not a program"), timeout=5)
+        self.assertFalse(result.ok)
+        self.assertTrue(any(f.where == "kb --help" for f in result.findings), result.findings)
+
+    def test_a_kb_that_is_not_executable_fails_the_check_with_the_reason(self):
+        release = self.build()
+        script = self.tmp / "plain.sh"
+        script.write_text("#!/bin/sh\nmkdir -p \"$HOME/.local/bin\"\necho '#!/bin/sh' > \"$HOME/.local/bin/kb\"\n")
+        result = rs.run_install_check(release, script, timeout=5)
+        self.assertFalse(result.ok)
+        self.assertTrue(any("Permission" in f.text or "not executable" in f.text for f in result.findings), result.findings)
+
+    def test_a_certificate_that_cannot_be_made_fails_the_check_with_the_reason(self):
+        release = self.build()
+        with mock.patch.object(rs, "make_certificate", side_effect=rs.ReleaseError("no openssl here")):
+            result = rs.run_install_check(release, INSTALLER)
+        self.assertFalse(result.ok)
+        self.assertIn("no openssl here", "\n".join(f.text for f in result.findings))
+
+    def test_an_installer_that_cannot_start_fails_the_check_with_the_reason(self):
+        release = self.build()
+        with mock.patch.object(rs.subprocess, "Popen", side_effect=OSError("exec failed on purpose")):
+            result = rs.run_install_check(release, INSTALLER)
+        self.assertFalse(result.ok)
+        self.assertIn("exec failed on purpose", "\n".join(f.text for f in result.findings))
+
+    def test_a_command_that_runs_past_its_time_loses_its_whole_process_group(self):
+        marker = self.tmp / "grandchild.pid"
+        started = time.time()
+        with self.assertRaises(subprocess.TimeoutExpired):
+            rs.run_group(["sh", "-c", "sleep 60 & echo $! > %s; wait" % marker], timeout=1)
+        self.assertLess(time.time() - started, 20)
+        pid = int(marker.read_text())
+        for _ in range(50):
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                break
+            time.sleep(0.1)
+        else:
+            os.kill(pid, 9)
+            self.fail("the command's own child outlived the timeout")
 
     def test_the_command_runs_the_install_check_when_given_an_installer(self):
         code, text = self.run_main("--installer", str(INSTALLER))
