@@ -43,6 +43,7 @@ import concurrent.futures
 import contextlib
 import dataclasses
 import gzip
+import hashlib
 import http.server
 import os
 import posixpath
@@ -65,6 +66,8 @@ VERSION_FILE = "kb/__init__.py"
 EXCEPTIONS_PATH = "tools/release_exceptions.tsv"
 ROWS_PATH = "bench/DATASET_ROWS.txt"
 SUITE_TIMEOUT = 3600
+ARCHIVE_MODES = {"100644": 0o664, "100755": 0o775, "120000": 0o777}
+ARCHIVE_DIR = 0o775
 INTERPRETERS = (("3.12", ("python3.12", "python3")), ("3.9", ("python3.9", "python3")))
 VERSION_PROBE = "import sys; print('%d.%d' % sys.version_info[:2])"
 SKIPPED = re.compile(r"\.\.\. skipped ('.*'|\".*\")\s*$", re.M)
@@ -333,6 +336,11 @@ def show(raw):
     return raw.decode("utf-8", "replace")
 
 
+def esc(raw):
+    text = raw if isinstance(raw, str) else show(raw)
+    return re.sub(r"[\x00-\x1f\x7f]", lambda m: "\\x%02x" % ord(m.group()), text)
+
+
 def check_history(repo, tag):
     problems = []
     kinds = git(repo, "cat-file", "--batch-all-objects", "--batch-check=%(objecttype)", isolated=True).split()
@@ -480,19 +488,63 @@ def group(findings):
     return grouped
 
 
+def blob_id(data):
+    return hashlib.sha1(b"blob %d\0" % len(data) + data).hexdigest()
+
+
+def member_key(raw):
+    return raw.decode("utf-8", "surrogateescape")
+
+
 def check_archive(release_repo, archive, prefix):
-    problems = []
-    entries = tree_entries(release_repo)
+    entries = [e for e in tree_entries(release_repo) if e[0] in ARCHIVE_MODES]
+    wanted = {prefix + member_key(name): (mode, sha) for mode, sha, name in entries}
+    folders = {prefix[:-1]}
+    for path in wanted:
+        parts = path.split("/")[:-1]
+        folders.update("/".join(parts[:n]) for n in range(len(prefix.split("/")) - 1, len(parts) + 1))
+    problems, seen = [], set()
+
+    def problem(where, text):
+        problems.append(Finding(esc(where), text))
+
     with tarfile.open(str(archive)) as tar:
-        names = [m.name for m in tar.getmembers() if not m.isdir()]
-    if any(not n.startswith(prefix) for n in names):
-        problems.append("a file sits outside %s" % prefix)
-    if prefix + "install.sh" not in names:
-        problems.append("%sinstall.sh is missing" % prefix)
-    if len(names) != len(entries):
-        problems.append("%d files in the archive, %d in the tree" % (len(names), len(entries)))
-    return result("archive", problems, "%d files under %s, install.sh among them" % (len(names), prefix),
-                  "; ".join(problems), [Finding(p) for p in problems])
+        for member in tar:
+            name = member.name.rstrip("/")
+            if name in seen:
+                problem(name, "appears more than once in the archive")
+            seen.add(name)
+            if member.isdir():
+                if name not in folders:
+                    problem(name, "is a folder that is not in the tree")
+                elif member.mode != ARCHIVE_DIR:
+                    problem(name, "has mode %s, git writes %s" % (oct(member.mode), oct(ARCHIVE_DIR)))
+                continue
+            if name not in wanted:
+                problem(name, "is in the archive but not in the tree under %s" % prefix)
+                continue
+            mode, sha = wanted[name]
+            if member.isreg():
+                data, kind = tar.extractfile(member).read(), "100644 or 100755"
+                good_type = mode in ("100644", "100755")
+            elif member.issym():
+                data, kind = member.linkname.encode("utf-8", "surrogateescape"), "120000"
+                good_type = mode == "120000"
+            else:
+                problem(name, "is neither a file nor a link")
+                continue
+            if not good_type:
+                problem(name, "is a %s in the archive and mode %s in the tree" % ("file" if member.isreg() else "link", mode))
+            elif blob_id(data) != sha:
+                problem(name, "has contents that differ from the tree's")
+            elif member.mode != ARCHIVE_MODES[mode]:
+                problem(name, "has mode %s, the tree's %s is written as %s" % (oct(member.mode), mode, oct(ARCHIVE_MODES[mode])))
+    for name in sorted((set(wanted) | folders) - seen):
+        problem(name, "is in the tree but missing from the archive")
+    if prefix + "install.sh" not in wanted:
+        problem(prefix + "install.sh", "is not in the tree")
+    return result("archive", problems, "%d files and %d folders match the tree exactly under %s, install.sh among them" % (len(wanted), len(folders), prefix),
+                  "%d differences between the archive and the tree" % len(problems), problems)
 
 
 def check_dataset(repo, archive, listed, prefix):
