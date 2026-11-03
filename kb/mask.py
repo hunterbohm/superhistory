@@ -2357,22 +2357,49 @@ def typed_secrets(name, args):
 # that types a string into a field a locator found (Playwright's fill, type and press_sequentially in JavaScript or
 # Python, Selenium's send_keys, WebdriverIO's setValue, Puppeteer's page.type(selector, text)). Read token by token, as
 # the code is laid out, with its strings' quotes plain or escaped, as JSON holds code.
-_CODE_TYPING_CALL = re.compile(rf"(?i)(?<![\w$])(?:[\w$]+\.)*(?:mcp__[\w-]+__)?(?:{_TYPING_TOOL.pattern[4:]})\s*\(")
+_TYPING_NAMES = _TYPING_TOOL.pattern.split(")?", 1)[1]  # the tool's own names, without its library's prefix
+# A typing tool's call by its tool's name: an MCP tool's ("tools.mcp__playwright__browser_type") or one with its
+# library's prefix ("browser_type"), not any method named fill or type, as an array's is.
+_CODE_TYPING_CALL = re.compile(rf"(?i)(?<![\w$])(?:[\w$]+\.)*(?:mcp__[\w-]+__(?:{_TYPING_TOOL.pattern[4:]})"
+                               rf"|(?:browser|puppeteer|playwright)_{_TYPING_NAMES})\s*\(")
 _CODE_FILL_CALL = re.compile(r"\.\s*(?:fill|type|pressSequentially|press_sequentially|sendKeys|send_keys|setValue|set_value)"
                              r"\s*\(")
 _CODE_HINT = re.compile(r"(?i)(?:fill|type|press_?sequentially|send_?keys|set_?value|input_text)\w*\s*\(")
+# A string that holds code, as JSON holds it: a typing call's "(" in it, and a quote of the code's own, plain or
+# escaped; "Autofill(42)!", a password, holds no quote.
+_CODE_IN_STRING = re.compile(r"(?i)(?:fill|type|press_?sequentially|send_?keys|set_?value|input_text)\w*\s*\(")
+_QUOTE_IN_STRING = re.compile(r"\\+\"|['`]")
 _CODE_NAME = re.compile(r"[A-Za-z_$][\w$]*")
 
 
-def _code_string_end(text, at, stop):
-    """Where the string in code that opens at `at` ends, past its closing quote, or None: its quote plain, or escaped as
-    JSON holds code ('\\"'), when it ends only at its quote escaped as many times."""
+def _string_open(text, at, stop):
+    """(where its quote is, its quote, how many backslashes escape it, whether it is tripled) of the string in code
+    that opens at `at`, past Python's prefix ("r", "f", "rb") and the backslashes JSON escapes its quote with."""
     j = at
-    while j < stop and text[j] == "\\":
+    while j < stop and text[j] in "rRbBuUfF" and j - at < 2:
         j += 1
+    depth = 0
+    while j < stop and text[j] == "\\":
+        j, depth = j + 1, depth + 1
     if j >= stop or text[j] not in "\"'`":
         return None
-    depth, quote, k = j - at, text[j], j + 1
+    unit = "\\" * depth + text[j]  # a quote as escaped as the first
+    triple = text[j] != "`" and text.startswith(unit * 3, j - depth)
+    return j, text[j], depth, triple
+
+
+def _code_string_end(text, at, stop):
+    """Where the string in code that opens at `at` ends, past its closing quote, or None: its quote plain, tripled, or
+    escaped as JSON holds code ('\\"'), when it ends only at its quote escaped as many times."""
+    opened = _string_open(text, at, stop)
+    if not opened:
+        return None
+    j, quote, depth, triple = opened
+    if triple:
+        unit = "\\" * depth + quote
+        end = text.find(unit * 3, j - depth + 3 * len(unit), stop)
+        return end + 3 * len(unit) if end >= 0 else None
+    k = j + 1
     while k < stop:
         if text[k] == "\\":
             run = k
@@ -2390,7 +2417,7 @@ def _code_string_end(text, at, stop):
     return None
 
 
-_CODE_TOKEN = re.compile(r"""(?<!\\)\\*["'`]|[{}\[\]():,=;.]|[A-Za-z_$][\w$]*""")
+_CODE_TOKEN = re.compile(r"""(?<![\w$\\])[rRbBuUfF]{1,2}\\*["'`]|(?<!\\)\\*["'`]|[{}\[\]():,=;.]|[A-Za-z_$][\w$]*""")
 
 
 def _code_tokens(text):
@@ -2409,7 +2436,7 @@ def _code_tokens(text):
                 end = _code_string_end(text, m.start(), stop)
                 if end:
                     inner = _code_text(text, ("s", m.start(), end))
-                    if _CODE_HINT.search(text, *inner):
+                    if _CODE_IN_STRING.search(text, *inner) and _QUOTE_IN_STRING.search(text, *inner):
                         spans.append(inner)
                     else:
                         tokens.append(("s", m.start(), end))
@@ -2426,10 +2453,19 @@ def _code_tokens(text):
 def _code_text(text, token):
     """What a string token holds, between its quotes, as (start, end)."""
     _, start, end = token
-    j = start
-    while text[j] == "\\":
-        j += 1
-    return j + 1, end - (j - start) - 1
+    j, quote, depth, triple = _string_open(text, start, end)
+    if triple:
+        width = 3 * (depth + 1)
+        return j - depth + width, end - width
+    return j + 1, end - depth - 1
+
+
+def _built_at_run_time(text, token):
+    """Whether a string token is built when the code runs: a template with "${...}", or Python's f-string with "{"."""
+    j, quote, depth, triple = _string_open(text, token[1], token[2])
+    a, b = _code_text(text, token)
+    prefix = text[token[1]:j].lower()
+    return quote == "`" and "${" in text[a:b] or "f" in prefix and "{" in text[a:b]
 
 
 def _call_arguments(tokens, k, limit=400):
@@ -2443,6 +2479,25 @@ def _call_arguments(tokens, k, limit=400):
                 return out
             depth -= 1
         out.append(token)
+    return out
+
+
+def _argument_strings(arguments):
+    """(argument's index, its string token) for each of a call's arguments that is a string: by itself, in brackets,
+    or as a keyword's value (value="..."). One that holds a name or more (Keys.HOME) is none."""
+    out, index, depth, current = [], 0, 0, []
+    for token in arguments + [(",", None, None)]:
+        if token[0] == "," and depth == 0:
+            if len(current) >= 2 and current[0][0] == "n" and current[1][0] == "=":
+                current = current[2:]
+            kinds = [t[0] for t in current]
+            if kinds.count("s") == 1 and set(kinds) <= {"s", "(", ")"}:
+                out.append((index, next(t for t in current if t[0] == "s")))
+            index, current = index + 1, []
+            continue
+        depth += token[0] in "([{"
+        depth -= token[0] in ")]}"
+        current.append(token)
     return out
 
 
@@ -2525,17 +2580,18 @@ def _typed_code_edits(text):
         k = opening(call)
         if k is None:
             continue
-        arguments = _call_arguments(tokens, k, 20)
-        if not arguments or arguments[0][0] != "s":
+        strings = _argument_strings(_call_arguments(tokens, k, 40))
+        if not strings:
             continue
-        dot = bisect.bisect_left(starts, call.start())
-        labels, value = _receiver_strings(text, tokens, dot), arguments[0]
-        if len(arguments) > 2 and arguments[1][0] == "," and arguments[2][0] == "s":  # page.fill(selector, text)
-            labels, value = labels + [text[slice(*_code_text(text, arguments[0]))]], arguments[2]
-        a, b = _code_text(text, value)
-        if b > a and "${" not in text[a:b] and (_labels_ask_for_a_secret(tuple(labels)) if labels
-                                                   else _password_shaped(INVISIBLE.sub("", text[a:b]))):
-            edits.append((a, b, "[masked]"))
+        labels = _receiver_strings(text, tokens, bisect.bisect_left(starts, call.start()))
+        if len(strings) > 1 and strings[0][0] == 0 and strings[1][0] == 1:  # page.fill(selector, text)
+            labels, strings = labels + [text[slice(*_code_text(text, strings[0][1]))]], strings[1:]
+        secret = _labels_ask_for_a_secret(tuple(labels)) if labels else None
+        for _, value in strings:
+            a, b = _code_text(text, value)
+            if b > a and not _built_at_run_time(text, value) and (
+                    secret if labels else _password_shaped(INVISIBLE.sub("", text[a:b]))):
+                edits.append((a, b, "[masked]"))
     merged = []
     for start, end, _ in sorted(edits):
         if merged and start <= merged[-1][1]:

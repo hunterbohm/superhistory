@@ -1852,6 +1852,45 @@ class ReviewThirtyTwoTest(unittest.TestCase):
                     self.assertEqual(mask(text), text)
 
 
+class ReviewThirtyThreeTest(unittest.TestCase):
+    """The thirty-third review's findings, inside the coordinator's class for code that types: Python's raw and
+    triple-quoted strings, a password given by keyword, after a key or in brackets, a password holding "fill(" or
+    "${", and an array's fill read as a typing tool's call."""
+
+    TYPED = (
+        ('page.get_by_label("Password").fill(r"Tr0ub{4dor}-Zk9q")', "Tr0ub{4dor}-Zk9q"),
+        ('page.get_by_label("Password").fill("""Tr0ub{4dor}-Zk9q""")', "Tr0ub{4dor}-Zk9q"),
+        ("page.get_by_label('Password').fill('''Tr0ub{4dor}-Zk9q''')", "Tr0ub{4dor}-Zk9q"),
+        ('page.get_by_label("Password").fill(value="sunshine")', "sunshine"),
+        ('driver.find_element(By.ID, "password").send_keys(Keys.HOME, "Tr0ub{4dor}-Zk9q")', "Tr0ub{4dor}-Zk9q"),
+        ('page.get_by_label("Password").fill(("Tr0ub{4dor}-Zk9q"))', "Tr0ub{4dor}-Zk9q"),
+        ('await page.getByLabel("Password").fill("Autofill(42)!");', "Autofill(42)!"),
+        ('await tools.mcp__playwright__browser_type({element: "Password", text: "Autofill(42)!"});', "Autofill(42)!"),
+        ('await page.getByLabel("Password").fill("H4wk${nest}9!");', "H4wk${nest}9!"),
+        ("await page.getByLabel('Password').fill('H4wk${nest}9!');", "H4wk${nest}9!"),
+    )
+    ORDINARY = (
+        'Array(3).fill({label: "Password", text: "Use at least twelve characters."})',
+        'new Array(8).fill({name: "Password", value: "hint"})',
+        "await page.getByLabel('Password').fill(`${password}`);",
+        'page.get_by_label("Password").fill(f"{password}")',
+        'page.get_by_label("Password").fill(value=password)',
+        'driver.find_element(By.ID, "password").send_keys(Keys.ENTER)',
+    )
+
+    def test_more_string_and_argument_forms_are_masked(self):
+        for code, secret in self.TYPED:
+            for text in (code, json.dumps({"code": code})):
+                with self.subTest(text=text[:70]):
+                    self.assertNotIn(secret, mask(text))
+
+    def test_ordinary_code_stays(self):
+        for code in self.ORDINARY:
+            for text in (code, json.dumps({"code": code})):
+                with self.subTest(text=text[:70]):
+                    self.assertEqual(mask(text), text)
+
+
 # Commands as an argument list, each flag's value its own item: (the list, the items masked).
 ARGV = (
     (["login", "--password", PASSWORD], {2}), (["--token", SUB], {1}), (["--api-key", SUB, "--verbose"], {1}),
