@@ -2,6 +2,7 @@ import base64
 import bisect
 import contextvars
 import hashlib
+import itertools
 import logging
 import math
 import os
@@ -326,20 +327,9 @@ _APP_GROUPS = rf"({_UNSEEN}{_APP_GROUP}(?:{_UNSEEN} {_UNSEEN}{_APP_GROUP}){{3}}{
 # comment. Neither reading takes a sentence of common words (_app_password_span).
 APP_PASSWORD_LINE = re.compile(r"(?m)(?:^|(?<=\\n))[ \t]*(?:export[ \t]+|-[ \t]+)?(?i:" + _KEY_NAME[4:] + r")([ \t]*:[ \t]*)"
                                + _APP_GROUPS + r"(?=[ \t]+#[^\r\n]*$|[ \t]*\r?$|\\[nr])")
-# Four-letter words common in English: four groups holding three or more of them are a sentence ("password: copy yaml
-# into toml"), which a random app password's groups almost never are.
-_COMMON_WORDS = frozenset("""
-able also area away back bank base been best body book both call came card care case city come copy cost data date
-days deal does done door down draw drop each easy edit else even ever face fact fail fall fast feel file fill find fine
-fire five flow food form four free from full game gave give goes gone good grow half hand hard have head hear held help
-here high hold home hope host hour huge idea into item just keep kept kind knew know last late lead left less life
-like line link list live load lock long look lose lost made mail main make many mark mean meet mind miss mode more
-most move much must name near need news next nice none note okay once only open over page part pass past path pick
-plan play plus post pull push read real rest rich role room rule runs safe said same save seen self send sent show
-shut side sign site size some soon sort stay step stop sure take talk task team tell term test text than that them
-then they this thus time told took tool true turn type unit upon used user uses very view wait walk want week well
-went were what when will wind with word work year your zero yaml json html http cron sudo bash then into onto
-""".split())
+# Four-letter words common in English and in technical text, defined at the end of this file: four groups holding
+# three or more of them are a sentence ("password: read from smtp logs"), which a random app password's groups are
+# about once in a million times.
 APP_PASSWORD = re.compile(_KEY_NAME + r"""((?:[ \t]*=|[\"']?[ \t]*[:=][ \t]*[\"'])[ \t]*)""" + _APP_GROUPS
                           + r"(?![A-Za-z0-9])")
 # An HTTP Authorization header's credentials: its first word, or after a scheme word ("Token ...", "Bot ...",
@@ -361,23 +351,26 @@ COMMAND_FLAGS = (
     (r"(?:docker|podman|nerdctl|buildah|skopeo|oras)\s+login|helm\s+registry\s+login", r"\s-p[ \t]+['\"]?", False),
     (r"redis-cli", r"\s-a[ \t]+['\"]?", False),
     # From here on, rows main's own lack (_MAIN_COMMANDS): a value that starts with "-", read without the characters a
-    # reader does not see, is the command's next option ("mongosh -p --quiet" asks for the password).
+    # reader does not see, is the command's next option ("mongosh -p --quiet" asks for the password), as these
+    # commands' parsers read one. keytool and jarsigner take whatever follows as the password ("dash"), so there only
+    # one of their own options (_JAVA_OPTIONS: "-keystore", "-v") is the next option.
     (r"az\s+login|mongosh|mongo|mongodump|mongorestore|mongoexport|mongoimport|twine", r"\s-p[ \t]+(?:\\?['\"])?",
      False),
-    (r"keytool|jarsigner", r"\s-(?:src|dest|new)?(?:storepass|keypass)[ \t]+(?:\\?['\"])?", False),
-    # aws configure set's secret settings, and a .netrc line's password after its machine and login. A setting's name
-    # is read once, its key word looked for ahead: read around the key word, a run of key words took time in the
-    # square of its length.
+    (r"keytool|jarsigner", r"\s-(?:src|dest|new)?(?:storepass|keypass)[ \t]+(?:\\?['\"])?", "dash"),
+    # aws configure set's secret settings, and a .netrc line's password, its fields in any order but with a login
+    # among them, so "the machine room password sheet" is no .netrc line. A setting's name is read once, its key word
+    # looked for ahead: read around the key word, a run of key words took time in the square of its length.
     (r"aws\s+configure\s+set",
      r"\s(?:[A-Za-z0-9_-]+\.)?(?=[A-Za-z0-9_]*?(?:secret|token|password))[A-Za-z0-9_]+[ \t]+(?:\\?['\"])?", False),
-    (r"(?:machine[ \t]+[^\s]+[ \t]+|default[ \t]+)login[ \t]+[^\s]+", r"\spassword[ \t]+(?:\\?['\"])?", "field"),
+    (r"(?:machine[ \t]+[^\s]+|default)(?=(?:[ \t]+(?:password|account)[ \t]+[^\s]+)*[ \t]+login[ \t]+[^\s])",
+     r"\spassword[ \t]+(?:\\?['\"])?", "field"),
 )
 _MAIN_COMMANDS = 5  # main's own rows of COMMAND_FLAGS; the rest are this PR's
 # A command's line runs to a pipe, ";" or a line break, plain or escaped (_LINE). For the rows main's own lack, it is
 # read as the shell reads it (_command_line), so a quoted password may hold a pipe ("az login -p 'Tr0ub4dor|Zk9q'").
 _LINE = r"(?:[^\n|;\\]|\\(?![nr]))*"
-_COMMANDS = [(re.compile(rf"(?i)(?:(?<![A-Za-z0-9_.-])|{_AFTER_ESCAPE})(?:{command})(?![A-Za-z0-9_.-])"
-                         + (_LINE if n < _MAIN_COMMANDS else "")),
+_COMMANDS = [(re.compile(rf"(?i)(?:(?<![A-Za-z0-9_.-])|{_AFTER_ESCAPE})(?:{command})"
+                         + (rf"(?![A-Za-z0-9_.-]){_LINE}" if n < _MAIN_COMMANDS else r"(?:\.exe)?(?![A-Za-z0-9_.-])")),
               re.compile(rf"({flag})((?:{_CLOSE}[^ \t\n\r'\"])+)"), always)
              for n, (command, flag, always) in enumerate(COMMAND_FLAGS)]
 _ANY_COMMAND = re.compile(r"(?i)curl|mysql|mariadb|sshpass|login|redis-cli|mongo|twine|keytool|jarsigner|aws")
@@ -519,7 +512,8 @@ def _command_line(text, start, stop=None, known=None):
     "$(", "(" and backticks, which hold quotes and brackets of their own, so arithmetic's "$((...))" closes as it opens.
     At the top level the line ends at what ends a command or starts another (a pipe, ";", "&" but in a redirection
     such as "2>&1", a bracket), at a comment (a "#" that starts a word), and at a JSON string's end (a '"' that opens no
-    quote, before ",", ":", "}" or "]"); anywhere at a line break, plain, or escaped but inside quotes of plain text. A
+    quote, before ",", ":", "}" or "]"); anywhere at a line break, plain, or escaped but inside quotes of plain text,
+    where quotes still open hold to the line's end, as a script over several lines in quotes holds its own flags. A
     line whose first double quote outside single quotes comes escaped ('\\"'), as JSON holds a command, is read
     unescaped: its escaped quotes are the shell's quotes, an escaped backslash escapes the shell character after it,
     and a bare '"' ends the JSON string. `known` maps where each substitution read before starts to where it ends, which
@@ -543,6 +537,11 @@ def _command_line(text, start, stop=None, known=None):
         held += kind in ("$(", "`")
         return after
 
+    def ended(at):  # the line ends at `at`, inside what is still open there, which holds to it
+        while stack:
+            close(at, closed=False)
+        return at, inside, subs
+
     def close(at, closed=True):
         nonlocal held
         kind, began = stack.pop(), opened.pop()
@@ -560,7 +559,7 @@ def _command_line(text, start, stop=None, known=None):
         top = stack[-1] if stack else ""
         if top == "'":  # nothing is special inside single quotes but the closing one
             if c in "\n\r" or c == '"' and escaped:
-                return here, inside, subs
+                return ended(here)
             i += 1
             if c == "'":
                 close(i)
@@ -571,7 +570,7 @@ def _command_line(text, start, stop=None, known=None):
                 if top == '"' and not escaped:
                     i += 2  # a backslash and a letter inside double quotes of plain text: part of the argument
                     continue
-                return here, inside, subs
+                return ended(here)
             if following == '"' and escaped is not False:
                 escaped, c, i = True, following, i + 2
             else:  # the shell's own backslash, and the character it escapes
@@ -581,9 +580,9 @@ def _command_line(text, start, stop=None, known=None):
                 continue
         else:
             if c in "\n\r" or c == '"' and escaped:
-                return here, inside, subs
+                return ended(here)
             if c == '"' and not stack and _JSON_STRING_END.match(text, i + 1):
-                return here, inside, subs
+                return ended(here)
             if c == '"' and escaped is None:
                 escaped = False
             i += 1
@@ -604,14 +603,12 @@ def _command_line(text, start, stop=None, known=None):
         if c in "'\"`" or substitution:
             i = enter("$(" if substitution else c, here, i + substitution)
         elif c in "|;()":
-            return here, inside, subs
+            return ended(here)
         elif c == "&" and not (here > start and text[here - 1] in "<>" or text[i:i + 1] == ">"):
-            return here, inside, subs
+            return ended(here)
         elif c == "#" and (here == start or text[here - 1] in " \t"):
-            return here, inside, subs
-    while stack:
-        close(n, closed=False)
-    return n, inside, subs
+            return ended(here)
+    return ended(n)
 
 
 def _holding(stretches, at):
@@ -633,25 +630,56 @@ def _netrc_password(value):
 _NETRC_LINE_END = re.compile(r"\r|\n|(?<!\S)#|\\[nr](?=[ \t]*(?:(?:machine|default|login|password|account|macdef)\b|[\"\\]|$))")
 
 
+_NETRC_FIELD = re.compile(r"(?<!\S)(?:machine|login|password|account|macdef)[ \t]+\Z")
+
+
 def _plain_line_end(text, start):
-    """Where a .netrc line from `start` ends: at a line break, at a comment (a "#" that starts a word), or at an escaped
-    line break before the next field or the text's end, as a .netrc file shown in JSON holds one; an escaped "n" in a
-    value is part of it, as .netrc reads "\\n" in a password."""
-    m = _NETRC_LINE_END.search(text, start)
-    return m.start() if m else len(text)
+    """Where a .netrc line from `start` ends: at a line break, at a comment (a "#" that starts a word, but for a field's
+    value, as "password #Tr0ub4dor9" holds one), or at an escaped line break before the next field or the text's end,
+    as a .netrc file shown in JSON holds one; an escaped "n" in a value is part of it, as .netrc reads "\\n" in a
+    password."""
+    for m in _NETRC_LINE_END.finditer(text, start):
+        if not (m.group() == "#" and _NETRC_FIELD.search(text, max(start, m.start() - 64), m.start())):
+            return m.start()
+    return len(text)
+
+
+def _past_closing_quote(text, start, end):
+    """Where a command named at text[start:end] goes on: past the quote right after its name, where that quote closes
+    one opened on its line just before the name, as a quoted path to a program ('"C:\\...\\keytool.exe"') holds it."""
+    quote = next((q for q in ('\\"', "\\'", '"', "'") if text.startswith(q, end)), None)
+    if quote is None:
+        return end
+    before = text[max(0, start - 260):start]
+    at = max(before.rfind('"'), before.rfind("'"))
+    if at < 0 or "\n" in before[at:] or "\r" in before[at:]:
+        return end
+    opened = before[at - 1:at + 1] if at > 0 and before[at - 1] == "\\" else before[at]
+    return end + len(quote) if opened == quote else end
 
 
 # What follows a '"' that ends a JSON string rather than a shell argument.
 _JSON_STRING_END = re.compile(r"[ \t]*[,:}\]]")
+# keytool's and jarsigner's own options (JDK 8 to 21), and a JVM option ("-keystore", "-v", "-J-Xmx512m").
+_JAVA_OPTIONS = frozenset("""
+addprovider alias cacerts certchain certreq certs changealias conf delete destalias destkeypass destkeystore
+destprotected destprovidername deststorepass deststoretype digestalg dname exportcert ext file gencert gencrl genkey
+genkeypair genseckey groupname h help id identitydb import importcert importkeystore importpass infile internalsf
+jarfile keyalg keyclone keypass keypasswd keysize keystore list maxsigblock new noprompt outfile printcert printcertreq
+printcrl protected providerarg providerclass providername providerpath revcheck rfc sectionsonly selfcert showinfo
+sigalg sigfile signedjar signer signerkeypass srcalias srckeypass srckeystore srcprotected srcprovidername
+srcstorepass srcstoretype sslserver startdate storepass storepasswd storetype strict tls trustcacerts tsa tsacert
+tsadigestalg tsapolicyid v validity verbose verify version
+""".split())
 
 
 def _command_password_edits(text, line_pattern, flag, always, unseen=False):
     """Each password one row of COMMAND_FLAGS finds, as an edit that masks it. A command's line is read once from its
     first word, and a command in a substitution once from its own, so a line that names the command again and again
-    costs time in proportion to its length. With
-    `unseen`, as the rows main's own lack are read, the line is read as the shell reads it (_command_line) and a
-    value is judged without the characters a reader does not see, so a coloured "$STOREPASS" is a variable and a
-    coloured "--quiet" the next option."""
+    costs time in proportion to its length. With `unseen`, as the rows main's own lack are read, the line is read as
+    the shell reads it (_command_line), past a quote that closes the command's quoted name, and a value is judged
+    without the characters a reader does not see, so a coloured "$STOREPASS" is a variable and a coloured "--quiet"
+    the next option."""
     edits, reading, known = [], [], {}  # reading: the lines read that hold the text so far, innermost last
     for line in line_pattern.finditer(text):
         while reading and reading[-1][0] <= line.start():
@@ -663,7 +691,8 @@ def _command_password_edits(text, line_pattern, flag, always, unseen=False):
         if always == "field":
             end = _plain_line_end(text, line.end())
         elif unseen:  # a command inside the substitution of a line read is read as a line of its own, to its end
-            end, inside, subs = _command_line(text, line.end(), held and held[1], known)
+            end, inside, subs = _command_line(text, _past_closing_quote(text, line.start(), line.end()),
+                                              held and held[1], known)
         else:
             end = line.end()
         reading.append((end, subs))
@@ -678,7 +707,9 @@ def _command_password_edits(text, line_pattern, flag, always, unseen=False):
                 if _netrc_password(value):
                     edits.append((m.start(2), m.end(2), "[masked]"))
                 continue
-            if unseen and (value.startswith("-") or _ABOUT_A_PASSWORD.search(m.group(1).strip(" \t'\"\\"))):
+            if unseen and (value.startswith("-") and (always != "dash" or value[1:].lower() in _JAVA_OPTIONS
+                                                      or value.startswith("-J"))
+                           or _ABOUT_A_PASSWORD.search(m.group(1).strip(" \t'\"\\"))):
                 continue  # the next option, or a setting about a secret ("aws configure set token_expiration 3600")
             if always is True or _looks_secret("password", m.group(1), value):
                 edits.append((m.start(2), m.end(2), "[masked]"))
@@ -764,9 +795,9 @@ def _line_password_span(m):
 
 
 def _app_password_span(m):
-    """_password_span for an app password's four groups, but where three or four are common English words
-    ("password: this will work fine", "password: copy yaml into toml"), read as main reads them: a random app
-    password's groups hold three such words some times in a billion."""
+    """_password_span for an app password's four groups, but where three or four are common words ("password: this
+    will work fine", "password: read from smtp logs"), read as main reads them: a random app password's groups hold
+    three such words about once in a million times."""
     groups = INVISIBLE.sub("", m.group(3)).split()
     return None if sum(group in _COMMON_WORDS for group in groups) >= 3 else _password_span(m)
 
@@ -1642,13 +1673,17 @@ def mask_all(value, key=None):
     if isinstance(value, dict):
         # "pass" and "pwd" name a password only beside a user's name, as in text; alone, its value is read alone.
         user = any(isinstance(k, str) and _USER_KEY.fullmatch(k.strip()) for k in value)
-        out = {mask(k) if isinstance(k, str) else k:
-               mask_all(v, k if isinstance(k, str) and (user or k.lower() not in ("pass", "pwd")) else None)
-               for k, v in value.items()}
+        out, keys = {}, {}
+        for k, v in value.items():
+            masked = mask(k) if isinstance(k, str) else k
+            if masked in out:  # two keys masked alike, as two tokens are: the later is numbered, so no value is lost
+                masked = next(f"{masked} ({n})" for n in itertools.count(2) if f"{masked} ({n})" not in out)
+            keys[k] = masked
+            out[masked] = mask_all(v, k if isinstance(k, str) and (user or k.lower() not in ("pass", "pwd")) else None)
         names = [k for k in value if isinstance(k, str) and k.lower() in ("name", "key")]
-        for field in (k for k in value if isinstance(k, str) and k.lower() == "value" and mask(k) in out):
+        for field in (k for k in value if isinstance(k, str) and k.lower() == "value"):
             for name in names:  # under any of its name or key fields
-                out[mask(field)] = _pair_value(value[name], value[field], out[mask(field)])
+                out[keys[field]] = _pair_value(value[name], value[field], out[keys[field]])
         return out
     if isinstance(value, (list, tuple)):
         return _masked_items(value, key)
@@ -1660,7 +1695,7 @@ def mask_all(value, key=None):
 
 def _masked_items(items, key):
     """mask_all over a list's items, each read alone, and an item after a flag read after the command line before it
-    too, up to eight items back: a command given as its arguments holds a flag and its value in two items, as
+    too, up to 64 items back: a command given as its arguments holds a flag and its value in two items, as
     ["login", "--password", "..."] or ["mongosh", "-u", "admin", "-p", "..."] does. Where that line reads more of the
     item as a secret than the item alone does, the item, one argument, is masked whole."""
     out = [mask_all(v, key) for v in items]
@@ -1901,3 +1936,128 @@ def is_auth_code(text):
     """A message that hands over a code: auth wording and the code itself. Agent sessions drop such turns, but keep
     turns that only talk about codes, as when someone builds a sign-in flow."""
     return is_auth_noise(text) and bool(CODE.search(text[:600]))
+
+
+# Four-letter words common in English and in technical text (_app_password_span): those used in two or more of an
+# Ubuntu 24.04 system's English manual pages or in Python 3.12's own comments and docstrings, and everyday words
+# besides; 2,812 of the 456,976 strings of four small letters.
+_COMMON_WORDS = frozenset("""
+aaaa aarp abbe abcd able abrt absf acct ache acid acks acls acme acml acos acpi acre acrn acsc acts adal addi addl addr
+adds adel adiw adpm adrc adsl aead afdo afir aged ages agmc agmd agmg agmh ahls aide aids aifc aiff aiir aims airs ajar
+akin alas algo algs allf alls allx ally alpe alpn alrm alsa also alto alts alum amax amet amid amin amix amqp andk andy
+anew ange anmr anon ansi ante anti ants aout apad apch apcn apco apcs apic apos apps apre apss aptd aptx arbg arcc arcd
+arcg arch arcs ardo area aref areg aren areq ares argb argc argg argn argp args argv argz aria arib arin arms army arnr
+arpa arpd arrp arts asan asdf asin asis asks asmf aspx asym atag atan atch atof atoi atol atom atop atsc attr atts auid
+aunt auth auto auxv avid away awks awry axes axis axjf aybc aybd aybg aybh azmq babs baby back bags bail bait bake bald
+ball band bang bank bans bare barf bark barn bars base bash basr bass bath bats baud bbal bbbb bbit bbox bbro bcmp bcsp
+beam bean bear beat beds beef been beep beer bees beet bell belt bend bent bert best beta bets bfin bfox bgra bias bidi
+bids bike bill bind bins bios bird bite bits blah blew blib blob bloc blog blow blue blum blur boat body boil bold bolt
+bomb bond bone book bool boom boon boot bore borg born boss both bout bowl boxh boxw boys bpos brag bras brcc brew brng
+brow bsfm bsfs bsod bsum btmp buds buff bufp bugs bulb bulk bull bump bunk burn bury bush busy butt buys buzz byte bzip
+cabs caca cafe cage caif cake calf call calm came camp cand cane cans cape caps card care carg carp cars cart casa case
+cash cast cats cave cavs cbrt cccc ccmp ccos ccpp ccrt cdda cdef cdma cdot ceil cell cent ceph cerf cert cexp cgid cgit
+cgls cgop chap char chat chef chet chew chfn chid chin chip chop chpl chrt chsh chvt cidr cifs cite city clad clam clap
+claw clay clev clip clnt clog club clue clut clwb cmap cmds cmit cmov cmoy cmpb cmpl cmse cmsg cmxe cmyk coal coat code
+coef coff coil coin cold coll colo cols come comm comp cond cone conf conj conn cons cont conv cook cool cope copy cord
+core cork corn coro corp corr cosf cosh cosl cost cosy cots cpan cpfr cpgr cpid cpio cpow cppw cprl cpus crab crda cred
+cref crew crib cris crit crlf crls cron crop crow crtc crud csin cssc csum ctan ctlx ctor ctrl ctxt cube cuda cues cuid
+cups curb cure curl curr cute cuts cvbr cves cwnd cyan dads daft dame damn damp dare dark dash data date dawn days dbnz
+dbus dcbw dccp dcti dctx ddeb ddiv dead deaf deal dean dear debs debt deck decl deed deem deep deer defn defs dell delv
+demo deny deps desc dese desi desk dest desx dgst dhcp diag dial diam dice dick dict didn died dies diet diff digs dime
+dine dirc dirp dirs dirt disc dish disk disp dist divd dive divf divs divu dlen dlls dmac dmtf dnat dnet dock docs does
+doff dogs doit doll dome domo done dont doom door dose dots dove down doze dpdk dpfp dpkg dpms drag draw drem drew drip
+drop drpm drug drum dsbt dscp dsos dsth dstw dtls dtor dtps dual duck dude duel dues duid duke dull dumb dump dune dups
+dusk dust duty dyad dyld dyne eabi each earn ears ease east easy eats ecdh echo ecma ecmp ecne ecvt eden edge edid edit
+edns egea eggs egid eimm elem elif elim elrw else emag emit ends enum envp envy envz epfd epic epzs erbs erfc erff erfl
+eric errc erri errp errs erru errx eryq esac escl esin etag etns euid euro eval even ever evex evil evim evrp ewma exam
+excl excp exec exim exit expf expl expo expr eyed eyes faan fabi fabs face fact fada fade fail fair fake fall fame fang
+fans fare farm fast fate fcoe fcse fcut fcvt fdbg fdce fdim fdiv fdse fdsi fear feat feed feel fees feet fell felt fenv
+feof fern fest feud fext ffat ffff ffix ffoo ffsl fgnu fidx fifa fifi fifo fiji file fill film fils filt find fine fini
+fipa fips fira fire firm fish fist fits five flac flag flap flat flaw flax flea fled flew flex flip flop flow flra flsa
+fltk flto flux fmaf fmal fmax fmem fmin fmla fmod fnew fnon foam foes fold folk fond font food fool foot fopt ford fork
+form fort forw foul four fowl fpcc fpch fpcr fpic fpie fpit fplt fpre fprm fptm fpud fpus fqdn frac frag frdy fred free
+freg freq frii friz frog from frwh fsca fsck fsel fsfm fsid fssa fsso fsub fsys ftls ftok ftpd ftps ftsp fuel fuey full
+fume func fund fuse fuss fuzz fvar fvpt fvtv fweb fwpa fwrx fwry fxsr gabi gain gait gala gale game gang gaps gasp gate
+gatt gave gawk gaze gbal gbit gbps gbrp gbtf gbuf gcda gcfn gcno gcov gcse gctf gctx gcvt gear geek gelf gems gene geom
+getc gets getw gfdl gfni ggdb ggnu gibi gids gift giga gimp gint ginv girl gist gitk give glad glib glob glow glsl glue
+glum gmon gnat goal goat goes gold golf gone good gopt gory gost goto gown gpgv gpus grab grad gram grap gray greg grep
+grew grey grid grim grin grip grit grml grog grok grow grpp grub gsar gsbj gsdj gslj gslp gsub gsum gtty guar guid gulf
+guns guru gusa gust guts guys gvfs gvim gvms gvrp gwsw gzip hack hadi hadn hail hair half hall halo halt hand hang hann
+hard harm hash hasn hast hate haul have hawk hazy hdcd hdlr hdmi hdrp hdtv head heal heap hear heat heel held hell helm
+help herb herd here hero hers hevc hfsc hhhh hhmm hide hier high hike hill hint hire hist hitm hits hive hkps hlen hlog
+hmac hold hole holy home hood hook hope hops horn hose host hour hpfs hpos hppa hpsa hpux href hrir hsin hsts hsub htab
+html htop http hubs hues huge hugs hull hung hunk hunt hurd hurt hush huts hvga hwdb iacr iaid iall iana ibft ibus icap
+icbi iche ichl icmp icon idct idea idel idet idev idgm idiv idle idol idtx iech ieee ierr ietf ifap ifup igmp ikey ilme
+imag imap imax imin impl imsg inch incl incr indx inet infc info infs init inka insb insl insn inst insw intb intl into
+intr ints intv inum ioam iocb iopl iops iota ipaq ipar ipcs ipfs ipip ipns iptr ipvx irda irec irix iron irqs isaa isab
+isac iseg isel iseq isig isma isml ismv isra itch item iter itmr itrc ittf ival ivar ivec jack jail jams jane jars java
+jazz jbsr jean jeep jfif jinc jiri jmpi jobs joey jogs john join joke jolt joss jpeg json jsri juju jump june junk jury
+just kbit kbps kcat kcbt kcmp kctx keen keep kend kent kept kern kext keys kibi kick kids kill kilo kimi kind king kiro
+kiss kite kits klog kmem kmod kmsg knee knew knit knob knot know kode konq kptr kslt ksym kwds labr labs lace lack lacp
+lady laid lake lamb lame lamp lanc land lane lang laps last late latm latt lavc lavf lawn laws lays lazy lcms ldap ldcd
+ldcw ldif ldiv ldpc ldrd lead leaf leak leal lean leap leds left legs lend lens lent leon lerp less lest lets lfoo lgcc
+lgpl lhls liar libc libm libs libz lice lick lids lied lies lieu life lift like lilo lima limb lime limp lina line link
+lint lion lipo lips lirc lisa lisp list live lkgs llcs lldp llrs llsc llvm lmax lmid lmin lmml load loaf loan lock lofi
+loft logb logf logl logo logs lohi lone long look loop lord lore loro lose losi loss lost lots loud loup love lpfr lprm
+lqpn lrcp lrsr lsim lsns lsof lsrr ltrt luck luks luma lumi lump lung lure lush lvfs lynx lyon lzip lzma lzop mabi mabm
+mabs macc mach mada madd made mads madu madx maes mafd maid mail main maix make maks male mall mamx mand many mapp maps
+marc mare mark marm mars mary mash mask masm masq mass mast mate math matt mavx mawk maxk maxp maze mbcs mbeq mbig mbim
+mbit mbmi mbmx mbox mbps mbss mbwx mccs mcdx mcet mcix mcld mcom mcpu mcrc mcse mcsr mctx mdar mdat mdaz mdec mdev mdiv
+mdll mdmx mdns mdoc mdsp mduc meal mean meat mebi meet mega mejo meld melf melt memb meml memo mems memu mend menu mere
+mesa mesg mesh mess meta meth meva mexr mext mfar mfhi mfix mflo mfma mfpr mfpu mfra mgas mgcc mghs mgmt mgnu mgpr mhal
+mhle mhtm mice midi midx migh mika mike mild mile milk mill mime mind mine mini minp mint mips mirq misa misc misr miss
+mist mitr mjli mjpg mjsr mjtg mkfs mlaf mlam mlev mliw mlow mlpc mlra mlsp mlwp mmac mmad mman mmap mmax mmco mmcu mmio
+mmix mmma mmmx mmno mmpy mmsa mmsh mmul mnan mnop moby mock modd mode modf modp mods modu mold mole mone monk mono mood
+moof moon moot moov mops more moss most motd moth move movl mpan mpdr mpeg mpic mpid mpku mpls mplt mppc mppe mptx mpwr
+mpym mpyu mpyw mrgf mrmw mrop mror mrtd mrtm mrtp msad msbc mscc msda msdn msec msel msep msgh msgp msgs msgx msha msim
+msio mspe msse mstd mstm msub msve msys mtab mtas mtbm mtda mtio mtls mtoc mtpf mtrr much muck mule muli muls mult mulu
+mulx muse musl must mute mutt mvhd mvis mvle mvms mvrp mvsx mxop mxpa myin mypy myth mzda nail name nand nanf nanl nano
+nans navy nawk nbio nbsp ndbm ndex near neat neck necs need neon ness nest netp nets newp news next nfds nfkc nfsd nftw
+nhid nice nick nils nine nist nlen nloc nmea nnnn nntp noah node nofp nomc none noon noop nops nopt noqa norc norm noro
+nose notb note noun novc nptl nptr nsec nseq nsfs nsid nsse ntds ntfs ntlm ntpd ntsc ntss null numa nuts nval nvim nvme
+nxyz nzer oaep oarg oath obex obey objc obmc ochl ocsp odds odgm odor oech oerr offs oids oils okay okey olor olpc omit
+omsg once ones only onto oomd oops opal open oper opts opus oral ored orig oseg oseq oslo otmr oucp ough ouid ours oust
+outa outb outl outs outv outw oval ovec oven over ovpn owed owes owls owns pace pack pact pads page paid pain pair pale
+palm paln pane pans panu papa para park parm parr part pass past path paul pave pays pcap pcie pcms pcpu pcre pcrl pcrs
+pctx peak peap pear peas pebi peek peel peer pens peps pere perf perl perm pers peta pets pfds pgid pgrp phil phys pick
+pict pids pier pies pigs pigz pike pile pill pine ping pink pins pint pipe pits pitt pity pkcs pkey pkgs pkix pkts plam
+plan play pldd plea plen plog plot plow ploy plug plum plus pmap pmem pmqs pmtu pmus pods poem poet poff poke pole poll
+polo pond pong pony pool poor popc popd pope pops pork port pose post pots pour powf powl ppdc ppdi ppid pppd pray prec
+pred pref preg prep pres prev prey prft prim prio priv prob proc prod prof prog proj prop pros prot psbb psnr psum psyc
+ptid ptmx ptsi ptys pubs pull pulp pump punk pure push putc puts putw pvid pwck pwdx pwrx pycs pypi pyro qcam qcif qdri
+qdrt qdrw qemu qeth qfoo qmax qmin qoff qpal qpel qsin quad qual quat quit quiz quot quux qvga qwen qxga race rack racy
+radd rafl raft rage raid rail rain rake ramp rand rang rank raop rare rarp rash rate rath rats rave rays rbal rcmd rcpc
+rctx rdev rdft rdma read real reap rear recp rect recv redo reds reef reel refs regs rela rely rent repo repr reps reqs
+resp rest rets revs rext rfcs rfds rgba rgid rhds rhel rhgb riaa rice rich rick ride rift ring rint riot risc rise risk
+rite ritz rlcp rlim rlog rlum rmdc rmkx rmso road roam roar robe rock rode roff role roll roof room root rope rori rose
+ross roth rotw rows rpcl rpza rseq rset rshd rssi rstp rsum rtld rtmp rtps rtsp rtti ruby rude ruff rugs ruid ruin rule
+runc rung runq runs rush rust rvim rwho rwin rwnd rwxr sack sadc sadf safe saga sage said sail sake sale salt same samp
+sand sane sang sank sans sasl satd save says sbal sbat sbin sbiw sbrk sbsf sbsl sbsr sbss scan scap scar scev scfi sclk
+scon scop scpu scrn scsi sctp sdcc sddm sdif seal seam seas seat secs sect seed seek seem seen sees self sell semi send
+sens sent serv sess seth seti sets sevp sewn sftp sfun sgid sgml shar shed shim ship shmp shoe shop shot show shuf shut
+sick side sidx sigh sign sigs silk simd simt sinc sine sinf sing sinh sink sinl sins site siti sits size skbs skel skew
+skid skin skip slab slam slap sled slen slev slid slim slip slit slli slog slot slow slsr slub slug smac smap smem smgl
+smkx smsc smso smtp smux snap snat snip snmp snow snup soak soap soar sock soda sofa soft soil sold sole solo some song
+soon sops sore sort soul soup sour soxr spal spam span spdy spec sped spfp spid spin spit spot spre spun spur spwd sqrt
+srai srch srcw srec sref srgb srli ssbs sset sshd ssid ssim ssrc ssrr sssd stab stag star stat stay stef stem step stew
+stir stld stlf stmt stnd stop strp stsd stts stty stub subj subq subs such suck sudo suid suit sums sung sunk supp sure
+surf suse susp sval svcd sven svga svme svml swab swan swap sway swdb swim sxga syms sync syno sysv tabs tack tact tada
+tagp tags tail take tale talk tall tame tanf tanh tank tanl tape taps task taxi tbit tbps tcon tcov tcpd tcsh tdfx tdii
+tdls team tear tebi tech tell temp tend tens tent tera term tesa test text tfdt tfhd tfnd tftp tgid than that thee them
+then ther they thin this thom thou thru thus tick tide tidy tied tier ties tiff tile till tilt time tins tint tiny tipc
+tips tire tkip tldr tlen tlog tlsa tmac tmcd tmix tmpl tmux toad todo toes told toll tomb toml tone tons tony took tool
+topo tops tore torn toss tour tout town toys tpcs tpic tput trac trae trak tram trap tray tree trek trim trio trip tron
+true tsan tset tsid tsig tsns tstr ttls tttt ttyp ttys tube tuck tuna tune turf turn twin twos type typo tzst uapi uazu
+ubuf ucfq ucfr uchl ucop udeb udev udta uefi ugen ugly uids uint ulog umac umax umin umul undo uniq unit unix unto unxz
+upnp upon upto uref urge uris urls urns usec used user uses uspp util utmp uucp uuid uwin uxga vaes vain vars vary vase
+vast vban vbox vbsf vcan vcpu vcsa vdir vdpa vdso vect veil vein vent venv vepa verb verr very vesa vest veth veto vfat
+vger vibe vice view vigr vine vipw viro virt visa vitc vlan vlen vliw vlpf vmaf vmap vmax vmin vnet void voip vops vote
+vpnc vpos vpre vptr vrep vrrp vsad vsse vsub vtag vtop vudc vvvv wade wage wail wais wait wake walk wall wand want ward
+warm warn warp wash wasn wasp watt wave wavy ways wdid weak wear webm webs weed week weep well went weof were west wext
+wget what when whim whip whom wide widl wife wifi wiki wild will wilt wind wine wing wink winp wins wipe wire wise wish
+with wlan wlog woke wolf wong wood wool word wore work worm worn wpan wrap wsfb wsgi wtmp wtps wvga wwan wxga xavs xbox
+xbpf xcam xdcb xdev xdim xdrs xdvi xena xenl xfer xfrm xfwp xgot xhot xiph xkcd xkey xlen xmac xmag xman xmax xmin xmpp
+xoff xorg xorl xpdf xpos xprt xrdb xres xrun xset xshm xsub xtra xvid xwud xxxx xyhl yama yaml yank yard yarn yawn yeah
+year yell yelp yhot ymax ymin yoga your ypos yres yyyy zago zcat zcmp zero zeta zeus zimg zinc zlib znew zone zoom zope
+zpos zstd zulu zzzz
+""".split())
