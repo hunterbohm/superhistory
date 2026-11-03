@@ -1,0 +1,31 @@
+{
+ "runs": [
+  {
+   "test": "longmemeval",
+   "set": "s",
+   "data_revision": "98d7416c24c778c2fee6e6f3006e7a073259d48f",
+   "data_sha256": "d6f21ea9d60a0d56f34a05b609c79c88a451d2ae03597821ea3d5a9678c3a442",
+   "judge_model": "gpt-6.1-sol",
+   "questions": 250,
+   "planned": {
+    "questions": 250,
+    "stores": 250,
+    "summary calls (one per long item)": 10279,
+    "check calls (at most 2 per question it searches for)": 490,
+    "questions the check skips as too short": 5,
+    "answer calls (1 to 5 per question)": "250 to 1250",
+    "judge calls": 250
+   },
+   "started": "2026-11-02T12:49:43Z",
+   "seconds": 3904,
+   "summaries": false,
+   "answer_model": "claude-sonnet-5-5",
+   "check_code": "5688365eec9c1c5d",
+   "check_commit": "5d09b6eb12ee16ba967c3c4530727e5d20d06747+uncommitted",
+   "workers": 1,
+   "ran": 250,
+   "failed": 0,
+   "failures": []
+  }
+ ]
+}

@@ -91,7 +91,30 @@ python3 bench/public/longmemeval.py --set s --split test --label baseline
 python3 bench/public/locomo.py --split test --label baseline
 ```
 
-A test half runs at most three times, once each as `baseline`, `midpoint` and `final`, and `bench/splits/heldout-runs.tsv` logs every run. "Handled right" on the month counts a correct answer, and for a question nothing fits, a lookup that also added nothing. Tokens per question count the cards, the agent's `kb` commands and the check's own model calls.
+Each test half ran four times: `baseline`, `midpoint`, and a final pair, `final` and `baseline-paired` side by side (`bench/public/DEVIATIONS.md`). `bench/splits/heldout-runs.tsv` logs every run. The test halves are now spent: no further change may be chosen on them, and a new change needs fresh held-out data. "Handled right" on the month counts a correct answer, and for a question nothing fits, a lookup that also added nothing. Tokens per question count the cards, the agent's `kb` commands and the check's own model calls.
+
+## Held-out results after the climb
+
+The final held-out pass ran two lookups on the three test halves at the same time and in the same question order (`bench/paired.py`): `final`, the lookup #16 shipped (main 4d7a130), and `baseline-paired`, the lookup it replaced (`kb/` from e66d49d). The harness, answer model and judge were the same; only `kb/` differed. Under the rule fixed before the run, the lookup that held up on all three tests would ship. The baseline's did, and varve #30 ported it back onto main with today's masking kept. The released check runs that lookup.
+
+![The released check against three rivals on held-out month B](results/hillclimb/month/b-baseline-paired/chart.png)
+
+| Test | Questions | `baseline-paired`, released | `final`, #16 | Change, final minus baseline, 95% interval | Only one right, exact McNemar p | Tokens added to the prompt, baseline and final |
+|---|---|---|---|---|---|---|
+| Month B, handled right | 171 | 166 (97.1%) | 156 (91.2%) | −5.8 points (−9.9 to −1.8) | 12 vs 2, p 0.013 | 2,226 and 1,684 |
+| LongMemEval S, test half | 250 | 239 (95.6%) | 231 (92.4%) | −3.2 points (−6.4 to 0.0) | 12 vs 4, p 0.077 | 10,069 and 8,153 |
+| LoCoMo, conversations 6 to 10 | 778 | 696 (89.5%) | 702 (90.2%) | +0.8 points (−0.9 to +2.4) | 19 vs 25, p 0.45 | 3,358 and 2,584 |
+
+```bash
+python3 bench/compare.py final baseline-paired --split test --paired
+```
+
+- **What the token cut cost.** #16's agent read less: on month B it made 135 `kb get` calls to the baseline's 277 and answered 61 questions with no read at all, against 18. Its cards were longer, so its whole saving in the prompt came from reading fewer records. The month and LongMemEval losses sit on the questions where it read less; on LoCoMo, whose conversations are short, reading less cost nothing. LoCoMo token F1 is 0.644 for the baseline and 0.673 for #16. Lookup p50 was within 0.25 s between the two on every test.
+- **Timed-out lookups.** A lookup that hit the check's 10 s budget counts as a machine failure, not an answer. Six such rows were set aside in `results/hillclimb/timeouts/` and each question was asked again once on its side; none timed out the second time.
+- **Run-to-run spread.** The same code does not score the same on another day. The baseline's code scored 161, 230 and 702 on 2026-10-27 and 166, 239 and 696 on 2026-11-02. So the LongMemEval and LoCoMo gaps sit inside that spread; the month gap is larger than any same-code move seen, but it rests on one run of each.
+- **The port.** With no model calls, the port and e66d49d show the same search hits, picker records, 677 cards, `kb search` output and 677 `kb get` pages for all 170 dev-month queries (varve #30).
+- **The rivals.** The rivals' month B rows ran between 2026-10-28 and 2026-11-01, not beside the check, so the chart compares tools across days. Every lookup time in the chart comes from a month run, not from lookups timed alone; the check's were taken while the other lookup ran beside it on the same gateway.
+- **What was tried and dropped.** `results/hillclimb/attempts.tsv` holds every candidate and its dev numbers, and `results/hillclimb/decisions.tsv` every keep or drop and why.
 
 ## Results on the made-up month
 
@@ -149,7 +172,8 @@ The check also ran on its owner's real knowledge base: 53 questions written from
 
 | | Right, of 53 | Of 42 with an answer | Of 11 with nothing to find |
 |---|---|---|---|
-| The check, as it runs today | 51 | 40 | 11 |
+| The check, kb's own code, 2026-10-27 | 51 | 40 | 11 |
+| The released check, 2026-11-02, on a re-masked copy | 46 | 35 | 11 |
 | No lookup | 11 | 0 | 11 |
 
-The questions were found with `kb search`, so every answerable one is reachable by keyword search, which favours the check. With 42 answerable questions, one question moves the score by 2.4 points. The sessions that wrote the questions were hidden from every search. On 8 of the 11 questions with nothing to find, the check added nothing.
+The questions were found with `kb search`, so every answerable one is reachable by keyword search, which favours the check. With 42 answerable questions, one question moves the score by 2.4 points. The sessions that wrote the questions were hidden from every search. On 8 of the 11 questions with nothing to find, the check added nothing. On 2026-11-02 the released check added nothing on 9 of the 11. Its 46 sits below the 49 and 50 the same lookup scored on 2026-10-27. With no model calls, the old code on a plain snapshot of the knowledge base and the released code on a re-masked copy of the same snapshot show the same search hits, picker records and cards on all 53 questions, and masking hides no word of any answer. That points to six days of change in the knowledge base, which grew by 19% and renamed an app the answer key predates, and to answer noise, rather than to the code.
