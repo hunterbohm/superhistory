@@ -192,8 +192,9 @@ Known limits:
 - A private key written as base64 (as a Kubernetes secret holds one) is not masked.
 - Provider tokens kb does not know by itself are masked by rules taken from gitleaks (kb/gitleaks.py, gitleaks v8.30.1,
   MIT licence), where gitleaks finds one in text, as a word of its own. An Airtable token is masked alone too, where
-  gitleaks needs the provider's name near it; a Facebook token only with "facebook" near it, as gitleaks reads it, since
-  alone its shape is also a pipe-separated record's (a timestamp and a trace id). An item's id is read more narrowly,
+  gitleaks needs the provider's name near it; a Facebook token only with "facebook" in the text, as gitleaks reads it,
+  since alone its shape is also a pipe-separated record's (a timestamp and a trace id). So with "facebook" anywhere in
+  the text, such a record of 16 digits, "|" and 32 hex digits is masked too. An item's id is read more narrowly,
   without these rules.
   gitleaks reads Netlify's "nfp_" tokens only by the word "netlify" near a value and has no rule for Resend's "re_"
   tokens, so kb does not mask them by themselves.
@@ -206,7 +207,10 @@ Known limits:
   and numbers ("Password", "API token (required)", "Your 4-digit PIN"). A label that says more keeps what is typed,
   even for a password ("Type your password", "Password to view your account"), and an ordinary field labelled only
   "Password" or "PIN" has what is typed masked. With no label, as Chrome DevTools names a field by its id alone, it
-  is masked only when it is shaped like a credential and not like a code identifier.
+  is masked only when it is shaped like a credential and not like a code identifier. Code that types into a page is
+  read the same way: a typing tool called with its input written as an object, as Codex's code mode calls one, and
+  Playwright's fill, type and pressSequentially on a field found by its label, placeholder, role's name or selector.
+  A value typed from a variable stays, and other ways of writing such code are not read.
 - kb reads a secret that one colour code or one invisible character splits, or glues to a word, and still hides all
   that kb's earlier mask hid. Shapes built from more than that are not all read: a secret split by two kinds of
   invisible character at once ("pass<soft hyphen>word=..." with a link inside the value), what an older kb left
@@ -220,7 +224,8 @@ Known limits:
   into small letters ("Utf8to16Codec") reads as a password and is masked.
 - Masking costs time in proportion to the text, but a text in which kb's newer readings fire is masked a second time
   beside kb's earlier mask, so a long run of built shapes is slow: 4,000 soft-hyphen-split passwords with a link
-  inside each (160 KB) take about 10 s, and 30,000 command lines with a password each (900 KB) about 14 s.
+  inside each (160 KB) take about 10 s, 30,000 command lines with a password each (900 KB) about 14 s, and 256 KB of
+  nothing but Playwright fill calls with a password each about 6 s.
 - Where a later pass cuts into a placeholder, a bracket can be left beside it ("[masked]]"), or two placeholders stand
   side by side ("[masked][masked]"); no character of the secret is left.
 - A password with a comma, a semicolon or a bracket in it is masked whole in quotes, in an XML element or on a line of

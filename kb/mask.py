@@ -1359,7 +1359,7 @@ def _run(text, rules, origin=None, named=None, fired=None):
     # gitleaks' rules last, so a named value holding a provider's token is read whole first; and in text only, as an
     # id is read more narrowly (secret_in_id), and an id one took for a token would drop its item.
     if reading == "named":
-        for step in (_name_value_edits, _gitleaks_edits):
+        for step in (_name_value_edits, _typed_code_edits, _gitleaks_edits):
             edits = step(text)  # read from the text the step before left
             if edits:
                 note(edits)
@@ -2216,6 +2216,64 @@ def typed_secrets(name, args):
         if isinstance(value, list):
             out[key] = [field(item) for item in value]
     return out
+
+
+# Code that types into a page, as a tool runs it: a typing tool called with its input written as an object, as Codex's
+# code mode calls one from JavaScript ('tools.mcp__playwright__browser_type({"element": "Password", ...})'), and
+# Playwright's own calls that fill a field found by its label, placeholder, role's name or selector. Quotes may come
+# escaped, as JSON holds code.
+_CODE_TYPING_CALL = re.compile(rf"(?i)(?<![\w$])(?:[\w$]+\.)*(?:mcp__[\w-]+__)?(?:{_TYPING_TOOL.pattern[4:]})\s*\(\s*(?=\{{)")
+_CODE_HINT = re.compile(r"(?i)(?:fill|type|press_?sequentially|input_text|set_value)\w*\s*\(")
+
+
+def _quoted_string(q, v):
+    """A string in code, its quote (plain or escaped) named `q` and what it holds `v`."""
+    return rf"(?P<{q}>\\*[\"'`])(?P<{v}>(?:(?!(?P={q}))(?:\\.|[^\\\n])){{0,500}}?)(?P={q})"
+
+
+_CODE_PAIR = re.compile(rf"(?P<kq>\\*[\"'`]?)(?P<key>[A-Za-z_$][\w$]*)(?P=kq)\s*:\s*{_quoted_string('q', 'v')}")
+_FILLS = rf"(?:\s*\.\s*(?:first|last|nth|filter)\([^()\n]{{0,60}}\))*\s*\.\s*(?:fill|type|pressSequentially)\(\s*{_quoted_string('vq', 'value')}"
+_CODE_FIELDS = (
+    re.compile(rf"getBy(?:Label|Placeholder)\(\s*{_quoted_string('lq', 'label')}[^()\n]{{0,200}}?\){_FILLS}"),
+    re.compile(rf"getByRole\(\s*\\*[\"'`]\w+\\*[\"'`]\s*,\s*\{{[^{{}}\n]{{0,300}}?\bname\s*:\s*{_quoted_string('lq', 'label')}"
+               rf"[^{{}}\n]{{0,300}}\}}\s*\){_FILLS}"),
+    re.compile(rf"(?:locator|\$)\(\s*{_quoted_string('lq', 'label')}\s*\){_FILLS}"),
+    re.compile(rf"\.\s*(?:fill|type)\(\s*{_quoted_string('lq', 'label')}\s*,\s*{_quoted_string('vq', 'value')}"),
+)
+
+
+def _typed_code_edits(text):
+    """Each password code types into a page, as an edit that masks it: what typed_secrets masks of a typing tool's
+    input written in code, each flat object of it read with its labels, and what Playwright fills into a field whose
+    label, placeholder, role's name or selector asks for a secret. A variable typed in stays."""
+    if not _CODE_HINT.search(text):
+        return []
+    edits = []
+    calls = [m.end() for m in _CODE_TYPING_CALL.finditer(text)]
+    for k, start in enumerate(calls):
+        stop = min(calls[k + 1] if k + 1 < len(calls) else len(text), start + 4000)
+        for obj in _FLAT_OBJECT.finditer(text, start, stop):
+            labels, typed = [], []
+            for pair in _CODE_PAIR.finditer(obj.group()):
+                if pair.group("key") in _LABEL_KEYS:
+                    labels.append(pair.group("v"))
+                elif pair.group("key") in _TYPED_KEYS and pair.group("v"):
+                    typed.append((obj.start() + pair.start("v"), obj.start() + pair.end("v"), pair.group("v")))
+            secret = _asks_for_a_secret(labels)
+            edits += [(a, b, "[masked]") for a, b, value in typed
+                      if secret or not labels and _password_shaped(INVISIBLE.sub("", value))]
+    for pattern in _CODE_FIELDS:
+        for m in pattern.finditer(text):
+            value = m.group("value")
+            if value and not re.fullmatch(r"\$\{[^}]*\}", value) and _asks_for_a_secret([m.group("label")]):
+                edits.append((m.start("value"), m.end("value"), "[masked]"))
+    merged = []
+    for start, end, _ in sorted(edits):
+        if merged and start <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], end), "[masked]")
+        else:
+            merged.append((start, end, "[masked]"))
+    return merged
 
 
 def _exc_text(exc_info):
