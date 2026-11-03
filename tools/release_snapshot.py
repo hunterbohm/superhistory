@@ -425,6 +425,24 @@ def grep_text(patterns, data):
     return hits
 
 
+def grep_matches(patterns, data):
+    if not data:
+        return []
+    lines = data.split(b"\n")
+    starts = [0]
+    for line in lines[:-1]:
+        starts.append(starts[-1] + len(line) + 1)
+    spans = {}
+    for row in grep_run(grep_command(patterns, "-o", "-b"), input=data).split(b"\n"):
+        if row:
+            number, offset, text = row.split(b":", 2)
+            begin = int(offset) - starts[int(number) - 1]
+            spans.setdefault(int(number), []).append((begin, begin + len(text)))
+    for number, _ in grep_text(patterns, data):
+        spans.setdefault(number, [])
+    return [(number, lines[number - 1], spans[number]) for number in sorted(spans)]
+
+
 def read_blobs(repo, shas):
     if not shas:
         return {}
@@ -459,11 +477,18 @@ def archive_candidates(patterns, archive, prefix, entries):
             if member.isdir():
                 continue
             if name not in known and grep_text(patterns, raw.encode("utf-8", "surrogateescape")):
-                found.append((name, 0, raw.encode("utf-8", "surrogateescape")))
+                found.append((name, 0, raw.encode("utf-8", "surrogateescape"), []))
             data = tar.extractfile(member).read() if member.isreg() else member.linkname.encode("utf-8", "surrogateescape")
             if known.get(name) != blob_id(data):
-                found.extend((name, number, text) for number, text in grep_text(patterns, data))
+                found.extend((name,) + hit for hit in grep_matches(patterns, data))
     return found
+
+
+def occurrences(line, string):
+    at = line.find(string)
+    while at >= 0:
+        yield at, at + len(string)
+        at = line.find(string, at + 1)
 
 
 def scan_patterns(repo, patterns, exceptions, extra, archive=None, prefix=None):
@@ -472,34 +497,27 @@ def scan_patterns(repo, patterns, exceptions, extra, archive=None, prefix=None):
     candidates = []
     for mode, sha, name in entries:
         if mode in ARCHIVE_MODES and show(name) != EXCEPTIONS_PATH:
-            candidates.extend((show(name), number, text) for number, text in grep_text(patterns, blobs[sha]))
+            candidates.extend((show(name),) + hit for hit in grep_matches(patterns, blobs[sha]))
     if archive is not None:
         candidates.extend(archive_candidates(patterns, archive, prefix, entries))
-    candidates = list(dict.fromkeys(candidates))
     for name, text in sorted((extra or {}).items()):
-        candidates.extend((name, number, line) for number, line in grep_text(patterns, text.encode()))
-    paths = [name for _, _, name in entries]
-    bad_paths = [name for name in paths if grep_text(patterns, name)]
+        candidates.extend((name,) + hit for hit in grep_matches(patterns, text.encode()))
+    candidates = list({(path, number, line): (path, number, line, spans) for path, number, line, spans in candidates}.values())
+    bad_paths = [name for _, _, name in entries if grep_text(patterns, name)]
     strings = {}
     for path, string, _ in exceptions:
-        strings.setdefault(path, []).append(string.encode())
-    used, rest = set(), []
-    for path, number, original in candidates:
-        text = original
-        for string in strings.get(path, ()):
-            if string in original:
-                used.add((path, string.decode()))
-                text = text.replace(string, b" ")
-        rest.append(text)
-    changed = [i for i, (c, text) in enumerate(zip(candidates, rest)) if text != c[2]]
-    still = {changed[number - 1] for number, _ in grep_text(patterns, b"\n".join(rest[i] for i in changed) + b"\n")} if changed else set()
-    findings, allowed = [], []
-    for position, (path, number, original) in enumerate(candidates):
-        row = Finding("%s:%d" % (path, number) if number else path, show(original)[:LINE_WIDTH])
-        if rest[position] != original and position not in still:
-            allowed.append(row)
-        else:
-            findings.append(row)
+        strings.setdefault(path, []).append(string)
+    used, findings, allowed = set(), [], []
+    for path, number, line, spans in candidates:
+        covers = [(start, end, (path, string)) for string in strings.get(path, ())
+                  for start, end in occurrences(line, string.encode())]
+        uncovered = not spans
+        for start, end in spans:
+            over = [key for s, e, key in covers if s <= start and end <= e]
+            used.update(over)
+            uncovered = uncovered or not over
+        row = Finding("%s:%d" % (path, number) if number else path, show(line)[:LINE_WIDTH])
+        (findings if uncovered else allowed).append(row)
     findings.extend(Finding(show(name), "(a file name)") for name in bad_paths)
     findings.sort(key=where_key)
     allowed.sort(key=where_key)
