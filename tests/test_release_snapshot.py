@@ -27,13 +27,13 @@ from tools import release_snapshot as rs
 REPO = Path(__file__).resolve().parent.parent
 INSTALLER = Path(__file__).resolve().parent / "fixtures" / "release" / "site_install.sh"
 CURRENT = "%d.%d" % sys.version_info[:2]
-PORT = "83" + "17"
+GW, PORT, PROXY = "acme-gateway", "4242", "AcmeProxyAPI"
 EXCEPTIONS = "tools/release_exceptions.tsv"
 ROWS = "bench/DATASET_ROWS.txt"
 CREDENTIAL = "zq-4417-kettle"
-SECRET = ("see " + "Acme" + "corp " + CREDENTIAL + " " + "cli" + "-gateway " + PORT + " " + "CLIPr" + "oxyAPI\n").encode()
+SECRET = ("see Acmecorp " + CREDENTIAL + " " + GW + " " + PORT + " " + PROXY + "\n").encode()
 AUTHOR = "Pat Example <pat@example.invalid>"
-PATTERNS = "\\bacmecorp\\b\n(^|[^-a-z0-9])boxroom\\b\n"
+PATTERNS = "\\bacmecorp\\b\n(^|[^-a-z0-9])boxroom\\b\nacme[-_]?gateway\n4242\nacmeproxyapi\n"
 README = """# Widgetly
 
 A small tool made up for tests. The command is `wgt`.
@@ -301,32 +301,46 @@ class PatternTest(SourceCase):
         release = self.build(self.commit(self.base_files()))
         self.assertTrue(release.check("patterns").ok)
 
-    GW = "cli" + "-gateway"
-    PORT = "83" + "17"
-    PROXY = "CLIPr" + "oxyAPI"
-    GATEWAY_SPELLINGS = [GW, "CLI" + "-Gateway", "cli" + "_gateway", "CLI" + "GATEWAY", PORT, PROXY, PROXY.lower(),
-                         "~/.config/" + GW + "/client.key", "$HOME/.config/" + GW, "${HOME}/.config/" + GW,
-                         "/home/someone/.config/" + GW, "/Users/someone/.config/" + GW,
-                         "$XDG_CONFIG_HOME/" + GW + "/client.key", "~/.config//cli" + "_gateway/client.key"]
+    GW, PORT, PROXY = GW, PORT, PROXY
+    SPELLINGS = [GW, "ACME-Gateway", "acme_gateway", "ACMEGATEWAY", PORT, PROXY, PROXY.lower(),
+                 "~/.config/acme-gateway/client.key", "$HOME/.config/acme-gateway", "${HOME}/.config/acme-gateway",
+                 "/home/someone/.config/acme-gateway", "/Users/someone/.config/acme-gateway",
+                 "$XDG_CONFIG_HOME/acme-gateway/client.key", "~/.config//acme_gateway/client.key"]
 
-    def test_the_releases_own_forbidden_strings_hit_whatever_the_patterns_file_holds(self):
-        text = "".join("see %s here\n" % spelling for spelling in self.GATEWAY_SPELLINGS)
+    def test_every_spelling_of_a_name_a_port_and_a_key_path_in_the_patterns_file_hits(self):
+        text = "".join("see %s here\n" % spelling for spelling in self.SPELLINGS)
         found = self.build(self.commit(self.base_files(**{"docs/a.md": text}))).check("patterns")
         self.assertFalse(found.ok)
-        self.assertEqual([f.where for f in found.findings], ["docs/a.md:%d" % n for n in range(1, len(self.GATEWAY_SPELLINGS) + 1)])
+        self.assertEqual([f.where for f in found.findings], ["docs/a.md:%d" % n for n in range(1, len(self.SPELLINGS) + 1)])
 
-    def test_words_near_the_forbidden_ones_do_not_hit(self):
-        text = "an api gateway\nthe cli tool\nport 8318 and 18316\nclient.key alone\n"
+    def test_the_scan_uses_only_the_patterns_file_it_is_given(self):
+        given = self.tmp / "only.txt"
+        given.write_text("\\bacmecorp\\b\n")
+        used, real = set(), rs.grep_run
+
+        def spy(cmd, cwd=None, input=None):
+            if "-f" in cmd:
+                used.update(line for line in Path(cmd[cmd.index("-f") + 1]).read_bytes().split(b"\n") if line)
+            return real(cmd, cwd=cwd, input=input)
+
+        release = self.build(self.commit(self.base_files(**{"docs/a.md": "see Acmecorp\n"})), patterns=given)
+        with mock.patch.object(rs, "grep_run", side_effect=spy):
+            found = rs.check_patterns(release.repo, given)
+        self.assertEqual([f.where for f in found.findings], ["docs/a.md:1"])
+        self.assertEqual(used, {b"\\bacmecorp\\b"})
+
+    def test_words_near_the_ones_in_the_patterns_file_do_not_hit(self):
+        text = "an api gateway\nthe acme tool\nport 4243 and 14241\nclient.key alone\n"
         found = self.build(self.commit(self.base_files(**{"docs/a.md": text}))).check("patterns")
         self.assertTrue(found.ok, found.findings)
 
-    def test_the_forbidden_strings_hit_in_file_names_the_commit_message_and_the_notes(self):
+    def test_the_patterns_hit_in_file_names_the_commit_message_and_the_notes(self):
         release = self.build(self.commit(self.base_files(**{"docs/%s.md" % self.GW: "fine\n"})))
         self.assertEqual([f.where for f in release.check("patterns").findings], ["docs/%s.md" % self.GW])
         found = rs.check_patterns(release.repo, self.patterns, extra={"commit message": "uses " + self.PORT, "RELEASE_NOTES.md": self.PROXY + "\n"})
         self.assertEqual(sorted(f.where for f in found.findings), ["RELEASE_NOTES.md:1", "commit message:1", "docs/%s.md" % self.GW])
 
-    def test_the_forbidden_strings_can_still_be_excepted_by_an_exact_entry(self):
+    def test_a_hit_on_a_port_number_can_be_excepted_by_an_exact_entry(self):
         score = "0.%s229747772217" % self.PORT
         files = {"data.json": "[%s]\n" % score, EXCEPTIONS: tsv(("data.json", score, "a similarity score"))}
         self.assertTrue(self.build(self.commit(self.base_files(**files))).check("patterns").ok)
@@ -357,6 +371,33 @@ class PatternTest(SourceCase):
         git(self.src, "commit", "-q", "-m", "link")
         found = self.build().check("patterns")
         self.assertFalse(found.ok)
+
+    def test_a_missing_or_empty_patterns_file_stops_the_run_before_anything_is_written(self):
+        head = self.commit(self.base_files())
+        empty = self.tmp / "empty.txt"
+        empty.write_text("")
+        for path, why in ((self.tmp / "none.txt", "cannot read the patterns file"), (empty, "is empty")):
+            with self.assertRaisesRegex(rs.ReleaseError, why):
+                self.build(head, patterns=path)
+            self.assertFalse(self.out.exists())
+
+    @unittest.skipIf(os.geteuid() == 0, "root reads a file whatever its mode")
+    def test_an_unreadable_patterns_file_stops_the_run(self):
+        head = self.commit(self.base_files())
+        locked = self.tmp / "locked.txt"
+        locked.write_text("acmecorp\n")
+        locked.chmod(0)
+        self.addCleanup(locked.chmod, 0o644)
+        with self.assertRaisesRegex(rs.ReleaseError, "cannot read the patterns file"):
+            self.build(head, patterns=locked)
+
+    def test_the_command_needs_a_patterns_file(self):
+        self.commit(self.base_files())
+        argv = ["HEAD", str(self.out), "--source", str(self.src), "--author", AUTHOR, "--credential", CREDENTIAL, "--no-suites"]
+        with contextlib.redirect_stderr(io.StringIO()) as err, self.assertRaises(SystemExit) as caught:
+            rs.main(argv)
+        self.assertEqual(caught.exception.code, 2)
+        self.assertIn("--patterns", err.getvalue())
 
     def test_a_blank_line_in_the_patterns_file_is_refused(self):
         head = self.commit(self.base_files())
@@ -715,8 +756,7 @@ class FilesTest(SourceCase):
 
 
 class ForbiddenNamesTest(SourceCase):
-    GW = "cli" + "-gateway"
-    PROXY = "CLIPr" + "oxyAPI"
+    GW, PROXY = GW, PROXY
 
     def test_a_forbidden_string_in_the_repo_name_fails_the_release_and_does_not_flood_the_report(self):
         name = "%s-%s-%s" % (self.GW, PORT, self.PROXY)
@@ -749,7 +789,7 @@ class ForbiddenNamesTest(SourceCase):
 class IdentityTest(SourceCase):
     def test_a_forbidden_string_or_a_pattern_in_the_author_fails_the_patterns_check(self):
         head = self.commit(self.base_files())
-        for author in ("cli" + "-gateway <test@example.invalid>", "Builds <acme" + "corp@example.invalid>"):
+        for author in (GW + " <test@example.invalid>", "Builds <acme" + "corp@example.invalid>"):
             shutil.rmtree(str(self.out), ignore_errors=True)
             found = self.build(head, author=author).check("patterns")
             self.assertEqual([f.where for f in found.findings], ["commit identity:1", "commit identity:2"], author)
