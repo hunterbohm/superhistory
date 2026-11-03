@@ -188,13 +188,16 @@ Known limits:
   tab, a form feed or the separators from 0x1c, which part words as a line break does. A key split by one of those is
   not masked whole.
 - Provider tokens kb does not know by itself are masked by rules taken from gitleaks (kb/gitleaks.py, gitleaks v8.30.1,
-  MIT licence), where gitleaks finds one in text, as a word of its own. An Airtable or Facebook token is masked alone
-  too, where gitleaks needs the provider's name near it. An item's id is read more narrowly, without these rules.
+  MIT licence), where gitleaks finds one in text, as a word of its own. An Airtable token is masked alone too, where
+  gitleaks needs the provider's name near it; a Facebook token only with "facebook" near it, as gitleaks reads it, since
+  alone its shape is also a pipe-separated record's (a timestamp and a trace id). An item's id is read more narrowly,
+  without these rules.
   gitleaks reads Netlify's "nfp_" tokens only by the word "netlify" near a value and has no rule for Resend's "re_"
   tokens, so kb does not mask them by themselves.
 - A .netrc line is read where it starts a line or a quoted string. One with no host after "machine" (or "default"),
-  whose login and password are both short words in small letters, reads as a sentence and is shown: "default login
-  page password field." stays, and so does "default login deploy password sunshine".
+  whose login and password are both words of letters, reads as a sentence and is shown: "default login page password
+  requirements" stays, and so does "default login deploy password sunshine". With a host, or a digit or a symbol in
+  the password, it is masked.
 - A password an agent types into a web page through a browser tool is masked when a label of the field names a
   password, passcode, secret, token, PIN or the like and nothing else but a form's own words, a kind of credential
   and numbers ("Password", "API token (required)", "Your 4-digit PIN"). A label that says more keeps what is typed,
