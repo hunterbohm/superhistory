@@ -302,14 +302,15 @@ LINE_PASSWORD = re.compile(
 # before a secret parts it from the word before (_once), though a colour code ends in a letter. The vertical tab, the
 # form feed, the four separators from 0x1c and NEL are whitespace, as str.split reads them, and part words as a line
 # break does: pdftotext puts a form feed between pages.
-_CSI = r"(?:\x1b\[|\x9b|(?<!\\)\\{1,8}(?:u001[bB]|x1[bB]|033|[eE])\[|(?<!\\)\\{1,8}(?:u009[bB]|x9[bB]|233))(?!masked\])[0-?]*[ -/]*[@-~]"
+_CSI = r"(?:\x1b\[|\x9b|(?<!\\)\\+(?:u001[bB]|x1[bB]|033|[eE])\[|(?<!\\)\\+(?:u009[bB]|x9[bB]|233))(?!masked\])[0-?]*[ -/]*[@-~]"
 _FORMAT_CHARACTERS = (r"\u00ad\u034f\u061c\u115f\u1160\u17b4\u17b5\u180b-\u180f\u200b-\u200f\u202a-\u202e\u2060-\u206f"
                       r"\u3164\ufe00-\ufe0f\ufeff\uffa0\ufff0-\ufff8\U0001bca0-\U0001bca3\U0001d173-\U0001d17a"
                       r"\U000e0000-\U000e0fff")
 # The same characters escaped, as JSON ("\u200b", "\u007f") and Python's repr ("\x7f", "\xad", "\u2060") print them; one
 # past U+FFFF as JSON writes it, a surrogate pair ("\udb40\udc01" for U+E0001); and any of them escaped twice, as a
-# JSON string inside JSON holds one ("\\u200b"); and JSON's short escape for the backspace, between word characters,
-# "_" among them, where a regular expression's word boundary ("\\btoken\\b", a non-word character beside it) does not.
+# JSON string inside JSON holds one ("\\u200b"); and JSON's short escape for the backspace, between characters a token
+# holds (letters, digits, "_", "-", "."), where a regular expression's word boundary ("\\btoken\\b", a quote or a space
+# beside it) does not.
 _ESCAPED_INVISIBLE = (
     r"\\?(?:\\u(?:000[0-8]|000[eEfF]|001[0-9a-bA-B]|007[fF]|008[0-46-9a-fA-F]|009[0-9a-fA-F]|00[aA][dD]|034[fF]|061[cC]"
     r"|115[fF]|1160|17[bB][45]|180[b-fB-F]|200[b-fB-F]|202[a-eA-E]|206[0-9a-fA-F]|3164|[fF][eE]0[0-9a-fA-F]"
@@ -318,7 +319,7 @@ _ESCAPED_INVISIBLE = (
     r"|\\U000(?:1[bB][cC][aA][0-3]|1[dD]17[3-9aA]|[eE]0[0-9a-fA-F]{3})"
     r"|\\u[dD][bB]4[0-3]\\{1,2}u[dD][c-fC-F][0-9a-fA-F]{2}|\\u[dD]82[fF]\\{1,2}u[dD][cC][aA][0-3]"
     r"|\\u[dD]834\\{1,2}u[dD][dD]7[3-9aA])"
-    r"|(?<=[A-Za-z0-9_])\\{1,2}b(?=[A-Za-z0-9_])")
+    r"|(?<=[A-Za-z0-9_.-])\\{1,2}b(?=[A-Za-z0-9_.-])")
 INVISIBLE = re.compile(_CSI + rf"|{_ESCAPED_INVISIBLE}|[\x00-\x08\x0e-\x1b\x7f-\x84\x86-\x9f{_FORMAT_CHARACTERS}]")
 # Main's own: a lone control or format character, not a colour code, an escaped one, DEL or a C1 control
 # (_NEW_INVISIBLE).
@@ -840,15 +841,73 @@ _PLAIN_ARGUMENTS = re.compile(rf"""(?:[^\s'"`$\\()|;&<>#]+|[ \t]+|\\t|(?<=\S)\#|
                               rf"""|{_SIMPLE_SUBSTITUTION}|'[^']*'|"(?![ \t]*(?:[,:}}\]]|\Z)){_DOUBLE_QUOTED}"|"""
                               rf"""\\"{_DOUBLE_QUOTED}\\")*""")
 # Where what kb reads plainly ends the command: the text's or the line's end, a pipe, ";", "&", a bracket that closes,
-# a comment, or, where a JSON string holds the command (_JSON_HELD: its opening quote, escaped as many times as JSON
-# holds it), that string's end, a quote escaped as many times before a JSON mark, an outer string's end or the text's
-# end; a quote inside it, as a jq selector holds one, is none.
-# Each by the backslashes before the string's opening quote, None where no JSON string holds the line.
+# a comment, or, where a JSON string holds the command, that string's end. The string, and its backslash count `held`
+# (0 at the top, 2**d - 1 at depth d), come from reading the line's strings in order (_json_cover), not a look-back,
+# so a quote inside the string, as a jq selector holds one, closes nothing.
 _LINE_END = r"[\r\n]|(?<!\\)\\+[nr]"
-_JSON_HELD = re.compile(r'(?:^|(?<=[\[{,:"]))[ \t]*(\\{0,3})"', re.M)
-_STRING_ENDS = {k: rf"""|(?<!\\)\\{{{k}}}"(?=[ \t]*(?:[,:}}\]]|\\*"|\Z))""" for k in range(4)}
-_PLAIN_STOP = {k: re.compile(rf"\Z|[|;&)#]|{_LINE_END}{_STRING_ENDS.get(k, '')}") for k in (None, 0, 1, 2, 3)}
-_SEGMENT_END = {k: re.compile(rf"{_LINE_END}{_STRING_ENDS.get(k, '')}") for k in (None, 0, 1, 2, 3)}
+
+
+def _string_end(held):
+    """Where a JSON string whose quotes carry `held` backslashes ends: a quote with that many backslashes before it,
+    the run started where no backslash does, before a JSON mark, an outer string's end or the text's end."""
+    return "" if held is None else r'|(?<!\\)\\{%d}"(?=[ \t]*(?:[,:}\]]|\\*"|\Z))' % held
+
+
+@functools.lru_cache(maxsize=256)
+def _plain_stop(held):
+    return re.compile(r"\Z|[|;&)#]|" + _LINE_END + _string_end(held))
+
+
+@functools.lru_cache(maxsize=256)
+def _segment_end(held):
+    return re.compile(_LINE_END + _string_end(held))
+
+
+@functools.lru_cache(maxsize=256)
+def _json_cover(text):
+    """(positions, counts): across [positions[i], positions[i+1]) the innermost open JSON string's delimiter has
+    counts[i] backslashes, or counts[i] is None where no string is open. One left-to-right scan of the text's strings
+    in order: a run of b backslashes then a double quote opens a nested string (b == 2c+1), closes the current one
+    (b == c) or, otherwise, is escaped content, where c is the current string's count (0 at the top)."""
+    positions, counts, stack = [0], [None], []
+    i, n = 0, len(text)
+
+    def mark():
+        top = stack[-1] if stack else None
+        if top != counts[-1]:
+            if positions[-1] == i:
+                counts[-1] = top
+            else:
+                positions.append(i)
+                counts.append(top)
+
+    while i < n:
+        ch = text[i]
+        if ch == "\\":
+            j = i
+            while j < n and text[j] == "\\":
+                j += 1
+            if j < n and text[j] == '"':
+                b, c = j - i, (stack[-1] if stack else None)
+                if stack and b == c:
+                    stack.pop()
+                elif stack and b == 2 * c + 1:
+                    stack.append(b)
+                i = j + 1
+                mark()
+                continue
+            i = j
+            continue
+        if ch == '"':
+            if not stack:
+                stack.append(0)
+            elif stack[-1] == 0:
+                stack.pop()
+            i += 1
+            mark()
+            continue
+        i += 1
+    return tuple(positions), tuple(counts)
 
 
 def _unread_flag_edits(text, line_pattern, flag, always, done):
@@ -858,24 +917,17 @@ def _unread_flag_edits(text, line_pattern, flag, always, done):
     where its value starts) is masked from the value to the end of that line, or of the JSON string holding it, where
     JSON holds the line: kb cannot tell where a part it does not read ends, so a pipe or ";" there may be quoted."""
     edits, covered = [], 0
-    # The JSON strings opened in the text, and the line breaks, each found once, so a line naming a command again and
-    # again costs time in proportion to the text, not its square.
-    openings = [(m.start(), len(m.group(1))) for m in _JSON_HELD.finditer(text)]
-    opening_at = [o[0] for o in openings]
-    breaks = [m.start() for m in re.finditer(r"[\r\n]", text)]
+    positions, counts = _json_cover(text)  # the string that holds each point, found once for the whole text
     for line in line_pattern.finditer(text):
         if line.start() < covered:
             continue
         begin = _past_closing_quote(text, covered, line.start(), line.end())
         plain = _PLAIN_ARGUMENTS.match(text, begin).end()
-        b = bisect.bisect_left(breaks, line.start()) - 1
-        line_start = breaks[b] + 1 if b >= 0 else 0
-        k = bisect.bisect_left(opening_at, line.start()) - 1  # the last JSON string opened before the command
-        held = openings[k][1] if k >= 0 and opening_at[k] >= line_start else None  # on the command's own line
-        if _PLAIN_STOP[held].match(text, plain):
+        held = counts[bisect.bisect_right(positions, line.start()) - 1]  # the JSON string the command sits in
+        if _plain_stop(held).match(text, plain):
             covered = plain
             continue
-        stop = _SEGMENT_END[held].search(text, plain)
+        stop = _segment_end(held).search(text, plain)
         covered = end = stop.start() if stop else len(text)
         for m in flag.finditer(text, max(begin, plain - 1), end):
             if m.start(2) in done or text.startswith("[masked]", m.start(2)) or not _flag_value_counts(m, always, True):
@@ -920,6 +972,16 @@ _QUOTE_ESCAPE = re.compile(r'(?<!\\)\\+(?=["'"'"'])')
 _NEEDS_ESCAPE = re.compile(r"[\"'\\\x00-\x1f\x7f]")
 
 
+def _encode_item(text, quote):
+    """`text` as a string body written between `quote` marks: JSON's escaping for a double quote, Python's
+    single-quote escaping for a single one. A plain placeholder needs neither."""
+    if text == "[masked]":
+        return text
+    if quote == '"':
+        return json.dumps(text)[1:-1]
+    return text.replace("\\", "\\\\").replace("'", "\\'")
+
+
 def _argument_items(source):
     """The strings of a list or a tuple JSON or Python writes, or None."""
     try:
@@ -934,7 +996,7 @@ def _argument_items(source):
     return tuple(items) if isinstance(items, (list, tuple)) and all(isinstance(v, str) for v in items) else None
 
 
-def _view_edits(text, view, split):
+def _view_edits(text, view, split, base):
     """_wrapping_edits' reading of one view, `split` read from `view` or None: (the lists of a command's arguments it
     reads, the edits that mask what they hold, the edits that mask what the lines read hold), in the text as
     written."""
@@ -949,31 +1011,32 @@ def _view_edits(text, view, split):
             strings = list(_ARGUMENT.finditer(read, m.start(), m.end()))
             for i, masked in _listed_flag_values(items).items():
                 k = 1 if strings[i].group(1) is not None else 2
-                listed.append((strings[i].start(k), strings[i].end(k), masked))
+                listed.append((strings[i].start(k), strings[i].end(k), masked, '"' if k == 1 else "'"))
     for n, (line, flag, always) in enumerate(_COMMANDS):
         unread = n >= _MAIN_COMMANDS and always != "field"
         found = _command_password_edits(read, line, flag, always, n >= _MAIN_COMMANDS) \
             if read != text or unread else []
-        if unread:
+        if unread and base:
             more = _unread_flag_edits(read, line, flag, always, {start for start, _, _ in found})
             found = found + more if read != text else more  # as written, the pass after reads the rest
-        lined += [(start, end, "[masked]") for start, end, _ in found if not read.startswith("[masked]", start)]
+        lined += [(start, end, "[masked]", None) for start, end, _ in found if not read.startswith("[masked]", start)]
     if not split:
+        listed = [(st, en, _encode_item(ins, q), None) for st, en, ins, q in listed]
         return lists, listed, lined
     # Back to the text as written, a value with the colour codes around it, as its reading masks one.
     unwrapped = {i for m in _QUOTE_ESCAPE.finditer(view) for i in range(m.start(), m.end())}
 
-    def back(start, end, insert):
+    def back(start, end, insert, quote):
         raw = split.raw(start, end)
-        if raw[1] - raw[0] != end - start:
-            insert = "[masked]"
         start, end = raw
         while start - 1 in split.removed and start - 1 not in unwrapped:
             start -= 1
         while end in split.removed and end not in unwrapped:
             end += 1
-        return start, end, insert
+        return start, end, insert, quote
 
+    # A list read in an unescaped view: its items' raw escaping is not this view's, so mask each whole, fail-closed.
+    listed = [(st, en, "[masked]", None) for st, en, _, _ in listed]
     return ([split.raw(*span) for span in lists], [back(*edit) for edit in listed], [back(*edit) for edit in lined])
 
 
@@ -996,7 +1059,7 @@ def _wrapping_edits(text):
         if levels and deepest < 2 ** (levels - 1):
             continue  # no quote escaped so deep: the view is the one a level up
         for found, more in zip((lists, listed, lined), _view_edits(text, view, _Split(view, runs, _NEVER)
-                                                                   if runs.search(view) else None)):
+                                                                   if runs.search(view) else None, levels == 0)):
             found += more
     # Where a list of arguments is read, it is read exactly; a line read across one, in a view that unescaped its
     # items' quotes with the quotes they hold, reads it wrongly.
@@ -1008,8 +1071,7 @@ def _wrapping_edits(text):
             stretches.append((start, end))
     spans = listed + [edit for edit in lined if _holding(stretches, edit[0]) is None]
     merged = []
-    for start, end, insert in sorted(spans):
-        insert = "[masked]" if _NEEDS_ESCAPE.search(insert) else insert
+    for start, end, insert, _ in sorted(spans):
         if merged and start < merged[-1][1]:
             merged[-1] = (merged[-1][0], max(merged[-1][1], end), "[masked]")
         else:
