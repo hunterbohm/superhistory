@@ -3,7 +3,7 @@
  "month": "953cba6ddd9330e3323843e29ba286eeecaa9686",
  "answer_model": "claude-sonnet-5-5",
  "judge_model": "gpt-6.1-sol",
- "base_url": "http://127.0.0.1:8317",
+ "base_url": "local model gateway",
  "questions": 171,
  "workers": 4,
  "tools": [

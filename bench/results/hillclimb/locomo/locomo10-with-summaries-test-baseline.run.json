@@ -31,7 +31,7 @@
    "ran": 777,
    "failed": 1,
    "failures": [
-    "conv-47/78: RuntimeError: HTTP 429 from http://127.0.0.1:8317/v1/messages: {\"type\":\"error\",\"error\":{\"type\":\"rate_limit_error\",\"message\":\"All credentials for model gpt-6.1-sol are cooling down (last error: {\\\"detail\\\":\\\"Rate limit exceeded\\\"})\"}}"
+    "conv-47/78: RuntimeError: HTTP 429 from local model gateway/v1/messages: {\"type\":\"error\",\"error\":{\"type\":\"rate_limit_error\",\"message\":\"All credentials for model gpt-6.1-sol are cooling down (last error: {\\\"detail\\\":\\\"Rate limit exceeded\\\"})\"}}"
    ]
   },
   {
