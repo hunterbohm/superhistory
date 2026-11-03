@@ -528,7 +528,7 @@ def _gitleaks_edits(text):
 # Which mask() a stored row was masked with. A row of another version, or of none, is masked again when read and by
 # the next ingest. The patterns change it by themselves; bump REVISION when the code that applies them changes what
 # it masks.
-REVISION = 16
+REVISION = 17
 VERSION = hashlib.sha256(repr((REVISION, [p.pattern for p in SECRET_PATTERNS + PREFIXED_SECRETS], KEYED_SECRET.pattern,
                                 ENV_KEY_SECRET.pattern, JSON_SECRET.pattern, FLAG_SECRET.pattern, AUTH_SECRET.pattern,
                                 COMMAND_FLAGS, PASSWORD_NAME.pattern, sorted(PLACEHOLDERS), REFERENCE.pattern,
@@ -1272,19 +1272,26 @@ def _token_tail(text):
 
 def _key_rest_edits(text, starts=_REST_START):
     """The rest of a key after an older kb's placeholder (`starts`, _REST) as an edit that removes it, unless its
-    base64 decodes whole as public material. Each placeholder outside the rest before it is read once, and each rest
-    runs once to its end, so a paragraph of many costs time in proportion."""
-    edits, end, tail = [], 0, None
+    base64 decodes whole as public material. Each placeholder outside the core of the rest before it is read once, and
+    each core runs once to its end, so a paragraph of many costs time in proportion."""
+    spans, core, tail = [], 0, None
     for at in _PLACEHOLDER.finditer(text):
-        if at.start() < end or not starts.match(text, at.end()):
+        if at.start() < core or not starts.match(text, at.end()):
             continue
+        core = _REST.match(text, at.end()).end()
         tail = tail or _token_tail(text)
-        end = tail(_REST.match(text, at.end()).end())
+        end = tail(core)  # a placeholder past the core, in the tail, still reads its own rest
         rest = text[at.end():end]
         data = None if _KEY_END_TEXT.search(rest) else _decoded(
             re.sub(r"[^A-Za-z0-9+/=]", "", _ESCAPE.sub("", INVISIBLE.sub("", rest))), 0, None)
         if not (data and _public_material(data)):
-            edits.append((at.end(), end, ""))
+            spans.append((at.end(), end))
+    edits = []
+    for start, end in spans:  # in order of their starts; one in a tail can run past it
+        if edits and start <= edits[-1][1]:
+            edits[-1] = (edits[-1][0], max(edits[-1][1], end), "")
+        else:
+            edits.append((start, end, ""))
     return edits
 
 
