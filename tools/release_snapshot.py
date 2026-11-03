@@ -10,6 +10,11 @@ OUT_DIR must be absent or empty. It gets:
     RELEASE_NOTES.md   the README's description and known limits
     v<version>.tar.gz  the source archive, built the way GitHub builds one for a tag
     CHECKS.txt         the report printed on screen
+    RELEASE.sha256     on a passing run only: the notes' and the archive's sha256, as `shasum -a 256 -c` reads them
+    RELEASE.ids        on a passing run only: the snapshot's commit id and tree id, on one line
+
+The last three are created only after every check, never through a link or over an entry already there, and a
+passing run prints RELEASE.sha256 and RELEASE.ids after its report, for a copy kept outside OUT_DIR.
 
 Nothing is pushed, and nothing is created on GitHub. The private values are arguments, so this file holds none: the
 snapshot's own check would find them here. The exit code is 0 when every check that ran passed, 1 when one failed
@@ -25,13 +30,14 @@ skipped:
     tools/release_binaries.tsv     <path><TAB><sha256><TAB><reason>. The only files allowed not to be UTF-8 text: each
                                    listed path must be a file that is not text, with exactly that sha256 of its bytes.
 
-The checks. A git command that fails or runs past COMMAND_TIMEOUT fails the check that ran it.
+The checks. A command that fails, runs past COMMAND_TIMEOUT or leaves a process running in its process group (which
+is then stopped) fails the check that ran it. A credential must be ASCII.
 
     history     the repo holds one commit with no parent, one branch, one tag, no remote
     links       first, before anything runs: every symlink in the commit, followed through its other links, stays
                 in the tree; if one leaves it, the installer and the suites do not run
-    files       every file and link target is UTF-8 text with no NUL byte, or is in release_binaries.tsv with its
-                sha256 (an entry that names no such file fails), and the tree holds no submodule
+    files       every path is UTF-8, every file and link target is UTF-8 text with no NUL byte or is in
+                release_binaries.tsv with its sha256 (an entry that names no such file fails), and there is no submodule
     credential  no object (as many read as git count-objects counts), file name, note, commit author or committer,
                 repo name, tag or archive folder name holds a made-up credential, in any case
     patterns    no file's text or name, link target, note, commit message, author or committer, repo name, tag or
@@ -42,7 +48,8 @@ The checks. A git command that fails or runs past COMMAND_TIMEOUT fails the chec
                 the local gateway's name in any spelling (so its key file's path under any home), its old port
                 number and its proxy's name. Nothing is decoded: a binary is only as safe as its list entry's review.
     dataset     no file named in DATASET_ROWS.txt is in the tree or the archive
-    archive     the archive, built from the tree, holds its files member by member under one folder, with install.sh
+    archive     the archive, built from the tree, holds its files member by member under one folder, with install.sh,
+                but for what .gitattributes marks export-ignore, as GitHub's archive does; export-subst fails
     install     --installer: the site's installer, run against a local https server of this folder (a throwaway
                 certificate, trusted through CURL_CA_BUNDLE), GETs the whole archive, and the `kb` it installs
                 runs --help and prints this release's version for --version
@@ -95,7 +102,8 @@ VERSION_PROBE = "import sys; print('%d.%d' % sys.version_info[:2])"
 SKIPPED = re.compile(r"\.\.\. skipped ('.*'|\".*\")\s*$", re.M)
 TAG_REF = "refs/tags/"
 FORBIDDEN = ["cli[-_]?" + "gateway", "83" + "17", "cli" + "proxy" + "api"]
-ISOLATED = {"GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1", "GIT_OPTIONAL_LOCKS": "0"}
+ISOLATED = {"GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1", "GIT_OPTIONAL_LOCKS": "0", "GIT_ATTR_NOSYSTEM": "1",
+            "GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "core.attributesFile", "GIT_CONFIG_VALUE_0": os.devnull}
 
 
 class ReleaseError(Exception):
@@ -169,7 +177,23 @@ def run_group(argv, timeout, cwd=None, env=None, input=None, stderr=subprocess.S
         except subprocess.TimeoutExpired:
             pass
         raise
+    left = stop_group(proc.pid)
+    if left:
+        raise ReleaseError("%s left %d process%s running in its group, now stopped: %s" % (
+            os.path.basename(str(argv[0])), len(left), "" if len(left) == 1 else "es", "; ".join(left)))
     return (proc.returncode, out) if stderr == subprocess.STDOUT else (proc.returncode, out, err)
+
+
+def stop_group(pgid):
+    """Names and stops whatever is still running in a finished command's process group."""
+    try:
+        os.killpg(pgid, 0)
+    except ProcessLookupError:
+        return []
+    listed = subprocess.run(["ps", "-A", "-o", "pid=,pgid=,command="], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL).stdout
+    rows = [row.split(None, 2) for row in show(listed).splitlines()]
+    os.killpg(pgid, signal.SIGKILL)
+    return [" ".join(row[:1] + row[2:])[:120] for row in rows if row[1:2] == [str(pgid)]] or ["a process ps did not show"]
 
 
 def run(cmd, cwd=None, env=None, input=None):
@@ -250,7 +274,7 @@ def read_exceptions(text):
 
 
 def read_rows(text, source, commit):
-    files = {show(name) for mode, sha, name in tree_entries(source, commit)}
+    files = {member_key(name) for mode, sha, name in tree_entries(source, commit)}
     listed = []
     for path, reason in table_rows(text, ROWS_PATH, 2):
         exact = path == posixpath.normpath(path) and not path.startswith("/") and ".." not in path.split("/")
@@ -371,11 +395,11 @@ def tree_entries(repo, rev="HEAD"):
 
 
 def show(raw):
-    return raw.decode("utf-8", "replace")
+    return raw.decode("utf-8", "backslashreplace")
 
 
 def esc(raw):
-    text = raw if isinstance(raw, str) else show(raw)
+    text = show(raw.encode("utf-8", "surrogateescape") if isinstance(raw, str) else raw)
     return re.sub(r"[\x00-\x1f\x7f]", lambda m: "\\x%02x" % ord(m.group()), text)
 
 
@@ -468,6 +492,8 @@ def check_files(repo, binaries):
     findings, seen, text = [], set(), 0
     for mode, sha, name in entries:
         where = esc(name)
+        if not is_text(name):
+            findings.append(Finding(where, "has a name that is not UTF-8 text"))
         if mode not in ARCHIVE_MODES:
             findings.append(Finding(where, "is a %s (mode %s), not a file or a link" % ("submodule" if mode == "160000" else "tree entry", mode)))
             continue
@@ -475,7 +501,7 @@ def check_files(repo, binaries):
         if is_text(data):
             text += 1
             continue
-        path, digest = show(name), hashlib.sha256(data).hexdigest()
+        path, digest = member_key(name), hashlib.sha256(data).hexdigest()
         seen.add(path)
         if path not in binaries:
             findings.append(Finding(where, "is not UTF-8 text without a NUL byte, and %s does not list it" % BINARIES_PATH))
@@ -615,7 +641,7 @@ def scan_patterns(repo, patterns, exceptions, extra):
     candidates = []
     for mode, sha, name in entries:
         if mode in ARCHIVE_MODES:
-            candidates.extend((show(name),) + hit for hit in grep_matches(patterns, blobs[sha]))
+            candidates.extend((member_key(name),) + hit for hit in grep_matches(patterns, blobs[sha]))
     for name, text in sorted((extra or {}).items()):
         candidates.extend((name,) + hit for hit in grep_matches(patterns, text.encode()))
     bad_paths = [name for _, _, name in entries if grep_text(patterns, name)]
@@ -679,15 +705,25 @@ def member_key(raw):
 
 def check_archive(release_repo, archive, prefix):
     entries = [e for e in tree_entries(release_repo) if e[0] in ARCHIVE_MODES]
-    wanted = {prefix + member_key(name): (mode, sha) for mode, sha, name in entries}
-    folders = {prefix[:-1]}
-    for path in wanted:
-        parts = path.split("/")[:-1]
-        folders.update("/".join(parts[:n]) for n in range(len(prefix.split("/")) - 1, len(parts) + 1))
+    dirs = sorted({b"/".join(name.split(b"/")[:n]) + b"/" for _, _, name in entries for n in range(1, name.count(b"/") + 1)})
+    asked = [name for _, _, name in entries] + dirs
+    said = git_bytes(release_repo, "check-attr", "--cached", "-z", "--stdin", "export-ignore", "export-subst", isolated=True,
+                     input=b"".join(path + b"\0" for path in asked)).split(b"\0")
+    marked = {(said[i], said[i + 1]) for i in range(0, len(said) - 2, 3) if said[i + 2] == b"set"}
+    ignored = [path for path, attr in marked if attr == b"export-ignore"]
+
+    def kept(path):
+        return not any(path == gone or (gone.endswith(b"/") and path.startswith(gone)) for gone in ignored)
+
+    wanted = {prefix + member_key(name): (mode, sha) for mode, sha, name in entries if kept(name)}
+    folders = {prefix[:-1]} | {prefix + member_key(path[:-1]) for path in dirs if kept(path)}
     problems, seen = [], set()
 
     def problem(where, text):
         problems.append(Finding(esc(where), text))
+
+    for path in sorted(path for path, attr in marked if attr == b"export-subst" and kept(path)):
+        problem(prefix + member_key(path), "has export-subst, which rewrites its contents in the archive: take the attribute out")
 
     try:
         with open(str(archive), "rb") as fh:
@@ -737,7 +773,7 @@ def check_archive(release_repo, archive, prefix):
 
 
 def check_dataset(repo, archive, listed, prefix):
-    present = {show(name) for _, _, name in tree_entries(repo)}
+    present = {member_key(name) for _, _, name in tree_entries(repo)}
     with tarfile.open(str(archive)) as tar:
         packed = {n[len(prefix):] for n in tar.getnames() if n.startswith(prefix)}
     back = [p for p in listed if p in present or p in packed]
@@ -977,7 +1013,7 @@ def run_suites(repo, suites, timeout=SUITE_TIMEOUT):
 
 
 def fingerprint(release):
-    """Every entry in the output folder but CHECKS.txt, by its path: its mode and its bytes' sha256 or its link target."""
+    """Every entry in the output folder, by its path: its mode and its bytes' sha256 or its link target."""
     out, entries = str(release.out), {}
     for folder, names, files in os.walk(out):
         for name in names + files:
@@ -989,7 +1025,6 @@ def fingerprint(release):
             else:
                 body = os.readlink(full) if stat.S_ISLNK(info.st_mode) else ""
             entries[os.path.relpath(full, out)] = (info.st_mode, body)
-    entries.pop("CHECKS.txt", None)
     return entries
 
 
@@ -1019,6 +1054,8 @@ def build(source, rev, out, *, author, patterns, credentials, repo_name=None, in
     credentials = list(credentials)
     if not credentials or not all(c.strip() for c in credentials):
         raise ReleaseError("give at least one made-up credential to look for, each non-blank")
+    if not all(c.isascii() for c in credentials):
+        raise ReleaseError("a credential must be ASCII, so it is matched in any case byte for byte")
     read_patterns(patterns)
     name, email = parse_author(author)
     done = run(["git", "rev-parse", "--verify", "--quiet", rev + "^{commit}"], cwd=source)
@@ -1196,10 +1233,24 @@ def main(argv=None):
         print("release_snapshot: %s" % exc, file=sys.stderr)
         return 2
     text = release.report()
-    with open(os.path.join(release.out, "CHECKS.txt"), "w") as fh:
-        fh.write(text)
-    print(text, end="")
+    pins = release_pins(release) if release.ok else {}
+    try:
+        for name, body in [("CHECKS.txt", text + "".join(pins.values()))] + list(pins.items()):
+            fd = os.open(os.path.join(str(release.out), name), os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o644)
+            with os.fdopen(fd, "w") as fh:
+                fh.write(body)
+    except OSError as exc:
+        print(text, end="")
+        print("release_snapshot: could not write %s, so the run fails: %s" % (name, exc), file=sys.stderr)
+        return 1
+    print(text + "".join(pins.values()), end="")
     return 0 if release.ok else 1
+
+
+def release_pins(release):
+    """What launch day checks before publishing, in `shasum -a 256` form and as the snapshot's commit and tree ids."""
+    sums = "".join("%s  %s\n" % (hashlib.sha256(Path(path).read_bytes()).hexdigest(), Path(path).name) for path in (release.notes, release.archive))
+    return {"RELEASE.sha256": sums, "RELEASE.ids": " ".join(git(release.repo, "rev-parse", "HEAD", "HEAD^{tree}", isolated=True).split()) + "\n"}
 
 
 if __name__ == "__main__":
