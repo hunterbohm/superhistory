@@ -1658,6 +1658,28 @@ class InstallTest(SourceCase):
             self.assertEqual(rs.run_group(["true"], timeout=10), (0, b""))
         self.assertEqual(calls[0], 0)
 
+    def test_a_process_list_that_fails_fails_the_check_and_still_stops_the_group(self):
+        marker = self.tmp / "left.pid"
+        real_run = rs.subprocess.run
+
+        def failing_ps(argv, *args, **kw):
+            if argv and argv[0] == "ps":
+                return subprocess.CompletedProcess(argv, 1, b"", b"ps: process list unavailable")
+            return real_run(argv, *args, **kw)
+
+        with mock.patch.object(rs.subprocess, "run", side_effect=failing_ps):
+            with self.assertRaisesRegex(rs.ReleaseError, "could not list"):
+                rs.run_group(["sh", "-c", "sleep 60 >/dev/null 2>&1 & echo $! > %s" % marker], timeout=10)
+        pid = int(marker.read_text())
+        for _ in range(50):
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                break
+            time.sleep(0.1)
+        else:
+            self.fail("the process left in the group was not stopped")
+
     def test_a_command_that_runs_past_its_time_loses_its_whole_process_group(self):
         marker = self.tmp / "grandchild.pid"
         started = time.time()
