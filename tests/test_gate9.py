@@ -1957,6 +1957,39 @@ class ReviewThirtyFiveTest(unittest.TestCase):
                     self.assertEqual(mask(text), text)
 
 
+class ReviewThirtySixTest(unittest.TestCase):
+    """The thirty-sixth review's findings, inside the shapes the coordinator froze: a comment holding a bracket or a
+    Windows path inside a typing call, Python's string prefix after a line break or tab escaped as JSON holds code, and
+    a page whose name is not "page"."""
+
+    TYPED = (
+        ("page.get_by_label(\"Password\").fill( # 1) Enter password\n \"Autofill('42')!\"\n)", "Autofill('42')!"),
+        ("page.get_by_label(\"Password\").fill( # see C:\\notes\n \"sunshine\"\n)", "sunshine"),
+        ("page.get_by_label(\"Password\").fill( # C:\\temp\\run (1)\n \"sunshine\"\n)", "sunshine"),
+        ("await page.getByLabel('Password').fill( // step 2) see C:\\notes\n 'sunshine'\n)", "sunshine"),
+        ("page.get_by_label(\"Password\").fill(\n\tr\"sunshine\"\n)", "sunshine"),
+        ("page.get_by_label(\"Password\").fill(\n    rb'sunshine'\n)", "sunshine"),
+        ("const loginPage = await browser.newPage();\nawait loginPage.type(\"#password\", \"sunshine\");", "sunshine"),
+        ("await login_page.fill(\"#password\", \"sunshine\")", "sunshine"),
+        ("await page2.type(\"#password\", \"sunshine\")", "sunshine"),
+        ("await adminFrame.fill(\"input[name=password]\", \"sunshine\")", "sunshine"),
+    )
+
+    def test_each_typed_password_is_masked_as_written_and_escaped_once_or_twice(self):
+        for code, secret in self.TYPED:
+            for text in (code, json.dumps(code), json.dumps({"code": code}), json.dumps(json.dumps(code))):
+                with self.subTest(text=text[:80]):
+                    self.assertNotIn(secret, mask(text))
+
+    def test_a_comment_keeps_the_code_after_it_read_and_ordinary_code_stays(self):
+        for code in ('page.get_by_label("Search").fill( # see C:\\notes\n "sunshine"\n)',
+                     'homePage.type("#search", "sunshine")', 'pageCount.fill("x")', 'Buffer.from("password").fill("x")',
+                     'subpages.fill("password")', '# see C:\\notes\nprint("sunshine")'):
+            for text in (code, json.dumps(code), json.dumps(json.dumps(code))):
+                with self.subTest(text=text[:80]):
+                    self.assertEqual(mask(text), text)
+
+
 # Commands as an argument list, each flag's value its own item: (the list, the items masked).
 ARGV = (
     (["login", "--password", PASSWORD], {2}), (["--token", SUB], {1}), (["--api-key", SUB, "--verbose"], {1}),
