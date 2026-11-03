@@ -15,26 +15,36 @@ Nothing is pushed, and nothing is created on GitHub. The private values are argu
 snapshot's own check would find them here. The exit code is 0 when every check that ran passed, 1 when one failed
 (the folder is still written, for a look), and 2 when the run could not start.
 
-Two lists ship in COMMIT and steer the run. Both are tab-separated, and a blank line or a line starting with # is
+Three lists ship in COMMIT and steer the run. Each is tab-separated, and a blank line or a line starting with # is
 skipped:
 
     bench/DATASET_ROWS.txt         <path><TAB><reason>. Every listed file is left out of the snapshot. The run does not
                                    start without this file, or when a line is not an exact path to a file in COMMIT.
     tools/release_exceptions.tsv   <path><TAB><string><TAB><reason>. A pattern hit is excepted only where its file
                                    equals the path and the line's matching text is the exact string, never a pattern.
+    tools/release_binaries.tsv     <path><TAB><sha256><TAB><reason>. The only files allowed not to be UTF-8 text: each
+                                   listed path must be a file that is not text, with exactly that sha256 of its bytes.
 
 The checks:
 
     history     the repo holds one commit with no parent, one branch, one tag, no remote
-    credential  no object in the repo, the notes or the archive holds a made-up credential, in any case
-    patterns    no file's text or name, no symlink target, no note and no commit message matches a line of the
-                patterns file, read as `grep -i -E -f` reads it, unless the exceptions list excepts the hit. The
-                list's own lines are not scanned. An entry that matches nothing is reported as stale. Whatever the
-                patterns file holds, the release's own forbidden strings always count too: the local gateway's
-                name in any spelling (so also in the key file's path under any home), its old port number and
-                its proxy's name, in any case.
+    files       every file and symlink target in the tree is UTF-8 text with no NUL byte, or is listed in
+                release_binaries.tsv with its sha256; a listed entry that names no such file fails. Every symlink
+                stays inside the tree, followed through the tree's other links, and the tree holds no submodule.
+    credential  no file name, blob or commit object in the repo, nor the notes, the repo name, the tag or the
+                archive's folder name holds a made-up credential, in any case
+    patterns    no file's text or name, no symlink target, no note, no commit message, nor the repo name, the tag or
+                the archive's folder name matches a line of the patterns file, read as `grep -i -E -f` reads it,
+                unless the exceptions list excepts the hit. Every match is found, overlapping ones too; a search
+                that reaches its round limit fails. The list's own lines are not scanned. An entry that matches
+                nothing is reported as stale. Whatever the patterns file holds, the release's own forbidden
+                strings always count too: the local gateway's name in any spelling (so also in the key file's
+                path under any home), its old port number and its proxy's name, in any case. The scans read the
+                tree's bytes as they are and decode nothing: a binary file's contents are only as safe as the
+                review behind its release_binaries.tsv entry.
     dataset     no file named in DATASET_ROWS.txt is in the tree or the archive
-    archive     the archive holds the same files as the tree, under one folder, with install.sh in it
+    archive     the archive holds the same files as the tree, member by member, under one folder, with install.sh in
+                it. The tool builds it from the tree, so its tar headers and its compression are not scanned.
     install     --installer: the site's installer, run against a local https server of this folder (a throwaway
                 certificate from openssl, trusted through CURL_CA_BUNDLE), installs `kb`
     suites      the snapshot's own tests, run inside the snapshot: tests/ under python3 and python3.9, and each
@@ -42,8 +52,6 @@ The checks:
                 and the run must leave the snapshot as it found it. --no-suites skips this check.
 """
 import argparse
-import binascii
-import bz2
 import concurrent.futures
 import contextlib
 import dataclasses
@@ -52,7 +60,6 @@ import gzip
 import hashlib
 import http.server
 import io
-import lzma
 import os
 import posixpath
 import re
@@ -65,8 +72,6 @@ import sys
 import tarfile
 import tempfile
 import threading
-import zipfile
-import zlib
 from pathlib import Path
 
 SHOWN_FILES = 40
@@ -76,15 +81,10 @@ VERSION_FILE = "kb/__init__.py"
 EXCEPTIONS_PATH = "tools/release_exceptions.tsv"
 ROWS_PATH = "bench/DATASET_ROWS.txt"
 SUITE_TIMEOUT = 3600
-MAX_DECODED = 512 * 1024 * 1024
-MAX_DEPTH = 8
-UNSUPPORTED = ((b"\x28\xb5\x2f\xfd", "zstd"), (b"\x04\x22\x4d\x18", "lz4"), (b"7z\xbc\xaf\x27\x1c", "7z"),
-               (b"Rar!\x1a\x07", "rar"), (b"\x1f\x9d", "compress"), (b"\x1f\xa0", "compress"), (b"LZIP", "lzip"),
-               (b"MSCF", "cab"))
-BASE64_RUN = re.compile(rb"[A-Za-z0-9+/_-]{16,}={0,2}")
-BASE64_LINES = re.compile(rb"(?<=[A-Za-z0-9+/_=-])\r?\n(?=[A-Za-z0-9+/_-])")
-URLSAFE = bytes.maketrans(b"-_", b"+/")
-TEXT_ENCODINGS = ("utf-16-le", "utf-16-be", "utf-32-le", "utf-32-be")
+BINARIES_PATH = "tools/release_binaries.tsv"
+SHA256 = re.compile(r"^[0-9a-f]{64}$")
+OVERLAP_ROUNDS = 64
+MAX_LINK_HOPS = 40
 ARCHIVE_MODES = {"100644": 0o664, "100755": 0o775, "120000": 0o777}
 ARCHIVE_DIR = 0o775
 INTERPRETERS = (("3.12", ("python3.12", "python3")), ("3.9", ("python3.9", "python3")))
@@ -389,139 +389,87 @@ def check_history(repo, tag):
     return result("history", problems, "1 commit with no parent, refs main and %s, no remote" % tag, "")
 
 
-class Unreadable(Exception):
-    pass
-
-
-def inflate(factory, data, budget, kind):
-    out, rest = [], data
-    while rest:
-        decoder, pending = factory(), rest
-        while True:
-            chunk = decoder.decompress(pending, budget[0] + 1)
-            budget[0] -= len(chunk)
-            if budget[0] < 0:
-                raise Unreadable("%s data inflates to something larger than %d bytes" % (kind, MAX_DECODED))
-            out.append(chunk)
-            if decoder.eof:
-                break
-            if hasattr(decoder, "unconsumed_tail"):
-                pending = decoder.unconsumed_tail
-                if not pending:
-                    raise Unreadable("%s data is cut off" % kind)
-            elif decoder.needs_input:
-                raise Unreadable("%s data is cut off" % kind)
-            else:
-                pending = b""
-        rest = decoder.unused_data
-    return b"".join(out)
-
-
-def printable_or_wide(part):
-    if not part:
+def is_text(data):
+    if b"\0" in data:
         return False
-    text = sum(1 for byte in part if 9 <= byte <= 13 or 32 <= byte < 127)
-    return text / len(part) >= 0.8 or part.count(0) / len(part) >= 0.25 or part[:2] in (b"\x1f\x8b", b"PK", b"BZ") \
-        or part[:6] == b"\xfd7zXZ\x00" or part[257:262] == b"ustar"
+    try:
+        data.decode("utf-8")
+    except UnicodeDecodeError:
+        return False
+    return True
 
 
-def base64_parts(blob):
-    parts = []
-    texts = [blob] + ([BASE64_LINES.sub(b"", blob)] if b"\n" in blob else [])
-    for text in texts:
-        for found in BASE64_RUN.finditer(text):
-            run = found.group().rstrip(b"=").translate(URLSAFE)
-            for skip in range(4):
-                chunk = run[skip:]
-                chunk = chunk[:len(chunk) - (1 if len(chunk) % 4 == 1 else 0)]
-                try:
-                    part = binascii.a2b_base64(chunk + b"=" * (-len(chunk) % 4))
-                except binascii.Error:
-                    continue
-                if printable_or_wide(part):
-                    parts.append(part)
-    return parts
+def read_binaries(text):
+    listed = {}
+    for path, digest, _reason in table_rows(text or "", BINARIES_PATH, 3):
+        if not SHA256.match(digest):
+            raise ReleaseError("%s lists %r with %r, which is not a sha256 in lowercase hex" % (BINARIES_PATH, path, digest))
+        if path in listed:
+            raise ReleaseError("%s lists %r more than once" % (BINARIES_PATH, path))
+        listed[path] = digest
+    return listed
 
 
-def derive(blob, budget):
-    kids = []
-
-    def take(kind, child):
-        budget[0] -= len(child)
-        if budget[0] < 0:
-            raise Unreadable("it decodes to something larger than %d bytes" % MAX_DECODED)
-        kids.append((kind, child))
-
-    for magic, name in UNSUPPORTED:
-        if blob.startswith(magic):
-            raise Unreadable("it is %s-compressed, which this tool cannot read" % name)
-    if blob[:2] == b"\x1f\x8b":
-        take("gzip", inflate(lambda: zlib.decompressobj(31), blob, budget, "gzip"))
-    elif blob[:1] == b"x" and blob[1:2] in (b"\x01", b"\x5e", b"\x9c", b"\xda") and (blob[0] * 256 + blob[1]) % 31 == 0:
-        take("zlib", inflate(lambda: zlib.decompressobj(15), blob, budget, "zlib"))
-    elif blob[:3] == b"BZh" and blob[4:10] == b"1AY&SY":
-        take("bz2", inflate(bz2.BZ2Decompressor, blob, budget, "bz2"))
-    elif blob[:6] == b"\xfd7zXZ\x00":
-        take("xz", inflate(lambda: lzma.LZMADecompressor(lzma.FORMAT_XZ), blob, budget, "xz"))
-    elif blob[:4] in (b"PK\x03\x04", b"PK\x05\x06"):
-        archive = zipfile.ZipFile(io.BytesIO(blob))
-        take("zip", "\n".join(info.filename for info in archive.infolist()).encode("utf-8", "surrogateescape"))
-        for info in archive.infolist():
-            if info.is_dir():
-                continue
-            if info.flag_bits & 1:
-                raise Unreadable("zip member %s is encrypted" % info.filename)
-            if info.file_size > budget[0]:
-                raise Unreadable("zip member %s is larger than %d bytes" % (info.filename, MAX_DECODED))
-            with archive.open(info) as member:
-                take("zip", member.read(budget[0] + 1))
-    elif blob[257:262] == b"ustar":
-        with tarfile.open(fileobj=io.BytesIO(blob), mode="r:") as archive:
-            names = []
-            for member in archive:
-                names.extend([member.name, member.linkname] if member.issym() or member.islnk() else [member.name])
-                if member.isreg():
-                    if member.size > budget[0]:
-                        raise Unreadable("tar member %s is larger than %d bytes" % (member.name, MAX_DECODED))
-                    take("tar", archive.extractfile(member).read())
-            take("tar", "\n".join(names).encode("utf-8", "surrogateescape"))
-    else:
-        if b"\0" in blob:
-            for encoding in TEXT_ENCODINGS:
-                text = blob.decode(encoding, "replace").encode("utf-8")
-                if text != blob:
-                    take(encoding, text)
-        parts = base64_parts(blob)
-        if parts:
-            take("base64", b"\n".join(parts))
-    return kids
-
-
-def decode_views(data):
-    views, problems, budget = [("", data)], [], [MAX_DECODED]
-    queue = [("", data, 0)]
+def link_end(links, name):
+    """Follows the link at name through the tree's other links: "outside" when it leaves the tree, "loop" when it never ends, else None."""
+    stack, queue, hops = name.split(b"/")[:-1], links[name].split(b"/"), 0
+    if links[name].startswith(b"/"):
+        return "outside"
     while queue:
-        label, blob, depth = queue.pop(0)
-        try:
-            kids = derive(blob, budget)
-        except Exception as exc:
-            problems.append("%s%s" % (exc if isinstance(exc, Unreadable) else failure(exc), " (inside %s)" % label if label else ""))
+        part = queue.pop(0)
+        if part in (b"", b"."):
             continue
-        for kind, child in kids:
-            if depth + 1 > MAX_DEPTH:
-                problems.append("it nests more than %d levels deep" % MAX_DEPTH)
-                continue
-            name = label + ">" + kind if label else kind
-            views.append((name, child))
-            queue.append((name, child, depth + 1))
-    return views, list(dict.fromkeys(problems))
+        if part == b"..":
+            if not stack:
+                return "outside"
+            stack.pop()
+            continue
+        stack.append(part)
+        target = links.get(b"/".join(stack))
+        if target is not None:
+            hops += 1
+            if hops > MAX_LINK_HOPS:
+                return "loop"
+            if target.startswith(b"/"):
+                return "outside"
+            stack.pop()
+            queue = target.split(b"/") + queue
+    return None
 
 
-def via(label):
-    return " [%s]" % label if label else ""
+def check_files(repo, binaries):
+    entries = tree_entries(repo)
+    blobs = read_blobs(repo, {sha for mode, sha, name in entries if mode in ARCHIVE_MODES})
+    links = {name: blobs[sha] for mode, sha, name in entries if mode == "120000"}
+    findings, seen, text = [], set(), 0
+    for mode, sha, name in entries:
+        where = esc(name)
+        if mode not in ARCHIVE_MODES:
+            findings.append(Finding(where, "is a %s (mode %s), not a file or a link" % ("submodule" if mode == "160000" else "tree entry", mode)))
+            continue
+        data = blobs[sha]
+        if mode == "120000":
+            end = link_end(links, name)
+            if end:
+                findings.append(Finding(where, "is a link to %s, %s" % (esc(data), "outside the tree" if end == "outside" else
+                                                                      "which loops through more than %d links" % MAX_LINK_HOPS)))
+        if is_text(data):
+            text += 1
+            continue
+        path, digest = show(name), hashlib.sha256(data).hexdigest()
+        seen.add(path)
+        if path not in binaries:
+            findings.append(Finding(where, "is not UTF-8 text without a NUL byte, and %s does not list it" % BINARIES_PATH))
+        elif binaries[path] != digest:
+            findings.append(Finding(where, "has sha256 %s, but %s lists %s: it changed after it was listed" % (digest, BINARIES_PATH, binaries[path])))
+    findings.extend(Finding("%s: %s" % (BINARIES_PATH, esc(path)), "names no binary file in the tree")
+                    for path in sorted(set(binaries) - seen))
+    return result("files", findings, "%d files and links: %d UTF-8 text, %d listed binaries matching their sha256, every link inside the tree"
+                  % (len(entries), text, len(entries) - text), "%d problem%s with the files" % (len(findings), "" if len(findings) == 1 else "s"),
+                  findings)
 
 
-def check_credential(repo, credentials, extra=None, archive=None, tag=None):
+def check_credential(repo, credentials, extra=None):
     needles = [c.lower().encode() for c in credentials]
     entries = tree_entries(repo)
     names = {}
@@ -541,28 +489,14 @@ def check_credential(repo, credentials, extra=None, archive=None, tag=None):
         if kind == "tree":
             continue
         if kind == "blob":
-            wheres = sorted(names.get(sha, ["unreferenced " + sha[:8]]))
-            seen, problems = decode_views(body)
-            for label, view in seen:
-                if has(view):
-                    findings.extend(Finding(esc(where) + via(label), "in the file's text") for where in wheres)
-            findings.extend(Finding(esc(where), "cannot be read: %s" % why) for where in wheres for why in problems)
+            if has(body):
+                findings.extend(Finding(esc(where), "in the file's text") for where in sorted(names.get(sha, ["unreferenced " + sha[:8]])))
         elif has(body):
             findings.append(Finding("%s %s" % (kind, sha[:8]), "in the %s" % ("commit message or author" if kind == "commit" else "object")))
     for name, text in (extra or {}).items():
         if has(text.encode()):
             findings.append(Finding(name, "in the text"))
-    if archive is not None:
-        with tarfile.open(str(archive)) as tar:
-            for member in tar:
-                data = tar.extractfile(member).read() if member.isfile() else b""
-                where = esc("%s:%s" % (os.path.basename(str(archive)), member.name))
-                seen, problems = decode_views(data)
-                if has(member.name.encode()):
-                    findings.append(Finding(where, "in the archive"))
-                findings.extend(Finding(where + via(label), "in the archive") for label, view in seen if has(view))
-                findings.extend(Finding(where, "cannot be read: %s" % why) for why in problems)
-    where_text = "%d objects%s%s" % (scanned, ", the notes" if extra else "", ", the archive" if archive is not None else "")
+    where_text = "%d objects%s" % (scanned, ", the notes and the names" if extra else "")
     return result("credential", findings, "no trace of %d made-up credential%s in %s, in any case" % (len(needles), "" if len(needles) == 1 else "s", where_text),
                   "a made-up credential is still here: %d place%s" % (len(findings), "" if len(findings) == 1 else "s"), findings)
 
@@ -605,25 +539,37 @@ def one_pattern_spans(pattern, text):
     return spans
 
 
-def every_span(patterns, line, rounds=64):
-    spans = set()
+def matches_at(pattern, line, start, end):
+    """Whether pattern matches line exactly over [start, end), with the line's own bytes on either side as context."""
+    if re.search(rb"\\[1-9]", pattern):
+        return True
+    left, right = line[start - 1:start], line[end:end + 1]
+    wrapped = b"^" + b"." * len(left) + b"(" + pattern + b")" + b"." * len(right) + b"$"
+    out = grep_run(["grep", "-a", "-i", "-E", "-c", "-e", wrapped], input=left + line[start:end] + right + b"\n")
+    return out.strip() != b"0"
+
+
+def every_span(patterns, line, rounds=OVERLAP_ROUNDS):
+    spans, finished = set(), True
     for pattern in pattern_lines(patterns):
-        found, text = set(), line
+        seen, text = set(), line
         for _ in range(rounds):
-            fresh = one_pattern_spans(pattern, text) - found
+            fresh = one_pattern_spans(pattern, text) - seen
             if not fresh:
                 break
-            found |= fresh
+            spans.update(span for span in fresh if text is line or matches_at(pattern, line, *span))
+            seen |= fresh
             blanked = bytearray(text)
             for start, _end in fresh:
                 blanked[start] = 0
             text = bytes(blanked)
-        spans |= found
-    return sorted(spans)
+        else:
+            finished = False
+    return sorted(spans), finished
 
 
 def grep_matches(patterns, data):
-    return [(number, line, every_span(patterns, line)) for number, line in grep_text(patterns, data)]
+    return [(number, line) + tuple(every_span(patterns, line)) for number, line in grep_text(patterns, data)]
 
 
 def read_blobs(repo, shas):
@@ -642,44 +588,12 @@ def read_blobs(repo, shas):
     return blobs
 
 
-def check_patterns(repo, patterns, exceptions=(), extra=None, archive=None, prefix=None):
+def check_patterns(repo, patterns, exceptions=(), extra=None):
     with tempfile.TemporaryDirectory(prefix="release-patterns-") as folder:
         combined = os.path.join(folder, "patterns.txt")
         with open(combined, "wb") as fh:
             fh.write(b"\n".join(read_patterns(patterns) + [p.encode() for p in FORBIDDEN]) + b"\n")
-        return scan_patterns(repo, combined, exceptions, extra, archive, prefix)
-
-
-def archive_candidates(patterns, archive, prefix, entries):
-    known = {member_key(name): sha for mode, sha, name in entries}
-    found, unreadable = [], []
-    folder = prefix.rstrip("/").encode("utf-8", "surrogateescape")
-    in_folder = bool(grep_text(patterns, folder))
-    if in_folder:
-        found.append(("archive folder " + prefix.rstrip("/"), 0, folder, [], ""))
-    with tarfile.open(str(archive)) as tar:
-        for member in tar:
-            raw = member.name.rstrip("/")
-            name = raw[len(prefix):] if raw.startswith(prefix) else raw
-            if not member.isdir():
-                own = grep_text(patterns, name.encode("utf-8", "surrogateescape"))
-                if name not in known and own:
-                    found.append((name, 0, name.encode("utf-8", "surrogateescape"), [], ""))
-                elif not own and not in_folder and grep_text(patterns, raw.encode("utf-8", "surrogateescape")):
-                    found.append((raw, 0, raw.encode("utf-8", "surrogateescape"), [], ""))
-            if member.isdir():
-                continue
-            data = tar.extractfile(member).read() if member.isreg() else member.linkname.encode("utf-8", "surrogateescape")
-            if known.get(name) != blob_id(data):
-                hits, why = scan_views(patterns, data)
-                found.extend((name, number, line, spans, label) for label, number, line, spans in hits)
-                unreadable.extend((name, reason) for reason in why)
-    return found, unreadable
-
-
-def scan_views(patterns, data):
-    views, problems = decode_views(data)
-    return [(label,) + hit for label, view in views for hit in grep_matches(patterns, view)], problems
+        return scan_patterns(repo, combined, exceptions, extra)
 
 
 def occurrences(line, string):
@@ -689,40 +603,33 @@ def occurrences(line, string):
         at = line.find(string, at + 1)
 
 
-def scan_patterns(repo, patterns, exceptions, extra, archive=None, prefix=None):
+def scan_patterns(repo, patterns, exceptions, extra):
     entries = tree_entries(repo)
     blobs = read_blobs(repo, {sha for mode, sha, name in entries if mode in ARCHIVE_MODES})
-    candidates, unreadable = [], []
+    candidates = []
     for mode, sha, name in entries:
         if mode in ARCHIVE_MODES and show(name) != EXCEPTIONS_PATH:
-            hits, why = scan_views(patterns, blobs[sha])
-            candidates.extend((show(name), number, line, spans, label) for label, number, line, spans in hits)
-            unreadable.extend((show(name), reason) for reason in why)
-    if archive is not None:
-        found, more = archive_candidates(patterns, archive, prefix, entries)
-        candidates.extend(found)
-        unreadable.extend(more)
+            candidates.extend((show(name),) + hit for hit in grep_matches(patterns, blobs[sha]))
     for name, text in sorted((extra or {}).items()):
-        candidates.extend((name, number, line, spans, "") for number, line, spans in grep_matches(patterns, text.encode()))
-    candidates = list({(path, label, number, line): (path, number, line, spans, label)
-                       for path, number, line, spans, label in candidates}.values())
+        candidates.extend((name,) + hit for hit in grep_matches(patterns, text.encode()))
     bad_paths = [name for _, _, name in entries if grep_text(patterns, name)]
     strings = {}
     for path, string, _ in exceptions:
         strings.setdefault(path, []).append(string)
     used, findings, allowed = set(), [], []
-    for path, number, line, spans, label in candidates:
+    for path, number, line, spans, finished in candidates:
         covers = [(start, end, (path, string)) for string in strings.get(path, ())
                   for start, end in occurrences(line, string.encode())]
-        uncovered = not spans
+        uncovered = not spans or not finished
         for start, end in spans:
             over = [key for s, e, key in covers if s <= start and end <= e]
             used.update(over)
             uncovered = uncovered or not over
-        row = Finding("%s%s:%d" % (esc(path), via(label), number) if number else esc(path), show(line)[:LINE_WIDTH])
-        (findings if uncovered else allowed).append(row)
+        text = show(line)[:LINE_WIDTH]
+        if not finished:
+            text = "the search for overlapping matches stopped after %d rounds, so not every match was checked: %s" % (OVERLAP_ROUNDS, text)
+        (findings if uncovered else allowed).append(Finding("%s:%d" % (esc(path), number), text))
     findings.extend(Finding(esc(name), "(a file name)") for name in bad_paths)
-    findings.extend(Finding(esc(path), "cannot be read: %s" % reason) for path, reason in dict.fromkeys(unreadable))
     findings.sort(key=where_key)
     allowed.sort(key=where_key)
     stale = ["stale: %s: %s" % (path, string) for path, string, _ in exceptions if (path, string) not in used]
@@ -1058,7 +965,7 @@ def digest_tree(root, skip=()):
         names[:] = sorted(n for n in names if os.path.relpath(os.path.join(folder, n), root) not in skip)
         relative = os.path.relpath(folder, root)
         digest.update(b"dir %s %o\0" % (relative.encode("utf-8", "surrogateescape"), os.lstat(folder).st_mode & 0o7777))
-        for name in sorted(files):
+        for name in sorted(files + [n for n in names if os.path.islink(os.path.join(folder, n))]):
             full = os.path.join(folder, name)
             info = os.lstat(full)
             label = os.path.relpath(full, root).encode("utf-8", "surrogateescape")
@@ -1123,6 +1030,7 @@ def build(source, rev, out, *, author, patterns, credentials, repo_name=None, in
     title = readme_parts(readme)[0]
     notes_text = release_notes(readme, tag)
     exceptions = read_exceptions(commit_file(source, commit, EXCEPTIONS_PATH))
+    read_binaries(commit_file(source, commit, BINARIES_PATH))
     rows = commit_file(source, commit, ROWS_PATH)
     if rows is None:
         raise ReleaseError("%s is missing from the commit: it names the bench files whose rows quote LoCoMo or "
@@ -1197,19 +1105,24 @@ def assemble(source, commit, out, name, email, tag, title, repo_name, notes_text
                      if suites else CheckResult("suites", "SKIP", "not run: --no-suites given"))
 
     def final_text():
-        extra = {"RELEASE_NOTES.md": Path(notes).read_bytes().decode("utf-8", "replace"), "repo name": repo_name, "tag": tag}
+        extra = {"RELEASE_NOTES.md": Path(notes).read_bytes().decode("utf-8", "replace"), "repo name": repo_name, "tag": tag,
+                 "archive folder": prefix.rstrip("/")}
         return extra, dict(extra, **{"commit message": git(repo, "log", "-1", "--format=%B", isolated=True)})
 
     def final_exceptions():
         return read_exceptions(commit_file(repo, "HEAD", EXCEPTIONS_PATH))
+
+    def final_binaries():
+        return read_binaries(commit_file(repo, "HEAD", BINARIES_PATH))
 
     def final_rows():
         return sorted({row[0] for row in table_rows(commit_file(repo, "HEAD", ROWS_PATH) or "", ROWS_PATH, 2)})
 
     release.checks = [
         guarded("history", lambda: check_history(repo, tag)),
-        guarded("credential", lambda: check_credential(repo, credentials, final_text()[0], archive)),
-        guarded("patterns", lambda: check_patterns(repo, patterns, final_exceptions(), final_text()[1], archive, prefix)),
+        guarded("files", lambda: check_files(repo, final_binaries())),
+        guarded("credential", lambda: check_credential(repo, credentials, final_text()[0])),
+        guarded("patterns", lambda: check_patterns(repo, patterns, final_exceptions(), final_text()[1])),
         guarded("dataset", lambda: check_dataset(repo, archive, final_rows(), prefix)),
         guarded("archive", lambda: check_archive(repo, archive, prefix)),
         install_result,
