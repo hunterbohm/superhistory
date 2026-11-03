@@ -3,6 +3,8 @@ named command's password where kb cannot read the command plainly: shell grammar
 by a continuation, a program name or flag inside a colour code, and a command given as a list of arguments. Made-up
 secrets only."""
 import json
+import shlex
+import subprocess
 import time
 import unittest
 
@@ -254,6 +256,116 @@ class CostTest(unittest.TestCase):
             with self.subTest(unit=unit[:24]):
                 small, large = took(unit * (2000 // len(unit) + 1)), took(unit * (16000 // len(unit) + 1))
                 self.assertLess(large, 20 * small + 0.05, (small, large))
+
+
+class ReviewOneTest(unittest.TestCase):
+    """#37's first review: a named command kb did not recognise at all, wherever it stands: colour inside its name, its
+    Windows file, its quoted name or its list of arguments escaped at any depth, or Python's repr of the list."""
+
+    GREP = "\x1b[01;31m\x1b[K{}\x1b[m\x1b[K"
+
+    def test_colour_inside_a_program_name(self):
+        for line, parts in ((f"keytool -list -storepass {PASSWORD}", ("tool", "key", "store", "pass", "eyto")),
+                            (f"mongosh -u admin -p {PASSWORD}", ("mongo", "sh", "gos")),
+                            (f"az login -u admin@example.com -p {PASSWORD}", ("az", "log", "in")),
+                            (f"aws configure set aws_secret_access_key {PASSWORD}", ("aws", "conf", "secret"))):
+            for part in parts:
+                coloured = line.replace(part, self.GREP.format(part), 1)
+                for text in (coloured, json.dumps(coloured).replace("\\u001b", "\\u001b")):
+                    with self.subTest(line=line[:10], part=part, text=text[:12]):
+                        self.assertNotIn(PASSWORD, mask(text))
+
+    def test_a_token_split_by_an_escaped_backspace(self):
+        split = TOKEN[:15] + "\b" + TOKEN[15:]
+        for text in (json.dumps(split), json.dumps(json.dumps(split)), json.dumps({"output": f"token {split}"})):
+            with self.subTest(text=text[:30]):
+                self.assertNotIn(TAIL, mask(text))
+
+    def test_a_word_boundary_in_code_stays(self):
+        for text in ('re.compile(r"\\btoken\\b")', json.dumps('pattern = r"\\bpassword\\b"'),
+                     json.dumps(r"grep -P '\bsecret\b' notes.md"), "\\bkey\\b and \\bvalue\\b"):
+            with self.subTest(text=text):
+                self.assertEqual(mask(text), text)
+
+    def test_a_quote_in_a_plain_line_is_no_json_string_end(self):
+        for text in (f"keytool -importcert -file <(jq -r '.[\"cert\"]' cert.json) -storepass {PASSWORD}",
+                     f"keytool -importcert -file <(jq -r '.cert, .key' c.json) -storepass {PASSWORD}",
+                     f"mongosh -f <(jq '{{\"a\": 1}}' x.json) -u admin -p {PASSWORD}"):
+            for form in (text, json.dumps(text), json.dumps({"cmd": text, "cwd": "/srv"})):
+                with self.subTest(text=form):
+                    self.assertNotIn(PASSWORD, mask(form))
+                    self.assertTrue(form.startswith("keytool") or '"cwd": "/srv"}' not in form
+                                    or mask(form).endswith('"cwd": "/srv"}'), mask(form))
+
+    def test_a_json_string_keeps_its_quotes_past_the_mask(self):
+        line = f"keytool -file <(cat cert.pem) -storepass {PASSWORD}"
+        for text in (json.dumps(line), json.dumps(json.dumps(line)), json.dumps(json.dumps(json.dumps(line)))):
+            with self.subTest(text=text[:12]):
+                masked = mask(text)
+                self.assertNotIn(PASSWORD, masked)
+                self.assertEqual(masked, text.replace(PASSWORD, "[masked]"))
+
+    def test_a_windows_program_file(self):
+        for text in (f"aws.exe configure set aws_secret_access_key {PASSWORD}",
+                     f'"C:\\Program Files\\Amazon\\AWSCLIV2\\aws.exe" configure set aws_secret_access_key {PASSWORD}',
+                     f"az.exe login -u admin@example.com -p {PASSWORD}", f"az.cmd login -u admin@example.com -p {PASSWORD}",
+                     f'"C:\\Program Files\\Microsoft SDKs\\Azure\\CLI2\\wbin\\az.cmd" login -u admin -p {PASSWORD}'):
+            for form in (text, json.dumps(text)):
+                with self.subTest(text=form[:40]):
+                    self.assertNotIn(PASSWORD, mask(form))
+
+    def test_a_quoted_program_name_escaped_at_any_depth(self):
+        for line in (f'"keytool" -storepass {PASSWORD}', f"'mongosh' -u admin -p {PASSWORD}",
+                     f'"az" login -u admin -p {PASSWORD}', f'"/opt/jdk/bin/keytool" -list -storepass {PASSWORD}'):
+            text = line
+            for depth in range(1, 4):
+                text = json.dumps({"output": text} if depth == 2 else {"command": text})
+                with self.subTest(line=line[:12], depth=depth):
+                    self.assertNotIn(PASSWORD, mask(text))
+
+    def test_a_list_of_arguments_escaped_at_any_depth(self):
+        for items in (["keytool", "-storepass", PASSWORD], ["mongosh", "-u", "admin", "-p", PASSWORD],
+                      ["az", "login", "-p", PASSWORD], ["keytool", "-alias", "team's cert", "-storepass", PASSWORD]):
+            text = json.dumps(items)
+            for depth in range(1, 4):
+                text = json.dumps({"output": text})
+                with self.subTest(command=items[0], depth=depth):
+                    masked = mask(text)
+                    self.assertNotIn(PASSWORD, masked)
+                    self.assertIn("-storepass" if items[0] == "keytool" else "-p", masked)
+
+    def test_python_prints_of_a_list_of_arguments(self):
+        for items in (["keytool", "-storepass", PASSWORD], ["mongosh", "-u", "admin", "-p", PASSWORD],
+                      ["keytool", "-alias", "team's cert", "-storepass", PASSWORD]):
+            for text in (str(subprocess.CalledProcessError(1, items)), repr(items), repr(tuple(items)),
+                         f"args={items!r}", json.dumps(str(subprocess.CalledProcessError(1, items)))):
+                with self.subTest(text=text[:40]):
+                    masked = mask(text)
+                    self.assertNotIn(PASSWORD, masked)
+                    self.assertIn("keytool" if items[0] == "keytool" else "mongosh", masked)
+
+    def test_wrapped_ordinary_command_lines_stay(self):
+        lines = ("mongosh --eval 'print(\"ssh -p 2222 host\")'", 'twine upload --comment "-p release-2026" dist/*',
+                 "keytool -list -v -alias \"-storepass example\" -keystore k.jks",
+                 "keytool -list -storepass $STOREPASS", "mongosh -u admin -p --quiet")
+        for line in lines:
+            for text in (json.dumps({"output": json.dumps({"command": line})}),
+                         json.dumps({"output": json.dumps(shlex.split(line))}), repr(shlex.split(line))):
+                with self.subTest(text=text[:50]):
+                    self.assertEqual(mask(text), text)
+
+    def test_prose_about_the_commands_stays(self):
+        for text in ("Run keytool -list to see the entries; keytool asks for the store password.",
+                     "az login opens a browser; with -u and -p it signs in a user without one.",
+                     "The keytool -storepass option takes the keystore's password.",
+                     "Use az login --service-principal -u <app-id> -p <password-or-cert> --tenant <tenant>.",
+                     "keytool -storepass:env STOREPASS reads the password from the environment.",
+                     "mongosh -p prompts for the password when no value follows it.",
+                     "aws configure set region us-east-1 sets the default region",
+                     "Run az.cmd login -p $STOREPASS.", "Pass keytool.exe -storepass %STOREPASS%, then -v."):
+            for form in (text, json.dumps(text), json.dumps(json.dumps(text))):
+                with self.subTest(text=form[:40]):
+                    self.assertEqual(mask(form), form)
 
 
 class RevisionTest(unittest.TestCase):
