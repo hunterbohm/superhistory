@@ -113,7 +113,7 @@ python3 bench/compare.py final baseline-paired --split test --paired
 - **Timed-out lookups.** A lookup that hit the check's 10 s budget counts as a machine failure, not an answer. Six such rows were set aside in `results/hillclimb/timeouts/` and each question was asked again once on its side; none timed out the second time.
 - **Run-to-run spread.** The same code does not score the same on another day. The baseline's code scored 161, 230 and 702 on 2026-10-27 and 166, 239 and 696 on 2026-11-02. So the LongMemEval and LoCoMo gaps sit inside that spread; the month gap is larger than any same-code move seen, but it rests on one run of each.
 - **The port.** With no model calls, the port and e66d49d show the same search hits, picker records, 677 cards, `kb search` output and 677 `kb get` pages for all 170 dev-month queries (varve #30).
-- **The rivals.** The rivals' month B rows ran between 2026-10-28 and 2026-11-01, not beside the check, so the chart compares tools across days.
+- **The rivals.** The rivals' month B rows ran between 2026-10-28 and 2026-11-01, not beside the check, so the chart compares tools across days. Every lookup time in the chart comes from a month run, not from lookups timed alone; the check's were taken while the other lookup ran beside it on the same gateway.
 - **What was tried and dropped.** `results/hillclimb/attempts.tsv` holds every candidate and its dev numbers, and `results/hillclimb/decisions.tsv` every keep or drop and why.
 
 ## Results on the made-up month
