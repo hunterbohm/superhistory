@@ -2003,6 +2003,13 @@ def _holds_another_quote(text, inner, quote):
     return bool(re.compile(r"\\+" + re.escape(quote) + "|[" + re.escape(others) + "]").search(text, *inner))
 _CODE_NAME = re.compile(r"[A-Za-z_$][\w$]*")
 _CODE_FIELD_KEYWORDS = frozenset(("selector", "locator", "label", "name", "placeholder"))
+# The names a chain that types into a page holds: a page or frame, a locator's method, Selenium's driver and finders,
+# WebdriverIO's "$", the keyboard. A chain with none (Buffer.from("password").fill("x")) types into no field.
+_CODE_LOCATOR_NAMES = frozenset((
+    "page", "frame", "mainFrame", "main_frame", "keyboard", "locator", "$", "$$", "driver", "browser", "element",
+    "getByLabel", "getByPlaceholder", "getByRole", "getByTestId", "getByText", "getByAltText", "getByTitle",
+    "get_by_label", "get_by_placeholder", "get_by_role", "get_by_test_id", "get_by_text", "get_by_alt_text",
+    "get_by_title", "find_element", "find_elements", "findElement", "findElements", "querySelector", "query_selector"))
 _CODE_VALUE_KEYWORDS = frozenset(("value", "text", "keys"))
 
 
@@ -2051,12 +2058,12 @@ def _code_string_end(text, at, stop):
     return None
 
 
-_CODE_TOKEN = re.compile(r"""(?<![\w$\\])[rRbBuUfF]{1,2}\\*["'`]|(?<!\\)\\*["'`]|(?:#|//)(?:(?!\\n)[^\n])*|/\*[\s\S]*?\*/"""
+_CODE_TOKEN = re.compile(r"""(?<![\w$\\])[rRbBuUfF]{1,2}\\*["'`]|(?<!\\)\\*["'`]|(?:#|//)(?:(?!\\+[nr])[^\n])*|/\*[\s\S]*?\*/"""
                          r"""|(?<!\\)\\+[nrt]|[{}\[\]():,=;.]|[A-Za-z_$][\w$]*""")
 # What stands before a string that is a typed value itself, which is never read as code it holds: a typing call's "("
 # (or a keyword's "value=" in it), or a typed key's separator.
-_VALUE_BEFORE = re.compile(r"(?i)(?:(?:fill|type|press_?sequentially|send_?keys|set_?value|input_text)\w*\s*\(\s*"
-                           r"(?:\w+\s*=\s*)?|\b(?:text|value)\\*[\"']?\s*[:=]\s*\(?\s*)\Z")
+_VALUE_BEFORE = re.compile(r"(?i)(?:(?:fill|type|press_?sequentially|send_?keys|set_?value|input_text)\w*\s*\("
+                           r"(?:[^()]|\([^()]*\))*|\b(?:text|value)\\*[\"']?\s*[:=]\s*\(?\s*)\Z")
 
 
 def _code_tokens(text):
@@ -2079,7 +2086,7 @@ def _code_tokens(text):
                 if end:
                     inner = _code_text(text, ("s", m.start(), end))
                     if (_CODE_IN_STRING.search(text, *inner) and _holds_another_quote(text, inner, c[-1])
-                            and not _VALUE_BEFORE.search(text, max(0, m.start() - 80), m.start())):
+                            and not _VALUE_BEFORE.search(text, max(0, m.start() - 300), m.start())):
                         spans.append(inner)
                     else:
                         tokens.append(("s", m.start(), end))
@@ -2252,6 +2259,8 @@ def _typed_code_edits(text):
             positional = positional[1:]
         values += [t for _, t in positional]
         # with no label, only typing into the focused field (page.keyboard.type) is read, by the value's shape
+        if not _CODE_LOCATOR_NAMES.intersection(names):
+            continue  # no page and no locator: the call types into no field
         secret = _labels_ask_for_a_secret(tuple(labels)) if labels else None
         for value in values:
             a, b = _code_text(text, value)
