@@ -44,9 +44,9 @@ is then stopped) fails the check that ran it. A credential must be ASCII.
                 archive folder name matches a line of the patterns file, read as `grep -i -E -f` reads it, unless
                 the exceptions list excepts it. Every match is found, overlapping ones too, and a search that
                 reaches its limit fails. The exceptions list is scanned like any file but for each entry's own
-                string; an entry that matches nothing is stale. The release's own forbidden strings always count:
-                the local gateway's name in any spelling (so its key file's path under any home), its old port
-                number and its proxy's name. Nothing is decoded: a binary is only as safe as its list entry's review.
+                string; an entry that matches nothing is stale. The patterns file, kept outside the repo, is the
+                only source of what may not ship. Nothing is decoded: a binary is only as safe as its list entry's
+                review.
     dataset     no file named in DATASET_ROWS.txt is in the tree or the archive
     archive     the archive, built from the tree, holds its files member by member under one folder, with install.sh,
                 but for what .gitattributes marks export-ignore, as GitHub's archive does; export-subst fails
@@ -63,7 +63,6 @@ import argparse
 import concurrent.futures
 import contextlib
 import dataclasses
-import functools
 import gzip
 import hashlib
 import http.server
@@ -101,7 +100,6 @@ INTERPRETERS = (("3.12", ("python3.12", "python3")), ("3.9", ("python3.9", "pyth
 VERSION_PROBE = "import sys; print('%d.%d' % sys.version_info[:2])"
 SKIPPED = re.compile(r"\.\.\. skipped ('.*'|\".*\")\s*$", re.M)
 TAG_REF = "refs/tags/"
-FORBIDDEN = ["cli[-_]?" + "gateway", "83" + "17", "cli" + "proxy" + "api"]
 ISOLATED = {"GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1", "GIT_OPTIONAL_LOCKS": "0", "GIT_ATTR_NOSYSTEM": "1",
             "GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "core.attributesFile", "GIT_CONFIG_VALUE_0": os.devnull}
 
@@ -565,7 +563,6 @@ def grep_text(patterns, data):
     return hits
 
 
-@functools.lru_cache(maxsize=8)
 def pattern_lines(path):
     with open(path, "rb") as fh:
         return tuple(line for line in fh.read().split(b"\n") if line)
@@ -629,11 +626,8 @@ def read_blobs(repo, shas):
 
 
 def check_patterns(repo, patterns, exceptions=(), extra=None):
-    with tempfile.TemporaryDirectory(prefix="release-patterns-") as folder:
-        combined = os.path.join(folder, "patterns.txt")
-        with open(combined, "wb") as fh:
-            fh.write(b"\n".join(read_patterns(patterns) + [p.encode() for p in FORBIDDEN]) + b"\n")
-        return scan_patterns(repo, combined, exceptions, extra)
+    read_patterns(patterns)
+    return scan_patterns(repo, str(patterns), exceptions, extra)
 
 
 def occurrences(line, string):

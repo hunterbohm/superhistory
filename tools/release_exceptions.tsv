@@ -10,9 +10,9 @@ bench/month/stories_b/client2.py	720-555-0186	a made-up phone number in the 555-
 bench/month/stories_b/client3.py	720 555 0192	a made-up phone number in the 555-01xx block reserved for fiction, from the fictional month
 bench/month/stories_b/client3.py	720 555 0193	a made-up phone number in the 555-01xx block reserved for fiction, from the fictional month
 bench/month/stories_b/client3.py	720-555-0177	a made-up phone number in the 555-01xx block reserved for fiction, from the fictional month
-bench/outside/results/sample/op/repetition.json	0.583171010017395	a similarity score whose digits hold the gateway's old port number; not the gateway
-bench/outside/results/sample/op/repetition.json	0.6883170008659363	a similarity score whose digits hold the gateway's old port number; not the gateway
-bench/outside/results/sample/op/repetition.json	0.8317229747772217	a similarity score whose digits hold the gateway's old port number; not the gateway
+bench/outside/results/sample/op/repetition.json	0.583171010017395	a measured similarity score whose digits match a private pattern by chance
+bench/outside/results/sample/op/repetition.json	0.6883170008659363	a measured similarity score whose digits match a private pattern by chance
+bench/outside/results/sample/op/repetition.json	0.8317229747772217	a measured similarity score whose digits match a private pattern by chance
 bench/results/hillclimb/month/a-k2/check.jsonl	720 555 0186	a made-up phone number in the 555-01xx block reserved for fiction, quoted in a recorded answer about the fictional month
 bench/results/hillclimb/month/a-k3/check.jsonl	720 555 0186	a made-up phone number in the 555-01xx block reserved for fiction, quoted in a recorded answer about the fictional month
 bench/results/hillclimb/month/a-noise1/check.jsonl	720 555 0186	a made-up phone number in the 555-01xx block reserved for fiction, quoted in a recorded answer about the fictional month
