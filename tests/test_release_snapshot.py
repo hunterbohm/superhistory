@@ -1,5 +1,6 @@
 import contextlib
 import copy
+import errno
 import gzip
 import hashlib
 import io
@@ -743,6 +744,8 @@ class FilesTest(SourceCase):
         try:
             probe.write_bytes(b"")
         except OSError as error:  # macOS's file system refuses such a name; the release is built on Linux
+            if error.errno != errno.EILSEQ:
+                raise
             self.skipTest("this file system refuses a file name that is not UTF-8: " + error.strerror)
         probe.unlink()
         self.commit_bytes({os.fsdecode(b"\xff.txt"): "Acmecorp\n", "\ufffd.txt": "Acmecorp\n",
