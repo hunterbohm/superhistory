@@ -417,20 +417,22 @@ REFERENCE = re.compile(r"^(?:\$(?:[{(]|[A-Z_][A-Z0-9_]*$|[a-z_][a-z0-9_]*$|env:)
                        r"[a-z]+://|(?:env|file|cmd):|[a-z_][\w.]*\()|"
                        r"^[A-Za-z_]+(?:\.[A-Za-z_]+)+$|^[A-Z][A-Z_]{2,}$|^[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+$")
 
-# A private key in a file written as base64, as a Kubernetes secret holds a TLS key: wherever the file's text says
-# "PRIVATE KEY", the run holds that word's base64 at one of the three byte offsets a word can start at.
+# A private key in a file written as base64, as a Kubernetes secret holds a TLS key: wherever the file's header or
+# footer says "PRIVATE KEY", or a PGP block's "SECRET KEY", the run holds that word's base64 at one of the three byte
+# offsets a word can start at.
 def _base64_of(word):
     """The base64 characters `word`'s bytes alone decide, at each of the three offsets it can start at."""
     return [base64.b64encode(b"\0" * k + word + b"\0\0\0").decode()[-(-8 * k // 6):8 * (k + len(word)) // 6]
             for k in range(3)]
 
 
-_ENCODED_KEY = re.compile("|".join(map(re.escape, _base64_of(b"PRIVATE KEY"))))
+_KEY_WORDS = (b"PRIVATE KEY", b"SECRET KEY")
+_ENCODED_KEY = re.compile("|".join(re.escape(code) for word in _KEY_WORDS for code in _base64_of(word)))
 _WRAP = r"[ \t\r]*(?:\r?\n|\\r\\n|\\n)[ \t]*"
 # A run of base64, with each line after it that it wraps onto: a line that is base64 from its indentation to its end,
 # however short. A run shorter than 16 starts one only when lines follow it. A run can start just after a backslash,
 # so the letter of an escape such as \n can lead it. Which of the lines hold a key is _key_range's to say.
-_WRAPPED_LINE = rf"{_WRAP}[A-Za-z0-9+/]+={{0,2}}(?=[ \t\r]*(?:\r?\n|\\r\\n|\\n|\\?[\"'<]|\Z))"
+_WRAPPED_LINE = rf"{_WRAP}(?:[A-Za-z0-9+/]+={{0,2}}|={{1,2}})(?=[ \t\r]*(?:\r?\n|\\r\\n|\\n|\\?[\"'<]|\Z))"
 _WRAPPED_BASE64 = re.compile(rf"(?<![A-Za-z0-9+/])(?:[A-Za-z0-9+/]{{16,}}={{0,2}}(?:{_WRAPPED_LINE})*"
                              rf"|[A-Za-z0-9+/]+={{0,2}}(?:{_WRAPPED_LINE})+)")
 _UNWRAP = re.compile(_WRAP)
@@ -504,7 +506,7 @@ def _gitleaks_edits(text):
 # Which mask() a stored row was masked with. A row of another version, or of none, is masked again when read and by
 # the next ingest. The patterns change it by themselves; bump REVISION when the code that applies them changes what
 # it masks.
-REVISION = 11
+REVISION = 12
 VERSION = hashlib.sha256(repr((REVISION, [p.pattern for p in SECRET_PATTERNS + PREFIXED_SECRETS], KEYED_SECRET.pattern,
                                 ENV_KEY_SECRET.pattern, JSON_SECRET.pattern, FLAG_SECRET.pattern, AUTH_SECRET.pattern,
                                 COMMAND_FLAGS, PASSWORD_NAME.pattern, sorted(PLACEHOLDERS), REFERENCE.pattern,
@@ -547,12 +549,13 @@ def _wrapped_lines(text, start, end):
     return lines + [(at, end)]
 
 
-# Where in a base64 group of 4 characters each encoding of "PRIVATE KEY" starts, which fixes how the groups of the
-# base64 around it fall.
-_KEY_WORD_PHASE = {code: -(-8 * k // 6) for k, code in enumerate(_base64_of(b"PRIVATE KEY"))}
+# For each encoding of a key's word, the byte of its base64 group of 4 characters the word starts at, and the character
+# its encoding starts at, which fix how the groups of the base64 around it fall.
+_KEY_WORD_AT = {code: (k, -(-8 * k // 6)) for word in _KEY_WORDS for k, code in enumerate(_base64_of(word))}
+_KEY_FRAME = re.compile(rb"-----(BEGIN|END) (?:[A-Z0-9 ]*PRIVATE KEY|PGP (?:PRIVATE|SECRET) KEY BLOCK)-----")
+_KEY_FOOTER = re.compile(rb"-----END (?:[A-Z0-9 ]*PRIVATE KEY|PGP (?:PRIVATE|SECRET) KEY BLOCK)-----")
 _NOT_TEXT = re.compile(rb"[^\t\n\r\x20-\x7e]")
-_FOOTER = re.compile(rb"-----END [A-Z0-9 ]+-----")
-_FILE_END = re.compile(rb"-----END [A-Z0-9 ]+-----\s*\Z")
+_LINE_BREAKS = re.compile(rb"[\r\n]*")
 
 
 def _decoded(joined, start, end):
@@ -563,49 +566,84 @@ def _decoded(joined, start, end):
         return None
 
 
+def _frame(joined, found):
+    """The key's header or footer that the encoded word `found` is in, as (b"BEGIN" or b"END", where the base64 group
+    holding its first byte starts), or None when the word is in none, as in a field's name or a sentence about keys."""
+    byte, char = _KEY_WORD_AT[found.group()]
+    group = found.start() - char
+    lo, hi = max(group - 64, group % 4), min(group + 40, len(joined))
+    pad = joined.rfind("=", lo, group)  # another stream's end
+    if pad >= 0:
+        lo = pad + 1 + (group - pad - 1) % 4
+    pad = joined.find("=", group, hi)
+    hi = pad + (group - pad) % 4 if pad >= 0 else hi - (hi - group) % 4
+    decoded = _decoded(joined, lo, hi)
+    at = (group - lo) // 4 * 3 + byte
+    for m in _KEY_FRAME.finditer(decoded or b""):
+        if m.start() <= at < m.end():
+            return m.group(1), lo + m.start() // 3 * 4
+    return None
+
+
 def _key_range(joined, starts, ends, found, floor):
-    """The first and last lines of a base64 block that hold the key whose encoded "PRIVATE KEY" is `found`, none above
-    line `floor`. A key file is text, so a line is the key's while the base64 through it, in the groups `found` fixes,
-    still decodes to text: a heading, a word between two keys or another stream decodes to other bytes and stays,
-    however the lines are wrapped. Below, the key's lines end where the text ends in a footer."""
-    phase = (found.start() - _KEY_WORD_PHASE[found.group()]) % 4
+    """The first and last lines of a base64 block that hold the key whose header or footer holds the encoded word
+    `found`, none above line `floor`; None when no header or footer holds it. A key starts at the line with its
+    header's first byte. With none, as when the block starts inside the key, a line above is the key's while the base64
+    through it, in the groups `found` fixes, still decodes to text. A key ends at its footer and the line breaks after
+    it, or with none where the text it decodes to ends: a heading, a word between two keys or another stream stays,
+    however the lines are wrapped."""
+    frame = _frame(joined, found)
+    if frame is None:
+        return None
+    kind, first = frame
+    phase = first % 4
     down = lambda p: p - (p - phase) % 4  # the group boundary at or before p
     up = lambda p: p + (phase - p) % 4  # the group boundary at or after p
-    top = bisect.bisect_right(ends, found.start())
-    bottom = bisect.bisect_left(ends, found.end())
-    while top > floor and up(starts[top - 1]) < down(starts[top]):
+    top = bisect.bisect_right(ends, first)
+    while kind == b"END" and top > floor and up(starts[top - 1]) < down(starts[top]):
         above = _decoded(joined, up(starts[top - 1]), down(starts[top]))
         if above is None or _NOT_TEXT.search(above):
             break
         top -= 1
-    recent = _decoded(joined, up(max(starts[top], ends[bottom] - 48)), down(ends[bottom])) or b""
-    for line in range(bottom + 1, len(ends)):
-        if ends[bottom] == down(ends[bottom]) and _FILE_END.search(recent):
-            break
-        below = _decoded(joined, down(ends[bottom]), down(ends[line]))
+    bottom, at, recent, ended = bisect.bisect_left(ends, found.end()), first, b"", False
+    for line in range(bisect.bisect_right(ends, first), len(ends)):
+        end = down(ends[line])
+        if end <= at:
+            continue
+        below = _decoded(joined, at, end)
         if below is None:
             break
-        other = _NOT_TEXT.search(below)
-        if other:
-            if _FOOTER.search(recent + below[:other.start()]):  # the text ended in a footer within this line
-                bottom = line
+        if not ended:
+            other = _NOT_TEXT.search(below)
+            footer = _KEY_FOOTER.search(recent + (below[:other.start()] if other else below))
+            if footer:  # the key ends with the group holding its footer's last byte
+                after = footer.end() - len(recent)
+                at += (after + 2) // 3 * 4
+                bottom, ended, below = max(bottom, bisect.bisect_right(ends, at - 1)), True, below[(after + 2) // 3 * 3:]
+            elif other:
+                break
+            else:
+                bottom, at, recent = line, end, (recent + below)[-48:]
+                continue
+        if not _LINE_BREAKS.fullmatch(below):
             break
-        bottom = line
-        recent = (recent + below)[-48:]
-    return top, bottom
+        bottom, at = max(bottom, line), end
+    return max(top, floor), bottom
 
 
 def _key_spans(text, lines):
-    """The spans to mask in a base64 block: for each encoded "PRIVATE KEY" outside the spans before it, its key's
+    """The spans to mask in a base64 block: for each key's header or footer word outside the spans before it, its key's
     lines. The block is joined once, and each key's lines are read once."""
     joined = "".join(text[a:b] for a, b in lines)
     ends = list(itertools.accumulate(b - a for a, b in lines))
     starts = [0] + ends[:-1]
     spans, floor = [], 0
     for found in _ENCODED_KEY.finditer(joined):
-        if bisect.bisect_right(ends, found.start()) < floor:
+        lines_of_key = None if bisect.bisect_right(ends, found.start()) < floor else _key_range(
+            joined, starts, ends, found, floor)
+        if lines_of_key is None:
             continue
-        top, bottom = _key_range(joined, starts, ends, found, floor)
+        top, bottom = lines_of_key
         spans.append((lines[top][0], lines[bottom][1]))
         floor = bottom + 1
     return spans

@@ -227,6 +227,10 @@ Known limits:
 - A private key is masked by its structure: from its header through its footer, or, if the footer is missing, through
   the end of its paragraph. So whatever follows a key cut off before its footer, up to the next blank line, is masked
   with it, and so is the paragraph before a footer with no header.
+- A private key written as base64 (as a Kubernetes secret holds one) is masked from the line with its header's first
+  byte through the line with its footer's. Cut off before its footer, it is masked while its base64 decodes to text,
+  so a word on the next line that happens to decode to text goes with it; cut off before its header, the same holds
+  for the line above.
 - A knowledge base that an older kb wrote, before each row recorded how it was masked, does not open: an older kb's
   masking can leave a secret that no pattern finds afterwards. kb says so and names `kb rebuild`, which reads your
   sources into a fresh one, each as far back as its oldest item in the old one. When a source no longer has some of

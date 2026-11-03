@@ -260,6 +260,7 @@ class OtherKeyFormatTest(unittest.TestCase):
         import base64
         import json
         import random
+        import re
         import textwrap
         r = random.Random(7)
 
@@ -278,7 +279,8 @@ class OtherKeyFormatTest(unittest.TestCase):
             for form, text in forms.items():
                 with self.subTest(pad=pad, form=form):
                     masked = mask(f"the bundle:\n{text}\nThanks, Bob")
-                    self.assertEqual([line for line in key_lines if line in masked], [])
+                    shown = set(re.split(r'\\n|\s+|"', masked))  # a certificate above stays, and may hold a short line
+                    self.assertEqual([line for line in key_lines if line in shown], [])
                     self.assertTrue(masked.startswith("the bundle:\n") and masked.endswith("\nThanks, Bob"), masked)
 
     def test_a_base64_key_wrapped_at_any_width_is_masked(self):
