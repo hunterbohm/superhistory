@@ -368,6 +368,89 @@ class ReviewOneTest(unittest.TestCase):
                     self.assertEqual(mask(form), form)
 
 
+class ReviewTwoTest(unittest.TestCase):
+    """#37's second review: aws configure set's settings in a list, a backspace after "_", a shell's -c script in a
+    list, Python's escaped single quotes, colour codes escaped twice, a long JSON string, and long runs of
+    backslashes."""
+
+    def test_an_aws_setting_in_a_list_of_arguments(self):
+        for items in (["aws", "configure", "set", "aws_secret_access_key", PASSWORD],
+                      ["aws", "configure", "set", "default.aws_session_token", PASSWORD]):
+            with self.subTest(items=items[3]):
+                self.assertEqual(mask_all(items)[-1], "[masked]")
+                for text in (json.dumps(items), repr(items), json.dumps({"output": json.dumps(items)})):
+                    self.assertNotIn(PASSWORD, mask(text))
+        for items in (["aws", "configure", "set", "region", "us-east-1"],
+                      ["aws", "configure", "set", "aws_session_token_expiration", "3600"]):
+            with self.subTest(items=items[3]):
+                self.assertEqual(mask_all(items), items)
+
+    def test_a_backspace_after_an_underscore(self):
+        token = "ghp_" + "\b" + TOKEN[4:]
+        for text in (json.dumps(token), json.dumps(json.dumps(token)), json.dumps(f"token {TOKEN[:4]}\b{TOKEN[4:]}")):
+            with self.subTest(text=text[:20]):
+                self.assertNotIn(TOKEN[10:], mask(text))
+        for text in (json.dumps(r"re.compile(r'_\bname\b')"), r"pattern = '\b_private\b'", r"x_\bword"):
+            with self.subTest(text=text):
+                self.assertEqual(mask(text), text)
+
+    def test_a_shells_script_in_a_list_of_arguments(self):
+        for shell in ("bash", "sh", "zsh", "/bin/bash"):
+            for script in (f"keytool -list -storepass {PASSWORD}", f"keytool \\\n -storepass {PASSWORD}",
+                           f"cd /srv && mongosh -u admin -p {PASSWORD}"):
+                items = [shell, "-c", script]
+                for text in (str(subprocess.CalledProcessError(1, items)), json.dumps(items), repr(items)):
+                    with self.subTest(shell=shell, script=script[:12], text=text[:12]):
+                        self.assertNotIn(PASSWORD, mask(text))
+        items = ["bash", "-c", "mongosh --eval 'print(\"ssh -p 2222 host\")'"]
+        self.assertEqual(mask(repr(items)), repr(items))
+
+    def test_python_escaped_single_quotes(self):
+        for args in (f"'keytool' -alias \"team cert\" -storepass {PASSWORD}", f"keytool -alias 'team cert' -storepass {PASSWORD}"):
+            process = subprocess.CompletedProcess(args, 1)
+            for text in (repr(process), json.dumps(process, default=repr), json.dumps(json.dumps(process, default=repr))):
+                with self.subTest(args=args[:10], text=text[:20]):
+                    self.assertNotIn(PASSWORD, mask(text))
+
+    def test_colour_codes_escaped_twice(self):
+        G = "\x1b[01;31m\x1b[K{}\x1b[m\x1b[K"
+        for line, word in ((f"keytool -storepass {PASSWORD}", "keytool"), (f"keytool -storepass {PASSWORD}", "-storepass"),
+                           (f"keytool -storepass {PASSWORD}", PASSWORD), (f"mongosh -u admin -p {PASSWORD}", "mongosh")):
+            coloured = line.replace(word, G.format(word), 1) + "\n"
+            for depth in (2, 3):
+                text = coloured
+                for _ in range(depth):
+                    text = json.dumps(text)
+                with self.subTest(word=word[:8], depth=depth):
+                    self.assertNotIn(PASSWORD, mask(text))
+
+    def test_the_mask_stays_in_its_json_string(self):
+        for prefix in (100, 4100, 20000):
+            text = json.dumps({"cmd": f"printf %s {'a' * prefix}; keytool -file <(cat cert.pem) -storepass {PASSWORD}",
+                               "cwd": "/srv/certs", "timeout": 30})
+            for form in (text, json.dumps({"output": text})):
+                with self.subTest(prefix=prefix, nested=form is not text):
+                    masked = mask(form)
+                    self.assertNotIn(PASSWORD, masked)
+                    self.assertEqual(json.loads(masked) if form is text else json.loads(json.loads(masked)["output"]),
+                                     {"cmd": f"printf %s {'a' * prefix}; keytool -file <(cat cert.pem) -storepass [masked]",
+                                      "cwd": "/srv/certs", "timeout": 30})
+
+    def test_long_runs_of_backslashes_cost_time_in_proportion(self):
+        def escaped(n):
+            text = f'keytool -alias "team cert" -storepass {PASSWORD}'
+            for _ in range(n):
+                text = json.dumps(text)
+            return text
+        small, large = escaped(10), escaped(12)
+        self.assertGreater(len(large), 3 * len(small))
+        self.assertNotIn(PASSWORD, mask(large))
+        self.assertLess(took(large), 6 * took(small) + 0.3)
+        self.assertLess(took(large), 1.5)
+        run = "\\" * 16000
+        self.assertLess(took(f"keytool -storepass {run}\"x"), 1.0)
+
+
 class RevisionTest(unittest.TestCase):
     def test_stored_rows_are_masked_again(self):
         self.assertEqual(masking.REVISION, 11)
