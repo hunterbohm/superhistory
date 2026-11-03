@@ -1911,7 +1911,6 @@ class ReviewThirtyFourTest(unittest.TestCase):
         "new Uint8Array(16).fill(0x2a); out.fill('Zq7vRt2LmX9kQ3w')",
         'page.get_by_label("Email").fill( # the address\n "me@example.com"\n)',
         'await page.getByLabel(/Search/i).fill("pelican plan");',
-        'await page.getByLabel("Password").fill("sun" + "shine");',
     )
 
     def test_more_layouts_of_a_typed_password_are_masked(self):
@@ -2026,6 +2025,11 @@ class TypingCallDesignTest(unittest.TestCase):
         # the rest of the line after a quote that closes nothing, and nothing past that line
         ('page.fill("#password", "sun"shine"); page.click("#login")\nawait done()',
          'page.fill("#password", "[masked]\nawait done()'),
+        # literals joined with "+", read as one value: kept readable before the design, masked by it
+        ('await page.getByLabel("Password").fill("sun" + "shine");', 'await page.getByLabel("Password").fill("[masked]");'),
+        # a key before the value, as Selenium's send_keys takes them
+        ('driver.find_element(By.ID, "password").send_keys(Keys.HOME, "sunshine")',
+         'driver.find_element(By.ID, "password").send_keys(Keys.HOME, "[masked]")'),
     )
     STAY = (
         'Buffer.from("password").fill("x")', 'new Array(4).fill("password").fill("x")',
