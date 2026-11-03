@@ -7,6 +7,7 @@ from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import gateway  # noqa: E402
 from tools import check  # noqa: E402
 
 from kb import ai  # noqa: E402
@@ -29,6 +30,9 @@ class TokenCountTest(unittest.TestCase):
         env = mock.patch.dict(os.environ, {"BENCH_API_KEY": "test"})
         env.start()
         self.addCleanup(env.stop)
+        base = mock.patch.object(gateway, "BASE_URL", "http://model.test")
+        base.start()
+        self.addCleanup(base.stop)
 
     def test_a_hedged_copy_that_loses_the_race_still_counts_with_cached_input(self):
         model = check.Counted(check.model())

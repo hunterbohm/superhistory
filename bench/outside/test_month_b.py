@@ -7,6 +7,7 @@ import unittest
 import urllib.error
 import urllib.response
 from types import SimpleNamespace
+from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -60,6 +61,9 @@ class GatewayTest(Installed):
             return urllib.response.addinfourl(io.BytesIO(reply.encode()), {}, request.full_url, 200)
 
         os.environ["BENCH_API_KEY"] = "test"
+        base = mock.patch.object(gateway, "BASE_URL", "http://model.test")
+        base.start()
+        self.addCleanup(base.stop)
         saved, gateway._open = gateway._open, opened
         self.addCleanup(setattr, gateway, "_open", saved)
         self.addCleanup(os.environ.pop if key is None else os.environ.__setitem__, "BENCH_API_KEY",

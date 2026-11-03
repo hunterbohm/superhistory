@@ -62,9 +62,9 @@ def code_id():
 
 def model():
     """The package's plug-in, with the summarizer held to PARALLEL calls at once: the benchmark shares its plans."""
-    key = Secret("env:BENCH_API_KEY" if os.environ.get("BENCH_API_KEY") else f"file:{gateway.KEY_FILE}")
+    key = Secret(gateway.key_source())
     plugin = api.Anthropic("anthropic-compatible",
-                           api.AnthropicCompatibleOptions(key=key, model=MODEL, base_url=gateway.BASE_URL))
+                           api.AnthropicCompatibleOptions(key=key, model=MODEL, base_url=gateway.base_url()))
     plugin.traits = plugin.traits._replace(parallel=min(plugin.traits.parallel, PARALLEL))
     return plugin
 
