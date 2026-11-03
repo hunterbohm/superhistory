@@ -9,6 +9,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import textwrap
 import time
 import unittest
 import urllib.error
@@ -1011,6 +1012,40 @@ class T(unittest.TestCase):
         found = self.built(body).check("suites")
         self.assertFalse(found.ok)
         self.assertTrue(any("snapshot changed" in f.text and "working tree" in f.text for f in found.findings), found.findings)
+
+    def tampered(self, snippet):
+        snap = str(self.out / "repo")
+        body = "    def test_tamper(self):\n        import os, subprocess\n        snap = %r\n%s" % (snap, textwrap.indent(textwrap.dedent(snippet), "        "))
+        return self.built(body).check("suites")
+
+    def assert_changed(self, found, what):
+        self.assertFalse(found.ok, found.findings)
+        self.assertTrue(any("snapshot changed" in f.text and what in f.text for f in found.findings), found.findings)
+
+    def test_git_update_index_assume_unchanged_cannot_hide_an_edit_to_a_snapshot_file(self):
+        found = self.tampered("""
+            subprocess.run(['git', '-C', snap, 'update-index', '--assume-unchanged', 'README.md'], check=True)
+            open(os.path.join(snap, 'README.md'), 'a').write('zq-4417' + '-kettle\\n')
+            """)
+        self.assert_changed(found, "working tree")
+
+    def test_a_new_loose_object_in_the_snapshot_is_a_change(self):
+        found = self.tampered("""
+            subprocess.run(['git', '-C', snap, 'hash-object', '-w', '--stdin'], input=b'stowaway', check=True)
+            """)
+        self.assert_changed(found, "objects")
+
+    def test_a_ref_written_by_hand_is_a_change(self):
+        found = self.tampered("""
+            head = open(os.path.join(snap, '.git', 'refs', 'heads', 'main')).read()
+            open(os.path.join(snap, '.git', 'refs', 'heads', 'extra'), 'w').write(head)
+            """)
+        self.assert_changed(found, "refs")
+
+    def test_a_mode_change_and_a_new_empty_folder_are_changes(self):
+        self.assert_changed(self.tampered("os.chmod(os.path.join(snap, 'README.md'), 0o755)"), "working tree")
+        self.out = self.tmp / "out2"
+        self.assert_changed(self.tampered("os.makedirs(os.path.join(snap, 'empty', 'folder'))"), "working tree")
 
     def test_the_tests_run_with_a_home_that_is_not_the_real_one(self):
         body = "    def test_home(self):\n        self.assertNotEqual(os.environ['HOME'], %r)\n" % os.path.expanduser("~")
