@@ -42,7 +42,7 @@ def places(secret, keywords):
         f"use {secret} for the deploy", f"curl 'https://api.example.com/v1?key={secret}'",
         f"key \x1b[1;31m{secret}\x1b[0m done", f"key {secret[:half]}\u200b{secret[half:]} done",
         f"{secret},active\n", f"tokens: [{secret}]", f"(see {secret}).", f"**{secret}**", repr(f"{secret}\tactive"),
-        json.dumps(json.dumps({"cmd": f'echo "{secret}"'}))))
+        json.dumps(json.dumps({"cmd": f'echo "{secret}"'})), f"_{secret}_", f"~~{secret}~~"))
 
 
 class RuleTest(unittest.TestCase):

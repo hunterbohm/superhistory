@@ -1575,6 +1575,43 @@ class ReviewTwentyFiveTest(unittest.TestCase):
                 with self.subTest(text=form):
                     self.assertNotIn("Tr0ub4dor9", mask(form))
 
+
+class ReviewTwentySixTest(unittest.TestCase):
+    """The twenty-sixth review's findings, under the coordinator's five-item bar."""
+
+    def test_provider_tokens_in_markdown_emphasis_and_strikeout(self):
+        secret = "dapi" + "0123456789abcdef" * 2
+        for text in (f"_{secret}_", f"~~{secret}~~", f"__{secret}__", f"*{secret}*", f"see _{secret}_ there"):
+            with self.subTest(text=text):
+                self.assertNotIn(secret, mask(text))
+        for reader in READERS:
+            with self.subTest(reader=reader):
+                self.assertNotIn(secret, stored(reader, tool_call(reader, "mcp__notes__write", {"text": f"~~{secret}~~"})))
+
+    def test_a_colour_code_as_bash_escapes_it(self):
+        token = "ghp_" + "A1b2C3d4E5f6" * 3
+        for text in (f"$'\\E[31m{token}'", f"$'\\E[01;31m\\E[K{token}\\E[m\\E[K'", f"\\e[1m{token}\\e[0m"):
+            with self.subTest(text=text):
+                self.assertNotIn(token, mask(text))
+        for reader in READERS:
+            with self.subTest(reader=reader):
+                self.assertNotIn(token, stored(reader, tool_call(reader, "Bash", {"command": f"echo $'\\E[31m{token}'"})))
+
+    def test_prose_about_login_pages_is_no_netrc_line(self):
+        for text in ("Default login page password field is empty.", "The machine learning login page password field is empty.",
+                     "machine room login desk password sheet in the drawer"):
+            for form in (text, json.dumps(text)):
+                with self.subTest(text=form):
+                    self.assertEqual(mask(form), form)
+        for text in ("machine api.example.com login deploy password Tr0ub4dor9",
+                     "machine api.example.com login deploy password Tr0ub4dor9 account ops",
+                     "machine api.example.com login deploy password Tr0ub4dor9 # rotated",
+                     "machine a.example.com login u password Tr0ub4dor9 machine b.example.com login v password Qz8rLm2x",
+                     "default login deploy password Tr0ub4dor9"):
+            for form in (text, json.dumps(text), json.dumps(text + "\n")):
+                with self.subTest(text=form):
+                    self.assertNotIn("Tr0ub4dor9", mask(form))
+
 # Commands as an argument list, each flag's value its own item: (the list, the items masked).
 ARGV = (
     (["login", "--password", PASSWORD], {2}), (["--token", SUB], {1}), (["--api-key", SUB, "--verbose"], {1}),
