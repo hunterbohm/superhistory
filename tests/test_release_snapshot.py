@@ -1,5 +1,6 @@
 import contextlib
 import copy
+import errno
 import gzip
 import hashlib
 import io
@@ -739,6 +740,14 @@ class FilesTest(SourceCase):
         self.assertTrue(all("outside the tree" in f.text for f in found.findings), found.findings)
 
     def test_a_path_that_is_not_utf8_fails_and_exceptions_match_names_exactly(self):
+        probe = self.src / os.fsdecode(b"\xff.probe")
+        try:
+            probe.write_bytes(b"")
+        except OSError as error:  # macOS's file system refuses such a name; the release is built on Linux
+            if error.errno != errno.EILSEQ:
+                raise
+            self.skipTest("this file system refuses a file name that is not UTF-8: " + error.strerror)
+        probe.unlink()
         self.commit_bytes({os.fsdecode(b"\xff.txt"): "Acmecorp\n", "\ufffd.txt": "Acmecorp\n",
                            EXCEPTIONS: tsv(("\ufffd.txt", "Acmecorp", "a made-up firm"))})
         release = self.build()
@@ -746,6 +755,13 @@ class FilesTest(SourceCase):
         found = release.check("patterns")
         self.assertEqual([f.where for f in found.findings], ["\\xff.txt:1"])
         self.assertEqual([f.where for f in found.allowed], ["\ufffd.txt:1"])
+
+    def test_only_a_refused_file_name_skips_the_test_of_one_that_is_not_utf8(self):
+        # any other failure to write the file is the test's error, never a skip
+        result = unittest.TestResult()
+        with mock.patch.object(Path, "write_bytes", side_effect=OSError(5, "Input/output error")):
+            FilesTest("test_a_path_that_is_not_utf8_fails_and_exceptions_match_names_exactly").run(result)
+        self.assertEqual((len(result.errors), len(result.skipped)), (1, 0), result.skipped)
 
     def test_a_submodule_entry_fails(self):
         self.commit_bytes({})
