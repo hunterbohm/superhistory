@@ -2059,6 +2059,40 @@ class TypingCallDesignTest(unittest.TestCase):
                     self.assertEqual(mask(text), text)
 
 
+class ReviewThirtyEightTest(unittest.TestCase):
+    """The thirty-eighth review's findings: a value read as a selector where options follow it in a call whose locator
+    already names the field, and many code records in one JSON log costing time in the square of their count."""
+
+    TYPED = (
+        'page.getByLabel("Password").fill("sunshine", {timeout: 5000})',
+        'page.get_by_label("Password").fill("sunshine", timeout=5000)',
+        'driver.find_element(By.ID, "password").send_keys("sunshine", Keys.ENTER)',
+        'await page.locator("#password").fill("sunshine", { force: true });',
+    )
+
+    def test_a_value_followed_by_options_is_masked(self):
+        for code in self.TYPED:
+            for text in (code, json.dumps(code), json.dumps({"code": code}), json.dumps(json.dumps(code))):
+                with self.subTest(text=text[:70]):
+                    self.assertNotIn("sunshine", mask(text))
+
+    def test_a_selector_with_a_variable_and_options_stays(self):
+        for code in ('page.fill("#password", password, {timeout: 5000})', 'page.type("#password", pw, {delay: 20})'):
+            for text in (code, json.dumps({"code": code})):
+                with self.subTest(text=text[:70]):
+                    self.assertEqual(mask(text), text)
+
+    def test_many_code_records_in_one_log_cost_time_in_proportion(self):
+        import time
+        took = {}
+        for n in (1000, 4000):
+            text = (json.dumps({"code": 'page.getByLabel("Search").fill("release notes")'}) + "\n") * n
+            started = time.process_time()
+            self.assertEqual(mask(text), text)
+            took[n] = time.process_time() - started
+        self.assertLess(took[4000], 6 * max(took[1000], 0.05), took)
+
+
 # Commands as an argument list, each flag's value its own item: (the list, the items masked).
 ARGV = (
     (["login", "--password", PASSWORD], {2}), (["--token", SUB], {1}), (["--api-key", SUB, "--verbose"], {1}),
