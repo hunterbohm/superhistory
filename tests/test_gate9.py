@@ -1246,6 +1246,56 @@ class ReviewEighteenTest(unittest.TestCase):
         self.assertNotIn("Tr0ub4dor9", mask("mongosh --eval 'db.x()' -p Tr0ub4dor9"))
 
 
+class ReviewNineteenTest(unittest.TestCase):
+    """The nineteenth review's findings, under the coordinator's split bar."""
+
+    def test_a_token_in_a_line_grep_colours_whole(self):
+        token = "dop_v1_b3178f9d5a06412ce78a6d2a43d98e56f0cab27d91470e31f2dc9b63f8ae5c04"
+        for text in (f"\x1b[01;31m\x1b[KERROR {token}\x1b[m\x1b[K\n", f"ERROR {token}\x1b[0m", f"ERROR {token}\u200b done"):
+            with self.subTest(text=text):
+                self.assertNotIn(token[8:40], mask(text))
+
+    def test_a_comment_holds_no_flag_or_field(self):
+        for text in ("mongosh --quiet # ssh -p 2222 host", "machine api.example.com login deploy # password supplied interactively"):
+            with self.subTest(text=text):
+                self.assertEqual(mask(text), text)
+        for text in ("mongosh -p Tr0ub4dor9 # admin", "mongosh --eval 'a # b' -p Tr0ub4dor9", "mongosh --host db#1 -p Tr0ub4dor9"):
+            with self.subTest(text=text):
+                self.assertNotIn("Tr0ub4dor9", mask(text))
+
+    def test_a_netrc_password_that_starts_with_a_dash_or_holds_a_backslash_n(self):
+        for text in ("machine api.example.com login deploy password -Tr0ub4dor9",
+                     "machine api.example.com login deploy password qjrx\\nvnmwkzptbhfc"):
+            with self.subTest(text=text):
+                self.assertEqual(mask(text), "machine api.example.com login deploy password [masked]")
+        two = json.dumps("machine a login u password Tr0ub4dor9\nmachine b login v password X7y8Z9q0w")
+        masked = mask(two)
+        self.assertNotIn("Tr0ub4dor9", masked)
+        self.assertNotIn("X7y8Z9q0w", masked)
+        self.assertIn("machine b login v", masked)
+
+    def test_a_long_argument_list_before_its_password_flag(self):
+        items = ["mongosh", "--host", "db", "--port", "27017", "--username", "deploy", "--authenticationDatabase", "admin",
+                 "--tls", "--tlsCAFile", "/etc/ssl/ca.pem", "-p", "Tr0ub4dor9"]
+        self.assertEqual(mask_all(items)[-1], "[masked]")
+
+    def test_an_app_password_with_two_common_words(self):
+        self.assertEqual(mask("APP_PASSWORD: hoyp mail htng user"), "APP_PASSWORD: [masked]")
+        self.assertEqual(mask("SMTP_PASS=send hoyp mail htng"), "SMTP_PASS=[masked]")
+        self.assertEqual(mask("password: copy yaml into toml"), "password: [masked] yaml into toml")
+
+    def test_arithmetic_and_a_nested_command(self):
+        for text in ("mongosh --port $((27017 + OFFSET)) -p Tr0ub4dor9",
+                     "mongosh --host \"$(mongosh -p Tr0ub4dor9 --eval 'db.host')\"",
+                     "mongosh --host $(mongosh -p Tr0ub4dor9 --eval 'db.host') --quiet"):
+            with self.subTest(text=text):
+                self.assertNotIn("Tr0ub4dor9", mask(text))
+
+    def test_an_escaped_double_quote_inside_single_quotes_decides_nothing(self):
+        text = "mongosh --eval 'db.x.find({name:/\\\"/})' --host \"localhost\" -p Tr0ub4dor9"
+        self.assertNotIn("Tr0ub4dor9", mask(text))
+
+
 # Commands as an argument list, each flag's value its own item: (the list, the items masked).
 ARGV = (
     (["login", "--password", PASSWORD], {2}), (["--token", SUB], {1}), (["--api-key", SUB, "--verbose"], {1}),
