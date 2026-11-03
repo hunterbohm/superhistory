@@ -477,14 +477,22 @@ def check_patterns(repo, patterns, exceptions=(), extra=None, archive=None, pref
 def archive_candidates(patterns, archive, prefix, entries):
     known = {member_key(name): sha for mode, sha, name in entries}
     found = []
+    folder = prefix.rstrip("/").encode("utf-8", "surrogateescape")
+    in_folder = bool(grep_text(patterns, folder))
+    if in_folder:
+        found.append(("archive folder " + prefix.rstrip("/"), 0, folder, []))
     with tarfile.open(str(archive)) as tar:
         for member in tar:
             raw = member.name.rstrip("/")
             name = raw[len(prefix):] if raw.startswith(prefix) else raw
+            if not member.isdir():
+                own = grep_text(patterns, name.encode("utf-8", "surrogateescape"))
+                if name not in known and own:
+                    found.append((name, 0, name.encode("utf-8", "surrogateescape"), []))
+                elif not own and not in_folder and grep_text(patterns, raw.encode("utf-8", "surrogateescape")):
+                    found.append((raw, 0, raw.encode("utf-8", "surrogateescape"), []))
             if member.isdir():
                 continue
-            if name not in known and grep_text(patterns, raw.encode("utf-8", "surrogateescape")):
-                found.append((name, 0, raw.encode("utf-8", "surrogateescape"), []))
             data = tar.extractfile(member).read() if member.isreg() else member.linkname.encode("utf-8", "surrogateescape")
             if known.get(name) != blob_id(data):
                 found.extend((name,) + hit for hit in grep_matches(patterns, data))
@@ -965,7 +973,7 @@ def assemble(source, commit, out, name, email, tag, title, repo_name, notes_text
         with gzip.GzipFile(filename="", mode="wb", fileobj=raw, mtime=0) as packed:
             packed.write(tar)
 
-    extra = {"RELEASE_NOTES.md": notes_text}
+    extra = {"RELEASE_NOTES.md": notes_text, "repo name": repo_name, "tag": tag}
     release = Release(tag, snapshot, Path(repo), Path(notes), Path(archive), Path(out), [], left_out)
     suites_result = guarded("suites", suites_check, release, suites) if suites else CheckResult("suites", "SKIP", "not run: --no-suites given")
     release.checks = [
