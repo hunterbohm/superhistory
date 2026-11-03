@@ -535,6 +535,66 @@ class ArchiveExactTest(SourceCase):
         self.assertFalse(self.verdict(extra).ok)
 
 
+class AwkwardNamesTest(SourceCase):
+    def commit_awkward(self, name, text="fine\n", link=None):
+        write(self.src, self.base_files())
+        if link:
+            os.symlink(link, self.src / name)
+        else:
+            (self.src / name).write_text(text)
+        git(self.src, "add", "-A")
+        git(self.src, "commit", "-q", "-m", "awkward")
+
+    def test_a_symlink_whose_target_holds_a_line_break_is_scanned_as_text(self):
+        self.commit_awkward("link", link="safe\n" + PORT)
+        release = self.build()
+        found = release.check("patterns")
+        self.assertEqual([f.where for f in found.findings], ["link:2"])
+        self.assertTrue(release.check("archive").ok, release.check("archive").findings)
+
+    def test_a_symlink_target_without_a_hit_passes(self):
+        self.commit_awkward("link", link="safe\nalso safe")
+        self.assertTrue(self.build().check("patterns").ok)
+
+    def test_a_file_name_with_a_line_break_does_not_crash_any_check(self):
+        self.commit_awkward("x\ny", "fine\n")
+        release = self.build()
+        self.assertTrue(release.ok, release.report())
+
+    def test_a_hit_in_a_name_with_a_line_break_is_reported_with_the_break_spelled_out(self):
+        self.commit_awkward("fine\nacmecorp.txt", "fine\n")
+        release = self.build()
+        found = release.check("patterns")
+        self.assertEqual([f.where for f in found.findings], ["fine\\x0aacmecorp.txt"])
+        self.assertNotIn("fine\nacmecorp", release.report())
+
+    def test_the_report_and_the_checks_file_come_out_whole_for_awkward_names(self):
+        self.commit_awkward("x\ny", "see Acmecorp\n")
+        code, text = self.run_main()
+        self.assertEqual(code, 1)
+        self.assertIn("x\\x0ay:1", text)
+        self.assertEqual((self.out / "CHECKS.txt").read_text(), text)
+
+    def test_a_check_that_raises_is_reported_as_a_failure_and_the_rest_still_run(self):
+        self.commit(self.base_files())
+        with mock.patch.object(rs, "check_credential", side_effect=RuntimeError("boom on purpose")):
+            release = self.build()
+        found = release.check("credential")
+        self.assertFalse(found.ok)
+        self.assertIn("RuntimeError: boom on purpose", "\n".join(f.text for f in found.findings))
+        self.assertTrue(release.check("history").ok)
+        self.assertFalse(release.ok)
+        self.assertIn("FAIL credential", release.report())
+
+    def test_the_command_writes_checks_when_a_check_raises(self):
+        self.commit(self.base_files())
+        with mock.patch.object(rs, "check_patterns", side_effect=ValueError("bad on purpose")):
+            code, text = self.run_main()
+        self.assertEqual(code, 1)
+        self.assertIn("ValueError: bad on purpose", text)
+        self.assertEqual((self.out / "CHECKS.txt").read_text(), text)
+
+
 class CommandTest(SourceCase):
     def test_a_clean_snapshot_exits_zero_and_reports_each_check(self):
         self.commit(self.base_files())
