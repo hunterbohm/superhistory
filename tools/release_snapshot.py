@@ -855,14 +855,34 @@ def sha256_of(path):
         return hashlib.sha256(fh.read()).hexdigest()
 
 
+def digest_tree(root, skip=()):
+    digest = hashlib.sha256()
+    for folder, names, files in os.walk(root):
+        names[:] = sorted(n for n in names if os.path.relpath(os.path.join(folder, n), root) not in skip)
+        relative = os.path.relpath(folder, root)
+        digest.update(b"dir %s %o\0" % (relative.encode("utf-8", "surrogateescape"), os.lstat(folder).st_mode & 0o7777))
+        for name in sorted(files):
+            full = os.path.join(folder, name)
+            info = os.lstat(full)
+            label = os.path.relpath(full, root).encode("utf-8", "surrogateescape")
+            if os.path.islink(full):
+                body = os.readlink(full).encode("utf-8", "surrogateescape")
+            else:
+                with open(full, "rb") as fh:
+                    body = fh.read()
+            digest.update(b"file %s %o %s\0" % (label, info.st_mode & 0o7777, hashlib.sha256(body).hexdigest().encode()))
+    return digest.hexdigest()
+
+
 def fingerprint(release):
-    repo = release.repo
-    objects = git(repo, "cat-file", "--batch-all-objects", "--batch-check", isolated=True)
-    return {"refs": git(repo, "for-each-ref", "--format=%(objectname) %(refname)", isolated=True)
-                    + "\n" + git(repo, "symbolic-ref", "HEAD", isolated=True),
-            "objects": "\n".join(sorted(objects.splitlines())),
+    repo = str(release.repo)
+    git_dir = os.path.join(repo, ".git")
+    return {"refs": "%s %s %s" % (digest_tree(os.path.join(git_dir, "refs")), sha256_of(os.path.join(git_dir, "HEAD")),
+                                  sha256_of(os.path.join(git_dir, "packed-refs")) if os.path.exists(os.path.join(git_dir, "packed-refs")) else "none"),
+            "objects": digest_tree(os.path.join(git_dir, "objects")),
+            "git settings": sha256_of(os.path.join(git_dir, "config")),
             "tree": git(repo, "rev-parse", "HEAD^{tree}", isolated=True),
-            "working tree": git(repo, "status", "--porcelain", "-z", "--ignored", isolated=True),
+            "working tree": digest_tree(repo, skip=(".git",)),
             "archive": sha256_of(release.archive), "notes": sha256_of(release.notes)}
 
 
