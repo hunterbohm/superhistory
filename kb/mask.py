@@ -352,6 +352,11 @@ def _quoted(flag):
     return rf"(?:{flag}|\"{flag}\"|'{flag}'|\\\"{flag}\\\"|\\'{flag}\\')"
 
 
+# aws configure set's setting about a secret, its key word looked for ahead (Python before 3.12 takes no backslash in
+# an f-string's braces, so it stands apart).
+_AWS_SETTING = r"(?:[A-Za-z0-9_-]+\.)?(?=[A-Za-z0-9_]*?(?:secret|token|password))[A-Za-z0-9_]+"
+
+
 COMMAND_FLAGS = (
     (r"curl", r"\s(?:-u|--user)\s*['\"]?[^ \t\n\r:'\"]+:", True),
     (r"mysql|mysqldump|mysqladmin|mariadb|mariadb-dump", r"\s-p(?=[^ \t\n\r'\"])", True),
@@ -369,9 +374,7 @@ COMMAND_FLAGS = (
     # aws configure set's secret settings, and a .netrc line's password, its fields in any order but with a login
     # among them, so "the machine room password sheet" is no .netrc line. A setting's name is read once, its key word
     # looked for ahead: read around the key word, a run of key words took time in the square of its length.
-    (r"aws\s+configure\s+set",
-     rf"\s{_quoted(r'(?:[A-Za-z0-9_-]+\.)?(?=[A-Za-z0-9_]*?(?:secret|token|password))[A-Za-z0-9_]+')}[ \t]+{_FLAG_QUOTE}",
-     False),
+    (r"aws\s+configure\s+set", rf"\s{_quoted(_AWS_SETTING)}[ \t]+{_FLAG_QUOTE}", False),
     (r"(?:machine[ \t]+[^\s]+|default)(?=(?:[ \t]+(?:password|account)[ \t]+[^\s]+)*[ \t]+login[ \t]+[^\s])",
      r"\spassword[ \t]+(?:\\?['\"])?", "field"),
 )
