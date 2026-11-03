@@ -326,8 +326,8 @@ _APP_GROUPS = rf"({_UNSEEN}{_APP_GROUP}(?:{_UNSEEN} {_UNSEEN}{_APP_GROUP}){{3}}{
 # comment. Neither reading takes a sentence of common words (_app_password_span).
 APP_PASSWORD_LINE = re.compile(r"(?m)(?:^|(?<=\\n))[ \t]*(?:export[ \t]+|-[ \t]+)?(?i:" + _KEY_NAME[4:] + r")([ \t]*:[ \t]*)"
                                + _APP_GROUPS + r"(?=[ \t]+#[^\r\n]*$|[ \t]*\r?$|\\[nr])")
-# Four-letter words common in English: four groups holding two or more of them are a sentence ("password: copy yaml
-# into json"), which a random app password's groups are not, but one time in some hundred thousand.
+# Four-letter words common in English: four groups holding three or more of them are a sentence ("password: copy yaml
+# into toml"), which a random app password's groups almost never are.
 _COMMON_WORDS = frozenset("""
 able also area away back bank base been best body book both call came card care case city come copy cost data date
 days deal does done door down draw drop each easy edit else even ever face fact fail fall fast feel file fill find fine
@@ -512,27 +512,67 @@ def _docker_login_edits(text):
     return [(m.end(1), m.end(), "[masked]") for m in _AUTH_FIELD.finditer(text) if _basic_credential(m.group(2))]
 
 
-def _command_line(text, start):
-    """(where a command's line from `start` ends, the stretches of it inside quotes or a command substitution), as the
-    shell reads it: outside those, at what ends a command or starts another (a pipe, ";", "&" but in a redirection
-    such as "2>&1", a bracket), at a JSON string's end (a '"' that opens no shell quote, before ",", ":", "}" or "]"),
-    and at a line break, plain, or escaped where it is not inside quotes of plain text. A line whose first double quote
-    comes escaped ('\\"'), as JSON holds a command, is read unescaped: its escaped quotes are the shell's quotes, an
-    escaped backslash escapes the shell character after it, and a bare '"' ends the JSON string; a single quote, which
-    JSON leaves bare, decides nothing. One pass over the line."""
-    i, n = start, len(text)
-    quote, escaped, depth = "", None, 0  # the open quote, whether quotes come escaped once, "$(" open
-    inside, opened = [], 0  # stretches inside quotes or a substitution, and where the open one began
+def _command_line(text, start, stop=None, known=None):
+    """(where a command's line from `start` ends, by `stop` if given, the stretches of it inside quotes or a substitution at its top level,
+    in order, the command substitutions in it that no other holds, in order), as the shell reads it. The shell's contexts are kept on a stack:
+    single quotes, which hold everything to the next one; double quotes, which hold a substitution or a backtick; and
+    "$(", "(" and backticks, which hold quotes and brackets of their own, so arithmetic's "$((...))" closes as it opens.
+    At the top level the line ends at what ends a command or starts another (a pipe, ";", "&" but in a redirection
+    such as "2>&1", a bracket), at a comment (a "#" that starts a word), and at a JSON string's end (a '"' that opens no
+    quote, before ",", ":", "}" or "]"); anywhere at a line break, plain, or escaped but inside quotes of plain text. A
+    line whose first double quote outside single quotes comes escaped ('\\"'), as JSON holds a command, is read
+    unescaped: its escaped quotes are the shell's quotes, an escaped backslash escapes the shell character after it,
+    and a bare '"' ends the JSON string. `known` maps where each substitution read before starts to where it ends, which
+    the reading adds to and passes over, so a command inside one costs no second reading of what it holds."""
+    i, n = start, len(text) if stop is None else stop
+    known = {} if known is None else known
+    stack, opened, escaped = [], [], None  # the shell's open contexts, where each opened, whether quotes come escaped
+    inside, subs, held = [], [], 0  # held: how many of the open contexts are substitutions
+
+    def enter(kind, at, after):  # where the reading goes on once `kind` opens at `at`: after it, or past all it holds
+        nonlocal held
+        end = known.get(at) if kind in ("$(", "`") else None
+        if end is not None and end <= n:
+            if not held:
+                subs.append((at, end))
+            if not stack:
+                inside.append((at, end))
+            return end
+        stack.append(kind)
+        opened.append(at)
+        held += kind in ("$(", "`")
+        return after
+
+    def close(at, closed=True):
+        nonlocal held
+        kind, began = stack.pop(), opened.pop()
+        if kind in ("$(", "`"):
+            held -= 1
+            if closed:
+                known[began] = at
+            if not held:
+                subs.append((began, at))
+        if not stack:
+            inside.append((began, at))
+
     while i < n:
         here, c = i, text[i]
+        top = stack[-1] if stack else ""
+        if top == "'":  # nothing is special inside single quotes but the closing one
+            if c in "\n\r" or c == '"' and escaped:
+                return here, inside, subs
+            i += 1
+            if c == "'":
+                close(i)
+            continue
         if c == "\\":
             following = text[i + 1:i + 2]
             if following in ("n", "r"):
-                if not quote or escaped:
-                    return here, inside
-                i += 2  # a backslash and a letter inside quotes of plain text: part of the argument
-                continue
-            if following == '"' and escaped is not False or following == "'" and escaped:
+                if top == '"' and not escaped:
+                    i += 2  # a backslash and a letter inside double quotes of plain text: part of the argument
+                    continue
+                return here, inside, subs
+            if following == '"' and escaped is not False:
                 escaped, c, i = True, following, i + 2
             else:  # the shell's own backslash, and the character it escapes
                 i += 2
@@ -541,40 +581,43 @@ def _command_line(text, start):
                 continue
         else:
             if c in "\n\r" or c == '"' and escaped:
-                return here, inside
-            if c == '"' and not quote and not depth and _JSON_STRING_END.match(text, i + 1):
-                return here, inside
+                return here, inside, subs
+            if c == '"' and not stack and _JSON_STRING_END.match(text, i + 1):
+                return here, inside, subs
             if c == '"' and escaped is None:
                 escaped = False
             i += 1
-        if quote:
-            if c == quote:
-                quote = ""
-                if not depth:
-                    inside.append((opened, i))
+        substitution = c == "$" and text[i:i + 1] == "("
+        if top == '"':
+            if c == '"':
+                close(i)
+            elif substitution or c == "`":
+                i = enter("$(" if substitution else "`", here, i + substitution)
             continue
-        if c in "'\"`":
-            quote = c
-            if not depth:
-                opened = here
-        elif c == "$" and text[i:i + 1] == "(":
-            depth += 1
-            if depth == 1:
-                opened = here
-            i += 1
-        elif c == ")" and depth:
-            depth -= 1
-            if not depth:
-                inside.append((opened, i))
-        elif depth:
-            continue  # inside a substitution, its own command's marks
+        if top == "`" and c == "`" or top in ("$(", "(") and c == ")":
+            close(i)
+            continue
+        if top:  # inside a substitution: its own quotes and brackets
+            if c in "'\"`(" or substitution:
+                i = enter("$(" if substitution else c, here, i + substitution)
+            continue
+        if c in "'\"`" or substitution:
+            i = enter("$(" if substitution else c, here, i + substitution)
         elif c in "|;()":
-            return here, inside
+            return here, inside, subs
         elif c == "&" and not (here > start and text[here - 1] in "<>" or text[i:i + 1] == ">"):
-            return here, inside
-    if quote or depth:
-        inside.append((opened, n))
-    return n, inside
+            return here, inside, subs
+        elif c == "#" and (here == start or text[here - 1] in " \t"):
+            return here, inside, subs
+    while stack:
+        close(n, closed=False)
+    return n, inside, subs
+
+
+def _holding(stretches, at):
+    """The one of `stretches`, (start, end) pairs in order that do not overlap, that holds `at`, or None."""
+    k = bisect.bisect_right(stretches, (at, math.inf)) - 1
+    return stretches[k] if k >= 0 and at < stretches[k][1] else None
 
 
 # A variable or a template's slot standing for a value, as a .netrc file shown with its values left out holds one.
@@ -587,9 +630,14 @@ def _netrc_password(value):
     return len(value) >= 4 and value.lower() not in PLACEHOLDERS and not _VARIABLE.match(value)
 
 
+_NETRC_LINE_END = re.compile(r"\r|\n|(?<!\S)#|\\[nr](?=[ \t]*(?:(?:machine|default|login|password|account|macdef)\b|[\"\\]|$))")
+
+
 def _plain_line_end(text, start):
-    """Where a line from `start` ends: at a line break, plain or escaped, as a .netrc line's does."""
-    m = re.compile(r"\r|\n|\\[nr]").search(text, start)
+    """Where a .netrc line from `start` ends: at a line break, at a comment (a "#" that starts a word), or at an escaped
+    line break before the next field or the text's end, as a .netrc file shown in JSON holds one; an escaped "n" in a
+    value is part of it, as .netrc reads "\\n" in a password."""
+    m = _NETRC_LINE_END.search(text, start)
     return m.start() if m else len(text)
 
 
@@ -599,34 +647,39 @@ _JSON_STRING_END = re.compile(r"[ \t]*[,:}\]]")
 
 def _command_password_edits(text, line_pattern, flag, always, unseen=False):
     """Each password one row of COMMAND_FLAGS finds, as an edit that masks it. A command's line is read once from its
-    first word, so a line that names the command again and again costs time in proportion to its length. With
+    first word, and a command in a substitution once from its own, so a line that names the command again and again
+    costs time in proportion to its length. With
     `unseen`, as the rows main's own lack are read, the line is read as the shell reads it (_command_line) and a
     value is judged without the characters a reader does not see, so a coloured "$STOREPASS" is a variable and a
     coloured "--quiet" the next option."""
-    edits, last = [], -1
+    edits, reading, known = [], [], {}  # reading: the lines read that hold the text so far, innermost last
     for line in line_pattern.finditer(text):
-        if line.start() < last:
-            continue  # the command named again inside a line already read
-        inside = []
+        while reading and reading[-1][0] <= line.start():
+            reading.pop()
+        held = _holding(reading[-1][1], line.start()) if reading else None
+        if reading and not held:
+            continue  # the command named again inside a line already read, not as a command of its own
+        inside, subs = [], []
         if always == "field":
-            last = _plain_line_end(text, line.end())
-        elif unseen:
-            last, inside = _command_line(text, line.end())
+            end = _plain_line_end(text, line.end())
+        elif unseen:  # a command inside the substitution of a line read is read as a line of its own, to its end
+            end, inside, subs = _command_line(text, line.end(), held and held[1], known)
         else:
-            last = line.end()
+            end = line.end()
+        reading.append((end, subs))
         starts = [a for a, _ in inside]
-        for m in flag.finditer(text, line.start(), last):
+        for m in flag.finditer(text, line.start(), end):
             k = bisect.bisect_right(starts, m.start()) - 1
             if k >= 0 and m.start() < inside[k][1]:
                 continue  # a flag inside a quoted argument or a substitution is another program's
 
             value = INVISIBLE.sub("", m.group(2)) if unseen else m.group(2)
-            if unseen and (value.startswith("-") or _ABOUT_A_PASSWORD.search(m.group(1).strip(" \t'\"\\"))):
-                continue  # the next option, or a setting about a secret ("aws configure set token_expiration 3600")
             if always == "field":  # a .netrc line's password, which nothing expands: any value but a placeholder
                 if _netrc_password(value):
                     edits.append((m.start(2), m.end(2), "[masked]"))
                 continue
+            if unseen and (value.startswith("-") or _ABOUT_A_PASSWORD.search(m.group(1).strip(" \t'\"\\"))):
+                continue  # the next option, or a setting about a secret ("aws configure set token_expiration 3600")
             if always is True or _looks_secret("password", m.group(1), value):
                 edits.append((m.start(2), m.end(2), "[masked]"))
     return edits
@@ -711,10 +764,11 @@ def _line_password_span(m):
 
 
 def _app_password_span(m):
-    """_password_span for an app password's four groups, but where two or more are common English words ("password:
-    this will work fine", "password: copy yaml into json"), read as main reads them."""
+    """_password_span for an app password's four groups, but where three or four are common English words
+    ("password: this will work fine", "password: copy yaml into toml"), read as main reads them: a random app
+    password's groups hold three such words some times in a billion."""
     groups = INVISIBLE.sub("", m.group(3)).split()
-    return None if sum(group in _COMMON_WORDS for group in groups) >= 2 else _password_span(m)
+    return None if sum(group in _COMMON_WORDS for group in groups) >= 3 else _password_span(m)
 
 
 def _xml_span(m):
@@ -1196,10 +1250,15 @@ def _split_secrets(text, rules):
         at = start + bisect.bisect_right(places, start)
         return 0 < at and at - 1 in removed and text[at - 1].isalnum()
 
+    def ends_at_removed(end):  # whether, as written, the view's text up to `end` runs into a character it does not see
+        at = end + bisect.bisect_left(places, end)
+        return at < len(text) and at in removed
+
     for start, end in found + glued:
         if not v.split(start, end):
-            # A colour code ends in a letter, so the text as written reads a token right after one as a longer word.
-            if glued_on(start):
+            # A colour code ends in a letter, so the text as written reads a token right after one as a longer word,
+            # and one right after a token stands where the token's end is read, as grep's colour around a line does.
+            if glued_on(start) or ends_at_removed(end):
                 spans.append(v.raw(start, end))
             continue
         cut = v.cut(start, end)
@@ -1612,7 +1671,7 @@ def _masked_items(items, key):
         if not (isinstance(flag, str) and isinstance(item, str) and flag.startswith("-") and len(flag) <= 64 and item):
             continue
         start = i - 1
-        while start > 0 and i - start < 8 and isinstance(items[start - 1], str):
+        while start > 0 and i - start < 64 and isinstance(items[start - 1], str):
             start -= 1
         line = " ".join(items[start:i])
         if not mask(f"{line} {item}").endswith(" " + mask(item)):

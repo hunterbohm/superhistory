@@ -211,7 +211,7 @@ Known limits:
   into small letters ("Utf8to16Codec") reads as a password and is masked.
 - Masking costs time in proportion to the text, but a text in which kb's newer readings fire is masked a second time
   beside kb's earlier mask, so a long run of built shapes is slow: 4,000 soft-hyphen-split passwords with a link
-  inside each (160 KB) take about 10 s.
+  inside each (160 KB) take about 10 s, and 30,000 command lines with a password each (900 KB) about 14 s.
 - Where a later pass cuts into a placeholder, a bracket can be left beside it ("[masked]]"), or two placeholders stand
   side by side ("[masked][masked]"); no character of the secret is left.
 - A password with a comma, a semicolon or a bracket in it is masked whole in quotes, in an XML element or on a line of
