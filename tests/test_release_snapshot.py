@@ -766,6 +766,45 @@ class ExceptionsTest(SourceCase):
         found = self.patterns_of({"a.txt": "see Acmecorp\n"}, [("a.txt", "Acme", "the start"), ("a.txt", "corp", "the end")])
         self.assertEqual([f.where for f in found.findings], ["a.txt:1"])
 
+    def with_patterns(self, *lines):
+        self.patterns.write_text("".join(line + "\n" for line in lines))
+
+    def test_an_exception_for_one_match_does_not_hide_one_that_overlaps_it(self):
+        self.with_patterns("abc", "bcd")
+        found = self.patterns_of({"a.txt": "abcd\n"}, [("a.txt", "abc", "the first pattern")])
+        self.assertEqual([f.where for f in found.findings], ["a.txt:1"])
+        self.assertEqual(found.notes, [])
+
+    def test_each_overlapping_match_is_checked_against_the_exceptions_on_its_own(self):
+        self.with_patterns("abc", "bcd")
+        both = self.patterns_of({"a.txt": "abcd\n"}, [("a.txt", "abc", "one"), ("a.txt", "bcd", "two")])
+        self.assertTrue(both.ok, both.findings)
+        shutil.rmtree(str(self.out))
+        union = self.patterns_of({"a.txt": "abcd\n"}, [("a.txt", "abcd", "both at once")])
+        self.assertTrue(union.ok, union.findings)
+
+    def test_a_match_inside_a_longer_one_is_found_too(self):
+        self.with_patterns("abcd", "bc")
+        inner = self.patterns_of({"a.txt": "abcd\n"}, [("a.txt", "bc", "the inner one")])
+        self.assertEqual([f.where for f in inner.findings], ["a.txt:1"])
+        shutil.rmtree(str(self.out))
+        outer = self.patterns_of({"a.txt": "abcd\n"}, [("a.txt", "abcd", "the outer one")])
+        self.assertTrue(outer.ok, outer.findings)
+
+    def test_one_pattern_matching_itself_overlapped_is_found_at_every_position(self):
+        self.with_patterns("abab")
+        part = self.patterns_of({"a.txt": "xababab\n"}, [("a.txt", "xabab", "the first match only")])
+        self.assertEqual([f.where for f in part.findings], ["a.txt:1"])
+        shutil.rmtree(str(self.out))
+        whole = self.patterns_of({"a.txt": "xababab\n"}, [("a.txt", "ababab", "both matches")])
+        self.assertTrue(whole.ok, whole.findings)
+
+    def test_finding_the_overlaps_adds_no_matches_that_are_not_there(self):
+        self.with_patterns("(^|[^-a-z0-9])boxroom\\b", "\\bacmecorp\\b")
+        found = self.patterns_of({"a.txt": "my boxroom and Acmecorp, not unboxroom or x-boxroom\n"},
+                                 [("a.txt", " boxroom", "a room"), ("a.txt", "Acmecorp", "a firm")])
+        self.assertTrue(found.ok, found.findings)
+
     def test_a_file_name_cannot_be_excepted(self):
         found = self.patterns_of({"acmecorp-notes.txt": "fine\n"},
                                  [("acmecorp-notes.txt", "acmecorp-notes.txt", "no")])
