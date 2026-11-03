@@ -1588,6 +1588,14 @@ class ReviewTwentySixTest(unittest.TestCase):
             with self.subTest(reader=reader):
                 self.assertNotIn(secret, stored(reader, tool_call(reader, "mcp__notes__write", {"text": f"~~{secret}~~"})))
 
+    def test_a_provider_token_ends_at_any_mark_that_is_no_letter_or_digit(self):
+        secret = "dapi" + "0123456789abcdef" * 2
+        for after in ("/x", "=", "+", "%22", "@host", "#", "(", "-tail", "^", "$", "[0]", "'s"):
+            with self.subTest(after=after):
+                self.assertNotIn(secret, mask(secret + after))
+        self.assertEqual(mask("dapi" + "0123456789abcdef" * 2 + "0"), "dapi" + "0123456789abcdef" * 2 + "0",
+                         "a longer run of hex is no Databricks token")
+
     def test_a_colour_code_as_bash_escapes_it(self):
         token = "ghp_" + "A1b2C3d4E5f6" * 3
         for text in (f"$'\\E[31m{token}'", f"$'\\E[01;31m\\E[K{token}\\E[m\\E[K'", f"\\e[1m{token}\\e[0m"):
