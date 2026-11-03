@@ -106,10 +106,33 @@ class LegacyFoldersTest(unittest.TestCase):
         self.assertEqual(Paths.for_user({}, "linux", home=self.home), new)
         self.assertTrue(old.db.exists())
 
-    def test_kb_home_and_try_are_unaffected(self):
+    def test_kb_home_is_unaffected(self):
         self.written_under(LEGACY_NAME, "linux")
         paths = Paths.for_user({"KB_HOME": str(self.home / "trial")}, "linux", home=self.home)
         self.assertEqual(paths, Paths.under(self.home / "trial"))
+
+    def test_try_keeps_the_config_and_moves_the_rest_into_the_folders_in_use(self):
+        old = self.written_under(LEGACY_NAME, "linux")
+        trial = Paths.for_user({}, "linux", home=self.home).for_try()
+        self.assertEqual(trial.config_file, old.config_file)
+        self.assertEqual(trial.data_dir, old.data_dir / "try")
+        self.assertEqual(trial.log_dir, old.log_dir / "try")
+        self.assertEqual(trial.cache_dir, old.cache_dir / "try")
+        self.assertNotEqual(trial.db, old.db)
+
+    def test_try_of_a_new_install_stays_under_the_new_name(self):
+        trial = Paths.for_user({}, "linux", home=self.home).for_try()
+        self.assertEqual(trial.config_file, self.home / ".config" / "superhistory" / "config.toml")
+        self.assertEqual(trial.db, self.home / ".local" / "share" / "superhistory" / "try" / "kb.sqlite")
+
+    def test_try_under_kb_home_stays_in_that_folder(self):
+        root = self.home / "trial"
+        base = Paths.for_user({"KB_HOME": str(root)}, "linux", home=self.home)
+        trial = base.for_try()
+        self.assertEqual(trial.config_file, base.config_file)
+        for where in (trial.db, trial.lock, trial.seen_dir, trial.log("check")):
+            self.assertTrue(str(where).startswith(str(root / "")), where)
+            self.assertIn("try", Path(where).relative_to(root).parts)
 
 
 if __name__ == "__main__":
