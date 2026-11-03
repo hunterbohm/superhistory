@@ -376,6 +376,88 @@ class OtherKeyFormatTest(unittest.TestCase):
                 with self.subTest(label=label, text=text[:12]):
                     self.assertEqual(mask(text), masked)
 
+    def test_a_base64_key_hides_all_the_mask_hides_without_its_reading(self):
+        # Read first, the key's placeholder cut short a quoted password's reading ("[masked],Rest" stayed).
+        import base64
+        import random
+        import textwrap
+        from unittest import mock
+        import kb.mask as m
+        r = random.Random(17)
+        body = base64.b64encode(bytes(r.randrange(256) for _ in range(48))).decode()
+        key = base64.b64encode(f"-----BEGIN PRIVATE KEY-----\n{body}\n-----END PRIVATE KEY-----\n".encode()).decode()
+        wrapped = "\n".join(textwrap.wrap(key, 76))
+        self.assertEqual(mask(f'password="{key},WalrusFixture9"'), 'password="[masked]"')
+
+        def hidden(text):
+            masked, origin = m.mask_with_origin(text)
+            return set(range(len(text))) - {c for c in origin if c >= 0}
+
+        for k in (key, wrapped):
+            for form in ('password="{k},WalrusFixture9"', "password='{k},WalrusFixture9'", '{{"password": "{k},Wal9"}}',
+                         "password={k},WalrusFixture9", "--password {k} next", "secret: {k},WalrusFixture9 done",
+                         "token={k}&next=1", "Authorization: Bearer {k}", "api_key = '{k}' # plan"):
+                text = form.format(k=k)
+                with self.subTest(form=form, wrapped=k is wrapped):
+                    with mock.patch.object(m, "_encoded_key_spans", lambda text: []):
+                        without = hidden(text)
+                    self.assertEqual(without - hidden(text), set(), mask(text))
+
+    def test_a_base64_key_with_an_invisible_character_inside_is_masked_whole(self):
+        import base64
+        import json
+        import random
+        import textwrap
+        r = random.Random(19)
+        body = "\n".join(textwrap.wrap(base64.b64encode(bytes(r.randrange(256) for _ in range(300))).decode(), 64))
+        pem = f"-----BEGIN RSA PRIVATE KEY-----\n{body}\n-----END RSA PRIVATE KEY-----\n"
+        key = base64.b64encode(pem.encode()).decode()
+        lines = textwrap.wrap(key, 76)
+        block = "\n".join(lines)
+        for invisible in ("\u200b", "\u00ad", "\u2060", "\ufeff", "\x00", "\x1b[0m"):
+            for at in range(40, len(block) - 40, 37):
+                if block[at - 1] == "\n" or block[at] == "\n":
+                    continue
+                text = block[:at] + invisible + block[at:]
+                for form, written, masked in (("lines", text, "[masked]"),
+                                              ("JSON", json.dumps({"k": text}), '{"k": "[masked]"}'),
+                                              ("JSON in JSON", json.dumps(json.dumps({"k": text})),
+                                               json.dumps(json.dumps({"k": "[masked]"}))),
+                                              ("repr", repr(text), "'[masked]'")):
+                    with self.subTest(invisible=invisible, at=at, form=form):
+                        self.assertEqual(mask(f"Plan\n{written}\nnext steps"), f"Plan\n{masked}\nnext steps")
+
+    def test_base64_after_a_base64_key_stays(self):
+        # A certificate's DER starts as a key's body does ("MII..."), but follows the key's footer.
+        import base64
+        import json
+        import random
+        import textwrap
+        r = random.Random(23)
+        body = base64.b64encode(bytes(r.randrange(256) for _ in range(48))).decode()
+        key = base64.b64encode(f"-----BEGIN PRIVATE KEY-----\n{body}\n-----END PRIVATE KEY-----\n".encode()).decode()
+        der = bytes([0x30, 0x82, 0x01, 0x22, 0x30, 0x82, 0x01, 0x0a, 0xa0, 0x03, 0x02, 0x01, 0x02])
+        cert = base64.b64encode(der + bytes(r.randrange(256) for _ in range(280))).decode()
+        for k in (key, "\n".join(textwrap.wrap(key, 76))):
+            public = "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAwalrus"
+            for after in (cert, "\n".join(textwrap.wrap(cert, 76)), public):
+                with self.subTest(wrapped="\n" in k, after=after[:12]):
+                    self.assertEqual(mask(f"{k}\n{after}\nnext steps"), f"[masked]\n{after}\nnext steps")
+                    self.assertEqual(mask(json.dumps({"k": k, "c": after})), json.dumps({"k": "[masked]", "c": after}))
+
+    def test_base64_of_prose_that_quotes_a_key_delimiter_stays(self):
+        import base64
+        import textwrap
+        for sentence in (b"PEM files use -----BEGIN PRIVATE KEY----- as their opening delimiter.",
+                         b"A key file ends with -----END RSA PRIVATE KEY----- on its last line.",
+                         b"gpg writes -----BEGIN PGP SECRET KEY BLOCK----- first, then the armor headers.",
+                         b"Look for '-----BEGIN OPENSSH PRIVATE KEY-----' in the file.\nThen check its mode."):
+            encoded = base64.b64encode(sentence).decode()
+            for width in range(1, len(encoded) + 1):
+                text = "\n".join(textwrap.wrap(encoded, width))
+                with self.subTest(sentence=sentence[:20], width=width):
+                    self.assertEqual(mask(f"note: {text}\nnext steps"), f"note: {text}\nnext steps")
+
     def test_many_keys_in_one_block_cost_time_in_proportion(self):
         import base64
         import time

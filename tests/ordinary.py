@@ -54,6 +54,8 @@ def key_prose(r):
         "Export the PGP SECRET KEY BLOCK with gpg --export-secret-keys and keep it off the {w} {v}.",
         "The SECRET KEY and the PRIVATE KEY of the {w} {v} are kept apart, {n} copies each.",
         "PRIVATE KEY\nSECRET KEY\n{w} {v} {n}\n",
+        "PEM files use -----BEGIN PRIVATE KEY----- as their opening delimiter, {n} lines before the {w} {v}.",
+        "The {w} key file ends with -----END RSA PRIVATE KEY----- and a line break.",
     )).format(w=word(r, PLAIN), v=word(r, PLAIN), n=r.randint(1, 28))
 
 
