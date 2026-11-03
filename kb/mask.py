@@ -549,7 +549,7 @@ def _gitleaks_edits(text):
 # Which mask() a stored row was masked with. A row of another version, or of none, is masked again when read and by
 # the next ingest. The patterns change it by themselves; bump REVISION when the code that applies them changes what
 # it masks.
-REVISION = 25
+REVISION = 26
 VERSION = f"r{REVISION}-" + hashlib.sha256(repr((REVISION, [p.pattern for p in SECRET_PATTERNS + PREFIXED_SECRETS], KEYED_SECRET.pattern,
                                 ENV_KEY_SECRET.pattern, JSON_SECRET.pattern, FLAG_SECRET.pattern, AUTH_SECRET.pattern,
                                 COMMAND_FLAGS, PASSWORD_NAME.pattern, sorted(PLACEHOLDERS), REFERENCE.pattern,
@@ -654,17 +654,29 @@ def _frame(joined, starts, found):
     return None
 
 
+def _footer_ahead(joined, starts, found):
+    """Whether the key whose header holds the encoded word `found` has its footer later in the same block: the first
+    key's frame after it is a footer, not another key's header."""
+    for m in _ENCODED_KEY.finditer(joined, found.end()):
+        frame = _frame(joined, starts, m)
+        if frame:
+            return frame[0] == b"END"
+    return False
+
+
 def _key_range(joined, starts, ends, found, floor):
     """The first and last lines of a base64 block that hold the key whose header or footer holds the encoded word
     `found`, none above line `floor`; None when no header or footer holds it. A key starts at the line with its
     header's first byte. With none, as when the block starts inside the key, a line above is the key's while the base64
     through it, in the groups `found` fixes, still decodes to text. A key ends at its footer and the line breaks after
-    it, or with none where the text it decodes to ends: a heading, a word between two keys or another stream stays,
-    however the lines are wrapped."""
+    it: where the block holds its footer later, everything between header and footer is the key, whatever its bytes
+    (an armour comment may hold any). With none, it ends where the text it decodes to ends: a heading, a word between
+    two keys or another stream stays, however the lines are wrapped."""
     frame = _frame(joined, starts, found)
     if frame is None:
         return None
     kind, first = frame
+    footer_ahead = kind == b"BEGIN" and _footer_ahead(joined, starts, found)
     phase = first % 4
     down = lambda p: p - (p - phase) % 4  # the group boundary at or before p
     up = lambda p: p + (phase - p) % 4  # the group boundary at or after p
@@ -683,7 +695,7 @@ def _key_range(joined, starts, ends, found, floor):
         if below is None:
             break
         if not ended:
-            other = _NOT_KEY_TEXT.search(below)
+            other = None if footer_ahead else _NOT_KEY_TEXT.search(below)
             footer = _KEY_FOOTER.search(recent + (below[:other.start()] if other else below))
             if footer:  # the key ends with the group holding its footer's last byte
                 after = footer.end() - len(recent)
