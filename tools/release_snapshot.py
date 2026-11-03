@@ -67,6 +67,7 @@ import gzip
 import hashlib
 import http.server
 import io
+import json
 import os
 import posixpath
 import re
@@ -98,7 +99,15 @@ ARCHIVE_MODES = {"100644": 0o664, "100755": 0o775, "120000": 0o777}
 ARCHIVE_DIR = 0o775
 INTERPRETERS = (("3.12", ("python3.12", "python3")), ("3.9", ("python3.9", "python3")))
 VERSION_PROBE = "import sys; print('%d.%d' % sys.version_info[:2])"
-SKIPPED = re.compile(r"\.\.\. skipped ('.*'|\".*\")\s*$", re.M)
+RUNNER = """import json, sys, unittest
+sys.path[0] = ""
+out, args = sys.argv[1], dict(zip(sys.argv[2::2], sys.argv[3::2]))
+tests = unittest.defaultTestLoader.discover(args.get("-s", "."), args.get("-p", "test*.py"), args.get("-t"))
+result = unittest.TextTestRunner(verbosity=2).run(tests)
+with open(out, "w") as fh:
+    json.dump({"run": result.testsRun, "skips": [[test.id(), why] for test, why in result.skipped]}, fh)
+sys.exit(not result.wasSuccessful())
+"""
 TAG_REF = "refs/tags/"
 ISOLATED = {"GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1", "GIT_OPTIONAL_LOCKS": "0", "GIT_ATTR_NOSYSTEM": "1",
             "GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "core.attributesFile", "GIT_CONFIG_VALUE_0": os.devnull}
@@ -960,23 +969,26 @@ def find_python(version, candidates, env):
     return None, "needs Python %s: %s" % (version, "; ".join(seen))
 
 
-def run_suite(suite, repo, env, timeout):
+def run_suite(suite, repo, env, timeout, runner, report):
+    """Runs a suite through RUNNER, which writes the suite's own result to `report`; a test's own runner cannot change it."""
     exe, why = find_python(suite.want[0], suite.want[1], env)
     if exe is None:
         return suite.label, None, 0, [], [why]
+    flags = [arg for arg in suite.argv[suite.argv.index("discover") + 1:] if arg != "-v"]
     try:
-        code, output = run_group([exe] + suite.argv[1:], timeout, cwd=repo, env=env)
+        code, output = run_group([exe, runner, report] + flags, timeout, cwd=repo, env=env)
     except subprocess.TimeoutExpired:
         return suite.label, None, 0, [], ["ran past %d seconds" % timeout]
     except OSError as exc:
         return suite.label, None, 0, [], [failure(exc)]
-    text = output.decode("utf-8", "replace")
-    # the suite's own summary is the last one: a test may run a runner of its own, which prints its "Ran" first
-    ran = ([None] + list(re.finditer(r"(?m)^Ran (\d+) tests? in", text)))[-1]
-    count = int(ran.group(1)) if ran else 0
-    reasons = [m.group(1)[1:-1] for m in SKIPPED.finditer(text)]
-    counted = re.search(r"\(.*skipped=(\d+)", text[ran.end():]) if ran else None
-    problems = []
+    text, problems = output.decode("utf-8", "replace"), []
+    try:
+        with open(report) as fh:
+            counted = json.load(fh)
+        count, reasons = int(counted["run"]), [str(why) for _, why in counted["skips"]]
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        count, reasons = 0, []
+        problems.append("wrote no readable result: %s" % failure(exc))
     if code:
         problems.append("exit %d" % code)
         lines = [l for l in text.splitlines() if re.match(r"(FAIL|ERROR): ", l)]
@@ -985,8 +997,6 @@ def run_suite(suite, repo, env, timeout):
         problems.append("ran no tests")
     if any(not r.strip() for r in reasons):
         problems.append("%d skipped without a reason" % sum(1 for r in reasons if not r.strip()))
-    if counted and int(counted.group(1)) > len(reasons):
-        problems.append("%d skipped with no reason shown" % (int(counted.group(1)) - len(reasons)))
     return suite.label, code, count, reasons, problems
 
 
@@ -997,8 +1007,12 @@ def run_suites(repo, suites, timeout=SUITE_TIMEOUT):
         env.update({"HOME": home, "PYTHONDONTWRITEBYTECODE": "1"})
         copy = os.path.join(home, "repo")
         shutil.copytree(str(repo), copy, symlinks=True)
+        runner = os.path.join(home, "runner.py")
+        with open(runner, "w") as fh:
+            fh.write(RUNNER)
         with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, len(suites))) as pool:
-            runs = list(pool.map(lambda suite: run_suite(suite, copy, env, timeout), suites))
+            runs = list(pool.map(lambda numbered: run_suite(numbered[1], copy, env, timeout, runner,
+                                                            os.path.join(home, "result-%d.json" % numbered[0])), enumerate(suites)))
         left = git_bytes(copy, "status", "--porcelain", "-z", isolated=True)
     findings, notes, total, skipped = [], [], 0, 0
     for label, code, count, reasons, problems in runs:
