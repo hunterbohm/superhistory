@@ -343,7 +343,15 @@ AUTH_SECRET = re.compile(rf"(?i)((?:(?<![A-Za-z0-9_.-])|{_AFTER_ESCAPE})(?:proxy
 # whether any value counts; otherwise a value of letters only after a space is a word, as after "is" ("docker login -p
 # is deprecated"). curl's -u takes "user:password", and mysql's -p takes its password glued, since "-p shop" names a
 # database.
-_FLAG_QUOTE = r"(?:\\?['\"])?"  # a quote, plain or escaped as JSON holds one, around a flag or its value
+_FLAG_QUOTE = r"(?:\\?['\"])?"  # a quote, plain or escaped as JSON holds one, before a flag's value
+
+
+def _quoted(flag):
+    """`flag` bare or in quotes that open and close around it, plain or escaped ('"-p"', "\\'-p\\'"), not a quote that
+    opens an argument the flag only starts ('--comment "-p release-2026"')."""
+    return rf"(?:{flag}|\"{flag}\"|'{flag}'|\\\"{flag}\\\"|\\'{flag}\\')"
+
+
 COMMAND_FLAGS = (
     (r"curl", r"\s(?:-u|--user)\s*['\"]?[^ \t\n\r:'\"]+:", True),
     (r"mysql|mysqldump|mysqladmin|mariadb|mariadb-dump", r"\s-p(?=[^ \t\n\r'\"])", True),
@@ -356,14 +364,14 @@ COMMAND_FLAGS = (
     # one of their own options (_JAVA_OPTIONS: "-keystore", "-v") is the next option.
     # A flag in quotes is the flag ('mongosh "-p" ...'), as the shell takes the quotes away.
     (r"az\s+login|mongosh|mongo|mongodump|mongorestore|mongoexport|mongoimport|twine",
-     rf"\s{_FLAG_QUOTE}-p{_FLAG_QUOTE}[ \t]+{_FLAG_QUOTE}", False),
-    (r"keytool|jarsigner", rf"\s{_FLAG_QUOTE}-(?:src|dest|new)?(?:storepass|keypass){_FLAG_QUOTE}[ \t]+{_FLAG_QUOTE}",
-     "dash"),
+     rf"\s{_quoted('-p')}[ \t]+{_FLAG_QUOTE}", False),
+    (r"keytool|jarsigner", rf"\s{_quoted('-(?:src|dest|new)?(?:storepass|keypass)')}[ \t]+{_FLAG_QUOTE}", "dash"),
     # aws configure set's secret settings, and a .netrc line's password, its fields in any order but with a login
     # among them, so "the machine room password sheet" is no .netrc line. A setting's name is read once, its key word
     # looked for ahead: read around the key word, a run of key words took time in the square of its length.
-    (r"aws\s+configure\s+set", rf"\s{_FLAG_QUOTE}(?:[A-Za-z0-9_-]+\.)?(?=[A-Za-z0-9_]*?(?:secret|token|password))"
-                                 rf"[A-Za-z0-9_]+{_FLAG_QUOTE}[ \t]+{_FLAG_QUOTE}", False),
+    (r"aws\s+configure\s+set",
+     rf"\s{_quoted(r'(?:[A-Za-z0-9_-]+\.)?(?=[A-Za-z0-9_]*?(?:secret|token|password))[A-Za-z0-9_]+')}[ \t]+{_FLAG_QUOTE}",
+     False),
     (r"(?:machine[ \t]+[^\s]+|default)(?=(?:[ \t]+(?:password|account)[ \t]+[^\s]+)*[ \t]+login[ \t]+[^\s])",
      r"\spassword[ \t]+(?:\\?['\"])?", "field"),
 )
@@ -646,17 +654,19 @@ def _plain_line_end(text, start):
     return len(text)
 
 
-def _past_closing_quote(text, start, end):
+def _past_closing_quote(text, after, start, end):
     """Where a command named at text[start:end] goes on: past the quote right after its name, where that quote closes
-    one of its kind opened on its line before the name, as a quoted path to a program ('"C:\\...\\keytool.exe"') holds it."""
+    one of its kind opened on its line before the name, and after `after`, where the command before it ended, as a
+    quoted path to a program ('"C:\\...\\keytool.exe"') holds it. Each command looks back only to the one before, so a
+    text that names many costs time in proportion to its length."""
     quote = next((q for q in ('\\"', "\\'", '"', "'") if text.startswith(q, end)), None)
     if quote is None:
         return end
-    before = text[max(0, start - 260):start]
-    at = before.rfind(quote[-1])  # the same kind of quote: the other may stand inside it ('"/opt/team's tools/bin/keytool"')
-    if at < 0 or "\n" in before[at:] or "\r" in before[at:]:
+    after = max(after, text.rfind("\n", after, start) + 1, text.rfind("\r", after, start) + 1)
+    at = text.rfind(quote[-1], after, start)  # its own kind: the other may stand inside it ('"/opt/team's tools/..."')
+    if at < 0:
         return end
-    opened = before[at - 1:at + 1] if at > 0 and before[at - 1] == "\\" else before[at]
+    opened = text[at - 1:at + 1] if at > 0 and text[at - 1] == "\\" else text[at]
     return end + len(quote) if opened == quote else end
 
 
@@ -683,9 +693,10 @@ def _command_password_edits(text, line_pattern, flag, always, unseen=False):
     without the characters a reader does not see, so a coloured "$STOREPASS" is a variable and a coloured "--quiet"
     the next option."""
     edits, reading, known = [], [], {}  # reading: the lines read that hold the text so far, innermost last
+    read_to = 0  # where the lines read before the text so far end
     for line in line_pattern.finditer(text):
         while reading and reading[-1][0] <= line.start():
-            reading.pop()
+            read_to = max(read_to, reading.pop()[0])
         held = _holding(reading[-1][1], line.start()) if reading else None
         if reading and not held:
             continue  # the command named again inside a line already read, not as a command of its own
@@ -693,8 +704,8 @@ def _command_password_edits(text, line_pattern, flag, always, unseen=False):
         if always == "field":
             end = _plain_line_end(text, line.end())
         elif unseen:  # a command inside the substitution of a line read is read as a line of its own, to its end
-            end, inside, subs = _command_line(text, _past_closing_quote(text, line.start(), line.end()),
-                                              held and held[1], known)
+            begin = _past_closing_quote(text, max(read_to, held[0] if held else 0), line.start(), line.end())
+            end, inside, subs = _command_line(text, begin, held and held[1], known)
         else:
             end = line.end()
         reading.append((end, subs))
