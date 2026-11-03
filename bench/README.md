@@ -109,6 +109,8 @@ The final held-out pass ran two lookups on the three test halves at the same tim
 
 ![The released check against three rivals on held-out month B](results/hillclimb/month/b-baseline-paired/chart.png)
 
+The chart's numbers are in `results/hillclimb/month/b-baseline-paired/table-with-rivals.md`, which `python3 bench/run.py heldout-table` writes from the committed rows: the check's `baseline-paired` rows and each rival's own month B rows, which ran on other days (see "The rivals" below). `bench/test_heldout_table.py` checks that it regenerates byte for byte.
+
 | Test | Questions | `baseline-paired`, released | `final`, #16 | Change, final minus baseline, 95% interval | Only one right, exact McNemar p | Tokens added to the prompt, baseline and final |
 |---|---|---|---|---|---|---|
 | Month B, handled right | 171 | 166 (97.1%) | 156 (91.2%) | −5.8 points (−9.9 to −1.8) | 12 vs 2, p 0.013 | 2,226 and 1,684 |

@@ -4,6 +4,7 @@
     python3 bench/run.py month [--tools none,oracle,check,check-cards] [--limit N] [--fresh]
     python3 bench/run.py month --month a|b --label NAME --tools check   # a split run: month A is dev, B is test
     python3 bench/run.py table [DIR]
+    python3 bench/run.py heldout-table   # month B with the rivals, from the committed rows
 
 Each tool loads demo/month/items.jsonl into a fresh store. Each question goes through the tool's lookup as a new
 message to an agent; one answer model answers from what the lookup added, and one judge grades the answer against
@@ -35,6 +36,11 @@ ROOT = os.path.dirname(HERE)
 MONTHS = {"a": os.path.join(ROOT, "demo", "month"), "b": os.path.join(HERE, "month-b")}
 MONTH = MONTHS["a"]
 RESULTS = os.path.join(HERE, "results", "month")
+# Month B with the rivals: the released check's `baseline-paired` rows and each rival's own month B run.
+HELDOUT_ROWS = tuple((name, os.path.join(HERE, "results", "hillclimb", "month", run, f"{name}.jsonl")) for name, run in
+                     (("check", "b-baseline-paired"), ("supermemory", "b-final"), ("mem0", "b-final"),
+                      ("claude-mem", "b-final")))
+HELDOUT_TABLE = os.path.join(HERE, "results", "hillclimb", "month", "b-baseline-paired", "table-with-rivals.md")
 SPLIT_RESULTS = os.path.join(HERE, "results", "hillclimb", "month")
 ANSWER_MODEL = "claude-sonnet-5-5"
 JUDGE_MODEL = "gpt-6.1-sol"
@@ -313,17 +319,13 @@ def summarize(rows):
     }
 
 
-def table(out):
-    meta = json.load(open(os.path.join(out, "run.json"))) if os.path.exists(os.path.join(out, "run.json")) else {}
-    names = [t["tool"] for t in meta.get("tools", [])] or sorted(
-        f[:-6] for f in os.listdir(out) if f.endswith(".jsonl") and f[:-6] in tools.REGISTRY)
+def table_text(named):
+    """The month table for (tool, path to its rows) pairs, in that order. Tools with no rows are left out."""
+    named = [(name, read_jsonl(path)) for name, path in named if os.path.exists(path) and read_jsonl(path)]
     lines = []
     head = None
-    for name in names:
-        path = os.path.join(out, f"{name}.jsonl")
-        if not os.path.exists(path) or not read_jsonl(path):
-            continue
-        s = summarize(read_jsonl(path))
+    for name, rows in named:
+        s = summarize(rows)
         if head is None:
             head = list(s)
             lines += ["| Tool | " + " | ".join(head) + " |", "|---" * (len(head) + 1) + "|"]
@@ -331,15 +333,27 @@ def table(out):
         lines.append(f"| {label} | " + " | ".join(str(s[k]) for k in head) + " |")
     kinds = ["single", "multi", "update", "temporal", "none"]
     lines += ["", "| Tool | " + " | ".join(kinds) + " |", "|---" * (len(kinds) + 1) + "|"]
-    for name in names:
-        path = os.path.join(out, f"{name}.jsonl")
-        if os.path.exists(path) and read_jsonl(path):
-            rows = read_jsonl(path)
-            cells = [pct(sum(r["correct"] for r in rows if r["kind"] == k), sum(r["kind"] == k for r in rows))
-                     for k in kinds]
-            lines.append(f"| {tools.kind(name).label} | " + " | ".join(cells) + " |")
-    text = "\n".join(lines) + "\n"
+    for name, rows in named:
+        cells = [pct(sum(r["correct"] for r in rows if r["kind"] == k), sum(r["kind"] == k for r in rows))
+                 for k in kinds]
+        lines.append(f"| {tools.kind(name).label} | " + " | ".join(cells) + " |")
+    return "\n".join(lines) + "\n"
+
+
+def table(out):
+    meta = json.load(open(os.path.join(out, "run.json"))) if os.path.exists(os.path.join(out, "run.json")) else {}
+    names = [t["tool"] for t in meta.get("tools", [])] or sorted(
+        f[:-6] for f in os.listdir(out) if f.endswith(".jsonl") and f[:-6] in tools.REGISTRY)
+    text = table_text([(name, os.path.join(out, f"{name}.jsonl")) for name in names])
     with open(os.path.join(out, "table.md"), "w", encoding="utf-8") as fh:
+        fh.write(text)
+    return text
+
+
+def heldout_table():
+    """Writes month B's table with the rivals, the rows the README's held-out chart draws."""
+    text = table_text(HELDOUT_ROWS)
+    with open(HELDOUT_TABLE, "w", encoding="utf-8") as fh:
         fh.write(text)
     return text
 
@@ -358,6 +372,7 @@ def main(argv=None):
                                    "takes " + ", ".join(splits.RUNS))
     t = sub.add_parser("table")
     t.add_argument("out", nargs="?", default=RESULTS)
+    sub.add_parser("heldout-table", help="write month B's table with the rivals, from the committed rows")
     lt = sub.add_parser("latency", help="time lookups alone, one at a time, alternating between tools")
     lt.add_argument("--tools", default="check")
     lt.add_argument("--questions", type=int, default=40)
@@ -383,6 +398,9 @@ def main(argv=None):
     args = p.parse_args(argv)
     if args.cmd == "table":
         print(table(args.out))
+        return 0
+    if args.cmd == "heldout-table":
+        print(heldout_table())
         return 0
     gateway.require()
     if args.cmd == "latency":
