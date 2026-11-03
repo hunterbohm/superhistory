@@ -546,7 +546,7 @@ def _gitleaks_edits(text):
 # Which mask() a stored row was masked with. A row of another version, or of none, is masked again when read and by
 # the next ingest. The patterns change it by themselves; bump REVISION when the code that applies them changes what
 # it masks.
-REVISION = 17
+REVISION = 18
 VERSION = hashlib.sha256(repr((REVISION, [p.pattern for p in SECRET_PATTERNS + PREFIXED_SECRETS], KEYED_SECRET.pattern,
                                 ENV_KEY_SECRET.pattern, JSON_SECRET.pattern, FLAG_SECRET.pattern, AUTH_SECRET.pattern,
                                 COMMAND_FLAGS, PASSWORD_NAME.pattern, sorted(PLACEHOLDERS), REFERENCE.pattern,
@@ -705,8 +705,10 @@ def _written_key_spans(text):
     return spans
 
 
-# A character a reader does not see, with the backslashes before an escaped one, as JSON in JSON escapes it twice.
-_UNSEEN_ESCAPED = re.compile(rf"\\*(?:{INVISIBLE.pattern})")
+# A character a reader does not see, with the backslashes before an escaped one, as JSON in JSON escapes it twice. It
+# starts where no backslash stands before it, so a long run of them is tried once, from its start, not at each of its
+# backslashes in turn, which took time in the square of its length.
+_UNSEEN_ESCAPED = re.compile(rf"(?<!\\)\\*(?:{INVISIBLE.pattern})")
 
 
 def _encoded_key_spans(text):
@@ -1213,7 +1215,7 @@ _REST = re.compile(rf"(?:(?!{_KEY_END})(?!{_WORDS_LINE})(?!{_NEXT_FIELD}){_IN_PA
 _KEY_END_TEXT = re.compile(_KEY_END)
 _PEM_HEADER = re.compile("-----BEGIN ")
 _LINE_END = re.compile(r"\r?\n|\\+(?:r\\+)?n|\Z")
-_RUN = re.compile(r"[A-Za-z0-9+/]{16,}")
+_RUN = re.compile(r"[A-Za-z0-9+/]{2,}={1,2}|[A-Za-z0-9+/]{4,}")
 _ESCAPE = re.compile(r"\\+(?:[nrt]|u[0-9A-Fa-f]{4})")
 
 
@@ -1286,10 +1288,14 @@ def _public_material(data):
 
 
 def _token_like(run):
-    """Whether a run of 16 base64 characters or more mixes two of capitals, small letters, and digits or "+" and "/",
-    as a token does. A word in one case does not; a camel-case name or a hash does, and is read as one, failing
-    closed."""
-    return sum(bool(re.search(kind, run)) for kind in ("[A-Z]", "[a-z]", "[0-9+/]")) >= 2
+    """Whether a run of base64 characters could be part of a key's body: one that ends in base64's "=" padding, or
+    one of four characters or more that mixes two of capitals, small letters, and digits or "+" and "/" and is no
+    word in small letters with a capital before them ("Next"). A word in one case does not; a camel-case name or a
+    hash does, and is read as one, failing closed, as main's reading hides the whole paragraph."""
+    if run.endswith("="):
+        return True
+    return (sum(bool(re.search(kind, run)) for kind in ("[A-Z]", "[a-z]", "[0-9+/]")) >= 2
+            and not re.fullmatch(r"[A-Z][a-z]+", run))
 
 
 def _token_tail(text):
