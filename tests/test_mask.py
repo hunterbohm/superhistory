@@ -604,6 +604,21 @@ class OtherKeyFormatTest(unittest.TestCase):
         masked = mask(text)
         self.assertEqual([line[:32] for line in lines[:6] if line[:32] in masked], [], masked)
 
+    def test_many_key_rests_in_one_paragraph_cost_time_in_proportion(self):
+        import base64
+        import random
+        import textwrap
+        import time
+        body = "\n".join(textwrap.wrap(base64.b64encode(made_up_private_key(random.Random(67))).decode(), 64)[:3])
+        for unit in (f"[masked]\n{body}\nnext steps\n", "[masked]x\nnext steps\n[masked] Zq00195081Wm4Np8Rt2Kd9\n"):
+            with self.subTest(unit=unit[:12]):
+                took = {}
+                for n in (500, 2000):
+                    started = time.process_time()
+                    mask(unit * n)
+                    took[n] = time.process_time() - started
+                self.assertLess(took[2000], 6 * max(took[500], 0.02), took)
+
     def test_an_id_reads_a_keys_rest_as_main_does(self):
         # An id that reads as holding a secret is refused, with its item: only a key's body start begins its rest.
         import base64
