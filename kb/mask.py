@@ -547,7 +547,7 @@ def _gitleaks_edits(text):
 # Which mask() a stored row was masked with. A row of another version, or of none, is masked again when read and by
 # the next ingest. The patterns change it by themselves; bump REVISION when the code that applies them changes what
 # it masks.
-REVISION = 19
+REVISION = 20
 VERSION = hashlib.sha256(repr((REVISION, [p.pattern for p in SECRET_PATTERNS + PREFIXED_SECRETS], KEYED_SECRET.pattern,
                                 ENV_KEY_SECRET.pattern, JSON_SECRET.pattern, FLAG_SECRET.pattern, AUTH_SECRET.pattern,
                                 COMMAND_FLAGS, PASSWORD_NAME.pattern, sorted(PLACEHOLDERS), REFERENCE.pattern,
@@ -709,7 +709,7 @@ def _written_key_spans(text):
 # A character a reader does not see, with the backslashes before an escaped one, as JSON in JSON escapes it twice. It
 # starts where no backslash stands before it, so a long run of them is tried once, from its start, not at each of its
 # backslashes in turn, which took time in the square of its length.
-_UNSEEN_ESCAPED = re.compile(rf"(?<!\\)\\*(?:{INVISIBLE.pattern})")
+_UNSEEN_ESCAPED = re.compile(rf"(?<!\\)\\*(?:{_CSI}|{_ESCAPED_INVISIBLE})|[\x00-\x08\x0e-\x1b\x7f-\x84\x86-\x9f{_FORMAT_CHARACTERS}]")
 
 
 def _encoded_key_spans(text):
@@ -1215,8 +1215,9 @@ _NEXT_FIELD = r"\\*\"[ \t]*(?:\}|,[ \t]*\\*\"[\w.-]+\\*\"[ \t]*:)"
 _REST = re.compile(rf"(?:(?!{_KEY_END})(?!{_WORDS_LINE})(?!{_NEXT_FIELD}){_IN_PARAGRAPH})*(?:{_KEY_END})?")
 _KEY_END_TEXT = re.compile(_KEY_END)
 _PEM_HEADER = re.compile("-----BEGIN ")
-_LINE_END = re.compile(r"\r?\n|\\+(?:r\\+)?n|\Z")
-_LINE_BREAK = re.compile(r"\r?\n|\\+(?:r\\+)?n")
+# A run of backslashes is tried once, from its start: tried at each of them, a long run took time in its square.
+_LINE_END = re.compile(r"\r?\n|(?<!\\)\\+(?:r\\+)?n|\Z")
+_LINE_BREAK = re.compile(r"\r?\n|(?<!\\)\\+(?:r\\+)?n")
 _WORDS_LINE_AT = re.compile(_WORDS_LINE)
 _BASE64_CHARACTER = re.compile(r"[A-Za-z0-9+/]")
 _RUN = re.compile(r"[A-Za-z0-9+/]{2,}={1,2}|[A-Za-z0-9+/]{4,}")
@@ -1238,6 +1239,14 @@ def _headless_key_edits(text):
 
 
 _PLACEHOLDER = re.compile(r"\[masked\]")
+# The placeholders in the text mask() was given, each by what follows it: an older kb's, after which base64 is a key's
+# rest unless it decodes as public material, as against one a reading of this same call put down (a password's), after
+# which only a key's body start begins one, as on main. None outside mask(): every placeholder is read as an older kb's.
+_GIVEN = contextvars.ContextVar("kb_mask_given_placeholders", default=None)
+
+
+def _given_placeholders(text):
+    return frozenset(text[m.end():m.end() + 32] for m in _PLACEHOLDER.finditer(text))
 _OPENSSH_PUBLIC = frozenset((b"ssh-rsa", b"ssh-dss", b"ssh-ed25519", b"ssh-ed448", b"ecdsa-sha2-nistp256",
                              b"ecdsa-sha2-nistp384", b"ecdsa-sha2-nistp521", b"sk-ssh-ed25519@openssh.com",
                              b"sk-ecdsa-sha2-nistp256@openssh.com"))
@@ -1291,18 +1300,6 @@ def _public_material(data):
     return tags == [0x30, 0x03] and first[0] == 0x06
 
 
-def _encoded_text(data):
-    """Whether bytes decoded from base64 are ordinary text, as base64 of JSON or a sentence is: UTF-8 with no control
-    character but a line break or a tab, holding a space or a mark base64 has not (a brace, a colon, a quote), and no
-    key's armour ("-----"). A key's DER, or any part of it, is no such text."""
-    try:
-        decoded = data.decode("utf-8")
-    except UnicodeDecodeError:
-        return False
-    return (not re.search(r"[\x00-\x08\x0b-\x1f\x7f]", decoded) and "-----" not in decoded
-            and bool(re.search(r"[^A-Za-z0-9+/=\r\n]", decoded)))
-
-
 def _token_like(run):
     """Whether a run of base64 characters could be part of a key's body: one that ends in base64's "=" padding, or
     one of four characters or more that mixes two of capitals, small letters, and digits or "+" and "/" and is no
@@ -1343,8 +1340,11 @@ def _key_rest_edits(text, starts=_REST_START):
     base64 decodes whole as public material. Each placeholder outside the core of the rest before it is read once, and
     each core runs once to its end, so a paragraph of many costs time in proportion."""
     spans, core, covered, tail = [], 0, 0, None
+    given = _GIVEN.get()
     for at in _PLACEHOLDER.finditer(text):
-        if at.start() < core or not starts.match(text, at.end()):
+        start = (_ID_REST_START if starts is _REST_START and given is not None
+                 and text[at.end():at.end() + 32] not in given else starts)
+        if at.start() < core or not start.match(text, at.end()):
             continue
         core = _REST.match(text, at.end()).end()
         tail = tail or _token_tail(text)
@@ -1354,7 +1354,7 @@ def _key_rest_edits(text, starts=_REST_START):
         rest = text[at.end():end]
         data = None if _KEY_END_TEXT.search(rest) else _decoded(
             re.sub(r"[^A-Za-z0-9+/=]", "", _ESCAPE.sub("", INVISIBLE.sub("", rest))), 0, None)
-        if not (data and (_public_material(data) or _encoded_text(data))):
+        if not (data and _public_material(data)):
             spans.append((at.end(), end))
             covered = max(covered, end)
     edits = []
@@ -1956,6 +1956,19 @@ def _passes_masked(text):
     return masked, [came[c] if c >= 0 else -1 for c in after], still
 
 
+def _given(read):
+    """`read`, a reading of a text given to kb, with the placeholders the text came with noted for it (_GIVEN)."""
+    def given(text):
+        marker = _GIVEN.set(_given_placeholders(text))
+        try:
+            return read(text)
+        finally:
+            _GIVEN.reset(marker)
+    given.__doc__, given.__name__ = read.__doc__, read.__name__
+    return given
+
+
+@_given
 def mask_with_origin(text):
     """mask(), and where each character of the result came from in `text`, -1 for a placeholder's (kb.mask._edit)."""
     original = text
@@ -1969,6 +1982,7 @@ def mask_with_origin(text):
             list(range(head)) + [-1] * 8 + list(range(len(original) - tail, len(original))))
 
 
+@_given
 def mask(text):
     """The text with every secret replaced by "[masked]". A placeholder can make the text next to it read as a secret
     or as a key's leftovers, so masking repeats until a pass changes nothing: masked text masks to itself, and text
