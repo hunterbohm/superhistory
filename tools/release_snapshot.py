@@ -25,31 +25,32 @@ skipped:
     tools/release_binaries.tsv     <path><TAB><sha256><TAB><reason>. The only files allowed not to be UTF-8 text: each
                                    listed path must be a file that is not text, with exactly that sha256 of its bytes.
 
-The checks:
+The checks. A git command that fails or runs past COMMAND_TIMEOUT fails the check that ran it.
 
     history     the repo holds one commit with no parent, one branch, one tag, no remote
-    files       every file and symlink target in the tree is UTF-8 text with no NUL byte, or is listed in
-                release_binaries.tsv with its sha256; a listed entry that names no such file fails. Every symlink
-                stays inside the tree, followed through the tree's other links, and the tree holds no submodule.
-    credential  no file name, blob or commit object in the repo, nor the notes, the repo name, the tag or the
-                archive's folder name holds a made-up credential, in any case
-    patterns    no file's text or name, no symlink target, no note, no commit message, nor the repo name, the tag or
-                the archive's folder name matches a line of the patterns file, read as `grep -i -E -f` reads it,
-                unless the exceptions list excepts the hit. Every match is found, overlapping ones too; a search
-                that reaches its round limit fails. The list's own lines are not scanned. An entry that matches
-                nothing is reported as stale. Whatever the patterns file holds, the release's own forbidden
-                strings always count too: the local gateway's name in any spelling (so also in the key file's
-                path under any home), its old port number and its proxy's name, in any case. The scans read the
-                tree's bytes as they are and decode nothing: a binary file's contents are only as safe as the
-                review behind its release_binaries.tsv entry.
+    links       first, before anything runs: every symlink in the commit, followed through its other links, stays
+                in the tree; if one leaves it, the installer and the suites do not run
+    files       every file and link target is UTF-8 text with no NUL byte, or is in release_binaries.tsv with its
+                sha256 (an entry that names no such file fails), and the tree holds no submodule
+    credential  no object (as many read as git count-objects counts), file name, note, commit author or committer,
+                repo name, tag or archive folder name holds a made-up credential, in any case
+    patterns    no file's text or name, link target, note, commit message, author or committer, repo name, tag or
+                archive folder name matches a line of the patterns file, read as `grep -i -E -f` reads it, unless
+                the exceptions list excepts it. Every match is found, overlapping ones too, and a search that
+                reaches its limit fails. The exceptions list is scanned like any file but for each entry's own
+                string; an entry that matches nothing is stale. The release's own forbidden strings always count:
+                the local gateway's name in any spelling (so its key file's path under any home), its old port
+                number and its proxy's name. Nothing is decoded: a binary is only as safe as its list entry's review.
     dataset     no file named in DATASET_ROWS.txt is in the tree or the archive
-    archive     the archive holds the same files as the tree, member by member, under one folder, with install.sh in
-                it. The tool builds it from the tree, so its tar headers and its compression are not scanned.
+    archive     the archive, built from the tree, holds its files member by member under one folder, with install.sh
     install     --installer: the site's installer, run against a local https server of this folder (a throwaway
-                certificate from openssl, trusted through CURL_CA_BUNDLE), installs `kb`
-    suites      the snapshot's own tests, run inside the snapshot: tests/ under python3 and python3.9, and each
-                folder of bench/ that holds test files, under python3. Every test must pass or skip with a reason,
-                and the run must leave the snapshot as it found it. --no-suites skips this check.
+                certificate, trusted through CURL_CA_BUNDLE), GETs the whole archive, and the `kb` it installs
+                runs --help and prints this release's version for --version
+    suites      the snapshot's own tests, run in a copy: tests/ under python3 and python3.9, and each folder of bench/
+                that holds test files, under python3; every test passes or skips with a reason (--no-suites: skip)
+
+The installer and the suites each run inside a fingerprint of the whole output folder, .git and its index included:
+every entry's mode and bytes or link target. A change fails that run.
 """
 import argparse
 import concurrent.futures
@@ -66,6 +67,7 @@ import re
 import shutil
 import signal
 import site
+import stat
 import ssl
 import subprocess
 import sys
@@ -81,6 +83,7 @@ VERSION_FILE = "kb/__init__.py"
 EXCEPTIONS_PATH = "tools/release_exceptions.tsv"
 ROWS_PATH = "bench/DATASET_ROWS.txt"
 SUITE_TIMEOUT = 3600
+COMMAND_TIMEOUT = 900
 BINARIES_PATH = "tools/release_binaries.tsv"
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
 OVERLAP_CHECKS = 4096  # positions inside one line's matches read for one pattern before the search fails
@@ -92,7 +95,7 @@ VERSION_PROBE = "import sys; print('%d.%d' % sys.version_info[:2])"
 SKIPPED = re.compile(r"\.\.\. skipped ('.*'|\".*\")\s*$", re.M)
 TAG_REF = "refs/tags/"
 FORBIDDEN = ["cli[-_]?" + "gateway", "83" + "17", "cli" + "proxy" + "api"]
-ISOLATED = {"GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1"}
+ISOLATED = {"GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1", "GIT_OPTIONAL_LOCKS": "0"}
 
 
 class ReleaseError(Exception):
@@ -153,20 +156,12 @@ def guarded(name, check, *args):
         return CheckResult(name, "FAIL", "the check could not finish", [Finding(name, failure(exc))])
 
 
-def run(cmd, cwd=None, env=None, input=None):
+def run_group(argv, timeout, cwd=None, env=None, input=None, stderr=subprocess.STDOUT):
+    """Runs argv in its own process group, which loses every process on a timeout: (exit code, stdout[, stderr])."""
+    proc = subprocess.Popen(argv, cwd=None if cwd is None else str(cwd), env=env, start_new_session=True, stdout=subprocess.PIPE,
+                            stdin=subprocess.DEVNULL if input is None else subprocess.PIPE, stderr=stderr)
     try:
-        done = subprocess.run(cmd, cwd=None if cwd is None else str(cwd), env=env, input=input,
-                              stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    except OSError as exc:
-        raise ReleaseError("could not run %s: %s" % (cmd[0], exc))
-    return done
-
-
-def run_group(argv, timeout, cwd=None, env=None):
-    proc = subprocess.Popen(argv, cwd=None if cwd is None else str(cwd), env=env, stdin=subprocess.DEVNULL,
-                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, start_new_session=True)
-    try:
-        out, _ = proc.communicate(timeout=timeout)
+        out, err = proc.communicate(input, timeout=timeout)
     except BaseException:
         os.killpg(proc.pid, signal.SIGKILL)
         try:
@@ -174,7 +169,16 @@ def run_group(argv, timeout, cwd=None, env=None):
         except subprocess.TimeoutExpired:
             pass
         raise
-    return proc.returncode, out
+    return (proc.returncode, out) if stderr == subprocess.STDOUT else (proc.returncode, out, err)
+
+
+def run(cmd, cwd=None, env=None, input=None):
+    try:
+        return subprocess.CompletedProcess(cmd, *run_group(cmd, COMMAND_TIMEOUT, cwd, env, input, subprocess.PIPE))
+    except subprocess.TimeoutExpired:
+        raise ReleaseError("%s ran past %d seconds" % (" ".join(cmd[:3]), COMMAND_TIMEOUT))
+    except OSError as exc:
+        raise ReleaseError("could not run %s: %s" % (cmd[0], exc))
 
 
 def failure(exc):
@@ -333,22 +337,26 @@ def archive_prefix(repo_name, tag):
     return "%s-%s/" % (repo_name, version)
 
 
-def object_stream(repo):
-    proc = subprocess.Popen(["git", "cat-file", "--batch-all-objects", "--batch"], cwd=str(repo),
-                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, env={**os.environ, **ISOLATED})
-    try:
-        while True:
-            header = proc.stdout.readline()
-            if not header:
-                break
-            sha, kind, size = header.split()
-            body = proc.stdout.read(int(size))
-            proc.stdout.read(1)
-            yield sha.decode(), kind.decode(), body
-    finally:
-        proc.stdout.close()
-        proc.wait()
-        proc.stderr.close()
+def batch(out):
+    """The objects in `git cat-file --batch` output, as (id, kind, body), read to its last byte."""
+    objects, at = [], 0
+    while at < len(out):
+        end = out.index(b"\n", at)
+        header = out[at:end].split()
+        if len(header) != 3 or out[end + 1 + int(header[2]):end + 2 + int(header[2])] != b"\n":
+            raise ReleaseError("git cat-file gave %r where an object belongs" % show(out[at:end]))
+        objects.append((header[0].decode(), header[1].decode(), out[end + 1:end + 1 + int(header[2])]))
+        at = end + 2 + int(header[2])
+    return objects
+
+
+def read_objects(repo):
+    objects = batch(git_bytes(repo, "cat-file", "--batch-all-objects", "--batch", isolated=True))
+    counts = dict(line.split(": ", 1) for line in git(repo, "count-objects", "-v", isolated=True).splitlines())
+    held = int(counts["count"]) + int(counts["in-pack"])
+    if len(objects) != held:
+        raise ReleaseError("git cat-file read %d objects, but git count-objects says the repo holds %d" % (len(objects), held))
+    return objects
 
 
 def tree_entries(repo, rev="HEAD"):
@@ -440,10 +448,23 @@ def link_end(links, name):
     return None
 
 
+def check_links(repo):
+    entries = tree_entries(repo)
+    blobs = read_blobs(repo, {sha for mode, sha, name in entries if mode == "120000"})
+    links = {name: blobs[sha] for mode, sha, name in entries if mode == "120000"}
+    findings = []
+    for name in sorted(links):
+        end = link_end(links, name)
+        if end:
+            findings.append(Finding(esc(name), "is a link to %s, %s" % (esc(links[name]), "outside the tree" if end == "outside" else
+                                                                        "which loops through more than %d links" % MAX_LINK_HOPS)))
+    return result("links", findings, "%d links in the commit, all inside the tree" % len(links),
+                  "%d links in the commit leave the tree" % len(findings), findings)
+
+
 def check_files(repo, binaries):
     entries = tree_entries(repo)
     blobs = read_blobs(repo, {sha for mode, sha, name in entries if mode in ARCHIVE_MODES})
-    links = {name: blobs[sha] for mode, sha, name in entries if mode == "120000"}
     findings, seen, text = [], set(), 0
     for mode, sha, name in entries:
         where = esc(name)
@@ -451,11 +472,6 @@ def check_files(repo, binaries):
             findings.append(Finding(where, "is a %s (mode %s), not a file or a link" % ("submodule" if mode == "160000" else "tree entry", mode)))
             continue
         data = blobs[sha]
-        if mode == "120000":
-            end = link_end(links, name)
-            if end:
-                findings.append(Finding(where, "is a link to %s, %s" % (esc(data), "outside the tree" if end == "outside" else
-                                                                      "which loops through more than %d links" % MAX_LINK_HOPS)))
         if is_text(data):
             text += 1
             continue
@@ -467,40 +483,29 @@ def check_files(repo, binaries):
             findings.append(Finding(where, "has sha256 %s, but %s lists %s: it changed after it was listed" % (digest, BINARIES_PATH, binaries[path])))
     findings.extend(Finding("%s: %s" % (BINARIES_PATH, esc(path)), "names no binary file in the tree")
                     for path in sorted(set(binaries) - seen))
-    return result("files", findings, "%d files and links: %d UTF-8 text, %d listed binaries matching their sha256, every link inside the tree"
+    return result("files", findings, "%d files and links: %d UTF-8 text, %d listed binaries matching their sha256"
                   % (len(entries), text, len(entries) - text), "%d problem%s with the files" % (len(findings), "" if len(findings) == 1 else "s"),
                   findings)
 
 
 def check_credential(repo, credentials, extra=None):
     needles = [c.lower().encode() for c in credentials]
-    entries = tree_entries(repo)
-    names = {}
+    entries, objects, names, findings = tree_entries(repo), read_objects(repo), {}, []
     for mode, sha, name in entries:
         names.setdefault(sha, []).append(show(name))
-    findings, scanned = [], 0
 
     def has(blob):
-        low = blob.lower()
-        return any(n in low for n in needles)
+        return any(n in blob.lower() for n in needles)
 
-    for mode, sha, name in entries:
-        if has(name):
-            findings.append(Finding(esc(name), "in the file's name"))
-    for sha, kind, body in object_stream(repo):
-        scanned += 1
-        if kind == "tree":
-            continue
-        if kind == "blob":
-            if has(body):
-                findings.extend(Finding(esc(where), "in the file's text") for where in sorted(names.get(sha, ["unreferenced " + sha[:8]])))
-        elif has(body):
-            findings.append(Finding("%s %s" % (kind, sha[:8]), "in the %s" % ("commit message or author" if kind == "commit" else "object")))
-    for name, text in (extra or {}).items():
-        if has(text.encode()):
-            findings.append(Finding(name, "in the text"))
-    where_text = "%d objects%s" % (scanned, ", the notes and the names" if extra else "")
-    return result("credential", findings, "no trace of %d made-up credential%s in %s, in any case" % (len(needles), "" if len(needles) == 1 else "s", where_text),
+    findings.extend(Finding(esc(name), "in the file's name") for mode, sha, name in entries if has(name))
+    for sha, kind, body in objects:
+        if kind != "tree" and has(body):
+            wheres = sorted(names.get(sha, ["unreferenced " + sha[:8]])) if kind == "blob" else ["%s %s" % (kind, sha[:8])]
+            what = {"blob": "file's text", "commit": "commit message or author"}.get(kind, "object")
+            findings.extend(Finding(esc(where), "in the %s" % what) for where in wheres)
+    findings.extend(Finding(name, "in the text") for name, text in (extra or {}).items() if has(text.encode()))
+    return result("credential", findings, "no trace of %d made-up credential%s in %d objects%s, in any case" % (
+                      len(needles), "" if len(needles) == 1 else "s", len(objects), ", the notes and the names" if extra else ""),
                   "a made-up credential is still here: %d place%s" % (len(findings), "" if len(findings) == 1 else "s"), findings)
 
 
@@ -586,16 +591,7 @@ def read_blobs(repo, shas):
     if not shas:
         return {}
     out = git_bytes(repo, "cat-file", "--batch", isolated=True, input=("\n".join(sorted(shas)) + "\n").encode())
-    blobs, at = {}, 0
-    while at < len(out):
-        end = out.index(b"\n", at)
-        header = out[at:end].split()
-        if len(header) != 3:
-            raise ReleaseError("git cat-file could not read %s" % show(out[at:end]))
-        size = int(header[2])
-        blobs[header[0].decode()] = out[end + 1:end + 1 + size]
-        at = end + 1 + size + 1
-    return blobs
+    return {sha: body for sha, kind, body in batch(out)}
 
 
 def check_patterns(repo, patterns, exceptions=(), extra=None):
@@ -618,7 +614,7 @@ def scan_patterns(repo, patterns, exceptions, extra):
     blobs = read_blobs(repo, {sha for mode, sha, name in entries if mode in ARCHIVE_MODES})
     candidates = []
     for mode, sha, name in entries:
-        if mode in ARCHIVE_MODES and show(name) != EXCEPTIONS_PATH:
+        if mode in ARCHIVE_MODES:
             candidates.extend((show(name),) + hit for hit in grep_matches(patterns, blobs[sha]))
     for name, text in sorted((extra or {}).items()):
         candidates.extend((name,) + hit for hit in grep_matches(patterns, text.encode()))
@@ -627,7 +623,14 @@ def scan_patterns(repo, patterns, exceptions, extra):
     for path, string, _ in exceptions:
         strings.setdefault(path, []).append(string)
     used, findings, allowed = set(), [], []
+    entries_listed = {(path, string) for path, string, _ in exceptions}
     for path, number, line, spans, finished in candidates:
+        fields = line.split(b"\t")
+        if path == EXCEPTIONS_PATH and not line.startswith(b"#") and len(fields) == 3 and (show(fields[0]), show(fields[1])) in entries_listed:
+            # the list's own copy of an entry's string, with the tabs around it, is no hit
+            spans = [(start, end) for start, end in spans if not (len(fields[0]) <= start and end <= len(fields[0]) + len(fields[1]) + 2)]
+            if finished and not spans:
+                continue
         covers = [(start, end, (path, string)) for string in strings.get(path, ())
                   for start, end in occurrences(line, string.encode())]
         uncovered = not spans or not finished
@@ -750,8 +753,12 @@ def serve_handler(out_dir, tag, log):
             pass
 
         def route(self, send_body):
+            self.sent = 0
+            self.answer(send_body)
             if log is not None:
-                log.append(self.path)
+                log.append((self.command, self.path, self.sent))
+
+        def answer(self, send_body):
             if self.path == "/releases/latest":
                 self.send_response(302)
                 self.send_header("Location", "https://%s/releases/tag/%s" % (self.headers.get("Host"), tag))
@@ -772,6 +779,8 @@ def serve_handler(out_dir, tag, log):
             self.end_headers()
             if send_body:
                 self.wfile.write(body)
+                self.wfile.flush()
+                self.sent = len(body)
 
         def do_GET(self):
             self.route(True)
@@ -847,28 +856,31 @@ def install_check(release, installer, timeout):
             findings.append(Finding("installer", "exit %d" % code))
             findings.extend(Finding("installer", line) for line in text.splitlines()[-10:])
             return CheckResult("install", "FAIL", "the site's installer failed", findings)
-        wanted = ["/releases/latest", "/archive/refs/tags/%s.tar.gz" % release.tag]
-        missed = [w for w in wanted if w not in requests]
+        tarball, size = "/archive/refs/tags/%s.tar.gz" % release.tag, os.path.getsize(str(release.archive))
         command = os.path.join(home, ".local", "bin", "kb")
-        if missed:
-            findings.append(Finding("installer", "never asked the server for %s" % ", ".join(missed)))
+        if not any(path == "/releases/latest" for _, path, _ in requests):
+            findings.append(Finding("installer", "never asked the server for /releases/latest"))
+        sent = [n for method, path, n in requests if method == "GET" and path == tarball]
+        if size not in sent:
+            findings.append(Finding("installer", "never downloaded the whole archive by GET: the server sent at most %d of its %d bytes" % (max(sent or [0]), size)))
         if not os.path.exists(command):
             findings.append(Finding(command[len(home) + 1:], "the installer left no kb command"))
         else:
-            try:
-                code, output = run_group([command, "--help"], timeout, cwd=tmp, env=env)
-            except subprocess.TimeoutExpired:
-                findings.append(Finding("kb --help", "ran past %d seconds" % timeout))
-            except OSError as exc:
-                findings.append(Finding("kb --help", failure(exc)))
-            else:
-                help_text = show(output)
-                if code or "usage" not in help_text.lower():
-                    findings.append(Finding("kb --help", "exit %d" % code))
-                    findings.extend(Finding("kb --help", line) for line in help_text.splitlines()[:10])
+            for args, good in (("--help", lambda text: "usage" in text.lower()),
+                               ("--version", lambda text: text.split()[-1:] == [release.tag[1:]] and len(text.splitlines()) == 1)):
+                try:
+                    code, output = run_group([command, args], timeout, cwd=tmp, env=env)
+                except subprocess.TimeoutExpired:
+                    findings.append(Finding("kb " + args, "ran past %d seconds" % timeout))
+                except OSError as exc:
+                    findings.append(Finding("kb " + args, failure(exc)))
+                else:
+                    if code or not good(show(output)):
+                        findings.append(Finding("kb " + args, "exit %d: %s" % (code, esc(" | ".join(show(output).splitlines()[:10])))))
     if findings:
         return CheckResult("install", "FAIL", "the site's installer ran but the install is not whole", findings)
-    return CheckResult("install", "PASS", "the site's installer fetched %s from a local https server and `kb --help` ran from ~/.local/bin" % release.tag)
+    return CheckResult("install", "PASS", "the site's installer fetched all of %s by GET from a local https server, and from "
+                       "~/.local/bin `kb --help` ran and `kb --version` printed %s" % (release.tag, release.tag[1:]))
 
 
 @dataclasses.dataclass
@@ -964,51 +976,33 @@ def run_suites(repo, suites, timeout=SUITE_TIMEOUT):
                   findings, (), notes)
 
 
-def sha256_of(path):
-    with open(str(path), "rb") as fh:
-        return hashlib.sha256(fh.read()).hexdigest()
-
-
-def digest_tree(root, skip=()):
-    digest = hashlib.sha256()
-    for folder, names, files in os.walk(root):
-        names[:] = sorted(n for n in names if os.path.relpath(os.path.join(folder, n), root) not in skip)
-        relative = os.path.relpath(folder, root)
-        digest.update(b"dir %s %o\0" % (relative.encode("utf-8", "surrogateescape"), os.lstat(folder).st_mode & 0o7777))
-        for name in sorted(files + [n for n in names if os.path.islink(os.path.join(folder, n))]):
+def fingerprint(release):
+    """Every entry in the output folder but CHECKS.txt, by its path: its mode and its bytes' sha256 or its link target."""
+    out, entries = str(release.out), {}
+    for folder, names, files in os.walk(out):
+        for name in names + files:
             full = os.path.join(folder, name)
             info = os.lstat(full)
-            label = os.path.relpath(full, root).encode("utf-8", "surrogateescape")
-            if os.path.islink(full):
-                body = os.readlink(full).encode("utf-8", "surrogateescape")
-            else:
+            if stat.S_ISREG(info.st_mode):
                 with open(full, "rb") as fh:
-                    body = fh.read()
-            digest.update(b"file %s %o %s\0" % (label, info.st_mode & 0o7777, hashlib.sha256(body).hexdigest().encode()))
-    return digest.hexdigest()
-
-
-def fingerprint(release):
-    repo = str(release.repo)
-    git_dir = os.path.join(repo, ".git")
-    return {"refs": "%s %s %s" % (digest_tree(os.path.join(git_dir, "refs")), sha256_of(os.path.join(git_dir, "HEAD")),
-                                  sha256_of(os.path.join(git_dir, "packed-refs")) if os.path.exists(os.path.join(git_dir, "packed-refs")) else "none"),
-            "objects": digest_tree(os.path.join(git_dir, "objects")),
-            "git settings": sha256_of(os.path.join(git_dir, "config")),
-            "tree": git(repo, "rev-parse", "HEAD^{tree}", isolated=True),
-            "working tree": digest_tree(repo, skip=(".git",)),
-            "archive": sha256_of(release.archive), "notes": sha256_of(release.notes)}
+                    body = hashlib.sha256(fh.read()).hexdigest()
+            else:
+                body = os.readlink(full) if stat.S_ISLNK(info.st_mode) else ""
+            entries[os.path.relpath(full, out)] = (info.st_mode, body)
+    entries.pop("CHECKS.txt", None)
+    return entries
 
 
 def watched(release, run_step, step):
     before = fingerprint(release)
     check = run_step()
     after = fingerprint(release)
-    changed = [key for key in before if before[key] != after[key]]
+    changed = sorted(path for path in set(before) | set(after) if before.get(path) != after.get(path))
     if changed:
         check.status = "FAIL"
-        check.findings.append(Finding("snapshot", "the snapshot changed while the %s ran: %s" % (step, ", ".join(changed))))
-        check.summary += "; the snapshot changed (%s)" % ", ".join(changed)
+        check.findings.append(Finding("snapshot", "the snapshot changed while the %s ran: %s%s" % (
+            step, esc(", ".join(changed[:10])), " and %d more" % (len(changed) - 10) if len(changed) > 10 else "")))
+        check.summary += "; the snapshot changed (%d path%s)" % (len(changed), "" if len(changed) == 1 else "s")
     return check
 
 
@@ -1109,15 +1103,20 @@ def assemble(source, commit, out, name, email, tag, title, repo_name, notes_text
             packed.write(tar)
 
     release = Release(tag, snapshot, Path(repo), Path(notes), Path(archive), Path(out), [], left_out)
-    install_result = (guarded("install", watched, release, lambda: run_install_check(release, installer), "installer")
-                      if installer else CheckResult("install", "SKIP", "not run: no --installer given"))
-    suites_result = (guarded("suites", watched, release, lambda: run_suites(release.repo, suites(release.repo)), "suites")
-                     if suites else CheckResult("suites", "SKIP", "not run: --no-suites given"))
+    links_result = guarded("links", check_links, repo)
+
+    def gated(name, given, why_not, step, label):
+        if given and links_result.ok:
+            return guarded(name, watched, release, step, label)
+        return CheckResult(name, "SKIP", why_not if not given else "not run: the links check failed, so nothing from the commit runs")
+
+    install_result = gated("install", installer, "not run: no --installer given", lambda: run_install_check(release, installer), "installer")
+    suites_result = gated("suites", suites, "not run: --no-suites given", lambda: run_suites(release.repo, suites(release.repo)), "suites")
 
     def final_text():
-        extra = {"RELEASE_NOTES.md": Path(notes).read_bytes().decode("utf-8", "replace"), "repo name": repo_name, "tag": tag,
-                 "archive folder": prefix.rstrip("/")}
-        return extra, dict(extra, **{"commit message": git(repo, "log", "-1", "--format=%B", isolated=True)})
+        return {"RELEASE_NOTES.md": Path(notes).read_bytes().decode("utf-8", "replace"), "repo name": repo_name, "tag": tag,
+                "archive folder": prefix.rstrip("/"), "commit message": git(repo, "log", "-1", "--format=%B", isolated=True),
+                "commit identity": git(repo, "log", "-1", "--format=%an <%ae>%n%cn <%ce>", isolated=True)}
 
     def final_exceptions():
         return read_exceptions(commit_file(repo, "HEAD", EXCEPTIONS_PATH))
@@ -1130,9 +1129,10 @@ def assemble(source, commit, out, name, email, tag, title, repo_name, notes_text
 
     release.checks = [
         guarded("history", lambda: check_history(repo, tag)),
+        links_result,
         guarded("files", lambda: check_files(repo, final_binaries())),
-        guarded("credential", lambda: check_credential(repo, credentials, final_text()[0])),
-        guarded("patterns", lambda: check_patterns(repo, patterns, final_exceptions(), final_text()[1])),
+        guarded("credential", lambda: check_credential(repo, credentials, final_text())),
+        guarded("patterns", lambda: check_patterns(repo, patterns, final_exceptions(), final_text())),
         guarded("dataset", lambda: check_dataset(repo, archive, final_rows(), prefix)),
         guarded("archive", lambda: check_archive(repo, archive, prefix)),
         install_result,

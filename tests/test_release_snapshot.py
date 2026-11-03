@@ -670,7 +670,7 @@ class FilesTest(SourceCase):
         inside = [("docs/up", "../README.md"), ("top", "docs/a.md"), ("docs/self", "."), ("dangling", "docs/none.md")]
         outside = [("docs/out", "../../etc/passwd"), ("abs", "/etc/passwd"), ("deep/x/y", "../../../outside")]
         self.commit_bytes({"docs/a.md": "fine\n"}, links=inside + outside)
-        found = self.build().check("files")
+        found = self.build().check("links")
         self.assertEqual(self.wheres(found), sorted(name for name, _ in outside))
         self.assertTrue(all("outside the tree" in f.text for f in found.findings), found.findings)
 
@@ -935,8 +935,8 @@ class ExceptionsTest(SourceCase):
         with mock.patch.object(rs, "OVERLAP_CHECKS", 3):
             found = self.patterns_of({"a.txt": "7" * 12 + "\n"}, [("a.txt", "7" * 12, "every digit")])
         self.assertFalse(found.ok)
-        self.assertEqual([f.where for f in found.findings], ["a.txt:1"])
-        self.assertIn("stopped", found.findings[0].text)
+        self.assertEqual([f.where for f in found.findings], ["a.txt:1", EXCEPTIONS + ":1"])
+        self.assertTrue(all("stopped" in f.text for f in found.findings), found.findings)
 
     def test_a_match_that_runs_into_a_later_match_is_found(self):
         # grep -o reports "ab" and then "cd"; "bcd" starts inside the first and runs into the second
@@ -969,7 +969,7 @@ class ExceptionsTest(SourceCase):
     def test_a_file_name_cannot_be_excepted(self):
         found = self.patterns_of({"acmecorp-notes.txt": "fine\n"},
                                  [("acmecorp-notes.txt", "acmecorp-notes.txt", "no")])
-        self.assertEqual([f.where for f in found.findings], ["acmecorp-notes.txt"])
+        self.assertEqual([f.where for f in found.findings], ["acmecorp-notes.txt", EXCEPTIONS + ":1"])
 
     def test_an_entry_that_matches_nothing_is_reported_as_stale_and_does_not_fail(self):
         files = {"a.md": "Acmecorp\nhello\n", "b.md": "hello\n"}
@@ -1231,7 +1231,7 @@ class T(unittest.TestCase):
         body = ("    def test_tamper(self):\n        open(%r, 'a').write('edited\\n')\n" % str(self.out / "repo" / "README.md"))
         found = self.built(body).check("suites")
         self.assertFalse(found.ok)
-        self.assertTrue(any("snapshot changed" in f.text and "working tree" in f.text for f in found.findings), found.findings)
+        self.assertTrue(any("snapshot changed" in f.text and "repo/README.md" in f.text for f in found.findings), found.findings)
 
     def tampered(self, snippet):
         snap = str(self.out / "repo")
@@ -1247,7 +1247,7 @@ class T(unittest.TestCase):
             subprocess.run(['git', '-C', snap, 'update-index', '--assume-unchanged', 'README.md'], check=True)
             open(os.path.join(snap, 'README.md'), 'a').write('zq-4417' + '-kettle\\n')
             """)
-        self.assert_changed(found, "working tree")
+        self.assert_changed(found, "repo/README.md")
 
     def test_a_new_loose_object_in_the_snapshot_is_a_change(self):
         found = self.tampered("""
@@ -1263,9 +1263,9 @@ class T(unittest.TestCase):
         self.assert_changed(found, "refs")
 
     def test_a_mode_change_and_a_new_empty_folder_are_changes(self):
-        self.assert_changed(self.tampered("os.chmod(os.path.join(snap, 'README.md'), 0o755)"), "working tree")
+        self.assert_changed(self.tampered("os.chmod(os.path.join(snap, 'README.md'), 0o755)"), "repo/README.md")
         self.out = self.tmp / "out2"
-        self.assert_changed(self.tampered("os.makedirs(os.path.join(snap, 'empty', 'folder'))"), "working tree")
+        self.assert_changed(self.tampered("os.makedirs(os.path.join(snap, 'empty', 'folder'))"), "repo/empty/folder")
 
     def test_a_folder_link_pointed_at_another_folder_is_a_change(self):
         os.symlink("target", str(self.src / "link"))
@@ -1273,17 +1273,17 @@ class T(unittest.TestCase):
         body = ("    def test_tamper(self):\n        link = os.path.join(%r, 'link')\n"
                 "        os.remove(link)\n        os.symlink('tests', link)\n" % snap)
         found = self.built(body, files={"target/a.txt": "fine\n"}).check("suites")
-        self.assert_changed(found, "working tree")
+        self.assert_changed(found, "repo/link")
 
     def test_a_new_hook_a_mode_change_on_the_notes_or_assume_unchanged_is_a_change(self):
         self.assert_changed(self.tampered("""
             os.makedirs(os.path.join(snap, '.git', 'hooks'), exist_ok=True)
             open(os.path.join(snap, '.git', 'hooks', 'pre-commit'), 'w').write('#!/bin/sh\\n')
-            """), "other .git files")
+            """), "repo/.git/hooks/pre-commit")
         self.out = self.tmp / "out2"
-        self.assert_changed(self.tampered("os.chmod(os.path.join(os.path.dirname(snap), 'RELEASE_NOTES.md'), 0o755)"), "notes")
+        self.assert_changed(self.tampered("os.chmod(os.path.join(os.path.dirname(snap), 'RELEASE_NOTES.md'), 0o755)"), "RELEASE_NOTES.md")
         self.out = self.tmp / "out3"
-        self.assert_changed(self.tampered("subprocess.run(['git', '-C', snap, 'update-index', '--assume-unchanged', 'README.md'], check=True)"), "index")
+        self.assert_changed(self.tampered("subprocess.run(['git', '-C', snap, 'update-index', '--assume-unchanged', 'README.md'], check=True)"), "repo/.git/index")
 
     def test_a_link_out_of_the_tree_stops_the_installer_and_the_suites_before_they_run(self):
         outside = self.tmp / "outside"
@@ -1300,7 +1300,6 @@ class T(unittest.TestCase):
             self.assertEqual(found.status, "SKIP", found.findings)
             self.assertIn("not run", found.summary)
         self.assertEqual(os.listdir(str(outside)), [])
-        self.assertFalse(release.check("files").ok)
 
     def test_a_suite_that_edits_the_notes_fails_the_credential_check_on_what_is_on_disk(self):
         notes = str(self.out / "RELEASE_NOTES.md")
@@ -1590,7 +1589,7 @@ class InstallTest(SourceCase):
         self.assertIn("RELEASE_NOTES.md", [f.where for f in release.check("credential").findings])
         found = release.check("install")
         self.assertFalse(found.ok)
-        self.assertTrue(any("snapshot changed" in f.text and "notes" in f.text for f in found.findings), found.findings)
+        self.assertTrue(any("snapshot changed" in f.text and "RELEASE_NOTES.md" in f.text for f in found.findings), found.findings)
         self.assertFalse(release.ok)
 
     def test_an_installer_that_replaces_the_archive_fails_the_archive_and_install_checks(self):
