@@ -309,8 +309,8 @@ _FORMAT_CHARACTERS = (r"\u00ad\u034f\u061c\u115f\u1160\u17b4\u17b5\u180b-\u180f\
 # The same characters escaped, as JSON ("\u200b", "\u007f") and Python's repr ("\x7f", "\xad", "\u2060") print them; one
 # past U+FFFF as JSON writes it, a surrogate pair ("\udb40\udc01" for U+E0001); and any of them escaped twice, as a
 # JSON string inside JSON holds one ("\\u200b"); and JSON's short escape for the backspace, between characters a token
-# holds (letters, digits, "_", "-", "."), where a regular expression's word boundary ("\\btoken\\b", a quote or a space
-# beside it) does not.
+# holds (letters, digits, "_", "-", ".", and base64's "+", "/" and "="), where a regular expression's word boundary
+# ("\\btoken\\b", a quote or a space beside it) does not.
 _ESCAPED_INVISIBLE = (
     r"\\?(?:\\u(?:000[0-8]|000[eEfF]|001[0-9a-bA-B]|007[fF]|008[0-46-9a-fA-F]|009[0-9a-fA-F]|00[aA][dD]|034[fF]|061[cC]"
     r"|115[fF]|1160|17[bB][45]|180[b-fB-F]|200[b-fB-F]|202[a-eA-E]|206[0-9a-fA-F]|3164|[fF][eE]0[0-9a-fA-F]"
@@ -319,7 +319,7 @@ _ESCAPED_INVISIBLE = (
     r"|\\U000(?:1[bB][cC][aA][0-3]|1[dD]17[3-9aA]|[eE]0[0-9a-fA-F]{3})"
     r"|\\u[dD][bB]4[0-3]\\{1,2}u[dD][c-fC-F][0-9a-fA-F]{2}|\\u[dD]82[fF]\\{1,2}u[dD][cC][aA][0-3]"
     r"|\\u[dD]834\\{1,2}u[dD][dD]7[3-9aA])"
-    r"|(?<=[A-Za-z0-9_.-])\\{1,2}b(?=[A-Za-z0-9_.-])")
+    r"|(?<=[A-Za-z0-9_.+/=-])\\{1,2}b(?=[A-Za-z0-9_.+/=-])")
 INVISIBLE = re.compile(_CSI + rf"|{_ESCAPED_INVISIBLE}|[\x00-\x08\x0e-\x1b\x7f-\x84\x86-\x9f{_FORMAT_CHARACTERS}]")
 # Main's own: a lone control or format character, not a colour code, an escaped one, DEL or a C1 control
 # (_NEW_INVISIBLE).
@@ -369,6 +369,7 @@ def _quoted(flag):
 # an f-string's braces, so it stands apart).
 _AWS_SETTING = r"(?:[A-Za-z0-9_-]+\.)?(?=[A-Za-z0-9_]*?(?:secret|token|password))[A-Za-z0-9_]+"
 _AWS_SETTING_NAME = re.compile(_AWS_SETTING + r"\Z")
+_AWS_PROGRAM = re.compile(r"aws(?:\.exe|\.cmd)?")  # aws's own name, read from a path's last part
 _SHELL = re.compile(r"(?:^|/)(?:ba|z|a|k)?sh\Z")
 _SHELL_SCRIPT_FLAG = re.compile(r"-[a-z]*c[a-z]*\Z")
 
@@ -379,7 +380,8 @@ def _aws_setting_item(items, i):
     if not _AWS_SETTING_NAME.match(items[i]):
         return False
     before = [v.lower() for v in items[max(0, i - 6):i] if isinstance(v, str)]
-    return any(v.startswith("aws") for v in before) and "configure" in before and "set" in before
+    return any(_AWS_PROGRAM.fullmatch(re.split(r"[\\/]", v)[-1]) for v in before) \
+        and "configure" in before and "set" in before
 
 
 COMMAND_FLAGS = (
@@ -841,100 +843,112 @@ _PLAIN_ARGUMENTS = re.compile(rf"""(?:[^\s'"`$\\()|;&<>#]+|[ \t]+|\\t|(?<=\S)\#|
                               rf"""|{_SIMPLE_SUBSTITUTION}|'[^']*'|"(?![ \t]*(?:[,:}}\]]|\Z)){_DOUBLE_QUOTED}"|"""
                               rf"""\\"{_DOUBLE_QUOTED}\\")*""")
 # Where what kb reads plainly ends the command: the text's or the line's end, a pipe, ";", "&", a bracket that closes,
-# a comment, or, where a JSON string holds the command, that string's end. The string, and its backslash count `held`
-# (0 at the top, 2**d - 1 at depth d), come from reading the line's strings in order (_json_cover), not a look-back,
-# so a quote inside the string, as a jq selector holds one, closes nothing.
+# or a comment. A command inside a JSON string is read in that string decoded as a text of its own (_string_edits), so
+# the string's end is that text's end, and the mask never leaves the string.
 _LINE_END = r"[\r\n]|(?<!\\)\\+[nr]"
+_PLAIN_STOP = re.compile(r"\Z|[|;&)#]|" + _LINE_END)
+_SEGMENT_END = re.compile(_LINE_END)
+# A JSON string as written: from a quote no backslash escapes to the next such quote on its line.
+_STRING_LITERAL = re.compile(r'(?<!\\)"((?:[^"\\\r\n]|\\.)*)"')
+# An escape in a string's body, as JSON or Python writes one.
+_ESCAPE = re.compile(r"\\(?:u([0-9a-fA-F]{4})|U([0-9a-fA-F]{8})|x([0-9a-fA-F]{2})|(.))", re.S)
+_SIMPLE_ESCAPES = {"n": "\n", "r": "\r", "t": "\t", "b": "\b", "f": "\f", "v": "\v", "a": "\a", "0": "\0"}
 
 
-def _string_end(held):
-    """Where a JSON string whose quotes carry `held` backslashes ends: a quote with that many backslashes before it,
-    the run started where no backslash does, before a JSON mark, an outer string's end or the text's end."""
-    return "" if held is None else r'|(?<!\\)\\{%d}"(?=[ \t]*(?:[,:}\]]|\\*"|\Z))' % held
+def _decoded(text, start, end):
+    """text[start:end], a string's body, decoded as JSON or Python escape one: (the decoded text, where each of its
+    characters starts in `text`, where each ends)."""
+    out, starts, ends, at = [], [], [], start
+    for m in _ESCAPE.finditer(text, start, end):
+        if m.start() > at:
+            out.append(text[at:m.start()])
+            starts.extend(range(at, m.start()))
+            ends.extend(range(at + 1, m.start() + 1))
+        code = m.group(1) or m.group(2) or m.group(3)
+        value = int(code, 16) if code else None
+        out.append(chr(value) if value is not None and value < 0x110000 else _SIMPLE_ESCAPES.get(m.group(4), m.group(4) or ""))
+        starts.append(m.start())
+        ends.append(m.end())
+        at = m.end()
+    if at < end:
+        out.append(text[at:end])
+        starts.extend(range(at, end))
+        ends.extend(range(at + 1, end + 1))
+    return "".join(out), starts, ends
 
 
-@functools.lru_cache(maxsize=256)
-def _plain_stop(held):
-    return re.compile(r"\Z|[|;&)#]|" + _LINE_END + _string_end(held))
+def _back_to(starts, ends, spans):
+    """Spans of a decoded text, as the stretches of the text it was decoded from that their characters came from."""
+    return [(starts[a], ends[b - 1]) for a, b in spans if b > a]
 
 
-@functools.lru_cache(maxsize=256)
-def _segment_end(held):
-    return re.compile(_LINE_END + _string_end(held))
+def _literals(text):
+    """The JSON strings `text` holds as written, as (start, end) stretches in order, quotes included."""
+    return [(m.start(), m.end()) for m in _STRING_LITERAL.finditer(text)]
 
 
-@functools.lru_cache(maxsize=256)
-def _json_cover(text):
-    """(positions, counts): across [positions[i], positions[i+1]) the innermost open JSON string's delimiter has
-    counts[i] backslashes, or counts[i] is None where no string is open. One left-to-right scan of the text's strings
-    in order: a run of b backslashes then a double quote opens a nested string (b == 2c+1), closes the current one
-    (b == c) or, otherwise, is escaped content, where c is the current string's count (0 at the top)."""
-    positions, counts, stack = [0], [None], []
-    i, n = 0, len(text)
-
-    def mark():
-        top = stack[-1] if stack else None
-        if top != counts[-1]:
-            if positions[-1] == i:
-                counts[-1] = top
-            else:
-                positions.append(i)
-                counts.append(top)
-
-    while i < n:
-        ch = text[i]
-        if ch == "\\":
-            j = i
-            while j < n and text[j] == "\\":
-                j += 1
-            if j < n and text[j] == '"':
-                b, c = j - i, (stack[-1] if stack else None)
-                if stack and b == c:
-                    stack.pop()
-                elif stack and b == 2 * c + 1:
-                    stack.append(b)
-                i = j + 1
-                mark()
-                continue
-            i = j
-            continue
-        if ch == '"':
-            if not stack:
-                stack.append(0)
-            elif stack[-1] == 0:
-                stack.pop()
-            i += 1
-            mark()
-            continue
-        i += 1
-    return tuple(positions), tuple(counts)
-
-
-def _unread_flag_edits(text, line_pattern, flag, always, done):
+def _unread_flag_edits(text, line_pattern, flag, always, done, literals=()):
     """The fail-closed rule, for one of this PR's rows of COMMAND_FLAGS: where a command's line holds a part kb cannot
     read plainly (_PLAIN_ARGUMENTS), as shell grammar it does not follow ("$'team\\'s cert'", "<(...)", an escaped quote
     or a nested substitution escaped twice), the first password its flag finds there that no reading masked (`done`,
-    where its value starts) is masked from the value to the end of that line, or of the JSON string holding it, where
-    JSON holds the line: kb cannot tell where a part it does not read ends, so a pipe or ";" there may be quoted."""
+    where its value starts) is masked from the value to the end of that line: kb cannot tell where a part it does not
+    read ends, so a pipe or ";" there may be quoted. A password inside one of `literals`, a JSON string, is left for
+    that string read decoded (_string_edits), where the string's end bounds the mask; outside every string the mask
+    runs to the line's end, so it never leaves the string that holds the line."""
     edits, covered = [], 0
-    positions, counts = _json_cover(text)  # the string that holds each point, found once for the whole text
     for line in line_pattern.finditer(text):
         if line.start() < covered:
             continue
         begin = _past_closing_quote(text, covered, line.start(), line.end())
         plain = _PLAIN_ARGUMENTS.match(text, begin).end()
-        held = counts[bisect.bisect_right(positions, line.start()) - 1]  # the JSON string the command sits in
-        if _plain_stop(held).match(text, plain):
+        if _PLAIN_STOP.match(text, plain):
             covered = plain
             continue
-        stop = _segment_end(held).search(text, plain)
+        stop = _SEGMENT_END.search(text, plain)
         covered = end = stop.start() if stop else len(text)
         for m in flag.finditer(text, max(begin, plain - 1), end):
             if m.start(2) in done or text.startswith("[masked]", m.start(2)) or not _flag_value_counts(m, always, True):
                 continue
+            if _holding(literals, m.start(2)) is not None:
+                break  # the password is inside a JSON string: read it decoded, where the string's end bounds the mask
             edits.append((m.start(2), len(text[:end].rstrip(" \t")), "[masked]"))
             break
     return edits
+
+
+def _command_spans(text, literals, unread_only=False):
+    """What COMMAND_FLAGS' rows mask in `text`, the fail-closed rule with them, as (start, end) spans: all of them, or
+    with `unread_only` only the fail-closed rule's, as the pass after reads the rest of a text as written."""
+    spans = []
+    for n, (line, flag, always) in enumerate(_COMMANDS):
+        unread = n >= _MAIN_COMMANDS and always != "field"
+        found = _command_password_edits(text, line, flag, always, n >= _MAIN_COMMANDS) \
+            if unread or not unread_only else []
+        if unread:
+            more = _unread_flag_edits(text, line, flag, always, {start for start, _, _ in found}, literals)
+            found = more if unread_only else found + more
+        spans += [(start, end) for start, end, _ in found if not text.startswith("[masked]", start)]
+    return spans
+
+
+@functools.lru_cache(maxsize=64)
+def _string_edits(text, depth=0):
+    """What COMMAND_FLAGS' rows and the fail-closed rule mask in each JSON string `text` holds that names a command,
+    the string decoded and read as a text of its own, and in each string that one holds, up to four deep: as
+    (start, end) spans of `text`. A string's own text is the line, so its end bounds the mask (_unread_flag_edits
+    reads each password's holding string), and the strings it holds are read a level down."""
+    if depth >= 16:
+        return ()  # deeper than any real JSON nesting; a cap keeps a crafted chain bounded
+    spans = []
+    for m in _STRING_LITERAL.finditer(text):
+        if not _ANY_COMMAND.search(text, m.start(1), m.end(1)):
+            continue
+        decoded, starts, ends = _decoded(text, m.start(1), m.end(1))
+        if not _ANY_COMMAND.search(decoded):
+            continue
+        found = _command_spans(decoded, _literals(decoded)) + list(_string_edits(decoded, depth + 1))
+        spans += _back_to(starts, ends, found)
+    return tuple(spans)
 
 
 @functools.lru_cache(maxsize=1024)
@@ -969,17 +983,6 @@ def _unescaped(levels):
 # The views of a command, deepest first: unescaped four times down to as written.
 _UNESCAPED = [_unescaped(levels) for levels in (4, 3, 2, 1, 0)]
 _QUOTE_ESCAPE = re.compile(r'(?<!\\)\\+(?=["'"'"'])')
-_NEEDS_ESCAPE = re.compile(r"[\"'\\\x00-\x1f\x7f]")
-
-
-def _encode_item(text, quote):
-    """`text` as a string body written between `quote` marks: JSON's escaping for a double quote, Python's
-    single-quote escaping for a single one. A plain placeholder needs neither."""
-    if text == "[masked]":
-        return text
-    if quote == '"':
-        return json.dumps(text)[1:-1]
-    return text.replace("\\", "\\\\").replace("'", "\\'")
 
 
 def _argument_items(source):
@@ -996,10 +999,32 @@ def _argument_items(source):
     return tuple(items) if isinstance(items, (list, tuple)) and all(isinstance(v, str) for v in items) else None
 
 
+def _masked_parts(decoded, masked):
+    """Where in `decoded`, an item as written, `masked`, the item as _flag_values masks it, hides something: the
+    stretches each "[masked]" stands for, the text around them kept as it is. None where they do not line up, as
+    when the reading changed the item otherwise; then the whole item is masked, fail-closed."""
+    pieces = masked.split("[masked]")
+    if len(pieces) == 1:
+        return []
+    if not decoded.startswith(pieces[0]) or not decoded.endswith(pieces[-1]):
+        return None
+    parts, at, last = [], len(pieces[0]), len(decoded) - len(pieces[-1])
+    for piece in pieces[1:-1]:
+        found = decoded.find(piece, at + 1, last)
+        if found < 0:
+            return None
+        parts.append((at, found))
+        at = found + len(piece)
+    if last <= at:
+        return None
+    parts.append((at, last))
+    return parts
+
+
 def _view_edits(text, view, split, base):
     """_wrapping_edits' reading of one view, `split` read from `view` or None: (the lists of a command's arguments it
-    reads, the edits that mask what they hold, the edits that mask what the lines read hold), in the text as
-    written."""
+    reads, the spans that mask what they hold, the spans that mask what the lines read hold), in the text as written.
+    A view only says where to mask: every span is mapped back to the text as written, and no view's text is kept."""
     read = split.view if split else view
     if not _ANY_COMMAND.search(read):
         return [], [], []
@@ -1011,33 +1036,35 @@ def _view_edits(text, view, split, base):
             strings = list(_ARGUMENT.finditer(read, m.start(), m.end()))
             for i, masked in _listed_flag_values(items).items():
                 k = 1 if strings[i].group(1) is not None else 2
-                listed.append((strings[i].start(k), strings[i].end(k), masked, '"' if k == 1 else "'"))
-    for n, (line, flag, always) in enumerate(_COMMANDS):
-        unread = n >= _MAIN_COMMANDS and always != "field"
-        found = _command_password_edits(read, line, flag, always, n >= _MAIN_COMMANDS) \
-            if read != text or unread else []
-        if unread and base:
-            more = _unread_flag_edits(read, line, flag, always, {start for start, _, _ in found})
-            found = found + more if read != text else more  # as written, the pass after reads the rest
-        lined += [(start, end, "[masked]", None) for start, end, _ in found if not read.startswith("[masked]", start)]
+                decoded, starts, ends = _decoded(read, strings[i].start(k), strings[i].end(k))
+                parts = _masked_parts(decoded, masked)
+                listed += [(strings[i].start(k), strings[i].end(k))] if parts is None else _back_to(starts, ends, parts)
+    if base:  # the fail-closed rule, on the text as written and in each JSON string it holds, read as its own text
+        literals = _literals(read)
+        if read != text:
+            lined += _command_spans(read, literals)
+        else:
+            lined += _command_spans(read, literals, unread_only=True)
+        lined += list(_string_edits(read))
+    else:
+        for n, (line, flag, always) in enumerate(_COMMANDS):
+            lined += [(start, end) for start, end, _ in _command_password_edits(read, line, flag, always,
+                                                                                n >= _MAIN_COMMANDS)
+                      if not read.startswith("[masked]", start)]
     if not split:
-        listed = [(st, en, _encode_item(ins, q), None) for st, en, ins, q in listed]
         return lists, listed, lined
     # Back to the text as written, a value with the colour codes around it, as its reading masks one.
     unwrapped = {i for m in _QUOTE_ESCAPE.finditer(view) for i in range(m.start(), m.end())}
 
-    def back(start, end, insert, quote):
-        raw = split.raw(start, end)
-        start, end = raw
+    def back(start, end):
+        start, end = split.raw(start, end)
         while start - 1 in split.removed and start - 1 not in unwrapped:
             start -= 1
         while end in split.removed and end not in unwrapped:
             end += 1
-        return start, end, insert, quote
+        return start, end
 
-    # A list read in an unescaped view: its items' raw escaping is not this view's, so mask each whole, fail-closed.
-    listed = [(st, en, "[masked]", None) for st, en, _, _ in listed]
-    return ([split.raw(*span) for span in lists], [back(*edit) for edit in listed], [back(*edit) for edit in lined])
+    return ([split.raw(*span) for span in lists], [back(*span) for span in listed], [back(*span) for span in lined])
 
 
 def _wrapping_edits(text):
@@ -1047,9 +1074,10 @@ def _wrapping_edits(text):
     depth (_UNESCAPED), so a command coloured by grep, even inside its name, or held in JSON once or many times, reads
     as it was written. A view is read for each depth JSON holds the text at, as written up to four times unescaped,
     since a text holds strings at many depths and only one level at a time keeps each string's own quotes
-    (_view_edits). In each, every row of COMMAND_FLAGS reads it, the fail-closed rule with them (_unread_flag_edits),
-    and a list or a tuple of a command's arguments, as JSON or Python writes one, is read as mask_all reads the list
-    (_flag_values)."""
+    (_view_edits). In each, every row of COMMAND_FLAGS reads it, and a list or a tuple of a command's arguments, as
+    JSON or Python writes one, is read as mask_all reads the list (_flag_values). The fail-closed rule reads the text
+    as written and each JSON string in it decoded as its own text (_string_edits). A view only says where to mask:
+    each edit puts "[masked]" over a stretch of the text as written, which keeps every other character."""
     if not (_ANY_COMMAND.search(text) or INVISIBLE.search(text)):
         return []
     view = _CONTINUATION.sub(lambda m: " " * len(m.group()), text)
@@ -1069,14 +1097,14 @@ def _wrapping_edits(text):
             stretches[-1] = (stretches[-1][0], max(stretches[-1][1], end))
         else:
             stretches.append((start, end))
-    spans = listed + [edit for edit in lined if _holding(stretches, edit[0]) is None]
+    spans = listed + [span for span in lined if _holding(stretches, span[0]) is None]
     merged = []
-    for start, end, insert, _ in sorted(spans):
+    for start, end in sorted(spans):
         if merged and start < merged[-1][1]:
-            merged[-1] = (merged[-1][0], max(merged[-1][1], end), "[masked]")
-        else:
-            merged.append((start, end, insert))
-    return merged
+            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+        elif start < end:
+            merged.append((start, end))
+    return [(start, end, "[masked]") for start, end in merged]
 
 
 # Where a name is part of an AWS resource's name, as "secretsmanager" and "secret" are in
