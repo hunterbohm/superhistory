@@ -323,33 +323,56 @@ class OtherKeyFormatTest(unittest.TestCase):
                     with self.subTest(key=len(key), width=width, between=between):
                         self.assertEqual(mask(block + between + block), "[masked]" + between + "[masked]")
 
-    def test_a_base64_key_wrapped_unevenly_is_masked_whole(self):
+    def test_a_field_name_holding_encoded_key_words_keeps_its_name_and_masks_its_value(self):
         import base64
-        import random
-        import re
+        for name in ("private_key_", "password_", "secret_", "api_key_"):
+            for words in (b"PRIVATE KEYX", b"SECRET KEYXY", b"the PRIVATE KEY"):
+                for sep in (": ", "="):
+                    field = name + base64.b64encode(words).decode()
+                    with self.subTest(field=field, sep=sep):
+                        self.assertEqual(mask(f"{field}{sep}Abcdefgh12345678"), f"{field}{sep}[masked]")
+
+    def test_a_heading_above_a_base64_key_stays_at_any_width(self):
+        import base64
         import textwrap
-        r = random.Random(11)
-        for case in range(300):
-            body = base64.b64encode(bytes(r.randrange(256) for _ in range(r.randrange(40, 300)))).decode()
-            key = "-----BEGIN PRIVATE KEY-----\n" + "\n".join(textwrap.wrap(body, 64)) + "\n-----END PRIVATE KEY-----\n"
-            before = r.choice(["", "-----BEGIN CERTIFICATE-----\nMIIBszCCAVmgAwIBAgIU\n-----END CERTIFICATE-----\n"])
-            encoded = base64.b64encode((before + key).encode()).decode()
-            lines, at = [], 0
-            while at < len(encoded):
-                width = r.choice([1, 2, 3, 4, 7, 8, 12, 40, 64, 76, 90])
-                lines.append(encoded[at:at + width])
-                at += width
-            brk = r.choice(["\n", "\\n", "\n  "])
-            after = r.choice(["", "\nThanks\nJohn", "\n\nnext paragraph"])
-            masked = mask("Notes\n" + brk.join(lines) + after)
-            # Every 12 characters of the key's own base64 that hold body bytes stay out of the output.
-            first = len(before + "-----BEGIN PRIVATE KEY-----\n") * 4 // 3 + 4
-            last = len(before + key) * 4 // 3 - len("-----END PRIVATE KEY-----\n") * 4 // 3 - 4
-            readable = re.sub(r"\s+|\\n", "", masked)
-            leaked = [encoded[i:i + 12] for i in range(first, last - 12, 6) if encoded[i:i + 12] in readable]
-            with self.subTest(case=case):
-                self.assertEqual(leaked, [])
-                self.assertTrue(masked.startswith("Notes\n") and masked.endswith(after), masked)
+        from tests.ordinary import WORDS
+        key = ("-----BEGIN PRIVATE KEY-----\n" + base64.b64encode(bytes(range(90))).decode()
+               + "\n-----END PRIVATE KEY-----\n")
+        encoded = base64.b64encode(key.encode()).decode()
+        for word in ("rent",) + WORDS:
+            for heading in (word, word.title(), word.upper()):
+                for width in sorted({4, len(heading), 64, 76}):
+                    with self.subTest(heading=heading, width=width):
+                        block = "\n".join(textwrap.wrap(encoded, width))
+                        self.assertEqual(mask(f"{heading}\n{block}\nnext steps"), f"{heading}\n[masked]\nnext steps")
+
+    def test_base64_of_text_about_keys_or_of_a_public_block_stays(self):
+        import random
+        import textwrap
+        from tests import ordinary
+        for seed in range(300):
+            encoded = ordinary.encoded(random.Random(f"encoded:{seed}"))
+            for width in sorted({1, 4, 64, 76, len(encoded)}):
+                text = "\n".join(textwrap.wrap(encoded, width))
+                with self.subTest(seed=seed, width=width):
+                    self.assertEqual(mask(f"note: {text}\nnext steps"), f"note: {text}\nnext steps")
+
+    def test_a_base64_pgp_secret_key_block_is_masked(self):
+        import base64
+        import json
+        import random
+        import textwrap
+        r = random.Random(5)
+        body = "\n".join(textwrap.wrap(base64.b64encode(bytes(r.randrange(256) for _ in range(150))).decode(), 64))
+        for label in ("PGP SECRET KEY BLOCK", "PGP PRIVATE KEY BLOCK"):
+            armored = (f"-----BEGIN {label}-----\nVersion: GnuPG v2\n\n{body}\n=AbCd\n-----END {label}-----\n")
+            encoded = base64.b64encode(armored.encode()).decode()
+            for text, masked in ((f"key: {encoded}\nnext steps", "key: [masked]\nnext steps"),
+                                 ("Plan\n" + "\n".join(textwrap.wrap(encoded, 76)) + "\nnext steps",
+                                  "Plan\n[masked]\nnext steps"),
+                                 (json.dumps({"key": "\n".join(textwrap.wrap(encoded, 64))}), '{"key": "[masked]"}')):
+                with self.subTest(label=label, text=text[:12]):
+                    self.assertEqual(mask(text), masked)
 
     def test_many_keys_in_one_block_cost_time_in_proportion(self):
         import base64
@@ -1192,6 +1215,65 @@ class KeyShapeTest(unittest.TestCase):
                 self.assertEqual(masked, mask(text[:start] + "[masked]" + text[end:]), f"seq {seq}: {text!r}")
                 if after.endswith("the next paragraph") and text[end:] in (after, after[1:]):
                     self.assertEqual(masked, "note [masked]" + text[end:], f"seq {seq}: {text!r}")
+
+    def test_a_base64_key_wrapped_at_every_width_is_masked_whole_in_place(self):
+        """Each kind of key file, alone or after a certificate, base64 wrapped at every width from 1 to its length, in a
+        field's value, a JSON string, under a heading and after prose: everything from the line that holds its
+        header's first byte through its last line is one placeholder, and the text around it stays. One kind and one
+        line break for each width; KB_KEY_CASES of 20000 or more reads every kind with every break."""
+        import base64
+        import json
+        import os
+        import random
+        import textwrap
+        r = random.Random(13)
+
+        def body(n):
+            return "\n".join(textwrap.wrap(base64.b64encode(bytes(r.randrange(256) for _ in range(n))).decode(), 64))
+
+        def pem(label):
+            return f"-----BEGIN {label}-----\n{body(r.randint(60, 120))}\n-----END {label}-----\n"
+
+        def pgp(label):
+            return (f"-----BEGIN {label}-----\nVersion: GnuPG v2\n\n{body(r.randint(60, 120))}\n"
+                    f"={base64.b64encode(bytes(r.randrange(256) for _ in range(3))).decode()}\n-----END {label}-----\n")
+
+        cert = f"-----BEGIN CERTIFICATE-----\n{body(48)}\n-----END CERTIFICATE-----\n"
+        encrypted = ("-----BEGIN RSA PRIVATE KEY-----\nProc-Type: 4,ENCRYPTED\nDEK-Info: AES-128-CBC,00112233445566778899AABBCCDDEEFF\n\n"
+                     f"{body(96)}\n-----END RSA PRIVATE KEY-----\n")
+        files = [("", pem("PRIVATE KEY")), ("", pem("RSA PRIVATE KEY")), ("", pem("EC PRIVATE KEY")),
+                 ("", pem("OPENSSH PRIVATE KEY")), ("", pem("ENCRYPTED PRIVATE KEY")), ("", encrypted),
+                 ("", pgp("PGP PRIVATE KEY BLOCK")), ("", pgp("PGP SECRET KEY BLOCK")), (cert, pem("PRIVATE KEY")),
+                 ("\n", pem("PRIVATE KEY")), ("a\n", pem("EC PRIVATE KEY"))]
+        breaks = ("\n", "\r\n", "\\n", "\n  ")
+        every = int(os.environ.get("KB_KEY_CASES", "3000")) >= 20000
+
+        def placed(lines, brk, cut):
+            """(the text, what it masks to) for the block's lines in each place: everything from line `cut` is the key's."""
+            head = brk.join(lines[:cut] + [""])
+            line_end = {"\\n": "\\n", "\r\n": "\r\n"}.get(brk, "\n")
+            block, masked = brk.join(lines), head + "[masked]"
+            yield "field", f"tls.key: {block}{line_end}ca.crt: none", f"tls.key: {masked}{line_end}ca.crt: none"
+            if brk != "\\n":
+                value = {"tls.key": block, "note": "rotate after the review"}
+                yield "JSON", json.dumps(value), json.dumps(dict(value, **{"tls.key": "[masked]"})).replace(
+                    "[masked]", json.dumps(head)[1:-1] + "[masked]")
+            yield "heading", f"Plan{line_end}{block}{line_end}next steps", f"Plan{line_end}{masked}{line_end}next steps"
+            yield ("prose", f"here is the key {block}{line_end}it rotates after the review",
+                   f"here is the key {masked}{line_end}it rotates after the review")
+
+        for n, (before, key) in enumerate(files):
+            encoded = base64.b64encode((before + key).encode()).decode()
+            header = len(before.encode()) // 3 * 4  # where the group holding the header's first byte starts
+            for width in range(1, len(encoded) + 1):
+                if not every and width % len(files) != n:
+                    continue
+                lines = textwrap.wrap(encoded, width)
+                cut = header // width
+                for brk in breaks if every else (breaks[width // len(files) % len(breaks)],):
+                    for place, text, masked in placed(lines, brk, cut):
+                        with self.subTest(file=n, width=width, brk=brk, place=place):
+                            self.assertEqual(mask(text), masked)
 
     def test_encrypted_key_fields_cost_time_near_prose(self):
         # An encrypted key's footer comes after one blank line, the one after its DEK-Info field, so a field's search
