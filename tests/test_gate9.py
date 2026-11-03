@@ -1715,6 +1715,34 @@ class ReviewTwentyNineTest(unittest.TestCase):
                     self.assertNotIn(text.rsplit(" ", 1)[1], mask(form))
 
 
+class ReviewThirtyTest(unittest.TestCase):
+    """The thirtieth review's finding: a provider's token that an earlier pattern took only part of, as GitLab's shape
+    takes a routable token's first part, kept the rest readable; gitleaks' own rule finds the whole token."""
+
+    def test_a_token_an_earlier_pattern_cut_is_masked_whole(self):
+        for secret in ("glpat-Ab3Cd5Ef7Gh9Ij1Kl3Mn5Op7Qr9St1Uv.aa1234567",
+                       "hvs.Qx7Lm2Vn8A_ghp_Ab3Cd5Ef7Gh9Ij1Kl3Mn5Op7Qr9St1Uv3Wx5_Yz4Bx6Cd8Ef0Gh2Ij4Kl6Mn8Op0Qr2St4Uv6Wx8Yz"):
+            tail, head = secret[-9:], secret[:12]
+            for text in (secret, f"GITLAB_TOKEN={secret}\n", json.dumps({"stdout": f"GITLAB_TOKEN={secret}\n"}),
+                         f"token: {secret} (expires soon)"):
+                with self.subTest(text=text[:40]):
+                    masked = mask(text)
+                    self.assertNotIn(tail, masked)
+                    self.assertNotIn(head, masked)
+            out = f"HOME=/home/dev\nGITLAB_TOKEN={secret}\nSHELL=/bin/bash\n"  # printenv's output
+            for reader, records in (
+                    ("codex", codex_session(
+                        {"type": "function_call", "name": "exec_command", "arguments": json.dumps({"cmd": "printenv"})},
+                        {"type": "function_call_output", "output": "Process exited with code 0\nOutput:\n" + out})),
+                    ("claude_code", claude_session({"type": "tool_result", "content": [{"type": "text", "text": out}]},
+                                                   role="user"))):
+                with self.subTest(reader=reader, secret=secret[:8]):
+                    text = stored(reader, records)
+                    self.assertNotIn(tail, text)
+                    self.assertNotIn(head, text)
+                    self.assertIn("SHELL=/bin/bash", text)
+
+
 # Commands as an argument list, each flag's value its own item: (the list, the items masked).
 ARGV = (
     (["login", "--password", PASSWORD], {2}), (["--token", SUB], {1}), (["--api-key", SUB, "--verbose"], {1}),

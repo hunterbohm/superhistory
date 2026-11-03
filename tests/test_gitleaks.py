@@ -60,6 +60,11 @@ def _rule_test(index):
                     masked = mask(text)
                     self.assertNotIn(secret, masked)
                     self.assertNotIn(secret[-12:], masked)
+                    # no part of it either, where an earlier pattern took only a part, but for an end the place
+                    # itself holds ("https://" before a webhook in a link)
+                    for end in (secret[:8], secret[-8:]):
+                        if end not in text.replace(secret, ""):
+                            self.assertNotIn(end, masked)
     return test
 
 
@@ -85,8 +90,12 @@ class BareTokenTest(unittest.TestCase):
                 continue
             for secret in examples(index, 2):
                 with self.subTest(rule=rule[0], secret=secret):
-                    self.assertNotIn(secret, mask(secret))
-                    self.assertNotIn(secret, mask(f"value: {secret}\n"))
+                    for text in (secret, f"value: {secret}\n"):
+                        masked = mask(text)
+                        self.assertNotIn(secret, masked)
+                        for end in (secret[:8], secret[-8:]):
+                            if end not in text.replace(secret, ""):
+                                self.assertNotIn(end, masked)
 
 
 class TableTest(unittest.TestCase):
