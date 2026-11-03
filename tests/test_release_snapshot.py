@@ -6,6 +6,7 @@ import io
 import os
 import re
 import shutil
+import signal
 import ssl
 import struct
 import subprocess
@@ -242,6 +243,11 @@ class CredentialTest(SourceCase):
         with self.assertRaisesRegex(rs.ReleaseError, "credential"):
             self.build(head, credentials=[""])
 
+    def test_a_credential_that_is_not_ascii_is_refused(self):
+        head = self.with_history()
+        with self.assertRaisesRegex(rs.ReleaseError, "ASCII"):
+            self.build(head, credentials=["fictional-\u00e9-secret"])
+
 
 class HistoryCheckTest(SourceCase):
     def test_a_repo_with_history_fails(self):
@@ -419,6 +425,23 @@ class ArchiveTest(SourceCase):
         bare = {k: v for k, v in self.base_files().items() if k != "install.sh"}
         shutil.rmtree(str(self.out))
         self.assertFalse(self.build(self.commit(bare, remove=["install.sh"])).check("archive").ok)
+
+    def test_export_ignore_leaves_files_and_folders_out_and_the_archive_check_still_passes(self):
+        files = self.base_files(**{".gitattributes": "notes.txt export-ignore\ndocs/ export-ignore\n", "notes.txt": "x\n",
+                                   "docs/a.md": "y\n", "docs/sub/b.md": "z\n", "keep/c.md": "w\n"})
+        release = self.build(self.commit(files))
+        with tarfile.open(str(release.archive)) as tar:
+            names = tar.getnames()
+        self.assertFalse([n for n in names if "notes.txt" in n or "/docs" in n], names)
+        self.assertIn("widgetly-1.2.3/keep/c.md", names)
+        found = release.check("archive")
+        self.assertTrue(found.ok, found.findings)
+
+    def test_export_subst_fails_the_archive_check_with_its_reason(self):
+        files = self.base_files(**{".gitattributes": "a.txt export-subst\n", "a.txt": "$Format:%H$\n"})
+        found = self.build(self.commit(files)).check("archive")
+        self.assertFalse(found.ok)
+        self.assertTrue(any(f.where.endswith("a.txt") and "export-subst" in f.text for f in found.findings), found.findings)
 
 
 class ArchiveExactTest(SourceCase):
@@ -674,6 +697,15 @@ class FilesTest(SourceCase):
         self.assertEqual(self.wheres(found), sorted(name for name, _ in outside))
         self.assertTrue(all("outside the tree" in f.text for f in found.findings), found.findings)
 
+    def test_a_path_that_is_not_utf8_fails_and_exceptions_match_names_exactly(self):
+        self.commit_bytes({os.fsdecode(b"\xff.txt"): "Acmecorp\n", "\ufffd.txt": "Acmecorp\n",
+                           EXCEPTIONS: tsv(("\ufffd.txt", "Acmecorp", "a made-up firm"))})
+        release = self.build()
+        self.assertEqual(self.wheres(release.check("files")), ["\\xff.txt"])
+        found = release.check("patterns")
+        self.assertEqual([f.where for f in found.findings], ["\\xff.txt:1"])
+        self.assertEqual([f.where for f in found.allowed], ["\ufffd.txt:1"])
+
     def test_a_submodule_entry_fails(self):
         self.commit_bytes({})
         git(self.src, "update-index", "--add", "--cacheinfo", "160000,%s,sub" % git(self.src, "rev-parse", "HEAD"))
@@ -780,6 +812,37 @@ class CommandTest(SourceCase):
         self.assertRegex(text, r"(?m)^SKIP install")
         self.assertRegex(text, r"(?m)^SKIP suites")
         self.assertEqual((self.out / "CHECKS.txt").read_text(), text)
+
+    VERIFY = ('cd "$OUT" && shasum -a 256 -c RELEASE.sha256 && test "$(git -C repo rev-parse HEAD \'HEAD^{tree}\' | paste -sd\' \' -)" '
+              '= "$(cat RELEASE.ids)" && echo "release verified"')
+
+    def verified(self):
+        done = subprocess.run(["bash", "-c", self.VERIFY], env=dict(os.environ, OUT=str(self.out)), capture_output=True, text=True)
+        return done.returncode == 0 and done.stdout.endswith("release verified\n")
+
+    def test_a_passing_run_pins_the_notes_the_archive_the_commit_and_the_tree_and_prints_the_pins_last(self):
+        self.commit(self.base_files())
+        code, text = self.run_main()
+        self.assertEqual(code, 0, text)
+        pins = (self.out / "RELEASE.sha256").read_text() + (self.out / "RELEASE.ids").read_text()
+        self.assertTrue(text.endswith("RESULT: PASS\n" + pins), text)
+        self.assertRegex(pins, r"^[0-9a-f]{64}  RELEASE_NOTES\.md\n[0-9a-f]{64}  v1\.2\.3\.tar\.gz\n[0-9a-f]{40} [0-9a-f]{40}\n$")
+        self.assertTrue(self.verified())
+        for path in (self.out / "RELEASE_NOTES.md", self.out / "v1.2.3.tar.gz"):
+            data = path.read_bytes()
+            path.write_bytes(data + b"x")
+            self.assertFalse(self.verified(), path)
+            path.write_bytes(data)
+        self.assertTrue(self.verified())
+        git(self.out / "repo", "commit", "-q", "--allow-empty", "-m", "moved")
+        self.assertFalse(self.verified())
+
+    def test_a_failing_run_writes_and_prints_no_pins(self):
+        self.commit(self.base_files(**{"a.txt": "acmecorp\n"}))
+        code, text = self.run_main()
+        self.assertEqual(code, 1)
+        self.assertTrue(text.endswith("RESULT: FAIL\n"), text)
+        self.assertFalse((self.out / "RELEASE.sha256").exists() or (self.out / "RELEASE.ids").exists())
 
     def test_a_failed_check_exits_one_and_still_writes_the_folder(self):
         self.commit(self.base_files(**{"a.txt": "acmecorp\n"}))
@@ -1580,6 +1643,41 @@ class InstallTest(SourceCase):
         script = self.tmp / "wrapped.sh"
         script.write_text("#!/bin/sh\n%s\nexec sh %s \"$@\"\n" % (before, INSTALLER))
         return script
+
+    def test_a_report_planted_by_the_installer_is_a_change_and_is_never_written_through(self):
+        victim = self.tmp / "victim.txt"
+        victim.write_text("keep me\n")
+        for target in (self.out / "RELEASE_NOTES.md", victim):
+            shutil.rmtree(str(self.out), ignore_errors=True)
+            planted = self.wrapped_installer("ln -s '%s' '%s'" % (target, self.out / "CHECKS.txt"))
+            code, text = self.run_main("--installer", str(planted))
+            self.assertNotEqual(code, 0, text)
+            self.assertIn("CHECKS.txt", text)
+            self.assertEqual(victim.read_text(), "keep me\n")
+            self.assertTrue((self.out / "RELEASE_NOTES.md").read_text().startswith("# "))
+            self.assertTrue(os.path.islink(str(self.out / "CHECKS.txt")))
+
+    def test_a_process_the_installer_leaves_in_its_group_is_stopped_and_fails_the_check(self):
+        marker = self.tmp / "left.pid"
+        planted = self.wrapped_installer("( sleep 60 ) > /dev/null 2>&1 < /dev/null &\necho $! > '%s'" % marker)
+        release = self.build(installer=planted)
+        pid = int(marker.read_text())
+
+        def stop():
+            with contextlib.suppress(ProcessLookupError):
+                os.kill(pid, signal.SIGKILL)
+        self.addCleanup(stop)
+        found = release.check("install")
+        self.assertFalse(found.ok)
+        self.assertIn(str(pid), "\n".join(f.text for f in found.findings))
+        for _ in range(50):
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                break
+            time.sleep(0.1)
+        else:
+            self.fail("the process the installer left is still running")
 
     def test_an_installer_that_adds_the_credential_to_the_notes_fails_the_credential_and_install_checks(self):
         notes = self.out / "RELEASE_NOTES.md"
