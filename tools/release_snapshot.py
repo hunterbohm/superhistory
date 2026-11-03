@@ -65,6 +65,8 @@ VERSION_FILE = "kb/__init__.py"
 EXCEPTIONS_PATH = "tools/release_exceptions.tsv"
 ROWS_PATH = "bench/DATASET_ROWS.txt"
 SUITE_TIMEOUT = 3600
+INTERPRETERS = (("3.12", ("python3.12", "python3")), ("3.9", ("python3.9", "python3")))
+VERSION_PROBE = "import sys; print('%d.%d' % sys.version_info[:2])"
 SKIPPED = re.compile(r"\.\.\. skipped ('.*'|\".*\")\s*$", re.M)
 TAG_REF = "refs/tags/"
 ISOLATED = {"GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1"}
@@ -635,21 +637,42 @@ def install_check(release, installer, timeout):
 class Suite:
     label: str
     argv: list
+    want: tuple = None
 
 
-def default_suites(repo, interpreters=("python3", "python3.9")):
-    suites = [Suite("%s tests" % py, [py, "-m", "unittest", "discover", "-v", "-s", "tests", "-t", "."]) for py in interpreters]
+def default_suites(repo, interpreters=INTERPRETERS):
+    suites = [Suite("python%s tests" % version, ["python", "-m", "unittest", "discover", "-v", "-s", "tests", "-t", "."],
+                    (version, candidates)) for version, candidates in interpreters]
     folders = {posixpath.dirname(show(name)) for _, _, name in tree_entries(repo)
                if show(name).startswith("bench/") and re.search(r"(^|/)test_[^/]*\.py$", show(name))}
-    suites.extend(Suite(folder, [interpreters[0], "-m", "unittest", "discover", "-v", "-s", folder, "-p", "test_*.py"])
+    suites.extend(Suite(folder, ["python", "-m", "unittest", "discover", "-v", "-s", folder, "-p", "test_*.py"], interpreters[0])
                   for folder in sorted(folders))
     return suites
 
 
+def find_python(version, candidates, env):
+    seen = []
+    for name in candidates:
+        exe = shutil.which(name)
+        if exe is None:
+            seen.append("%s is not on PATH" % name)
+            continue
+        try:
+            code, output = run_group([exe, "-c", VERSION_PROBE], 60, env=env)
+        except (OSError, subprocess.SubprocessError) as exc:
+            seen.append("%s did not run: %s" % (name, failure(exc)))
+            continue
+        found = show(output).strip()
+        if not code and found == version:
+            return exe, None
+        seen.append("%s is %s, not %s" % (name, found or "unreadable", version))
+    return None, "needs Python %s: %s" % (version, "; ".join(seen))
+
+
 def run_suite(suite, repo, env, timeout):
-    exe = shutil.which(suite.argv[0])
+    exe, why = find_python(suite.want[0], suite.want[1], env)
     if exe is None:
-        return suite.label, None, 0, [], ["%s is not on PATH" % suite.argv[0]]
+        return suite.label, None, 0, [], [why]
     try:
         code, output = run_group([exe] + suite.argv[1:], timeout, cwd=repo, env=env)
     except subprocess.TimeoutExpired:
