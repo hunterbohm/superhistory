@@ -547,7 +547,7 @@ def _gitleaks_edits(text):
 # Which mask() a stored row was masked with. A row of another version, or of none, is masked again when read and by
 # the next ingest. The patterns change it by themselves; bump REVISION when the code that applies them changes what
 # it masks.
-REVISION = 18
+REVISION = 19
 VERSION = hashlib.sha256(repr((REVISION, [p.pattern for p in SECRET_PATTERNS + PREFIXED_SECRETS], KEYED_SECRET.pattern,
                                 ENV_KEY_SECRET.pattern, JSON_SECRET.pattern, FLAG_SECRET.pattern, AUTH_SECRET.pattern,
                                 COMMAND_FLAGS, PASSWORD_NAME.pattern, sorted(PLACEHOLDERS), REFERENCE.pattern,
@@ -1216,6 +1216,9 @@ _REST = re.compile(rf"(?:(?!{_KEY_END})(?!{_WORDS_LINE})(?!{_NEXT_FIELD}){_IN_PA
 _KEY_END_TEXT = re.compile(_KEY_END)
 _PEM_HEADER = re.compile("-----BEGIN ")
 _LINE_END = re.compile(r"\r?\n|\\+(?:r\\+)?n|\Z")
+_LINE_BREAK = re.compile(r"\r?\n|\\+(?:r\\+)?n")
+_WORDS_LINE_AT = re.compile(_WORDS_LINE)
+_BASE64_CHARACTER = re.compile(r"[A-Za-z0-9+/]")
 _RUN = re.compile(r"[A-Za-z0-9+/]{2,}={1,2}|[A-Za-z0-9+/]{4,}")
 _ESCAPE = re.compile(r"\\+(?:[nrt]|u[0-9A-Fa-f]{4})")
 
@@ -1288,15 +1291,27 @@ def _public_material(data):
     return tags == [0x30, 0x03] and first[0] == 0x06
 
 
+def _encoded_text(data):
+    """Whether bytes decoded from base64 are ordinary text, as base64 of JSON or a sentence is: UTF-8 with no control
+    character but a line break or a tab, holding a space or a mark base64 has not (a brace, a colon, a quote), and no
+    key's armour ("-----"). A key's DER, or any part of it, is no such text."""
+    try:
+        decoded = data.decode("utf-8")
+    except UnicodeDecodeError:
+        return False
+    return (not re.search(r"[\x00-\x08\x0b-\x1f\x7f]", decoded) and "-----" not in decoded
+            and bool(re.search(r"[^A-Za-z0-9+/=\r\n]", decoded)))
+
+
 def _token_like(run):
     """Whether a run of base64 characters could be part of a key's body: one that ends in base64's "=" padding, or
     one of four characters or more that mixes two of capitals, small letters, and digits or "+" and "/" and is no
-    word in small letters with a capital before them ("Next"). A word in one case does not; a camel-case name or a
-    hash does, and is read as one, failing closed, as main's reading hides the whole paragraph."""
+    word in small letters, with a vowel, after a capital ("Next", but not "Bcsv"). A word in one case does not; a
+    camel-case name or a hash does, and is read as one, failing closed, as main's reading hides the whole paragraph."""
     if run.endswith("="):
         return True
     return (sum(bool(re.search(kind, run)) for kind in ("[A-Z]", "[a-z]", "[0-9+/]")) >= 2
-            and not re.fullmatch(r"[A-Z][a-z]+", run))
+            and not re.fullmatch(r"[A-Z][a-z]*[aeiouy][a-z]*", run))
 
 
 def _token_tail(text):
@@ -1305,6 +1320,14 @@ def _token_tail(text):
     header, or its footer), so that only a tail of ordinary text stays. Read once for the text: each rest then costs a
     lookup."""
     tokens = [m.start() for m in _RUN.finditer(text) if _token_like(m.group())]
+    # and every line that is no line of words (_WORDS_LINE) but holds a run of base64's characters, as a fragment of a
+    # key alone on its line ("Bcsv") does
+    for m in _LINE_BREAK.finditer(text):
+        if not _WORDS_LINE_AT.match(text, m.start()):
+            run = _BASE64_CHARACTER.search(text, m.end(), _LINE_END.search(text, m.end()).start())
+            if run:
+                tokens.append(run.start())
+    tokens.sort()
     ends = sorted([m.start() for m in _BLANK_LINE.finditer(text)] + [m.start() for m in _PEM_HEADER.finditer(text)]
                   + [m.end() for m in _KEY_END_TEXT.finditer(text)])
 
@@ -1331,7 +1354,7 @@ def _key_rest_edits(text, starts=_REST_START):
         rest = text[at.end():end]
         data = None if _KEY_END_TEXT.search(rest) else _decoded(
             re.sub(r"[^A-Za-z0-9+/=]", "", _ESCAPE.sub("", INVISIBLE.sub("", rest))), 0, None)
-        if not (data and _public_material(data)):
+        if not (data and (_public_material(data) or _encoded_text(data))):
             spans.append((at.end(), end))
             covered = max(covered, end)
     edits = []
