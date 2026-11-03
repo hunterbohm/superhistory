@@ -625,7 +625,7 @@ def _key_range(joined, starts, ends, found, floor):
             elif other:
                 break
             else:
-                bottom, at, recent = line, end, (recent + below)[-48:]
+                bottom, at, recent = max(bottom, line), end, (recent + below)[-48:]
                 continue
         if not _LINE_BREAKS.fullmatch(below):
             break
@@ -641,13 +641,10 @@ def _key_spans(text, lines):
     starts = [0] + ends[:-1]
     spans, floor = [], 0
     for found in _ENCODED_KEY.finditer(joined):
-        lines_of_key = None if bisect.bisect_right(ends, found.start()) < floor else _key_range(
-            joined, starts, ends, found, floor)
-        if lines_of_key is None:
-            continue
-        top, bottom = lines_of_key
-        spans.append((lines[top][0], lines[bottom][1]))
-        floor = bottom + 1
+        key = bisect.bisect_right(ends, found.start()) >= floor and _key_range(joined, starts, ends, found, floor)
+        if key:
+            spans.append((lines[key[0]][0], lines[key[1]][1]))
+            floor = key[1] + 1
     return spans
 
 
