@@ -5,7 +5,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from kb import NAME
+from kb import LEGACY_NAME, NAME
 from kb.paths import HOME_ENV
 
 SLUG = NAME.lower()
@@ -13,6 +13,12 @@ LABEL = f"{SLUG}.kb.ingest"
 UNIT = f"{SLUG}-kb-ingest"
 SERVICE = f"{UNIT}.service"
 TIMER = f"{UNIT}.timer"
+# The job as it was named before the rename. Turning the schedule on replaces it; off stops it; status reports it.
+OLD_LABEL = f"{LEGACY_NAME.lower()}.kb.ingest"
+OLD_UNIT = f"{LEGACY_NAME.lower()}-kb-ingest"
+OLD_SERVICE = f"{OLD_UNIT}.service"
+OLD_TIMER = f"{OLD_UNIT}.timer"
+NOT_SCHEDULED = "Not scheduled."
 FALLBACK_PATH = "/usr/local/bin:/usr/bin:/bin"
 
 
@@ -78,12 +84,12 @@ def _every(minutes):
     return f"every {minutes} minute" + ("" if minutes == 1 else "s")
 
 
-def _plist_path(home):
-    return _home(home) / "Library" / "LaunchAgents" / f"{LABEL}.plist"
+def _plist_path(home, label=LABEL):
+    return _home(home) / "Library" / "LaunchAgents" / f"{label}.plist"
 
 
-def _target():
-    return f"gui/{os.getuid()}/{LABEL}"
+def _target(label=LABEL):
+    return f"gui/{os.getuid()}/{label}"
 
 
 def _mac_on(paths, config, kb_path, home):
@@ -104,27 +110,46 @@ def _mac_on(paths, config, kb_path, home):
     code, out = _run("launchctl", "bootstrap", f"gui/{os.getuid()}", str(plist))
     if code:
         raise ScheduleError(f"launchctl could not load {plist}: {out or 'exit ' + str(code)}")
-    return f"Scheduled ingest {_every(minutes)} with the launchd agent {LABEL}."
+    message = f"Scheduled ingest {_every(minutes)} with the launchd agent {LABEL}."
+    if _plist_path(home, OLD_LABEL).exists() and _mac_stop(OLD_LABEL, home):
+        message += f" Replaced the old launchd agent {OLD_LABEL}."
+    return message
+
+
+def _mac_stop(label, home):
+    unloaded = _run("launchctl", "bootout", _target(label))[0] == 0
+    removed = _remove(_plist_path(home, label))
+    return unloaded or removed
 
 
 def _mac_off(home):
-    unloaded = _run("launchctl", "bootout", _target())[0] == 0
-    removed = _remove(_plist_path(home))
-    if not (unloaded or removed):
+    stopped = _mac_stop(LABEL, home)
+    stopped_old = _mac_stop(OLD_LABEL, home)
+    if not (stopped or stopped_old):
         return "Nothing was scheduled."
-    return f"Stopped the launchd agent {LABEL} and removed its file."
+    names = LABEL if stopped and not stopped_old else OLD_LABEL if stopped_old and not stopped else f"{LABEL} and {OLD_LABEL}"
+    return f"Stopped the launchd agent {names} and removed its file."
 
 
 def _mac_status(home):
-    plist = _plist_path(home)
-    loaded = _run("launchctl", "print", _target())[0] == 0
+    message = _mac_job_status(home, LABEL)
+    if message == NOT_SCHEDULED:
+        old = _mac_job_status(home, OLD_LABEL)
+        if old != NOT_SCHEDULED:
+            return f"{old} It moves to {LABEL} when you turn the schedule on again."
+    return message
+
+
+def _mac_job_status(home, label):
+    plist = _plist_path(home, label)
+    loaded = _run("launchctl", "print", _target(label))[0] == 0
     if plist.exists() and loaded:
-        return f"Scheduled: launchd agent {LABEL} is loaded ({plist})."
+        return f"Scheduled: launchd agent {label} is loaded ({plist})."
     if plist.exists():
         return f"Not running: {plist} exists but launchd has not loaded it. Turn the schedule on again."
     if loaded:
-        return f"launchd has {LABEL} loaded but {plist} is gone. Turn the schedule off, then on again."
-    return "Not scheduled."
+        return f"launchd has {label} loaded but {plist} is gone. Turn the schedule off, then on again."
+    return NOT_SCHEDULED
 
 
 def _unit_dir(home):
@@ -174,30 +199,48 @@ def _linux_on(config, kb_path, home):
         code, out = _run("systemctl", "--user", *argv)
         if code:
             raise ScheduleError(f"systemctl --user {' '.join(argv)} failed: {out or 'exit ' + str(code)}")
-    return (f"Scheduled ingest {_every(minutes)} with the systemd timer {TIMER}. "
-            "A user timer stops at logout unless lingering is on (`loginctl enable-linger`).")
+    message = f"Scheduled ingest {_every(minutes)} with the systemd timer {TIMER}. "
+    if (_unit_dir(home) / OLD_TIMER).exists() and _linux_stop(OLD_TIMER, OLD_SERVICE, home):
+        message += f"Replaced the old timer {OLD_TIMER}. "
+    return message + "A user timer stops at logout unless lingering is on (`loginctl enable-linger`)."
+
+
+def _linux_stop(timer, service, home):
+    unit_dir = _unit_dir(home)
+    disabled = _run("systemctl", "--user", "disable", "--now", timer)[0] == 0
+    removed = [_remove(unit_dir / name) for name in (timer, service)]
+    _run("systemctl", "--user", "daemon-reload")
+    return disabled or any(removed)
 
 
 def _linux_off(home):
-    unit_dir = _unit_dir(home)
-    disabled = _run("systemctl", "--user", "disable", "--now", TIMER)[0] == 0
-    removed = [_remove(unit_dir / name) for name in (TIMER, SERVICE)]
-    _run("systemctl", "--user", "daemon-reload")
-    if not (disabled or any(removed)):
+    stopped = _linux_stop(TIMER, SERVICE, home)
+    stopped_old = _linux_stop(OLD_TIMER, OLD_SERVICE, home)
+    if not (stopped or stopped_old):
         return "Nothing was scheduled."
-    return f"Stopped the systemd timer {TIMER} and removed its files."
+    names = TIMER if stopped and not stopped_old else OLD_TIMER if stopped_old and not stopped else f"{TIMER} and {OLD_TIMER}"
+    return f"Stopped the systemd timer {names} and removed its files."
 
 
 def _linux_status(home):
-    exists = (_unit_dir(home) / TIMER).exists()
-    active = _run("systemctl", "--user", "is-active", TIMER)[0] == 0
+    message = _linux_job_status(home, TIMER)
+    if message == NOT_SCHEDULED:
+        old = _linux_job_status(home, OLD_TIMER)
+        if old != NOT_SCHEDULED:
+            return f"{old} It moves to {TIMER} when you turn the schedule on again."
+    return message
+
+
+def _linux_job_status(home, timer):
+    exists = (_unit_dir(home) / timer).exists()
+    active = _run("systemctl", "--user", "is-active", timer)[0] == 0
     if exists and active:
-        return f"Scheduled: systemd timer {TIMER} is active."
+        return f"Scheduled: systemd timer {timer} is active."
     if exists:
-        return f"Not running: {TIMER} is written but not active. Turn the schedule on again."
+        return f"Not running: {timer} is written but not active. Turn the schedule on again."
     if active:
-        return f"systemd has {TIMER} active but its file is gone. Turn the schedule off, then on again."
-    return "Not scheduled."
+        return f"systemd has {timer} active but its file is gone. Turn the schedule off, then on again."
+    return NOT_SCHEDULED
 
 
 def on(paths, config, kb_path, platform=None, home=None):
