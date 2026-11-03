@@ -1660,16 +1660,19 @@ class ReviewTwentyEightTest(unittest.TestCase):
     """The twenty-eighth review's findings, under the coordinator's five-item bar."""
 
     def test_bare_airtable_and_facebook_tokens(self):
+        # An Airtable token is read alone. A Facebook token is read where "facebook" is in the text, as gitleaks reads
+        # it: alone, its shape is a pipe-separated record's too (ReviewTwentyNineTest), and the coordinator's rule
+        # from round 30 counts a token gitleaks' own rule would not find as ON-MAIN.
         airtable = "patAb3Cd5Ef7Gh9Ij." + "0123456789abcdef" * 4
         facebook = "123456789012345|a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5"
-        facebook_url = "123456789012345%7Ca1b2c3d4e5f6g7h8i9j0k1l2m3n4o5"  # its "|" written as a link writes it
-        for secret in (airtable, facebook, facebook_url):
-            for text in (secret, f"{secret}\n", json.dumps({"stdout": secret})):
+        for secret, before in ((airtable, ""), (facebook, "facebook token "),
+                               ("123456789012345%7Ca1b2c3d4e5f6g7h8i9j0k1l2m3n4o5", "facebook token ")):
+            for text in (before + secret, f"{before}{secret}\n", json.dumps({"stdout": before + secret})):
                 with self.subTest(text=text[:30]):
                     self.assertNotIn(secret, mask(text))
             for reader in READERS:
                 with self.subTest(reader=reader, secret=secret[:10]):
-                    self.assertNotIn(secret, stored(reader, tool_call(reader, "Bash", {"command": f"echo {secret}"})))
+                    self.assertNotIn(secret, stored(reader, tool_call(reader, "Bash", {"command": f"echo {before}{secret}"})))
 
     def test_prose_that_starts_a_string_with_a_netrc_keyword(self):
         for text in ("default login page password field.", "machine learning login page password field.",
@@ -1685,6 +1688,32 @@ class ReviewTwentyEightTest(unittest.TestCase):
             for form in (text, json.dumps({"content": text})):
                 with self.subTest(text=form):
                     self.assertNotIn(text.rsplit(" ", 1)[1], mask(form))
+
+class ReviewTwentyNineTest(unittest.TestCase):
+    """The twenty-ninth review's findings: a pipe-separated record read as a Facebook token, and a .netrc-like
+    sentence whose last word is long."""
+
+    def test_a_pipe_separated_record_with_a_timestamp_and_a_trace_id(self):
+        for text in ("1700000000000000|0123456789abcdef0123456789abcdef",
+                     "1700000000000000|0123456789abcdef0123456789abcdef|200|GET /health\n",
+                     "ts=1700000000000000%7C0123456789abcdef0123456789abcdef&page=2",
+                     json.dumps({"row": "1700000000000000|0123456789abcdef0123456789abcdef"})):
+            with self.subTest(text=text):
+                self.assertEqual(mask(text), text)
+
+    def test_netrc_like_prose_with_a_long_last_word(self):
+        for text in ("default login page password requirements", "default login page password Requirements.",
+                     "machine learning login page password self-service", "default login screen password guidelines",
+                     "default login form password autocomplete"):
+            for form in (text, json.dumps({"description": text})):
+                with self.subTest(text=form):
+                    self.assertEqual(mask(form), form)
+        for text in ("default login deploy password Tr0ub4dor9", "default login deploy password hx7-Qm2p",
+                     "machine api.example.com login deploy password requirements"):
+            for form in (text, json.dumps({"content": text})):
+                with self.subTest(text=form):
+                    self.assertNotIn(text.rsplit(" ", 1)[1], mask(form))
+
 
 # Commands as an argument list, each flag's value its own item: (the list, the items masked).
 ARGV = (
