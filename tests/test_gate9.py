@@ -1550,6 +1550,31 @@ class ReviewTwentyFourTest(unittest.TestCase):
         self.assertEqual(mask_all(["keytool", "-alias", "team's cert", "-storepass", "Tr0ub4dor9"])[-1], "[masked]")
         self.assertNotIn("Tr0ub4dor9", mask_all(["curl", "-u", "deploy:Tr0ub4dor9", "https://example.com"])[2])
 
+
+class ReviewTwentyFiveTest(unittest.TestCase):
+    """The twenty-fifth review's findings, under the coordinator's five-item bar."""
+
+    def test_provider_tokens_in_markdown_and_before_an_escape(self):
+        secret = "dapi" + "0123456789abcdef" * 2
+        for text in (f"**{secret}**", repr(secret + "\tactive"), json.dumps(json.dumps({"cmd": f'echo "{secret}"'})),
+                     f"`{secret}`*", repr(f"{secret}\\back")):
+            with self.subTest(text=text):
+                self.assertNotIn(secret, mask(text))
+        for reader in READERS:
+            with self.subTest(reader=reader):
+                self.assertNotIn(secret, stored(reader, tool_call(reader, "mcp__notes__write", {"text": f"**{secret}**"})))
+
+    def test_prose_about_a_default_login_page_is_no_netrc_line(self):
+        for text in ("The default login page password field is empty.", "a default login form password reset link"):
+            for form in (text, json.dumps(text)):
+                with self.subTest(text=form):
+                    self.assertEqual(mask(form), form)
+        for text in ("default login deploy password Tr0ub4dor9", "machine h login u password Qz8rLm2x\ndefault login deploy password Tr0ub4dor9",
+                     "  default login deploy password Tr0ub4dor9"):
+            for form in (text, json.dumps(text)):
+                with self.subTest(text=form):
+                    self.assertNotIn("Tr0ub4dor9", mask(form))
+
 # Commands as an argument list, each flag's value its own item: (the list, the items masked).
 ARGV = (
     (["login", "--password", PASSWORD], {2}), (["--token", SUB], {1}), (["--api-key", SUB, "--verbose"], {1}),
