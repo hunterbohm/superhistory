@@ -718,6 +718,85 @@ class ReviewSixTest(unittest.TestCase):
                 self.assertEqual(mask(text), text)
 
 
+class ReviewSevenTest(unittest.TestCase):
+    """#37's seventh review: a list, dict or tuple in text is parsed whole and read as mask_all reads it, so prose before
+    a printed dict, a newline inside an earlier item, and a shell -c item in a longer list all read right; the parsers
+    are guarded, and where a span does not parse the reading only adds."""
+
+    def test_prose_before_a_printed_dict(self):
+        value = {"cmd": "keytool -file <(cat /srv/c.pem) -storepass " + PASSWORD, "cwd": "/srv", "exit": 1}
+        for text in ("Couldn't run: " + repr(value), "it's broken; " + repr(value), f"log: {value!r}",
+                     repr({"err": "can't open", "proc": value})):
+            with self.subTest(text=text[:16]):
+                masked = mask(text)
+                self.assertNotIn(PASSWORD, masked)
+                read = ast.literal_eval(masked[masked.index("{"):masked.rindex("}") + 1])
+                inner = read.get("proc", read)
+                self.assertEqual((inner["cwd"], inner["exit"]), ("/srv", 1))
+                self.assertEqual(inner["cmd"], value["cmd"].replace(PASSWORD, "[masked]"))
+
+    def test_a_newline_in_an_earlier_item(self):
+        for items in (["mongosh", "--eval", "db.stats();\nprint(1)", "-p", PASSWORD],
+                      ["keytool", "-J-Dx=a\nb", "-storepass", PASSWORD],
+                      ["az", "login", "--eval", "a;\nb", "-p", PASSWORD]):
+            for text in (str(subprocess.CalledProcessError(1, items)), json.dumps(items), repr(items)):
+                with self.subTest(items=items[0], text=text[:12]):
+                    self.assertNotIn(PASSWORD, mask(text))
+
+    def test_a_shell_c_item_after_other_options(self):
+        for items in (["bash", "--noprofile", "-c", "keytool -file <(cat /srv/c.pem) -storepass " + PASSWORD],
+                      ["/bin/sh", "-eu", "-c", "mongosh -u admin -p " + PASSWORD],
+                      ["zsh", "-lc", "keytool -storepass " + PASSWORD + " -v"]):
+            for text in (str(subprocess.CalledProcessError(1, items)), json.dumps(items),
+                         json.dumps(json.dumps(items))):
+                with self.subTest(items=items[0], text=text[:12]):
+                    masked = mask(text)
+                    self.assertNotIn(PASSWORD, masked)
+                    self.assertIn("keytool" if "keytool" in items[-1] else "mongosh", masked)
+
+    def test_the_parse_matches_mask_all(self):
+        for items in (["keytool", "-storepass", PASSWORD, "-v"], ["mongosh", "--eval", "x;\ny", "-p", PASSWORD],
+                      ["bash", "-c", "keytool -storepass " + PASSWORD]):
+            for depth in (0, 1, 2):
+                text = json.dumps(items)
+                for _ in range(depth):
+                    text = json.dumps(text)
+                with self.subTest(items=items[0], depth=depth):
+                    read = mask(text)
+                    for _ in range(depth + 1):
+                        read = json.loads(read)
+                    self.assertEqual(read, mask_all(items))
+
+    def test_the_parsers_are_guarded(self):
+        deep = "[" * 5000 + "]" * 5000  # deeper than json/ast parse; the depth guard skips it before any parser
+        digits = '["keytool", "-storepass", "' + "9" * 80000 + '"]'  # str-to-int is quadratic on 3.9; skipped
+        for text in (deep, digits, "{" + "0" * 40000 + ": 1}", "[" + "9" * 40000 + "]"):
+            with self.subTest(text=text[:12]):
+                start = time.process_time()
+                out = mask(text)
+                self.assertLess(time.process_time() - start, 1.0, len(text))
+                self.assertNotIn(PASSWORD, out)
+        # a command hidden behind a long digit run, and a large list, do not crash and do not leak (no tight bound,
+        # as a text this large costs about the same on #29: it is the base mask cost, not a guard)
+        for text in ('{"cmd": "keytool -storepass ' + PASSWORD + '", ' + "0" * 70000 + "}",
+                     "[" + ", ".join('"x"' for _ in range(100000)) + "]"):
+            with self.subTest(text=text[:12]):
+                self.assertNotIn(PASSWORD, mask(text))
+
+    def test_a_span_that_does_not_parse_only_adds(self):
+        # A span that does not parse falls back to the line readings, which only add: no crash, and the text around a
+        # mask is kept. A bare command line inside the brackets is still masked by the fail-closed reading.
+        for text in ("run [keytool -storepass " + PASSWORD + "] now", "{ keytool -storepass " + PASSWORD + " }"):
+            with self.subTest(text=text[:16]):
+                masked = mask(text)
+                self.assertNotIn(PASSWORD, masked)
+                self.assertTrue(masked.startswith(text.split("keytool")[0]), masked)
+        for text in ("a plain [list, of, words] here", "{key: value, other: thing}", "see ['one', 'two', 'three']",
+                     "the list [1, 2, 3] and {a: b}"):
+            with self.subTest(text=text):
+                self.assertEqual(mask(text), text)
+
+
 class RevisionTest(unittest.TestCase):
     def test_stored_rows_are_masked_again(self):
         self.assertEqual(masking.REVISION, 11)
