@@ -2,7 +2,6 @@ import base64
 import bisect
 import contextvars
 import hashlib
-import itertools
 import logging
 import math
 import os
@@ -344,6 +343,7 @@ AUTH_SECRET = re.compile(rf"(?i)((?:(?<![A-Za-z0-9_.-])|{_AFTER_ESCAPE})(?:proxy
 # whether any value counts; otherwise a value of letters only after a space is a word, as after "is" ("docker login -p
 # is deprecated"). curl's -u takes "user:password", and mysql's -p takes its password glued, since "-p shop" names a
 # database.
+_FLAG_QUOTE = r"(?:\\?['\"])?"  # a quote, plain or escaped as JSON holds one, around a flag or its value
 COMMAND_FLAGS = (
     (r"curl", r"\s(?:-u|--user)\s*['\"]?[^ \t\n\r:'\"]+:", True),
     (r"mysql|mysqldump|mysqladmin|mariadb|mariadb-dump", r"\s-p(?=[^ \t\n\r'\"])", True),
@@ -354,14 +354,16 @@ COMMAND_FLAGS = (
     # reader does not see, is the command's next option ("mongosh -p --quiet" asks for the password), as these
     # commands' parsers read one. keytool and jarsigner take whatever follows as the password ("dash"), so there only
     # one of their own options (_JAVA_OPTIONS: "-keystore", "-v") is the next option.
-    (r"az\s+login|mongosh|mongo|mongodump|mongorestore|mongoexport|mongoimport|twine", r"\s-p[ \t]+(?:\\?['\"])?",
-     False),
-    (r"keytool|jarsigner", r"\s-(?:src|dest|new)?(?:storepass|keypass)[ \t]+(?:\\?['\"])?", "dash"),
+    # A flag in quotes is the flag ('mongosh "-p" ...'), as the shell takes the quotes away.
+    (r"az\s+login|mongosh|mongo|mongodump|mongorestore|mongoexport|mongoimport|twine",
+     rf"\s{_FLAG_QUOTE}-p{_FLAG_QUOTE}[ \t]+{_FLAG_QUOTE}", False),
+    (r"keytool|jarsigner", rf"\s{_FLAG_QUOTE}-(?:src|dest|new)?(?:storepass|keypass){_FLAG_QUOTE}[ \t]+{_FLAG_QUOTE}",
+     "dash"),
     # aws configure set's secret settings, and a .netrc line's password, its fields in any order but with a login
     # among them, so "the machine room password sheet" is no .netrc line. A setting's name is read once, its key word
     # looked for ahead: read around the key word, a run of key words took time in the square of its length.
-    (r"aws\s+configure\s+set",
-     r"\s(?:[A-Za-z0-9_-]+\.)?(?=[A-Za-z0-9_]*?(?:secret|token|password))[A-Za-z0-9_]+[ \t]+(?:\\?['\"])?", False),
+    (r"aws\s+configure\s+set", rf"\s{_FLAG_QUOTE}(?:[A-Za-z0-9_-]+\.)?(?=[A-Za-z0-9_]*?(?:secret|token|password))"
+                                 rf"[A-Za-z0-9_]+{_FLAG_QUOTE}[ \t]+{_FLAG_QUOTE}", False),
     (r"(?:machine[ \t]+[^\s]+|default)(?=(?:[ \t]+(?:password|account)[ \t]+[^\s]+)*[ \t]+login[ \t]+[^\s])",
      r"\spassword[ \t]+(?:\\?['\"])?", "field"),
 )
@@ -646,12 +648,12 @@ def _plain_line_end(text, start):
 
 def _past_closing_quote(text, start, end):
     """Where a command named at text[start:end] goes on: past the quote right after its name, where that quote closes
-    one opened on its line just before the name, as a quoted path to a program ('"C:\\...\\keytool.exe"') holds it."""
+    one of its kind opened on its line before the name, as a quoted path to a program ('"C:\\...\\keytool.exe"') holds it."""
     quote = next((q for q in ('\\"', "\\'", '"', "'") if text.startswith(q, end)), None)
     if quote is None:
         return end
     before = text[max(0, start - 260):start]
-    at = max(before.rfind('"'), before.rfind("'"))
+    at = before.rfind(quote[-1])  # the same kind of quote: the other may stand inside it ('"/opt/team's tools/bin/keytool"')
     if at < 0 or "\n" in before[at:] or "\r" in before[at:]:
         return end
     opened = before[at - 1:at + 1] if at > 0 and before[at - 1] == "\\" else before[at]
@@ -1400,10 +1402,11 @@ def _named_spans(view, rules):
     return spans
 
 
-def _reading_inside(text, start, end, starts=_READING_START):
-    """Where in text[start:end] the text as written starts a reading, or None."""
+def _reading_inside(text, start, end, starts=_READING_START, removed=()):
+    """Where in text[start:end] the text as written starts a reading, or None; not inside the characters a view
+    removed, as the letters of an escaped colour code ("\\x9b31m") would start a link's "x9b31m://"."""
     for m in _MAY_START.finditer(text, start, end):
-        if starts.match(text, m.start()):
+        if m.start() not in removed and starts.match(text, m.start()):
             return m.start()
     return None
 
@@ -1437,7 +1440,7 @@ class _Split:
         character splits it any more, as the text as written then reads its first part as main does."""
         gone = self.gone
         start, end = self.raw(start, end)
-        at = _reading_inside(self.text, gone[bisect.bisect_left(gone, start)] + 1, end, self.starts)
+        at = _reading_inside(self.text, gone[bisect.bisect_left(gone, start)] + 1, end, self.starts, self.removed)
         if at is not None:
             end = gone[bisect.bisect_left(gone, at) - 1] if bisect.bisect_left(gone, at) else start
             while end - 1 in self.removed:
@@ -1465,7 +1468,7 @@ class _Split:
                         or not PASSWORD_NAME.search(name) and not _password_shaped(value):
                     continue
             start, end = self.raw(start, end)
-            at = _reading_inside(self.text, start, end, self.starts)
+            at = _reading_inside(self.text, start, end, self.starts, self.removed)
             if at is not None:
                 end = at
             if start < end:
@@ -1673,11 +1676,15 @@ def mask_all(value, key=None):
     if isinstance(value, dict):
         # "pass" and "pwd" name a password only beside a user's name, as in text; alone, its value is read alone.
         user = any(isinstance(k, str) and _USER_KEY.fullmatch(k.strip()) for k in value)
-        out, keys = {}, {}
+        out, keys, numbered = {}, {}, {}
         for k, v in value.items():
             masked = mask(k) if isinstance(k, str) else k
             if masked in out:  # two keys masked alike, as two tokens are: the later is numbered, so no value is lost
-                masked = next(f"{masked} ({n})" for n in itertools.count(2) if f"{masked} ({n})" not in out)
+                n = numbered.get(masked, 1) + 1  # going on from the last number given, so many cost no more each
+                while f"{masked} ({n})" in out:
+                    n += 1
+                numbered[masked] = n
+                masked = f"{masked} ({n})"
             keys[k] = masked
             out[masked] = mask_all(v, k if isinstance(k, str) and (user or k.lower() not in ("pass", "pwd")) else None)
         names = [k for k in value if isinstance(k, str) and k.lower() in ("name", "key")]
