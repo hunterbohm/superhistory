@@ -963,6 +963,58 @@ class ReviewSevenTest(unittest.TestCase):
                     self.assertEqual(mask(text), text)
 
 
+class ReviewEightTest(unittest.TestCase):
+    """#34's eighth review: a key's fragment split by an invisible character after a line of words, written as JSON in
+    JSON, and a key file that starts with a byte order mark, written as base64."""
+
+    def test_a_split_fragment_after_a_line_of_words_stays_masked_in_json_at_any_depth_and_in_a_stored_row(self):
+        import json
+        from kb import mask as mask_module
+        head = "[masked]\nMC4CAQAwBQYDK2VwBCIEIAABAgMEBQYHCAkKCwwNDg8QERIT\nnotes deploy "
+        for fragment in ("ABCDEFGH\u200babcdefgh", "Zq7v\u200bRt2L", "abcd\u00adEFGH1234"):
+            for depth in range(3):
+                text = head + fragment
+                for _ in range(depth):
+                    text = json.dumps(text)
+                half = fragment.split("\u200b")[0].split("\u00ad")[0]
+                with self.subTest(fragment=repr(fragment), depth=depth):
+                    self.assertNotIn(half, mask(text))
+                with self.subTest(fragment=repr(fragment), depth=depth, row="stored"):
+                    with mask_module.stored_row("0123456789abcdef"):
+                        self.assertNotIn(half, mask(text))
+
+    def test_a_key_file_with_a_byte_order_mark_is_masked_whole_as_base64(self):
+        import base64
+        import textwrap
+        ec = bytes.fromhex("30310201010420") + bytes(range(32)) + bytes.fromhex("a00a06082a8648ce3d030107")
+        pkcs8 = bytes.fromhex("302e020100300506032b657004220420") + bytes(range(32))
+        for kind, der in ((b"EC PRIVATE KEY", ec), (b"PRIVATE KEY", pkcs8)):
+            pem = (b"\xef\xbb\xbf-----BEGIN " + kind + b"-----\n" + base64.b64encode(der)
+                   + b"\n-----END " + kind + b"-----\n")
+            encoded = base64.b64encode(pem).decode()
+            for width in (64, 76, len(encoded)):
+                block = "\n".join(textwrap.wrap(encoded, width))
+                for text in (block, "tls.key: " + block, "Here is the key file:\n\n" + block + "\n\nThanks"):
+                    with self.subTest(kind=kind, width=width, text=text[:12]):
+                        masked = mask(text)
+                        self.assertIn("[masked]", masked)
+                        for line in block.splitlines():
+                            self.assertNotIn(line, masked)
+                        self.assertEqual(masked.startswith("tls.key: "), text.startswith("tls.key: "))
+                        self.assertEqual(masked.endswith("Thanks"), text.endswith("Thanks"))
+
+    def test_base64_of_a_text_file_with_a_byte_order_mark_that_quotes_a_header_stays(self):
+        import base64
+        import textwrap
+        for label in (b"Note: ", b"The header reads "):
+            doc = (b"\xef\xbb\xbf" + label + b"-----BEGIN PRIVATE KEY-----\nRead the documentation before importing.\n")
+            encoded = base64.b64encode(doc).decode()
+            for width in (40, 64, 76):
+                text = "\n".join(textwrap.wrap(encoded, width))
+                with self.subTest(label=label, width=width):
+                    self.assertEqual(mask(text), text)
+
+
 class HeadlessKeyTest(unittest.TestCase):
     """A key's body without its header, as an older kb's row-by-row remask leaves the chunk after the header's."""
     LINE = "MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7"
