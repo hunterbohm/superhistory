@@ -1,7 +1,12 @@
+import base64
+import bz2
 import contextlib
 import copy
+import gzip
 import io
+import lzma
 import os
+import random
 import re
 import shutil
 import ssl
@@ -12,6 +17,8 @@ import tempfile
 import textwrap
 import time
 import unittest
+import zlib
+import zipfile
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -26,6 +33,7 @@ PORT = "83" + "17"
 EXCEPTIONS = "tools/release_exceptions.tsv"
 ROWS = "bench/DATASET_ROWS.txt"
 CREDENTIAL = "zq-4417-kettle"
+SECRET = ("see " + "Acme" + "corp " + CREDENTIAL + " " + "cli" + "-gateway " + PORT + " " + "CLIPr" + "oxyAPI\n").encode()
 AUTHOR = "Pat Example <pat@example.invalid>"
 PATTERNS = "\\bacmecorp\\b\n(^|[^-a-z0-9])boxroom\\b\n"
 README = """# Widgetly
@@ -329,7 +337,8 @@ class PatternTest(SourceCase):
         release = self.build()
         self.assertNotIn(b"Acmecorp", (release.repo / "hidden.txt").read_bytes())
         found = release.check("patterns")
-        self.assertEqual([f.where for f in found.findings], ["hidden.txt:2"])
+        self.assertIn("hidden.txt:2", [f.where for f in found.findings])
+        self.assertFalse(release.check("archive").ok)
 
     def test_the_committed_blob_is_scanned_not_the_checkout(self):
         release = self.build(self.commit(self.base_files(**{"docs/a.md": "see Acmecorp\n", "docs/b.md": "fine\n"})))
@@ -608,6 +617,132 @@ class AwkwardNamesTest(SourceCase):
         self.assertEqual(code, 1)
         self.assertIn("ValueError: bad on purpose", text)
         self.assertEqual((self.out / "CHECKS.txt").read_text(), text)
+
+
+def gz(data):
+    return gzip.compress(data, mtime=0)
+
+
+def tar_of(name, data):
+    out = io.BytesIO()
+    with tarfile.open(fileobj=out, mode="w") as tar:
+        info = tarfile.TarInfo(name)
+        info.size = len(data)
+        tar.addfile(info, io.BytesIO(data))
+    return out.getvalue()
+
+
+def zip_of(name, data):
+    out = io.BytesIO()
+    with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr(name, data)
+    return out.getvalue()
+
+
+def hidden_forms():
+    b64 = base64.b64encode(SECRET)
+    return {
+        "x/plain.gz": gz(SECRET), "x/two.gz": gz(gz(SECRET)), "x/plain.bz2": bz2.compress(SECRET),
+        "x/plain.xz": lzma.compress(SECRET), "x/plain.zlib": zlib.compress(SECRET),
+        "x/plain.zip": zip_of("inner.txt", SECRET), "x/plain.tar": tar_of("inner.txt", SECRET),
+        "x/plain.tar.gz": gz(tar_of("inner.txt", SECRET)),
+        "x/u16le.txt": SECRET.decode().encode("utf-16-le"), "x/u16be.txt": SECRET.decode().encode("utf-16-be"),
+        "x/u16bom.txt": SECRET.decode().encode("utf-16"),
+        "x/u32le.txt": SECRET.decode().encode("utf-32-le"), "x/u32be.txt": SECRET.decode().encode("utf-32-be"),
+        "x/u32bom.txt": SECRET.decode().encode("utf-32"),
+        "x/b64.txt": b"token: " + b64 + b" and more text\n", "x/b64url.txt": b"v=" + base64.urlsafe_b64encode(SECRET + b"??>>") + b"\n",
+        "x/b64wrap.txt": base64.encodebytes(SECRET * 3), "x/b64glued.txt": b"ab" + b64 + b"\n",
+        "x/b64.json": b'{"blob": "' + base64.b64encode(SECRET.decode().encode("utf-16-le")) + b'"}\n',
+        "x/nested.gz": gz(base64.b64encode(SECRET.decode().encode("utf-16-le"))),
+        "x/named.zip": zip_of("zq-4417" + "-kettle.txt", b"fine\n"),
+    }
+
+
+class EncodedContentTest(SourceCase):
+    def commit_bytes(self, files):
+        for name, data in files.items():
+            path = self.src / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(data.encode() if isinstance(data, str) else data)
+        write(self.src, self.base_files())
+        git(self.src, "add", "-A")
+        git(self.src, "commit", "-q", "-m", "blobs")
+
+    @staticmethod
+    def paths(found):
+        return {re.sub(r"^v1\.2\.3\.tar\.gz:widgetly-1\.2\.3/", "", rs.split_where(f.where)[0].split(" [")[0]) for f in found.findings}
+
+    def test_content_inside_compression_encodings_and_base64_cannot_hide_from_either_scan(self):
+        forms = hidden_forms()
+        clean = {"x/clean.gz": gz(b"nothing to see here\n"), "x/clean.txt": b"a" * 5 + b"0123456789abcdef" * 4 + b"\n",
+                 "x/bin.dat": bytes(random.Random(7).randrange(256) for _ in range(3000)), "x/plain.txt": b"plain words\n"}
+        self.commit_bytes(dict(forms, **clean))
+        release = self.build()
+        self.assertEqual(self.paths(release.check("credential")) & set(clean), set())
+        self.assertEqual(self.paths(release.check("patterns")) & set(clean), set())
+        self.assertEqual(self.paths(release.check("credential")), set(forms))
+        self.assertEqual(self.paths(release.check("patterns")), set(forms) - {"x/named.zip"})
+        self.assertFalse(release.ok)
+
+    def test_the_view_a_hit_came_from_is_named(self):
+        self.commit_bytes({"x/plain.gz": gz(SECRET), "x/nested.gz": hidden_forms()["x/nested.gz"]})
+        wheres = [f.where for f in self.build().check("patterns").findings]
+        self.assertIn("x/plain.gz [gzip]:1", wheres)
+        self.assertTrue(any(w.startswith("x/nested.gz [gzip>base64>utf-16-le]") for w in wheres), wheres)
+
+    def test_a_hit_inside_a_compressed_file_is_excused_by_an_exact_entry_for_that_file(self):
+        row = ("see Acme" + "corp rows\n").encode()
+        files = {"x/rows.gz": gz(row + b"another line\n"), EXCEPTIONS: tsv(("x/rows.gz", "see Acmecorp rows", "a reply that uses an ordinary word"))}
+        self.commit_bytes(files)
+        found = self.build().check("patterns")
+        self.assertTrue(found.ok, found.findings)
+        self.assertEqual([f.where for f in found.allowed], ["x/rows.gz [gzip]:1"])
+        self.assertEqual(found.notes, [])
+
+    def test_what_cannot_be_read_fails_both_scans_and_is_never_skipped(self):
+        broken = {"x/zstd.zst": b"\x28\xb5\x2f\xfd" + b"\x00" * 40, "x/cut.gz": gz(SECRET * 50)[:40],
+                  "x/lz4.bin": b"\x04\x22\x4d\x18" + b"\x00" * 40, "x/seven.7z": b"7z\xbc\xaf\x27\x1c" + b"\x00" * 40,
+                  "x/bad.zip": zip_of("a.txt", b"hello world" * 20)[:-30]}
+        self.commit_bytes(broken)
+        release = self.build()
+        for check in ("credential", "patterns"):
+            found = release.check(check)
+            self.assertFalse(found.ok, check)
+            self.assertEqual(self.paths(found), set(broken), check)
+            self.assertTrue(all("cannot be read" in f.text for f in found.findings), found.findings)
+
+    def test_a_file_that_inflates_past_the_limit_or_nests_too_deep_is_refused(self):
+        deep = SECRET
+        for _ in range(12):
+            deep = gz(deep)
+        self.commit_bytes({"x/bomb.gz": gz(b"\0" * 5000), "x/deep.gz": deep})
+        with mock.patch.object(rs, "MAX_DECODED", 1000):
+            found = self.build().check("patterns")
+        self.assertEqual(self.paths(found), {"x/bomb.gz", "x/deep.gz"})
+        text = "\n".join(f.text for f in found.findings)
+        self.assertIn("larger than", text)
+
+    def test_nesting_up_to_the_limit_is_read(self):
+        deep = SECRET
+        for _ in range(5):
+            deep = gz(deep)
+        self.commit_bytes({"x/deep.gz": deep})
+        self.assertEqual(self.paths(self.build().check("patterns")), {"x/deep.gz"})
+
+    def test_an_archive_member_that_differs_from_the_tree_is_read_inside_too(self):
+        release = self.build(self.commit(self.base_files(**{"docs/a.md": "fine\n"})))
+        prefix = "widgetly-1.2.3/"
+        path = self.tmp / "tampered.tar.gz"
+        with tarfile.open(str(release.archive)) as tar:
+            members = [(m, tar.extractfile(m).read() if m.isfile() else None) for m in tar.getmembers()]
+        with tarfile.open(str(path), "w:gz") as out:
+            for info, data in members:
+                if info.name == prefix + "docs/a.md":
+                    data = gz(SECRET)
+                    info.size = len(data)
+                out.addfile(info, io.BytesIO(data) if data is not None else None)
+        found = rs.check_patterns(release.repo, self.patterns, archive=path, prefix=prefix)
+        self.assertEqual([f.where for f in found.findings], ["docs/a.md [gzip]:1"])
 
 
 class ForbiddenNamesTest(SourceCase):
