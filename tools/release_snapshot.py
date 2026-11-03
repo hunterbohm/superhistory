@@ -977,10 +977,11 @@ def run_suite(suite, repo, env, timeout):
     except OSError as exc:
         return suite.label, None, 0, [], [failure(exc)]
     text = output.decode("utf-8", "replace")
-    ran = re.search(r"(?m)^Ran (\d+) tests? in", text)
+    # the suite's own summary is the last one: a test may run a runner of its own, which prints its "Ran" first
+    ran = ([None] + list(re.finditer(r"(?m)^Ran (\d+) tests? in", text)))[-1]
     count = int(ran.group(1)) if ran else 0
     reasons = [m.group(1)[1:-1] for m in SKIPPED.finditer(text)]
-    counted = re.search(r"\(.*skipped=(\d+)", text)
+    counted = re.search(r"\(.*skipped=(\d+)", text[ran.end():]) if ran else None
     problems = []
     if code:
         problems.append("exit %d" % code)
