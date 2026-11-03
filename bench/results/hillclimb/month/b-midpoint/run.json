@@ -5,7 +5,7 @@
  "check_commit": "d57ec3111b1aaa308a7a468a827db4c0adc037a3",
  "answer_model": "claude-sonnet-5-5",
  "judge_model": "gpt-6.1-sol",
- "base_url": "http://127.0.0.1:8317",
+ "base_url": "local model gateway",
  "questions": 171,
  "workers": 2,
  "tools": [
