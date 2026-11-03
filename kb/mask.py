@@ -549,7 +549,7 @@ def _gitleaks_edits(text):
 # Which mask() a stored row was masked with. A row of another version, or of none, is masked again when read and by
 # the next ingest. The patterns change it by themselves; bump REVISION when the code that applies them changes what
 # it masks.
-REVISION = 22
+REVISION = 23
 VERSION = f"r{REVISION}-" + hashlib.sha256(repr((REVISION, [p.pattern for p in SECRET_PATTERNS + PREFIXED_SECRETS], KEYED_SECRET.pattern,
                                 ENV_KEY_SECRET.pattern, JSON_SECRET.pattern, FLAG_SECRET.pattern, AUTH_SECRET.pattern,
                                 COMMAND_FLAGS, PASSWORD_NAME.pattern, sorted(PLACEHOLDERS), REFERENCE.pattern,
@@ -635,7 +635,8 @@ def _frame(joined, starts, found):
         # stream's padding; but not where the wrapping of encoded text only happens to break, as a sentence that
         # quotes a header shows, its words and spaces decoding before the header on its line
         before = decoded[decoded.rfind(b"\n", 0, m.start()) + 1:m.start()]
-        continues = len(before) >= 8 and b" " in before and not _NOT_TEXT.search(before)
+        continues = bool(before) and not _NOT_TEXT.search(before) and (
+            len(before) >= 8 and b" " in before or before[-1:] in (b" ", b"\t"))  # "Note: -----BEGIN ..."
         opens = opens or m.start() % 3 == 0 and not continues and (
             first == opened or line < len(starts) and starts[line] == first)
         closes = decoded[m.end():m.end() + 1] in (b"\r", b"\n") or m.end() == len(decoded) and closed
@@ -1343,7 +1344,16 @@ def _token_tail(text):
     the last line holding a token (_token_like) before where main's reading of it ended (its paragraph's end, the next
     header, or its footer), so that only a tail of ordinary text stays. Read once for the text: each rest then costs a
     lookup."""
-    tokens = [m.start() for m in _RUN.finditer(text) if _token_like(m.group())]
+    # runs read without the characters a reader does not see, so a fragment one of them splits reads whole
+    kept, pieces, last = [], [], 0
+    for m in INVISIBLE.finditer(text):
+        pieces.append(text[last:m.start()])
+        kept += range(last, m.start())
+        last = m.end()
+    pieces.append(text[last:])
+    kept += range(last, len(text))
+    view = "".join(pieces)
+    tokens = [kept[m.start()] for m in _RUN.finditer(view) if _token_like(m.group())]
     # and every line that is no line of words (_WORDS_LINE) but holds a run of base64's characters, as a fragment of a
     # key alone on its line ("Bcsv") does
     for m in _LINE_BREAK.finditer(text):
