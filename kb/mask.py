@@ -1796,24 +1796,26 @@ def mask(text):
     the last pass, the region still changing is masked whole, and counted in `capped`. Where a pass read otherwise than
     main's own could, the text is masked again as _masked masks it, all main's own mask hides hidden too."""
     global capped
-    original, novel = text, []
-    marker = _NOVEL.set(novel)
-    try:
-        for _ in range(MAX_PASSES):
-            masked = _mask_once(text)
-            if masked == text:
-                break
-            text = masked
-        else:
-            text = None
-    finally:
-        _NOVEL.reset(marker)
-    still = text is None
-    keys = _encoded_key_spans(original)
-    if novel or keys:
+    original, novel, keys = text, [], _encoded_key_spans(text)
+    if keys:  # hidden over the passes, which then need to know where each character came from
         text, _, still = _masked(original, keys)
-    elif still:
-        text = masked
+    else:
+        marker = _NOVEL.set(novel)
+        try:
+            for _ in range(MAX_PASSES):
+                masked = _mask_once(text)
+                if masked == text:
+                    break
+                text = masked
+            else:
+                text = None
+        finally:
+            _NOVEL.reset(marker)
+        still = text is None
+        if novel:
+            text, _, still = _masked(original, keys)
+        elif still:
+            text = masked
     if not still:
         return text
     # Still changing: everything between what the original and the last pass share at both ends becomes one mask.
