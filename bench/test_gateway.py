@@ -644,7 +644,8 @@ class Mem0ClientTest(unittest.TestCase):
     def setUp(self):
         gateway.LIMITED.clear()
         self.addCleanup(gateway.LIMITED.clear)
-        for patch in (mock.patch.dict(os.environ, {"BENCH_API_KEY": "test"}), mock.patch("time.sleep")):
+        for patch in (mock.patch.dict(os.environ, {"BENCH_API_KEY": "test"}), mock.patch("time.sleep"),
+                      mock.patch.object(gateway, "BASE_URL", "http://model.test")):
             patch.start()
             self.addCleanup(patch.stop)
 
