@@ -760,6 +760,55 @@ class T(unittest.TestCase):
         found = self.built(body, files={"bench/rows.jsonl": "{}\n"}, rows="bench/rows.jsonl\tquotes a dataset\n").check("suites")
         self.assertTrue(found.ok, found.findings)
 
+    def tamper_body(self, snapshot, *extra):
+        return ("    def test_tamper(self):\n        import subprocess\n        snap = %r\n"
+                "        os.makedirs(os.path.join(snap, 'bench'), exist_ok=True)\n"
+                "        with open(os.path.join(snap, 'bench', 'rows.jsonl'), 'w') as fh:\n"
+                "            fh.write('Acme' + 'corp ' + %r + %r + '\\n')\n"
+                "        ident = ['-c', 'user.name=x', '-c', 'user.email=x@example.invalid']\n"
+                "        for args in (%s):\n"
+                "            subprocess.run(['git', '-C', snap] + ident + args, check=True)\n"
+                % (snapshot, CREDENTIAL[:6], CREDENTIAL[6:], ", ".join(repr(a) for a in extra)))
+
+    def test_a_test_that_restores_a_listed_file_and_commits_works_on_a_copy_and_leaves_the_snapshot_alone(self):
+        marker = self.tmp / "cwd.txt"
+        body = ("    def test_where(self):\n        open(%r, 'w').write(os.getcwd())\n"
+                "        open('bench/rows.jsonl', 'w').write('Acme' + 'corp ' + %r + %r + '\\n')\n"
+                "        import subprocess\n"
+                "        ident = ['-c', 'user.name=x', '-c', 'user.email=x@example.invalid']\n"
+                "        subprocess.run(['git'] + ident + ['add', '-A'], check=True)\n"
+                "        subprocess.run(['git'] + ident + ['commit', '-q', '-m', 'restore'], check=True)\n") % (str(marker), CREDENTIAL[:6], CREDENTIAL[6:])
+        release = self.built(body, files={"bench/rows.jsonl": "{}\n"}, rows="bench/rows.jsonl\tquotes a dataset\n")
+        self.assertTrue(release.check("suites").ok, release.check("suites").findings)
+        self.assertNotEqual(marker.read_text(), str(release.repo))
+        self.assertEqual(git(release.repo, "rev-list", "--all", "--count"), "1")
+        self.assertFalse((release.repo / "bench" / "rows.jsonl").exists())
+        self.assertTrue(release.ok, release.report())
+
+    def test_a_test_that_changes_the_snapshot_itself_fails_the_suites_and_every_check_run_after_them(self):
+        snapshot = str(self.out / "repo")
+        body = self.tamper_body(snapshot, ["add", "-A"], ["commit", "-q", "-m", "restore"])
+        release = self.built(body, files={"bench/rows.jsonl": "{}\n"}, rows="bench/rows.jsonl\tquotes a dataset\n")
+        self.assertFalse(release.ok)
+        suites = release.check("suites")
+        self.assertFalse(suites.ok)
+        self.assertTrue(any("snapshot changed" in f.text and "refs" in f.text and "objects" in f.text for f in suites.findings), suites.findings)
+        for name in ("history", "credential", "patterns", "dataset"):
+            self.assertFalse(release.check(name).ok, name)
+
+    def test_any_change_to_the_snapshot_during_the_suites_is_named(self):
+        snapshot = str(self.out / "repo")
+        body = ("    def test_tamper(self):\n        import subprocess\n        snap = %r\n"
+                "        subprocess.run(['git', '-C', snap, 'tag', 'extra-tag'], check=True)\n" % snapshot)
+        found = self.built(body).check("suites")
+        self.assertFalse(found.ok)
+        self.assertTrue(any("snapshot changed" in f.text and "refs" in f.text for f in found.findings), found.findings)
+        self.out = self.tmp / "out2"
+        body = ("    def test_tamper(self):\n        open(%r, 'a').write('edited\\n')\n" % str(self.out / "repo" / "README.md"))
+        found = self.built(body).check("suites")
+        self.assertFalse(found.ok)
+        self.assertTrue(any("snapshot changed" in f.text and "working tree" in f.text for f in found.findings), found.findings)
+
     def test_the_tests_run_with_a_home_that_is_not_the_real_one(self):
         body = "    def test_home(self):\n        self.assertNotEqual(os.environ['HOME'], %r)\n" % os.path.expanduser("~")
         self.assertTrue(self.built(body).check("suites").ok)
