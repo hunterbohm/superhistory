@@ -2362,16 +2362,20 @@ def _typed_code_edits(text):
         k = opening(call)
         if k is None:
             continue
-        arguments, close = _call_span(tokens, k, stretches.holding(tokens[k][1])[1])
+        bound = stretches.holding(tokens[k][1])[1]  # the end of the code that holds the call
+        arguments, close = _call_span(tokens, k, bound)
         args = _split_arguments(text, arguments)
         if not any(t[0] == "s" for _, ts in args for t in ts):
             continue
         labels, names = _receiver_strings(text, tokens, bisect.bisect_left(starts, call.start()))
         own = [ts for kw, ts in args if kw in _CODE_FIELD_KEYWORDS]
         positional = [ts for kw, ts in args if kw is None]
-        selector = (not labels and len(positional) > 1 and [t[0] for t in positional[0]] == ["s"]
-                    and any(t[0] == "s" for t in positional[1]))
-        if selector:  # page.fill(selector, text), on any page or variable holding one; not fill(text, {options})
+        # the call's own selector, page.fill(selector, text) on any page or variable holding one: a lone string first,
+        # then a value holding a string, by position or as value=; not fill(text, {options}) or send_keys(text, Keys.ENTER)
+        selector = bool(positional) and [t[0] for t in positional[0]] == ["s"] and (
+            len(positional) > 1 and any(t[0] == "s" for t in positional[1])
+            or any(kw in _CODE_VALUE_KEYWORDS and any(t[0] == "s" for t in ts) for kw, ts in args))
+        if selector:
             own.append(positional[0])
         labels += [text[slice(*_code_text(text, t))] for ts in own for t in ts if t[0] == "s"]
         # the value: a value= keyword's, or the first argument after the field that holds a string (send_keys may
@@ -2395,7 +2399,7 @@ def _typed_code_edits(text):
         # between: a comment, a prefix, an escape or a string read wrong cannot hold any of it back
         rest = [t for kw, ts in args if ts is not None and not any(ts is o for o in own) for t in ts if t[0] == "s"]
         start, end = _code_text(text, strings[0])[0], max(_code_text(text, rest[-1])[1], _code_text(text, strings[0])[1])
-        stop = tokens[close][1] if close is not None else len(text)
+        stop = tokens[close][1] if close is not None else bound
         stray = loose[bisect.bisect_left(loose, start):][:1]
         if stray and stray[0] < stop:  # a quote that closes nothing: on to the end of its line
             end = max(end, stretches.line_end(stray[0]))
