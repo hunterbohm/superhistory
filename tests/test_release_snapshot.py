@@ -21,6 +21,7 @@ from tools import release_snapshot as rs
 REPO = Path(__file__).resolve().parent.parent
 INSTALLER = Path(__file__).resolve().parent / "fixtures" / "release" / "site_install.sh"
 CURRENT = "%d.%d" % sys.version_info[:2]
+PORT = "83" + "17"
 EXCEPTIONS = "tools/release_exceptions.tsv"
 ROWS = "bench/DATASET_ROWS.txt"
 CREDENTIAL = "zq-4417-kettle"
@@ -616,8 +617,34 @@ class ExceptionsTest(SourceCase):
 
     def test_more_than_one_entry_can_cover_a_line(self):
         found = self.patterns_of({"a.md": "Acmecorp and boxroom\n"},
-                                 [("a.md", "Acmecorp", "a made-up firm"), ("a.md", "boxroom", "a made-up room")])
+                                 [("a.md", "Acmecorp", "a made-up firm"), ("a.md", " boxroom", "a made-up room")])
         self.assertTrue(found.ok, found.findings)
+
+    def test_an_entry_for_part_of_a_match_does_not_excuse_the_whole_match(self):
+        found = self.patterns_of({"a.txt": "the port is %s\n" % PORT}, [("a.txt", PORT[:2], "the start of a number")])
+        self.assertEqual([f.where for f in found.findings], ["a.txt:1"])
+        self.assertEqual(found.notes, ["stale: a.txt: %s" % PORT[:2]])
+
+    def test_an_entry_covers_a_match_only_where_its_string_sits_over_it(self):
+        found = self.patterns_of({"a.txt": "%s and later %s\n" % (PORT[:2], PORT)}, [("a.txt", PORT[:2], "the start of a number")])
+        self.assertEqual([f.where for f in found.findings], ["a.txt:1"])
+
+    def test_one_entry_may_cover_a_match_inside_a_longer_string(self):
+        score = "0.%s229747772217" % PORT
+        found = self.patterns_of({"a.txt": "[%s, 1.0, %s]\n" % (score, score)}, [("a.txt", score, "a similarity score")])
+        self.assertTrue(found.ok, found.findings)
+        self.assertEqual(found.notes, [])
+
+    def test_a_string_beside_a_match_must_cover_the_character_the_pattern_took_with_it(self):
+        found = self.patterns_of({"a.txt": "my boxroom\n"}, [("a.txt", "boxroom", "a made-up room")])
+        self.assertEqual([f.where for f in found.findings], ["a.txt:1"])
+        shutil.rmtree(str(self.out))
+        found = self.patterns_of({"a.txt": "my boxroom\n"}, [("a.txt", " boxroom", "a made-up room")])
+        self.assertTrue(found.ok, found.findings)
+
+    def test_two_entries_cannot_split_one_match_between_them(self):
+        found = self.patterns_of({"a.txt": "see Acmecorp\n"}, [("a.txt", "Acme", "the start"), ("a.txt", "corp", "the end")])
+        self.assertEqual([f.where for f in found.findings], ["a.txt:1"])
 
     def test_a_file_name_cannot_be_excepted(self):
         found = self.patterns_of({"acmecorp-notes.txt": "fine\n"},
