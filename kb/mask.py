@@ -846,7 +846,7 @@ _PLAIN_ARGUMENTS = re.compile(rf"""(?:[^\s'"`$\\()|;&<>#]+|[ \t]+|\\t|(?<=\S)\#|
                               rf"""|{_SIMPLE_SUBSTITUTION}|'[^']*'|"(?![ \t]*(?:[,:}}\]]|\Z)){_DOUBLE_QUOTED}"|"""
                               rf"""\\"{_DOUBLE_QUOTED}\\")*""")
 # Where what kb reads plainly ends the command: the text's or the line's end, a pipe, ";", "&", a bracket that closes,
-# or a comment. A command inside a JSON string is read in that string decoded as a text of its own (_string_edits), so
+# or a comment. A command inside a JSON string is read in that string decoded as a text of its own (_container_edits), so
 # the string's end is that text's end, and the mask never leaves the string.
 _LINE_END = r"[\r\n]|(?<!\\)\\+[nr]"
 _PLAIN_STOP = re.compile(r"\Z|[|;&)#]|" + _LINE_END)
@@ -904,7 +904,7 @@ def _unread_flag_edits(text, line_pattern, flag, always, done, literals=()):
     where its value starts) is masked from the value to the end of that line: kb cannot tell where a part it does not
     read ends, so a pipe or ";" there may be quoted. Quotes that open right at the value are the value's own, and the
     mask covers what they hold. A JSON string of `literals` that holds the password and more is the command's own,
-    left for that string read decoded (_string_edits), where its end bounds the mask, or another's, which the
+    left for that string read decoded (_container_edits), where its end bounds the mask, or another's, which the
     command's line does not reach; either way the mask never leaves the string. Elsewhere it runs to the line's end."""
     edits, covered = [], 0
     for line in line_pattern.finditer(text):
@@ -942,27 +942,6 @@ def _command_spans(text, literals, unread_only=False):
             found = more if unread_only else found + more
         spans += [(start, end) for start, end, _ in found if not text.startswith("[masked]", start)]
     return spans
-
-
-@functools.lru_cache(maxsize=64)
-def _string_edits(text, depth=0):
-    """What COMMAND_FLAGS' rows and the fail-closed rule mask in each JSON string `text` holds that names a command,
-    the string decoded and read as a text of its own, and in each string that one holds, up to four deep: as
-    (start, end) spans of `text`. A string's own text is the line, so its end bounds the mask (_unread_flag_edits
-    reads each password's holding string), and the strings it holds are read a level down."""
-    if depth >= 16:
-        return ()  # deeper than any real JSON nesting; a cap keeps a crafted chain bounded
-    spans = []
-    for m in _STRING_LITERAL.finditer(text):
-        body = 1 if m.group(1) is not None else 2
-        if not _ANY_COMMAND.search(text, m.start(body), m.end(body)):
-            continue
-        decoded, starts, ends = _decoded(text, m.start(body), m.end(body))
-        if not _ANY_COMMAND.search(decoded):
-            continue
-        found = _command_spans(decoded, _literals(decoded)) + list(_string_edits(decoded, depth + 1))
-        spans += _back_to(starts, ends, found)
-    return tuple(spans)
 
 
 @functools.lru_cache(maxsize=1024)
@@ -1035,6 +1014,145 @@ def _masked_parts(decoded, masked):
     return parts
 
 
+# A run of digits long enough that str-to-int is slow on Python 3.9 (no digit limit there), or that no real value
+# holds: a span with one is left for the fallback, not parsed.
+_DIGIT_RUN = re.compile(r"[0-9]{1000,}")
+_CONTAINER_MAX = 200000  # a span longer than this, or nested past _CONTAINER_DEPTH, is left for the fallback
+_CONTAINER_DEPTH = 100
+_CLOSERS = {"[": "]", "{": "}", "(": ")"}
+
+
+def _match_bracket(text, start):
+    """Where the balanced bracket span opened at `text[start]` ends (one past its closer), or None: brackets inside
+    quotes do not count, and a span over _CONTAINER_MAX long or nested past _CONTAINER_DEPTH, or malformed, is None.
+    The depth is counted here, before any parser sees the span."""
+    stack, i, n = [], start, min(len(text), start + _CONTAINER_MAX)
+    while i < n:
+        c = text[i]
+        if c in "\"'":
+            i += 1
+            while i < n and text[i] != c:
+                i += 2 if text[i] == "\\" else 1
+            i += 1
+            continue
+        if c in _CLOSERS:
+            stack.append(_CLOSERS[c])
+            if len(stack) > _CONTAINER_DEPTH:
+                return None
+            i += 1
+            continue
+        if c in "]})":
+            if not stack or stack.pop() != c:
+                return None
+            i += 1
+            if not stack:
+                return i
+            continue
+        i += 1
+    return None
+
+
+def _containers(text):
+    """The top-level balanced bracket spans text holds, in order, as (start, end), skipping brackets inside quotes."""
+    i, n = 0, len(text)
+    while i < n:
+        if text[i] in _CLOSERS:
+            end = _match_bracket(text, i)
+            if end is not None:
+                yield i, end
+                i = end
+                continue
+        i += 1
+
+
+def _parse_container(source):
+    """`source`, a bracketed span, parsed as a list, dict or tuple by json.loads or, failing that, Python's
+    ast.literal_eval, or None where it does not parse to one of those. The size, depth and digit guards run before
+    this, and every parser error falls back to None."""
+    for parse in (json.loads, _literal_eval):
+        try:
+            value = parse(source)
+        except (ValueError, SyntaxError, RecursionError, MemoryError):
+            continue
+        if isinstance(value, (list, dict, tuple)):
+            return value
+    return None
+
+
+def _literal_eval(source):
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        return ast.literal_eval(source)
+
+
+def _leaf_pairs(value, masked):
+    """(a string of `value`, how `masked` masks it) for each string in `value`, in the order _STRING_LITERAL finds
+    them in the source: a dict's keys and values in turn, a list's or tuple's items in turn, a string itself. `masked`
+    is mask_all(value), which keeps the order and count of keys and items, so the two walk together."""
+    if isinstance(value, str):
+        yield value, masked if isinstance(masked, str) else value
+    elif isinstance(value, dict) and isinstance(masked, dict):
+        for (k, v), (mk, mv) in zip(value.items(), masked.items()):
+            if isinstance(k, str):
+                yield k, mk if isinstance(mk, str) else k
+            yield from _leaf_pairs(v, mv)
+    elif isinstance(value, (list, tuple)) and isinstance(masked, (list, tuple)):
+        for item, mitem in zip(value, masked):
+            yield from _leaf_pairs(item, mitem)
+
+
+@functools.lru_cache(maxsize=256)
+def _container_edits(text, depth=0):
+    """(the top-level spans of `text` read here, the spans that mask what they hold), as (start, end) in `text`. A
+    bracket span (a list, dict or tuple) is parsed whole and read as mask_all reads it; a string is decoded and read a
+    level down, as a nested container or a command line, so the text's layers peel exactly as json.loads and ast do.
+    A span whose parse fails or whose masks cannot be placed is not read here, so the fail-closed reading still runs
+    over it. Read once per text (lru_cache), so no layer is masked twice."""
+    if depth > 16:
+        return (), ()  # deeper than any real nesting; a cap keeps a crafted chain bounded
+    spans, masks = [], []
+    for start, end in _containers(text):
+        if not _ANY_COMMAND.search(text, start, end) or _DIGIT_RUN.search(text, start, end):
+            continue
+        value = _parse_container(text[start:end])
+        if value is None:
+            continue
+        literals = list(_STRING_LITERAL.finditer(text, start, end))
+        pairs = list(_leaf_pairs(value, mask_all(value)))
+        if len(literals) != len(pairs):
+            continue
+        placed, found = True, []
+        for literal, (orig, masked) in zip(literals, pairs):
+            if masked == orig:
+                continue
+            body = 1 if literal.group(1) is not None else 2
+            decoded, starts, ends = _decoded(text, literal.start(body), literal.end(body))
+            parts = _masked_parts(decoded, masked) if decoded == orig else None
+            if parts is None:  # the literal scan disagrees with the parse, or the mask will not place: fall back
+                placed = False
+                break
+            found += _back_to(starts, ends, parts)
+        if placed:
+            spans.append((start, end))
+            masks += found
+    for literal in _STRING_LITERAL.finditer(text):
+        if _holding(spans, literal.start()) is not None:  # inside a parsed container, read there
+            continue
+        body = 1 if literal.group(1) is not None else 2
+        if not _ANY_COMMAND.search(text, literal.start(body), literal.end(body)):
+            continue
+        decoded, starts, ends = _decoded(text, literal.start(body), literal.end(body))
+        if not _ANY_COMMAND.search(decoded):
+            continue
+        inner_spans, inner_masks = _container_edits(decoded, depth + 1)
+        found = _command_spans(decoded, _literals(decoded)) + list(inner_masks)
+        spans.append((literal.start(), literal.end()))
+        masks += _back_to(starts, ends, found)
+    spans.sort()
+    return tuple(spans), tuple(masks)
+
+
+
 def _view_edits(text, view, split, base):
     """_wrapping_edits' reading of one view, `split` read from `view` or None: (the lists of a command's arguments it
     reads, the spans that mask what they hold, the spans that mask what the lines read hold), in the text as written.
@@ -1042,37 +1160,19 @@ def _view_edits(text, view, split, base):
     read = split.view if split else view
     if not _ANY_COMMAND.search(read):
         return [], [], []
-    lists, listed, lined = [], [], []
-    for m in _ARGUMENT_LIST.finditer(read):
-        items = _argument_items(m.group()) if _ANY_COMMAND.search(m.group()) else None
-        if items:
-            strings, placed_all = list(_ARGUMENT.finditer(read, m.start(), m.end())), True
-            for i, masked in _listed_flag_values(items).items():
-                k = 1 if strings[i].group(1) is not None else 2
-                decoded, starts, ends = _decoded(read, strings[i].start(k), strings[i].end(k))
-                parts = _masked_parts(decoded, masked)
-                if parts is None and len(items[i]) == len(decoded):
-                    parts = _masked_parts(items[i], masked)  # placed by the exact decoding, mapped by this view's
-                if parts is not None:
-                    listed += _back_to(starts, ends, parts)
-                else:
-                    placed_all = False
-            if placed_all:  # where it is read exactly, a line read across the list in another view reads it wrongly
-                lists.append((m.start(), m.end()))
-    if base:  # the fail-closed rule, on the text as written and in each JSON string it holds, read as its own text
-        literals = _literals(read)
-        if read != text:
-            lined += _command_spans(read, literals)
-        else:
-            lined += _command_spans(read, literals, unread_only=True)
-        lined += list(_string_edits(read))
-    else:
+    if base:  # the containers and strings the text holds, read whole, and the fail-closed rule outside them
+        lists, listed = _container_edits(read)
+        lined = _command_spans(read, _literals(read), unread_only=read == text)
+    else:  # an unescaped view only recognises a command (colour in its name, an escaped quote), never a container
+        lists, listed, lined = [], [], []
         for n, (line, flag, always) in enumerate(_COMMANDS):
             lined += [(start, end) for start, end, _ in _command_password_edits(read, line, flag, always,
                                                                                 n >= _MAIN_COMMANDS)
                       if not read.startswith("[masked]", start)]
+    lists = list(lists)
+    lined = [span for span in lined if _holding(lists, span[0]) is None]  # inside a span read whole: read exactly
     if not split:
-        return lists, listed, lined
+        return lists, list(listed), lined
     # Back to the text as written, a value with the colour codes around it, as its reading masks one.
     unwrapped = {i for m in _QUOTE_ESCAPE.finditer(view) for i in range(m.start(), m.end())}
 
@@ -1084,7 +1184,9 @@ def _view_edits(text, view, split, base):
             end += 1
         return start, end
 
-    return ([split.raw(*span) for span in lists], [back(*span) for span in listed], [back(*span) for span in lined])
+    # A container's masks are exact decoded positions; map them straight, without back()'s extension into removed
+    # characters, which is for a value abutting a colour code, not a string's own content.
+    return ([split.raw(*span) for span in lists], [split.raw(*span) for span in listed], [back(*span) for span in lined])
 
 
 def _wrapping_edits(text):
@@ -1096,7 +1198,7 @@ def _wrapping_edits(text):
     since a text holds strings at many depths and only one level at a time keeps each string's own quotes
     (_view_edits). In each, every row of COMMAND_FLAGS reads it, and a list or a tuple of a command's arguments, as
     JSON or Python writes one, is read as mask_all reads the list (_flag_values). The fail-closed rule reads the text
-    as written and each JSON string in it decoded as its own text (_string_edits). A view only says where to mask:
+    as written and each JSON string in it decoded as its own text (_container_edits). A view only says where to mask:
     each edit puts "[masked]" over a stretch of the text as written, which keeps every other character."""
     if not (_ANY_COMMAND.search(text) or INVISIBLE.search(text)):
         return []
@@ -2199,9 +2301,12 @@ def _flag_values(items):
         if not (isinstance(item, str) and item):
             continue
         is_flag = isinstance(flag, str) and flag.startswith("-") and len(flag) <= 64
-        # A shell's -c script is a command line of its own, read as one.
-        if is_flag and _SHELL_SCRIPT_FLAG.match(flag) and i >= 2 and isinstance(items[i - 2], str) \
-                and _SHELL.search(items[i - 2]):
+        # A shell's -c script is a command line of its own, read as one. The shell may be any earlier item, with only
+        # options ("--noprofile", "-eu") between it and the -c flag.
+        shell_before = any(isinstance(items[j], str) and _SHELL.search(items[j])
+                           and all(isinstance(items[k], str) and items[k].startswith("-") for k in range(j + 1, i - 1))
+                           for j in range(i - 1))
+        if is_flag and _SHELL_SCRIPT_FLAG.match(flag) and shell_before:
             read = mask(item)
             if read != item:
                 found[i] = read
@@ -2218,7 +2323,7 @@ def _flag_values(items):
         lead = list(items[start:i])
         if named is not None and named < start and start > 0 and isinstance(items[start - 1], str):
             lead = [v for v in items[max(0, named - 2):min(named + 3, start)] if isinstance(v, str)] + lead
-        line = " ".join(map(shlex.quote, lead))
+        line = re.sub(r"[\r\n]", " ", " ".join(map(shlex.quote, lead)))  # the lead is context; a newline in it ends nothing
         head = mask(line) + " "
         if after_flag:
             quoted = shlex.quote(item)
