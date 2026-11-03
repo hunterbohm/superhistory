@@ -1891,6 +1891,72 @@ class ReviewThirtyThreeTest(unittest.TestCase):
                     self.assertEqual(mask(text), text)
 
 
+class ReviewThirtyFourTest(unittest.TestCase):
+    """The thirty-fourth review's findings, inside the coordinator's class for code that types: a buffer's fill read
+    as typing, a password holding a call and a quote, a regex label, comments inside a call, keyword arguments in
+    any order, a value in brackets in a tool's input, and code in single quotes."""
+
+    TYPED = (
+        ("await page.getByLabel(\"Password\").fill(\"Autofill('42')!\");", "Autofill('42')!"),
+        ('await page.getByLabel(/Password/i).fill("sunshine");', "sunshine"),
+        ('page.get_by_label("Password").fill( # Enter the password\n "sunshine"\n)', "sunshine"),
+        ('await tools.mcp__playwright__browser_type({element: "Password", text: /* password */ "sunshine"});', "sunshine"),
+        ('page.fill(value="sunshine", selector="#password")', "sunshine"),
+        ('await tools.mcp__playwright__browser_type({element: "Password", text: ("sunshine")});', "sunshine"),
+        ("python3 -c 'page.get_by_label(\"Password\").fill(\"sunshine\")'", "sunshine"),
+        ('await page.keyboard.type("Tr0ub{4dor}-Zk9q");', "Tr0ub{4dor}-Zk9q"),
+    )
+    ORDINARY = (
+        'Buffer.alloc(32).fill("0123456789abcdef")',
+        "new Uint8Array(16).fill(0x2a); out.fill('Zq7vRt2LmX9kQ3w')",
+        'page.get_by_label("Email").fill( # the address\n "me@example.com"\n)',
+        'await page.getByLabel(/Search/i).fill("pelican plan");',
+        'await page.getByLabel("Password").fill("sun" + "shine");',
+    )
+
+    def test_more_layouts_of_a_typed_password_are_masked(self):
+        for code, secret in self.TYPED:
+            for text in (code, json.dumps({"code": code})):
+                with self.subTest(text=text[:70]):
+                    self.assertNotIn(secret, mask(text))
+
+    def test_ordinary_code_stays(self):
+        for code in self.ORDINARY:
+            for text in (code, json.dumps({"code": code})):
+                with self.subTest(text=text[:70]):
+                    self.assertEqual(mask(text), text)
+
+
+class ReviewThirtyFiveTest(unittest.TestCase):
+    """The thirty-fifth review's findings, inside the shapes the coordinator froze: a password holding a call after a
+    selector argument or a comment, a comment in code escaped twice, and a buffer's fill under a string that names a
+    secret."""
+
+    TYPED = (
+        ("page.fill(\"#password\", \"Autofill('42')!\")", "Autofill('42')!"),
+        ("page.get_by_label(\"Password\").fill( # the password\n \"Autofill('42')!\"\n)", "Autofill('42')!"),
+    )
+
+    def test_a_password_holding_a_call_after_a_selector_or_a_comment(self):
+        for code, secret in self.TYPED:
+            for text in (code, json.dumps({"code": code}), json.dumps(json.dumps(code))):
+                with self.subTest(text=text[:70]):
+                    self.assertNotIn(secret, mask(text))
+
+    def test_a_comment_in_code_escaped_twice(self):
+        code = 'page.get_by_label("Password").fill( # Enter password\n "sunshine"\n)'
+        for text in (json.dumps(code), json.dumps(json.dumps(code))):
+            with self.subTest(depth=text.count("\\\\")):
+                self.assertNotIn("sunshine", mask(text))
+
+    def test_a_buffer_or_other_object_that_is_no_page_keeps_its_value(self):
+        for code in ('Buffer.from("password").fill("x")', 'new Array(4).fill("password").fill("x")',
+                     'secrets.get("password").type("text/plain")'):
+            for text in (code, json.dumps({"code": code})):
+                with self.subTest(text=text[:70]):
+                    self.assertEqual(mask(text), text)
+
+
 # Commands as an argument list, each flag's value its own item: (the list, the items masked).
 ARGV = (
     (["login", "--password", PASSWORD], {2}), (["--token", SUB], {1}), (["--api-key", SUB, "--verbose"], {1}),

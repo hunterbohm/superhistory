@@ -2322,8 +2322,20 @@ _CODE_HINT = re.compile(r"(?i)(?:fill|type|press_?sequentially|send_?keys|set_?v
 # A string that holds code, as JSON holds it: a typing call's "(" in it, and a quote of the code's own, plain or
 # escaped; "Autofill(42)!", a password, holds no quote.
 _CODE_IN_STRING = re.compile(r"(?i)(?:fill|type|press_?sequentially|send_?keys|set_?value|input_text)\w*\s*\(")
-_QUOTE_IN_STRING = re.compile(r"\\+\"|['`]")
+def _holds_another_quote(text, inner, quote):
+    """Whether what a string holds has a quote of the code's own: one other than its own quote, or its own escaped."""
+    others = "".join(q for q in "\"'`" if q != quote)
+    return bool(re.compile(r"\\+" + re.escape(quote) + "|[" + re.escape(others) + "]").search(text, *inner))
 _CODE_NAME = re.compile(r"[A-Za-z_$][\w$]*")
+_CODE_FIELD_KEYWORDS = frozenset(("selector", "locator", "label", "name", "placeholder"))
+# The names a chain that types into a page holds: a page or frame, a locator's method, Selenium's driver and finders,
+# WebdriverIO's "$", the keyboard. A chain with none (Buffer.from("password").fill("x")) types into no field.
+_CODE_LOCATOR_NAMES = frozenset((
+    "page", "frame", "mainFrame", "main_frame", "keyboard", "locator", "$", "$$", "driver", "browser", "element",
+    "getByLabel", "getByPlaceholder", "getByRole", "getByTestId", "getByText", "getByAltText", "getByTitle",
+    "get_by_label", "get_by_placeholder", "get_by_role", "get_by_test_id", "get_by_text", "get_by_alt_text",
+    "get_by_title", "find_element", "find_elements", "findElement", "findElements", "querySelector", "query_selector"))
+_CODE_VALUE_KEYWORDS = frozenset(("value", "text", "keys"))
 
 
 def _string_open(text, at, stop):
@@ -2371,7 +2383,12 @@ def _code_string_end(text, at, stop):
     return None
 
 
-_CODE_TOKEN = re.compile(r"""(?<![\w$\\])[rRbBuUfF]{1,2}\\*["'`]|(?<!\\)\\*["'`]|[{}\[\]():,=;.]|[A-Za-z_$][\w$]*""")
+_CODE_TOKEN = re.compile(r"""(?<![\w$\\])[rRbBuUfF]{1,2}\\*["'`]|(?<!\\)\\*["'`]|(?:#|//)(?:(?!\\+[nr])[^\n])*|/\*[\s\S]*?\*/"""
+                         r"""|(?<!\\)\\+[nrt]|[{}\[\]():,=;.]|[A-Za-z_$][\w$]*""")
+# What stands before a string that is a typed value itself, which is never read as code it holds: a typing call's "("
+# (or a keyword's "value=" in it), or a typed key's separator.
+_VALUE_BEFORE = re.compile(r"(?i)(?:(?:fill|type|press_?sequentially|send_?keys|set_?value|input_text)\w*\s*\("
+                           r"(?:[^()]|\([^()]*\))*|\b(?:text|value)\\*[\"']?\s*[:=]\s*\(?\s*)\Z")
 
 
 def _code_tokens(text):
@@ -2386,11 +2403,15 @@ def _code_tokens(text):
             if not m:
                 break
             c = m.group()
+            if c.startswith(("#", "//", "/*")) or c[0] == "\\" and c[-1] in "nrt":
+                i = m.end()  # a comment, or a line break or tab escaped as JSON holds code: space between tokens
+                continue
             if c[-1] in "\"'`":
                 end = _code_string_end(text, m.start(), stop)
                 if end:
                     inner = _code_text(text, ("s", m.start(), end))
-                    if _CODE_IN_STRING.search(text, *inner) and _QUOTE_IN_STRING.search(text, *inner):
+                    if (_CODE_IN_STRING.search(text, *inner) and _holds_another_quote(text, inner, c[-1])
+                            and not _VALUE_BEFORE.search(text, max(0, m.start() - 300), m.start())):
                         spans.append(inner)
                     else:
                         tokens.append(("s", m.start(), end))
@@ -2436,23 +2457,32 @@ def _call_arguments(tokens, k, limit=400):
     return out
 
 
-def _argument_strings(arguments):
-    """(argument's index, its string token) for each of a call's arguments that is a string: by itself, in brackets,
-    or as a keyword's value (value="..."). One that holds a name or more (Keys.HOME) is none."""
+def _argument_strings(text, arguments):
+    """(argument's index, its string token, its keyword or None) for each of a call's arguments that is a string: by
+    itself, in brackets, or as a keyword's value (value="..."). One that holds a name or more (Keys.HOME) is none."""
     out, index, depth, current = [], 0, 0, []
     for token in arguments + [(",", None, None)]:
         if token[0] == "," and depth == 0:
+            keyword = None
             if len(current) >= 2 and current[0][0] == "n" and current[1][0] == "=":
-                current = current[2:]
+                keyword, current = text[current[0][1]:current[0][2]], current[2:]
             kinds = [t[0] for t in current]
             if kinds.count("s") == 1 and set(kinds) <= {"s", "(", ")"}:
-                out.append((index, next(t for t in current if t[0] == "s")))
+                out.append((index, next(t for t in current if t[0] == "s"), keyword))
             index, current = index + 1, []
             continue
         depth += token[0] in "([{"
         depth -= token[0] in ")]}"
         current.append(token)
     return out
+
+
+def _key_before(tokens, k):
+    """The index of the key a string token at k is the value of ("key": "value", key=value, key: ("value")), or None."""
+    j = k - 1
+    while j >= 0 and tokens[j][0] == "(":
+        j -= 1
+    return j - 1 if j >= 1 and tokens[j][0] in ":=" and tokens[j - 1][0] in "sn" else None
 
 
 def _typed_in_objects(text, tokens):
@@ -2464,8 +2494,8 @@ def _typed_in_objects(text, tokens):
             objects.append([[], []])
         elif token[0] == "}" and len(objects) > 1:
             edits += _typed_values(text, *objects.pop())
-        elif token[0] == "s" and k >= 2 and tokens[k - 1][0] in ":=" and tokens[k - 2][0] in "sn":
-            name = tokens[k - 2]
+        elif token[0] == "s" and _key_before(tokens, k) is not None:
+            name = tokens[_key_before(tokens, k)]
             key = text[slice(*_code_text(text, name))] if name[0] == "s" else text[name[1]:name[2]]
             labels, typed = objects[-1]
             if key in _LABEL_KEYS:
@@ -2489,10 +2519,13 @@ def _typed_values(text, labels, typed):
             if b > a and (secret or not labels and _password_shaped(INVISIBLE.sub("", text[a:b])))]
 
 
+_REGEX_LABEL = re.compile(r"\s*/((?:\\.|[^/\\\n])+)/[a-z]*\s*")
+
+
 def _receiver_strings(text, tokens, k, limit=200):
     """The strings in the chain of calls before tokens[k], read back over names, dots and whole brackets, as
     'page.getByRole("textbox", {name: "Password"})' or 'driver.find_element(By.ID, "password")' gives a field's labels."""
-    strings, depth, stop = [], 0, max(-1, k - limit)
+    strings, names, depth, stop, close = [], [], 0, max(-1, k - limit), None
     k -= 1
     while k > stop:
         kind = tokens[k][0]
@@ -2501,15 +2534,20 @@ def _receiver_strings(text, tokens, k, limit=200):
             depth -= kind in "([{"
             if kind == "s":
                 strings.append(text[slice(*_code_text(text, tokens[k]))])
+            if not depth:  # a regex literal in the brackets ("getByLabel(/Password/i)") names the field too
+                regex = _REGEX_LABEL.fullmatch(text, tokens[k][2], close)
+                if regex:
+                    strings.append(re.sub(r"\\.|[\^$.*+?()\[\]{}|]", " ", regex.group(1)).strip())
         elif kind in ")]":
-            depth = 1
+            depth, close = 1, tokens[k][1]
         elif kind == "n":
+            names.append(text[tokens[k][1]:tokens[k][2]])
             if k > 0 and tokens[k - 1][0] == "n":
                 break  # "await page": the chain starts at its first name
         elif kind != ".":
             break
         k -= 1
-    return strings
+    return strings, names
 
 
 def _typed_code_edits(text):
@@ -2534,17 +2572,25 @@ def _typed_code_edits(text):
         k = opening(call)
         if k is None:
             continue
-        strings = _argument_strings(_call_arguments(tokens, k, 40))
+        strings = _argument_strings(text, _call_arguments(tokens, k, 40))
         if not strings:
             continue
-        labels = _receiver_strings(text, tokens, bisect.bisect_left(starts, call.start()))
-        if len(strings) > 1 and strings[0][0] == 0 and strings[1][0] == 1:  # page.fill(selector, text)
-            labels, strings = labels + [text[slice(*_code_text(text, strings[0][1]))]], strings[1:]
+        labels, names = _receiver_strings(text, tokens, bisect.bisect_left(starts, call.start()))
+        labels += [text[slice(*_code_text(text, t))] for _, t, kw in strings if kw in _CODE_FIELD_KEYWORDS]
+        values = [t for _, t, kw in strings if kw in _CODE_VALUE_KEYWORDS]
+        positional = [(i, t) for i, t, kw in strings if kw is None]
+        if len(positional) > 1 and positional[0][0] == 0 and positional[1][0] == 1:  # page.fill(selector, text)
+            labels.append(text[slice(*_code_text(text, positional[0][1]))])
+            positional = positional[1:]
+        values += [t for _, t in positional]
+        # with no label, only typing into the focused field (page.keyboard.type) is read, by the value's shape
+        if not _CODE_LOCATOR_NAMES.intersection(names):
+            continue  # no page and no locator: the call types into no field
         secret = _labels_ask_for_a_secret(tuple(labels)) if labels else None
-        for _, value in strings:
+        for value in values:
             a, b = _code_text(text, value)
             if b > a and not _built_at_run_time(text, value) and (
-                    secret if labels else _password_shaped(INVISIBLE.sub("", text[a:b]))):
+                    secret if labels else "keyboard" in names and _password_shaped(INVISIBLE.sub("", text[a:b]))):
                 edits.append((a, b, "[masked]"))
     merged = []
     for start, end, _ in sorted(edits):
