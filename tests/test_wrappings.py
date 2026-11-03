@@ -613,6 +613,67 @@ class ReviewFourTest(unittest.TestCase):
                 self.assertEqual(mask(text), text)
 
 
+class ReviewFiveTest(unittest.TestCase):
+    """#37's fifth review: a reading only adds masks; a backslash before an "n" in a path is no continuation, and no item
+    is masked whole as a fallback; and a value in its own double quotes is masked."""
+
+    def test_a_reading_only_adds_masks(self):
+        script = f"echo {PASSWORD}; keytool -storepass {PASSWORD}"
+        for value, key in (({"password": ["bash", "-c", script]}, "password"), ({"token": ["keytool", "-storepass", PASSWORD]}, "token")):
+            with self.subTest(key=key):
+                masked = mask_all(value)
+                self.assertNotIn(PASSWORD, json.dumps(masked))
+        self.assertEqual(mask_all({"password": ["bash", "-c", script]})["password"][2], "[masked]")
+
+    def test_a_windows_path_keeps_its_text(self):
+        for path in ("C:\\new\\team", "C:\\tmp\\new", "D:\\notes\\readme"):
+            script = f'echo "{path}"; keytool -storepass {PASSWORD} -v'
+            items = ["bash", "-c", script]
+            for depth in (1, 2, 3):
+                text = json.dumps(items)
+                for _ in range(depth - 1):
+                    text = json.dumps(text)
+                with self.subTest(path=path, depth=depth):
+                    read = mask(text)
+                    for _ in range(depth):
+                        read = json.loads(read)
+                    self.assertEqual(read, ["bash", "-c", script.replace(PASSWORD, "[masked]")])
+
+    def test_a_continuation_is_still_read_at_every_depth(self):
+        line = "keytool -list \\\n  -storepass " + PASSWORD + " -v"
+        for depth in (0, 1, 2):
+            text = line
+            for _ in range(depth):
+                text = json.dumps(text)
+            with self.subTest(depth=depth):
+                self.assertNotIn(PASSWORD, mask(text))
+
+    def test_a_value_in_its_own_double_quotes(self):
+        for line in (f'keytool -file <(cat c) -storepass "{PASSWORD}"', f'keytool -file <(cat c) -storepass "{PASSWORD}" -v',
+                     f'mongosh -f <(cat init.js) -u admin -p "{PASSWORD}"'):
+            for depth in (0, 1, 2):
+                text = line
+                for _ in range(depth):
+                    text = json.dumps(text)
+                with self.subTest(line=line[-6:], depth=depth):
+                    masked = mask(text)
+                    self.assertNotIn(PASSWORD, masked)
+                    read = masked
+                    for _ in range(depth):
+                        read = json.loads(read)
+                    self.assertTrue(read.startswith(line.split(PASSWORD)[0]), read)
+
+    def test_argument_lists_cost_time_in_proportion(self):
+        def make(n, twice):
+            items = ["keytool"] + [f"-J-Dopt{i}=v{i}" for i in range(n)] + ["-storepass", PASSWORD]
+            text = json.dumps(items)
+            return json.dumps(json.dumps(text)) if twice else text
+        for twice in (False, True):
+            with self.subTest(twice=twice):
+                small, large = took(make(200, twice)), took(make(800, twice))
+                self.assertLess(large, 6 * small + 0.5, (small, large))
+
+
 class RevisionTest(unittest.TestCase):
     def test_stored_rows_are_masked_again(self):
         self.assertEqual(masking.REVISION, 11)
