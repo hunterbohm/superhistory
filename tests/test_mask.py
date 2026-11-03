@@ -41,6 +41,17 @@ def made_up_private_key(r):
     return _der(0x30, _der(0x02, b"\0"), _rsa_algorithm(), _der(0x04, bytes(r.randrange(256) for _ in range(600))))
 
 
+def as_older_row(test):
+    """The test read as a stored row from a kb before keys were masked whole (a mask version with no revision mark), as
+    remask reads one: there an older kb may have left a key's rest after a placeholder, which fails closed."""
+    def run(self):
+        from kb import mask as mask_module
+        with mask_module.stored_row("0123456789abcdef"):
+            test(self)
+    run.__name__, run.__doc__ = test.__name__, test.__doc__
+    return run
+
+
 class MaskTest(unittest.TestCase):
     def assert_masked(self, text, secret):
         out = mask(text)
@@ -514,6 +525,7 @@ class OtherKeyFormatTest(unittest.TestCase):
                     self.assertEqual(once, f"[masked]\n{after}\nnext steps")
                     self.assertEqual(mask(once), once)
 
+    @as_older_row
     def test_after_a_placeholder_base64_stays_masked_unless_it_decodes_whole_as_public_material(self):
         # An older kb's mask left a key's body after its placeholder, whole or in part. Only base64 that decodes whole
         # as a certificate, a certificate request, a public key or an OpenSSH public key is shown.
@@ -541,6 +553,7 @@ class OtherKeyFormatTest(unittest.TestCase):
             with self.subTest(neither=name):
                 self.assertEqual(mask(f"[masked]\n{lines}\nnext steps"), "[masked]\nnext steps")
 
+    @as_older_row
     def test_each_part_of_a_private_keys_body_after_a_placeholder_stays_masked(self):
         import base64
         import json
@@ -592,6 +605,7 @@ class OtherKeyFormatTest(unittest.TestCase):
             with self.subTest(text=text[:20]):
                 self.assertNotIn(line[8:40], mask(text))
 
+    @as_older_row
     def test_a_placeholder_inside_another_keys_rest_reads_its_own(self):
         # A rest that stops at a JSON string's end runs on through the last token before its footer; a placeholder it
         # passes on that line still reads its own rest, which here runs on to the next line.
@@ -844,6 +858,26 @@ class ReviewFiveTest(unittest.TestCase):
             self.assertNotIn(rest, mask(f"[masked]\n{rest}\n"))
         with mask_module.stored_row(mask_module.VERSION):
             self.assertIn(rest, mask(f"[masked]\n{rest}\n"))
+
+    def test_remask_reads_an_older_kbs_row_fail_closed_and_its_own_rows_as_main(self):
+        import base64
+        import tempfile
+        from kb import store
+        rest = "QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVphYmNkZWZnaGlqa2xtbm9wcXJzdHV2d3h5ejAxMjM0"
+        encoded = base64.b64encode(b'{"note":"next steps","enabled":true,"mode":"normal"}').decode()
+        for version, text, kept in (("0123456789abcdef", f"[masked]\n{rest}\nnext steps\n", False),
+                                    ("r20-0123456789abcdef", f"password: [masked]\n{encoded}\nDone\n", True)):
+            with tempfile.TemporaryDirectory() as folder, self.subTest(version=version):
+                db = store.connect(folder + "/kb.sqlite")
+                try:
+                    store.store_item(db, "notes", "example", "2026-11-03", "Plan", "placeholder text", {})
+                    db.execute("UPDATE docs SET content=?", (text,))
+                    db.execute("UPDATE docs SET masked=?", (version,))  # after the trigger that clears it
+                    store.remask(db)
+                    content = db.execute("SELECT content FROM docs WHERE kind='doc'").fetchone()[0]
+                finally:
+                    db.close()
+                self.assertEqual((rest in content) or (encoded in content), kept, content)
 
     def test_an_all_capitals_fragment_with_no_vowel_inside_a_line_of_words(self):
         text = "[masked]\nMC4CAQAwBQYDK2VwBCIEIAAABCDFAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\nnotes BCDF"
