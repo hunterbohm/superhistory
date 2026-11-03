@@ -767,6 +767,30 @@ class IdentityTest(SourceCase):
         self.assertEqual(found.notes, [])
 
 
+class TextLabelTest(SourceCase):
+    """An exception for one of the texts the tool checks besides the files (the commit identity, the notes, the commit
+    message) covers that text only, never a committed file that happens to share its name."""
+
+    def test_a_file_named_like_a_checked_text_takes_none_of_its_exceptions(self):
+        author = "Acme" + "corp Builds <builds@example.invalid>"
+        for name in ("commit identity", "commit message", "tag"):
+            files = self.base_files(**{EXCEPTIONS: tsv(("commit identity", author, "the made-up author"), (name, author, "x")),
+                                       name: author + "\n"})
+            shutil.rmtree(str(self.out), ignore_errors=True)
+            found = self.build(self.commit(files), author=author).check("patterns")
+            with self.subTest(name=name):
+                self.assertFalse(found.ok)
+                self.assertIn("%s:1" % name, [f.where for f in found.findings])
+
+    def test_the_same_string_in_a_file_with_its_own_entry_is_excused(self):
+        author = "Acme" + "corp Builds <builds@example.invalid>"
+        files = self.base_files(**{EXCEPTIONS: tsv(("commit identity", author, "the made-up author"),
+                                                   ("docs/credits.md", author, "the made-up author in the credits")),
+                                   "docs/credits.md": author + "\n"})
+        found = self.build(self.commit(files), author=author).check("patterns")
+        self.assertTrue(found.ok, found.findings)
+
+
 class GitFailureTest(SourceCase):
     def shimmed(self, body):
         folder = self.tmp / "shim"
