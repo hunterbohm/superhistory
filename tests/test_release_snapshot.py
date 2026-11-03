@@ -19,6 +19,7 @@ from tools import release_snapshot as rs
 
 REPO = Path(__file__).resolve().parent.parent
 INSTALLER = Path(__file__).resolve().parent / "fixtures" / "release" / "site_install.sh"
+CURRENT = "%d.%d" % sys.version_info[:2]
 EXCEPTIONS = "tools/release_exceptions.tsv"
 ROWS = "bench/DATASET_ROWS.txt"
 CREDENTIAL = "zq-4417-kettle"
@@ -621,7 +622,7 @@ class T(unittest.TestCase):
 """
 
     def suites(self, repo):
-        return rs.default_suites(repo, interpreters=(sys.executable,))
+        return rs.default_suites(repo, interpreters=((CURRENT, (sys.executable,)),))
 
     def built(self, body="", files=None, rows="", **kw):
         files = dict(files or {})
@@ -678,11 +679,12 @@ class T(unittest.TestCase):
 
     def test_an_interpreter_that_is_missing_fails_that_suite_only(self):
         self.commit(self.base_files(**{"tests/test_t.py": self.TESTS % "", "tests/__init__.py": ""}))
-        release = self.build(suites=lambda repo: rs.default_suites(repo, interpreters=("no-such-python-9.9", sys.executable)))
+        both = ((("9.9", ("no-such-python-9.9",)), (CURRENT, (sys.executable,))))
+        release = self.build(suites=lambda repo: rs.default_suites(repo, interpreters=both))
         found = release.check("suites")
         self.assertFalse(found.ok)
         self.assertTrue(any("no-such-python-9.9" in f.text and "PATH" in f.text for f in found.findings), found.findings)
-        self.assertTrue(any(sys.executable in n for n in found.notes), found.notes)
+        self.assertIn("python%s tests: 1 tests, 0 skipped, passed" % CURRENT, found.notes)
 
     def test_bench_tests_run_one_folder_at_a_time(self):
         files = {"bench/test_a.py": self.TESTS % "", "bench/sub/test_b.py": self.TESTS % "", "bench/data.py": "x = 1\n"}
@@ -699,9 +701,57 @@ class T(unittest.TestCase):
         self.commit(self.base_files(**{"bench/test_a.py": "x = 1\n", "tests/test_t.py": "x = 1\n"}))
         release = self.build()
         found = rs.default_suites(release.repo)
-        self.assertEqual([(s.label, s.argv[0]) for s in found],
-                         [("python3 tests", "python3"), ("python3.9 tests", "python3.9"), ("bench", "python3")])
+        self.assertEqual([(s.label, s.want) for s in found],
+                         [("python3.12 tests", ("3.12", ("python3.12", "python3"))),
+                          ("python3.9 tests", ("3.9", ("python3.9", "python3"))),
+                          ("bench", ("3.12", ("python3.12", "python3")))])
         self.assertEqual(found[0].argv[1:], ["-m", "unittest", "discover", "-v", "-s", "tests", "-t", "."])
+
+    def fake_pythons(self, **claims):
+        folder = self.tmp / "fake-bin"
+        folder.mkdir(exist_ok=True)
+        for tool in ("git", "grep", "sh"):
+            if not (folder / tool).exists():
+                (folder / tool).symlink_to(shutil.which(tool))
+        for name, version in claims.items():
+            script = folder / name
+            script.write_text('#!/bin/sh\nif [ "$1" = "-c" ]; then echo %s; exit 0; fi\nexec %s "$@"\n' % (version, sys.executable))
+            script.chmod(0o755)
+        return str(folder)
+
+    def run_default(self, path):
+        self.commit(self.base_files(**{"tests/test_t.py": self.TESTS % "", "tests/__init__.py": ""}))
+        with mock.patch.dict(os.environ, {"PATH": path}):
+            return self.build(suites=rs.default_suites).check("suites")
+
+    def test_an_interpreter_of_another_version_than_the_slot_needs_fails_and_says_both(self):
+        self.commit(self.base_files(**{"tests/test_t.py": self.TESTS % "", "tests/__init__.py": ""}))
+        wrong = (("2.7", (sys.executable,)),)
+        found = self.build(suites=lambda repo: rs.default_suites(repo, interpreters=wrong)).check("suites")
+        self.assertFalse(found.ok)
+        self.assertTrue(any("is %s, not 2.7" % CURRENT in f.text for f in found.findings), found.findings)
+
+    def test_a_python3_that_is_3_9_cannot_stand_in_for_3_12(self):
+        found = self.run_default(self.fake_pythons(python3="3.9", **{"python3.12": "3.9"}))
+        self.assertFalse(found.ok)
+        self.assertTrue(any("3.12" in f.text and "3.9" in f.text for f in found.findings), found.findings)
+        self.assertIn("python3.9 tests: 1 tests, 0 skipped, passed", found.notes)
+
+    def test_both_interpreters_missing_fails_and_names_both(self):
+        found = self.run_default(self.fake_pythons())
+        self.assertFalse(found.ok)
+        text = "\n".join(f.text for f in found.findings)
+        self.assertIn("Python 3.12", text)
+        self.assertIn("Python 3.9", text)
+
+    def test_one_interpreter_of_each_version_passes(self):
+        found = self.run_default(self.fake_pythons(**{"python3.12": "3.12", "python3.9": "3.9"}))
+        self.assertTrue(found.ok, found.findings)
+        self.assertIn("2 suites", found.summary)
+
+    def test_the_slot_takes_the_first_candidate_that_has_the_version(self):
+        found = self.run_default(self.fake_pythons(python3="3.12", **{"python3.9": "3.9"}))
+        self.assertTrue(found.ok, found.findings)
 
     def test_no_suites_means_the_check_is_skipped_not_passed(self):
         found = self.build(self.commit(self.base_files())).check("suites")
