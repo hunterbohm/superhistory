@@ -19,7 +19,7 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
-from kb.mask import clip, is_auth_noise, mask, mask_all
+from kb.mask import clip, is_auth_noise, mask, mask_all, typed_secrets
 from kb.sources import Item, Progress, SourceType
 
 TOOL_CHARS = 300
@@ -90,13 +90,16 @@ def clean_text(text, role):
     return "" if text.startswith(DROP_PREFIXES) else text
 
 
-def _tool_input(args):
+def _tool_input(args, name=None):
     try:
         args = json.loads(args)
     except (TypeError, ValueError):
         return str(args)
     if not isinstance(args, dict):
         return str(args)
+    typed = typed_secrets(name, args)
+    if typed != args:  # a secret it typed, masked, with the field it typed into; else as before
+        return json.dumps(mask_all(typed), ensure_ascii=False)
     for key in ("command", "path", "file_path", "query", "url", "pattern", "goal", "name", "message"):
         if key in args:
             return str(args[key])
@@ -110,8 +113,13 @@ def _tool_calls(raw):
         return []
     if not isinstance(calls, list):
         return []
-    return [f"TOOL {(c.get('function') or {}).get('name')}: {_clip(_tool_input((c.get('function') or {}).get('arguments')), TOOL_CHARS)}"
-            for c in calls if isinstance(c, dict)]
+    out = []
+    for c in calls:
+        if isinstance(c, dict):
+            name = (c.get("function") or {}).get("name")
+            arguments = _tool_input((c.get("function") or {}).get("arguments"), name)
+            out.append(f"TOOL {name}: {_clip(arguments, TOOL_CHARS)}")
+    return out
 
 
 def _tool_result(content, name):

@@ -9,6 +9,7 @@ from datetime import datetime, timedelta, timezone
 from unittest import mock
 
 from kb import ai, search, store, summarize
+from tests import legacy_store
 from tests.support import (FakeModel, TRAITS, open_db, parse_config, scratch_paths, segment, summary_text)
 
 LOG = logging.getLogger("test_summarize")
@@ -96,6 +97,30 @@ class SummarizeTest(unittest.TestCase):
     def item_hash(self, sid="test:s1"):
         return json.loads(self.db.execute("SELECT metadata FROM docs WHERE source_id=? AND kind='raw' LIMIT 1",
                                           (sid,)).fetchone()[0])["hash"]
+
+    def test_only_this_install_s_items_are_summarized(self):
+        config = dataclasses.replace(self.config, install="c-aaaaaaaaaaaaa")
+        self.store("sessions", "c-aaaaaaaaaaaaa:mine", long_text("mine"), SESSION_META)
+        self.store("sessions", "c-aaaaaaaaaaaaa@laptop:mine-there", long_text("there"), SESSION_META)
+        self.store("sessions", "c-bbbbbbbbbbbbb:theirs", long_text("theirs"), SESSION_META)
+        self.store("sessions", "c-aaaaaaaaaaaaab:near", long_text("near"), SESSION_META)
+        rules = summarize.scope(config)
+        self.assertEqual(sorted(i.source_id for i in summarize.pending(self.db, rules, owner=config.owner)),
+                         ["c-aaaaaaaaaaaaa:mine", "c-aaaaaaaaaaaaa@laptop:mine-there"])
+        self.assertEqual(summarize.estimate(self.db, config)["sessions"][0], 2)
+
+    def test_request_parse_and_rows_summarize_an_item_outside_summarize(self):
+        item = summarize.Item("sessions", "c-aaaaaaaaaaaaa:s9", "2026-10-01T00:00:00Z", "Pelican checkout", "h9",
+                              {"path": "/s/9.jsonl"}, 12, None)
+        prompt = summarize.request(item, "USER: the checkout fails\nASSISTANT: the key expired", summarize.OTHERS_ATOMS)
+        self.assertIn("Pelican checkout", prompt.user)
+        self.assertIn("the key expired", prompt.user)
+        self.assertIn("decision, path", prompt.system)
+        segments, atoms = summarize.parse(summary_text(), summarize.OTHERS_ATOMS)
+        rows = summarize.rows(item, {"from_chars": 0, "of_chars": 12}, segments, atoms)
+        self.assertTrue(rows)
+        self.assertEqual({r["metadata"]["of_hash"] for r in rows}, {"h9"})
+        self.assertEqual({r["metadata"]["path"] for r in rows}, {"/s/9.jsonl"})
 
     def grow(self, text, sid="test:s1"):
         self.store("sessions", sid, text, SESSION_META)
@@ -251,6 +276,23 @@ class SummarizeTest(unittest.TestCase):
                 sent, _ = self.run_titled(f"Full {n}")
                 self.assertIn(text, sent)
                 self.assertEqual([r[2] for r in self.summary_rows()], [f"Full {n}"])
+
+    def test_remask_keeps_a_summary_current_under_its_items_new_hash_and_its_next_growth_gets_a_full_pass(self):
+        text = long_text("gamma") + "vpn_pw: walrus2secret9\n"
+        legacy_store.store_item(self.db, "sessions", "test:s2", "2026-10-18T10:00:00Z", "title test:s2", text,
+                                SESSION_META, store.CHUNK)
+        # As an earlier version of the mask stored it: rows that record no version are an older kb's, left to rebuild.
+        self.db.execute("UPDATE docs SET masked='0123456789abcdef' WHERE source_id='test:s2'")
+        self.db.commit()
+        self.run_once(FakeModel(summary_text()))
+        older = self.item_hash("test:s2")
+        store.remask(self.db)
+        self.assertNotEqual(self.item_hash("test:s2"), older)
+        self.assertEqual(self.pending_ids(), [])
+        self.assertNotIn(older, json.dumps(self.db.execute("SELECT metadata FROM docs").fetchall()))
+        self.grow(text + "one more line\n", sid="test:s2")
+        _, meta = self.run_titled("Grown")
+        self.assertEqual(meta["from_chars"], 0)
 
     def test_item_that_shrank_but_is_still_long_gets_a_full_pass(self):
         self.run_once(FakeModel(summary_text()))

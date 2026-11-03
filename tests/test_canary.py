@@ -27,7 +27,7 @@ from unittest import mock
 
 import dataclasses
 
-from kb import ai, check, cli, config, ingest, remote, search, store, summarize
+from kb import ai, check, cli, config, ids, ingest, remote, search, store, summarize
 from kb.ai import api
 from kb.ai import cli as ai_cli
 from kb.paths import Paths
@@ -537,7 +537,8 @@ password = "cmd:echo {CANARY['cmdfail']} >&2; exit 3"
                 ("doc", "old-check.md", "walrus check" + across("oldcheck")[12:], "walrus ledger deploys",
                  {"hash": "oldcheck"})]
         parts = store.chunk(long)
-        rows += [("raw", "old-long.md", "Long notes", part, {"hash": "oldlong", "chunk": i, "chunks": len(parts)})
+        own = ids.prefix(ids.install_id(self.paths))  # this install's own item, which its summarizer reads
+        rows += [("raw", f"{own}old-long.md", "Long notes", part, {"hash": "oldlong", "chunk": i, "chunks": len(parts)})
                  for i, part in enumerate(parts)]
         # A key across three chunks: the chunk that matches holds body lines and the footer, but not the header.
         parts = store.chunk("p" * 3820 + "\n" + LONG_PEM + "\nwalrus ledger deployment notes\n")
@@ -550,8 +551,8 @@ password = "cmd:echo {CANARY['cmdfail']} >&2; exit 3"
                        [(kind, sid, older if sid == "old-pem.md" else old, title, text, json.dumps(meta))
                         for kind, sid, title, text, meta in rows])
         db.commit()
-        ids = [r[0] for r in db.execute("SELECT id FROM docs WHERE source_id IN ('sync.md', 'old-short.md', "
-                                        "'old-long.md') ORDER BY id")]
+        rids = [r[0] for r in db.execute("SELECT id FROM docs WHERE source_id IN ('sync.md', 'old-short.md', ?) "
+                                         "ORDER BY id", (f"{own}old-long.md",))]
         db.close()
         self.kb("search", "walrus ledger")
         Model.query = "walrus ledger"
@@ -567,7 +568,7 @@ password = "cmd:echo {CANARY['cmdfail']} >&2; exit 3"
         pem = [r[0] for r in store.connect(self.paths.db, readonly=True).execute(
             "SELECT id FROM docs WHERE source_id = 'old-pem.md' ORDER BY id")]
         self.kb("get", str(pem[-1]))
-        for rid in (ids[0], ids[1], ids[2], ids[-1]):
+        for rid in (rids[0], rids[1], rids[2], rids[-1]):
             self.kb("get", str(rid))
         sent = len(Model.sent)
         self.kb("summarize", "--limit", "2")

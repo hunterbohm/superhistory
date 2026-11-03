@@ -4,6 +4,7 @@ import re
 import sqlite3
 from datetime import datetime, timezone
 
+from kb import store
 from kb.mask import mask, mask_all
 from kb.store import SUMMARY_KINDS, TOKENIZE, current, item_names, secret_id, unversioned
 
@@ -16,6 +17,9 @@ RAW_WEIGHT = 0.5
 CANDIDATES = 60
 # The longest passage FTS5's snippet() gives: the stretch of a record where its matching words cluster.
 EXCERPT_TOKENS = 64
+# The short snippet with its matches in brackets, then the excerpt with them marked for excerpt() to cut around.
+SNIPPETS = ("snippet({table}, {column}, '[', ']', ' … ', 24), "
+            "snippet({table}, {column}, char(2), char(3), ' … ', " + str(EXCERPT_TOKENS) + ")")
 EXCERPT_CHARS = 500
 SNIPPET_CHARS = 220
 MARK, END = "\x02", "\x03"
@@ -98,11 +102,13 @@ def search(db, query, after=None, sources=(), limit=10, before=None, keep=None):
     if before:
         now = datetime.fromisoformat(before.replace("Z", "+00:00"))
     rows = db.execute(
-        f"SELECT id, kind, source, source_id, ts, title, content, metadata, superseded_by FROM docs "
+        f"SELECT id, kind, source, source_id, ts, title, content, metadata FROM docs "
         f"WHERE id IN ({','.join('?' * len(fused))})", list(fused)).fetchall()
+    marks = store.superseded(db, {(r[2], r[3]) for r in rows})
     best, total = {}, {}
     for row in rows:
-        rid, kind, src, sid, ts, title, content, meta, superseded = row
+        rid, kind, src, sid, ts, title, content, meta = row
+        superseded = marks.get((src, sid))
         score = fused[rid] * coverage[rid] * (1 + math.exp(-_age_days(ts, now) / 180))
         if superseded:
             score *= 0.5
@@ -121,38 +127,59 @@ def search(db, query, after=None, sources=(), limit=10, before=None, keep=None):
     hits = sorted((h for h in allowed if keep is None or keep(h)), key=lambda h: -h["score"])[:limit]
     for hit in hits:
         if hit["id"] in fresh:
-            snip, marked = db.execute(
-                f"SELECT snippet(docs_fts, 1, '[', ']', ' … ', 24), snippet(docs_fts, 1, char(2), char(3), ' … ', "
-                f"{EXCERPT_TOKENS}) FROM docs_fts WHERE docs_fts MATCH ? AND rowid = ?", (match, hit["id"])).fetchone()
-            hit["snippet"] = re.sub(r"\s+", " ", snip if "[" in snip else hit["content"][:SNIPPET_CHARS]).strip()
-            hit["excerpt"] = excerpt(marked if MARK in marked else hit["content"])
+            own = hit["content"]
+            snip, marked = db.execute(f"SELECT {SNIPPETS.format(table='docs_fts', column=1)} FROM docs_fts "
+                                      "WHERE docs_fts MATCH ? AND rowid = ?", (match, hit["id"])).fetchone()
         else:
-            # Older rows are masked whole before any cut, and the match is found again in the masked text.
-            hit["title"], hit["content"], hit["meta"] = mask(hit["title"]), _masked_item(db, hit), mask_all(hit["meta"])
-            marked = _marked(hit["content"], match)
-            hit["snippet"] = excerpt(marked.replace(MARK, MARK + "[").replace(END, "]" + END), SNIPPET_CHARS)
-            hit["excerpt"] = excerpt(marked)
+            # Older rows are masked whole before any cut, and the same passages are cut from the hit's own stretch of
+            # the masked text, so their cards read as a current row's would.
+            hit["title"], hit["meta"] = mask(hit["title"]), mask_all(hit["meta"])
+            hit["content"], own = _masked_item(db, hit)
+            snip, marked = _snippets(hit["title"], own, match)
+        hit["snippet"] = re.sub(r"\s+", " ", snip if "[" in snip else own[:SNIPPET_CHARS]).strip()
+        hit["excerpt"] = excerpt(marked if MARK in marked else own)
     return hits
 
 
+def search_stores(stores, query, after=None, sources=(), limit=10, before=None, keep=None):
+    """search() in each of several stores, merged best first. `stores` is [(label, db), ...]. Row ids are unique only
+    within one store, so each hit names its store in hit["store"]."""
+    hits = []
+    for label, db in stores:
+        for hit in search(db, query, after, sources, limit, before, keep):
+            hits.append({**hit, "store": label})
+    return sorted(hits, key=lambda h: -h["score"])[:limit]
+
+
 def _masked_item(db, hit):
-    """The hit's text masked whole: a doc or summary row by itself, a chunk as its item's chunks joined in order."""
+    """The hit's item masked whole, and the hit's own stretch of it. A doc or summary row is its own item. A chunk's
+    item is its chunks joined in order, masked together so a secret across two chunks is still found. Its own stretch
+    is the chunk masked alone when the text before it, the chunk and the text after it, each masked alone, join up to
+    the whole masked item; otherwise a secret crosses its edge and the stretch is the whole item."""
     if hit["kind"] != "raw":
-        return mask(hit["content"])
-    return mask("".join(r[0] for r in db.execute(
-        "SELECT content FROM docs WHERE source=? AND source_id=? AND kind='raw' "
-        "ORDER BY json_extract(metadata, '$.chunk')", (hit["source"], hit["source_id"]))))
+        whole = mask(hit["content"])
+        return whole, whole
+    rows = db.execute("SELECT content, json_extract(metadata, '$.chunk') FROM docs WHERE source=? AND source_id=? "
+                      "AND kind='raw' ORDER BY 2", (hit["source"], hit["source_id"])).fetchall()
+    parts = [content for content, _ in rows]
+    whole = mask("".join(parts))
+    at = [i for i, (_, chunk) in enumerate(rows) if chunk == hit["meta"].get("chunk")]
+    if len(at) != 1:
+        return whole, whole
+    before, own, after = (mask("".join(p)) for p in (parts[:at[0]], parts[at[0]:at[0] + 1], parts[at[0] + 1:]))
+    return whole, own if before + own + after == whole else whole
 
 
-def _marked(text, match):
-    """`text` with the words the FTS query `match` finds marked as snippet() marks them, found by FTS5 itself in an
-    index of just this text, so stemming matches as it does in the store."""
+def _snippets(title, text, match):
+    """The two passages search() cuts from a current row, cut by FTS5 itself from an index of just this title and
+    text, laid out as docs_fts is, so stemming matches, a match in the title alone counts, and the matching words
+    cluster as they do in the store."""
     index = sqlite3.connect(":memory:")
     try:
-        index.execute(f"CREATE VIRTUAL TABLE t USING fts5(content, tokenize='{TOKENIZE}')")
-        index.execute("INSERT INTO t(rowid, content) VALUES (1, ?)", (text,))
-        row = index.execute("SELECT highlight(t, 0, char(2), char(3)) FROM t WHERE t MATCH ?", (match,)).fetchone()
-        return row[0] if row else text
+        index.execute(f"CREATE VIRTUAL TABLE t USING fts5(title, content, tokenize='{TOKENIZE}')")
+        index.execute("INSERT INTO t(rowid, title, content) VALUES (1, ?, ?)", (title, text))
+        row = index.execute(f"SELECT {SNIPPETS.format(table='t', column=1)} FROM t WHERE t MATCH ?", (match,)).fetchone()
+        return row if row else ("", text)
     finally:
         index.close()
 

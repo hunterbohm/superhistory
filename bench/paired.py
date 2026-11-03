@@ -33,9 +33,11 @@ FREEZE = os.path.join(splits.FOLDER, "paired-freeze.json")
 CHECKOUT = os.path.expanduser(os.environ.get("BENCH_PAIRED_BASELINE", "~/.cache/kb-bench/paired-baseline"))
 LOGS = os.path.expanduser(os.environ.get("BENCH_LOGS", "~/.cache/kb-bench/logs/hillclimb"))
 LABELS = ("final", "baseline-paired")
-# Per test half: the command, the run name it logs, and the results it writes, as each runner names them.
+# Per test half: the command, the run name it logs, and the results it writes, as each runner names them. The month's
+# are the check's own files, since the rivals' month B rows share b-final/.
 TESTS = {
-    "month": (["run.py", "month", "--month", "b", "--tools", "check"], "b-{label}:check", ["month/b-{label}"]),
+    "month": (["run.py", "month", "--month", "b", "--tools", "check"], "b-{label}:check",
+              [f"month/b-{{label}}/{name}" for name in ("check.jsonl", "run.json", "table.md")]),
     "longmemeval-s": (["public/longmemeval.py", "--set", "s", "--split", "test"], "s-without-summaries-test-{label}",
                       [f"longmemeval/s-without-summaries-test-{{label}}{ext}" for ext in (".jsonl", ".md", ".run.json")]),
     "locomo": (["public/locomo.py", "--split", "test"], "locomo10-with-summaries-test-{label}",
@@ -147,6 +149,15 @@ def freeze(head, final, base, baseline):
         fh.write("\n")
 
 
+def copy_baseline_results(test, checkout, out):
+    """Copy what the baseline's run of `test` wrote in its checkout into `out`, beside the final's."""
+    for path in (path.format(label=LABELS[1]) for path in TESTS[test][2]):
+        source = os.path.join(checkout, "bench", "results", "hillclimb", path)
+        if os.path.exists(source):
+            os.makedirs(os.path.dirname(os.path.join(out, path)), exist_ok=True)
+            shutil.copy(source, os.path.join(out, path))
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--tests", default=",".join(TESTS))
@@ -186,7 +197,6 @@ def main(argv=None):
     env = {**os.environ, "BENCH_HELDOUT_LOG": os.path.abspath(splits.LOG)}
     os.makedirs(LOGS, exist_ok=True)
     for test in tests:
-        results = TESTS[test][2]
         runs = []
         for label, folder, command in commands[test]:
             log = open(os.path.join(LOGS, f"paired-{test}-{label}.log"), "a", encoding="utf-8")
@@ -197,13 +207,7 @@ def main(argv=None):
             if proc.wait():
                 failed.append(label)
             log.close()
-        for path in results:
-            source = os.path.join(CHECKOUT, "bench", "results", "hillclimb", path.format(label=LABELS[1]))
-            target = os.path.join(OUT, path.format(label=LABELS[1]))
-            if os.path.isdir(source):
-                shutil.copytree(source, target, dirs_exist_ok=True)
-            elif os.path.exists(source):
-                shutil.copy(source, target)
+        copy_baseline_results(test, CHECKOUT, OUT)
         print(f"{test}: " + ("done" if not failed else f"{', '.join(failed)} stopped; see {LOGS}/paired-{test}-*.log "
                              "and run the same command again once the cause has passed"))
         if failed:

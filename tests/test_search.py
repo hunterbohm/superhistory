@@ -1,3 +1,4 @@
+import contextlib
 import os
 import sqlite3
 import tempfile
@@ -13,6 +14,9 @@ def iso(delta=timedelta(0)):
 
 def long_body(term):
     return f"{term} leads the first line\n" + "padding line of ordinary text\n" * 200
+
+
+MINE, THEIRS = "c-aaaaaaaaaaaaa", "c-bbbbbbbbbbbbb"
 
 
 class TempDB(unittest.TestCase):
@@ -32,9 +36,9 @@ class TempDB(unittest.TestCase):
 class OldRowTest(TempDB):
     """Rows an earlier version of mask() stored, which today's changes, so a reader masks them before cutting them."""
 
-    def old(self, sid, content, kind="doc", meta='{}'):
+    def old(self, sid, content, kind="doc", meta='{}', title="t"):
         self.db.execute("INSERT INTO docs(kind, source, source_id, ts, title, content, metadata, masked) "
-                        "VALUES (?, 's', ?, ?, 't', ?, ?, '0123456789abcdef')", (kind, sid, iso(), content, meta))
+                        "VALUES (?, 's', ?, ?, ?, ?, ?, '0123456789abcdef')", (kind, sid, iso(), title, content, meta))
         self.db.commit()
 
     def test_a_match_far_from_a_masked_secret_stays_in_the_passage(self):
@@ -68,6 +72,58 @@ class OldRowTest(TempDB):
     def test_an_old_item_whose_id_looks_like_a_secret_is_left_out(self):
         self.old("desk:key-sk-ant-api03-old-" + "Z" * 24 + ".md", "walrus deployment")
         self.assertEqual(search.search(self.db, "walrus deployment"), [])
+
+    def test_an_old_row_gets_the_card_a_current_row_gets_for_the_same_text(self):
+        key = "sk-ant-api03-old-" + "Z" * 24
+        text = "ordinary filler " * 60 + f"the walrus deployment key is {key} for now " + "more filler " * 60
+        self.add("now.md", text)
+        self.old("then.md", text)
+        hits = {h["source_id"]: h for h in search.search(self.db, "walrus deployment")}
+        old, current = hits["then.md"], hits["now.md"]
+        self.assertEqual((old["snippet"], old["excerpt"]), (current["snippet"], current["excerpt"]))
+        self.assertIn("walrus deployment key", old["excerpt"])
+        self.assertNotIn("Z" * 12, old["excerpt"])
+        self.assertLess(len(old["excerpt"]), search.EXCERPT_CHARS)
+
+    def test_an_old_chunk_gets_the_card_its_current_chunk_gets(self):
+        text = "prefix padding " * 180 + "\nwalrus deployment approved.\n" + "suffix padding " * 180
+        self.add("now.md", text)
+        parts = store.chunk(text)
+        self.assertGreater(len(parts), 1)
+        for i, part in enumerate(parts):
+            self.old("then.md", part, kind="raw", meta=f'{{"chunk": {i}, "chunks": {len(parts)}}}')
+        hits = {h["source_id"]: h for h in search.search(self.db, "walrus deployment")}
+        old, current = hits["then.md"], hits["now.md"]
+        self.assertEqual(old["meta"]["chunk"], current["meta"]["chunk"])
+        self.assertEqual((old["snippet"], old["excerpt"]), (current["snippet"], current["excerpt"]))
+        self.assertNotIn("suffix", old["excerpt"])
+
+    def test_an_old_chunk_a_key_runs_into_gets_the_card_of_its_whole_masked_item(self):
+        line = ("T2xkUGVtQm9keUxpbmU" * 4)[:64]
+        key = "-----BEGIN PRIVATE KEY-----\n" + f"{line}\n" * 90 + "-----END PRIVATE KEY-----"
+        text = "context " + " " * 3800 + "\n" + key + "\nwalrus deployment notes\n"
+        self.add("now.md", text)
+        parts = store.chunk(text)
+        self.assertEqual(len(parts), 3)
+        for i, part in enumerate(parts):
+            self.old("then.md", part, kind="raw", meta=f'{{"chunk": {i}, "chunks": 3}}')
+        hits = {h["source_id"]: h for h in search.search(self.db, "walrus deployment")}
+        old, current = hits["then.md"], hits["now.md"]
+        self.assertEqual(old["meta"]["chunk"], 2, "the match is in the chunk the key runs into")
+        self.assertEqual((old["snippet"], old["excerpt"]), (current["snippet"], current["excerpt"]))
+        self.assertIn("context", old["excerpt"])
+        self.assertNotIn(line[:12], old["snippet"] + old["excerpt"])
+
+    def test_an_old_row_matched_by_its_title_alone_gets_a_current_rows_card(self):
+        for n, body in enumerate(("Opening [note] " + "ordinary filler " * 60,
+                                  "token sk-ant-api03-old-" + "Z" * 24 + " " + "ordinary filler " * 60)):
+            with self.subTest(body=body[:20]):
+                self.add(f"now{n}.md", body, title=f"walrus{n}")
+                self.old(f"then{n}.md", body, title=f"walrus{n}")
+                hits = {h["source_id"]: h for h in search.search(self.db, f"walrus{n}")}
+                old, current = hits[f"then{n}.md"], hits[f"now{n}.md"]
+                self.assertEqual((old["snippet"], old["excerpt"]), (current["snippet"], current["excerpt"]))
+                self.assertNotIn("Z" * 12, old["snippet"] + old["excerpt"])
 
     def test_current_rows_keep_the_index_snippet(self):
         self.add("d.md", "ordinary filler " * 100 + "walrus deployment was approved by Dana.")
@@ -260,20 +316,74 @@ class SearchTest(TempDB):
         self.add("b", "ibis", title="good", ts=iso())
         self.assertEqual(self.titles("ibis"), ["good", "bad"])
 
-    def test_superseded_row_score_is_halved(self):
+    def test_superseded_item_score_is_halved(self):
         self.add("a", "gecko", title="a")
         before = search.search(self.db, "gecko")[0]["score"]
-        self.db.execute("UPDATE docs SET superseded_by=123")
+        store.mark_superseded(self.db, "s", "a", ("s", "b"), MINE)
         hit = search.search(self.db, "gecko")[0]
         self.assertAlmostEqual(hit["score"], before / 2, places=9)
-        self.assertEqual(hit["superseded_by"], 123)
+        self.assertEqual(hit["superseded_by"], ("s", "b"))
 
     def test_superseded_loses_to_equal_current_row(self):
         ts = iso()
         self.add("old", "gecko", title="old", ts=ts)
         self.add("new", "gecko", title="new", ts=ts)
-        self.db.execute("UPDATE docs SET superseded_by=2 WHERE source_id='old'")
+        store.mark_superseded(self.db, "s", "old", ("s", "new"), MINE)
         self.assertEqual(self.titles("gecko"), ["new", "old"])
+
+    def test_a_mark_survives_a_refresh_of_the_item(self):
+        self.add("old", "gecko first words", title="old")
+        store.mark_superseded(self.db, "s", "old", ("s", "new"), MINE)
+        self.add("old", "gecko changed words", title="old")
+        self.assertEqual(search.search(self.db, "gecko")[0]["superseded_by"], ("s", "new"))
+        store.clear_superseded(self.db, "s", "old", MINE)
+        self.assertIsNone(search.search(self.db, "gecko")[0]["superseded_by"])
+
+    def test_a_mark_and_a_deletion_give_one_answer_in_either_order(self):
+        """Sync applies records one at a time as they arrive, or in a batch with marks after items. A mark from another
+        computer, the item's deletion and its return reach the same store either way."""
+        def apply(order):
+            db = store.connect(os.path.join(self.tmp.name, f"{order}.sqlite"))
+            self.addCleanup(db.close)
+            steps = {"item": lambda: store.store_item(db, "s", "old", iso(), "old", "gecko", {}),
+                     "mark": lambda: store.mark_superseded(db, "s", "old", ("s", "new"), THEIRS, "2026-10-01", v=1),
+                     "gone": lambda: store.delete_item(db, "s", "old")}
+            for step in order.split("-"):
+                steps[step]()
+            return store.superseded_by(db, "s", "old")
+
+        one_at_a_time = apply("item-mark-gone-item")
+        self.assertEqual(one_at_a_time, ("s", "new"))
+        self.assertEqual(apply("item-gone-item-mark"), one_at_a_time, "a batch applies marks after items")
+
+    def test_each_computer_keeps_its_own_mark_and_the_latest_wins(self):
+        self.add("old", "gecko", title="old")
+        store.mark_superseded(self.db, "s", "old", ("s", "theirs"), THEIRS, "2026-10-01", v=3)
+        store.mark_superseded(self.db, "s", "old", ("s", "mine"), MINE, "2026-10-02", v=2)
+        self.assertEqual(store.superseded_by(self.db, "s", "old"), ("s", "theirs"), "the higher version wins")
+        store.mark_superseded(self.db, "s", "old", ("s", "mine"), MINE)
+        self.assertEqual(store.superseded_by(self.db, "s", "old"), ("s", "mine"), "a mark not synced yet is newest")
+
+    def test_a_later_clear_outranks_an_older_mark_from_another_computer(self):
+        self.add("old", "gecko", title="old")
+        store.mark_superseded(self.db, "s", "old", ("s", "a-new"), THEIRS, "2026-10-01", v=1)
+        store.mark_superseded(self.db, "s", "old", ("s", "b-new"), MINE, "2026-10-02", v=2)
+        store.clear_superseded(self.db, "s", "old", MINE, "2026-10-03", v=3)
+        self.assertIsNone(store.superseded_by(self.db, "s", "old"), "the older mark does not win again")
+        self.assertIsNone(search.search(self.db, "gecko")[0]["superseded_by"])
+        store.mark_superseded(self.db, "s", "old", ("s", "a-newer"), THEIRS, "2026-10-04", v=4)
+        self.assertEqual(store.superseded_by(self.db, "s", "old"), ("s", "a-newer"), "a newer mark wins over the clear")
+
+    def test_search_over_several_stores_merges_by_score_and_names_each_store(self):
+        other = store.connect(os.path.join(self.tmp.name, "other.sqlite"))
+        self.addCleanup(other.close)
+        self.add("a", "heron heron heron", title="strong here")
+        store.store_item(other, "s", "b", iso(), "weak there", "heron and many other words besides", {})
+        store.store_item(other, "s", "c", iso(), "strong there", "heron heron heron", {})
+        other.commit()
+        hits = search.search_stores([("mine", self.db), ("team", other)], "heron", limit=2)
+        self.assertEqual(sorted((h["store"], h["title"]) for h in hits), [("mine", "strong here"), ("team", "strong there")])
+        self.assertEqual(len(search.search_stores([("mine", self.db), ("team", other)], "heron")), 3)
 
     def test_after_filter(self):
         self.add("a", "lynx", title="before", ts="2025-12-31T23:59:59Z")
@@ -336,6 +446,162 @@ class SearchTest(TempDB):
         hit = search.search(self.db, "capybara")[0]
         self.assertEqual(search.pointer(hit["meta"]), "laptop:/tmp/x.md")
         self.assertEqual(search.pointer(hit["meta"], machine="laptop"), "/tmp/x.md")
+
+
+class SupersedeMarkTest(TempDB):
+    SECRET = "sk-ant-api03-" + "Q" * 40  # made up
+
+    def older_row(self, sid):
+        # A row an older kb wrote under an older mask, before ingest refused an id that holds a secret.
+        self.db.execute("INSERT INTO docs(kind, source, source_id, ts, title, content, metadata, masked) VALUES "
+                        "('doc', 's', ?, ?, 'old', 'walrus notes', '{}', 'older-mask')", (sid, iso()))
+        self.db.commit()
+
+    def test_a_mark_on_or_to_an_item_whose_id_holds_a_secret_is_refused(self):
+        self.add("plain", "walrus notes")
+        self.older_row(self.SECRET)
+        for name, mark in (("to it", lambda: store.mark_superseded(self.db, "s", "plain", ("s", self.SECRET), MINE)),
+                           ("on it", lambda: store.mark_superseded(self.db, "s", self.SECRET, ("s", "plain"), MINE)),
+                           ("cleared", lambda: store.clear_superseded(self.db, "s", self.SECRET, MINE))):
+            with self.subTest(name):
+                with self.assertRaises(ValueError) as caught:
+                    mark()
+                self.assertNotIn(self.SECRET, str(caught.exception))
+        self.assertEqual(self.db.execute("SELECT count(*) FROM supersedes").fetchone()[0], 0)
+
+    def test_remask_deletes_the_item_and_every_mark_that_names_its_id(self):
+        self.add("plain", "walrus notes")
+        self.older_row(self.SECRET)
+        # Marks written before kb refused them, or synced from another computer.
+        self.db.executemany("INSERT INTO supersedes(source, source_id, marked_by, new_source, new_source_id, at, v) "
+                            "VALUES (?,?,?,?,?,'2026-10-01',1)",
+                            [("s", "plain", MINE, "s", self.SECRET), ("s", self.SECRET, THEIRS, "s", "plain"),
+                             ("s", "plain", THEIRS, "s", "other")])
+        self.db.commit()
+        store.remask(self.db)
+        self.assertNotIn(self.SECRET, "\n".join(self.db.iterdump()))
+        self.assertNotIn(self.SECRET, repr(search.search(self.db, "walrus")))
+        self.assertEqual(store.superseded_by(self.db, "s", "plain"), ("s", "other"), "other marks stay")
+        with open(self.path, "rb") as fh:
+            self.assertNotIn(self.SECRET.encode(), fh.read())
+
+    def test_a_hit_never_names_a_replacement_whose_id_holds_a_secret(self):
+        self.add("plain", "walrus notes")
+        self.older_row(self.SECRET)
+        self.db.execute("INSERT INTO supersedes(source, source_id, marked_by, new_source, new_source_id, at, v) "
+                        "VALUES ('s', 'plain', ?, 's', ?, '2026-10-01', 1)", (THEIRS, self.SECRET))
+        self.db.commit()
+        self.assertNotIn(self.SECRET, repr(search.search(self.db, "walrus")))
+        self.assertIsNone(store.superseded_by(self.db, "s", "plain"))
+
+    PROFILE_ID = "m1:secret-project:20261028_101500_a1b2c3"  # a Hermes session in a profile named so
+    PROFILE_META = {"host": "m1", "profile": "secret-project"}
+
+    def test_a_mark_to_an_item_that_is_gone_for_now_stays_through_remask(self):
+        store.store_item(self.db, "hermes", "m1:old", iso(), "old", "walrus", {"host": "m1"})
+        store.store_item(self.db, "hermes", self.PROFILE_ID, iso(), "new", "replacement", self.PROFILE_META)
+        store.mark_superseded(self.db, "hermes", "m1:old", ("hermes", self.PROFILE_ID), MINE)
+        self.db.commit()
+        store.delete_item(self.db, "hermes", self.PROFILE_ID)
+        store.remask(self.db)
+        self.assertEqual(store.superseded_by(self.db, "hermes", "m1:old"), ("hermes", self.PROFILE_ID),
+                         "a mark to a deleted item stays, as main's does")
+        store.store_item(self.db, "hermes", self.PROFILE_ID, iso(), "new", "replacement", self.PROFILE_META)
+        self.assertEqual(search.search(self.db, "walrus")[0]["superseded_by"], ("hermes", self.PROFILE_ID))
+
+    def test_a_mark_that_arrives_before_its_item_is_kept(self):
+        # Sync can deliver a mark before the items it names, as a batch with marks after items does not.
+        store.mark_superseded(self.db, "hermes", "m1:old", ("hermes", self.PROFILE_ID), THEIRS, "2026-10-01", v=1)
+        store.store_item(self.db, "hermes", "m1:old", iso(), "old", "walrus", {"host": "m1"})
+        store.store_item(self.db, "hermes", self.PROFILE_ID, iso(), "new", "replacement", self.PROFILE_META)
+        self.assertEqual(store.superseded_by(self.db, "hermes", "m1:old"), ("hermes", self.PROFILE_ID))
+
+    def test_marks_to_one_long_item_cost_remask_and_search_time_in_proportion(self):
+        import json
+        import time
+        took = {}
+        for n in (200, 800):
+            db = store.connect(os.path.join(self.tmp.name, f"many-{n}.sqlite"))
+            self.addCleanup(db.close)
+            db.executemany("INSERT INTO docs(kind, source, source_id, ts, title, content, metadata, masked) "
+                           "VALUES (?,?,?,?,?,?,?,?)",
+                           [("doc", "s", f"old-{i}", iso(), "old", "walrus notes", "{}", "older-mask") for i in range(n)]
+                           + [("raw", "s", "latest", iso(), "latest", "ordinary facts\n" * 40,
+                               json.dumps({"chunk": i, "chunks": n}), store.VERSION) for i in range(n)])
+            db.executemany("INSERT INTO supersedes VALUES ('s', ?, ?, 's', 'latest', '2026-10-01', NULL)",
+                           [(f"old-{i}", MINE) for i in range(n)])
+            db.commit()
+            started = time.process_time()
+            store.remask(db)
+            search.search(db, "walrus", limit=n)
+            took[n] = time.process_time() - started
+            self.assertEqual(db.execute("SELECT count(*) FROM supersedes").fetchone()[0], n)
+        self.assertLess(took[800], 8 * max(took[200], 0.02))
+
+    def main_store(self):
+        """A store main wrote: each mark is the replacing row's id in docs.superseded_by, and there is no supersedes
+        table."""
+        self.add("old", "gecko first", title="old")
+        self.add("new", "gecko second", title="new")
+        self.db.execute("DROP TABLE supersedes")
+        self.db.execute("ALTER TABLE docs ADD COLUMN superseded_by INTEGER")
+        self.db.execute("UPDATE docs SET superseded_by=(SELECT id FROM docs WHERE source_id='new') WHERE source_id='old'")
+        self.db.commit()
+        self.db.close()
+
+    def test_a_mark_main_kept_to_a_row_since_gone_still_marks_its_item(self):
+        # Main points a mark at the replacing row's id, which an ingest that refreshes that item deletes.
+        self.main_store()
+        raw = sqlite3.connect(self.path)
+        target = raw.execute("SELECT superseded_by FROM docs WHERE source_id='old'").fetchone()[0]
+        raw.execute("DELETE FROM docs WHERE source_id='new'")
+        raw.commit()
+        raw.close()
+        for readonly in (True, False, False):
+            with self.subTest(readonly=readonly), contextlib.closing(store.connect(self.path, readonly=readonly)) as db:
+                self.assertEqual(store.superseded_by(db, "s", "old"), ("", f"#{target}"))
+                self.assertTrue(search.search(db, "gecko")[0]["superseded_by"])
+
+    def test_a_store_main_wrote_keeps_its_marks_when_read_and_once_written(self):
+        self.main_store()
+        with contextlib.closing(store.connect(self.path, readonly=True)) as db:
+            self.assertEqual(store.superseded_by(db, "s", "old"), ("s", "new"), "read before any write")
+            hits = {h["title"]: h["superseded_by"] for h in search.search(db, "gecko")}
+            self.assertEqual(hits, {"old": ("s", "new"), "new": None})
+        with contextlib.closing(store.connect(self.path)) as db:
+            self.assertEqual(store.superseded_by(db, "s", "old"), ("s", "new"), "the first write moves the mark")
+            self.assertEqual(db.execute("SELECT count(*) FROM docs WHERE superseded_by IS NOT NULL").fetchone()[0], 0)
+            store.clear_superseded(db, "s", "old", MINE)
+            db.commit()
+            self.assertIsNone(store.superseded_by(db, "s", "old"), "a clear made since outranks the moved mark")
+        with contextlib.closing(store.connect(self.path)) as db:
+            self.assertIsNone(store.superseded_by(db, "s", "old"), "and the mark is moved once")
+
+
+class MarkMoveFailureTest(SupersedeMarkTest):
+    def test_a_move_that_fails_partway_leaves_the_store_as_it_was_and_a_second_move_does_nothing(self):
+        self.main_store()
+        raw = sqlite3.connect(self.path)
+        # A failure after the table is made and the marks are written, as the column is emptied.
+        raw.execute("CREATE TRIGGER fail_move BEFORE UPDATE OF superseded_by ON docs "
+                    "BEGIN SELECT RAISE(ABORT, 'disk full'); END")
+        raw.commit()
+        before = list(raw.iterdump())
+        with self.assertRaises(sqlite3.Error):
+            store.connect(self.path)
+        self.assertEqual(list(raw.iterdump()), before, "the store is as it was")
+        with contextlib.closing(store.connect(self.path, readonly=True)) as db:
+            self.assertEqual(store.superseded_by(db, "s", "old"), ("s", "new"), "and still reads its marks")
+        raw.execute("DROP TRIGGER fail_move")
+        raw.commit()
+        store.connect(self.path).close()
+        moved = list(raw.iterdump())
+        self.assertNotEqual(moved, before)
+        store.connect(self.path).close()
+        self.assertEqual(list(raw.iterdump()), moved, "a second move does nothing")
+        with contextlib.closing(store.connect(self.path, readonly=True)) as db:
+            self.assertEqual(store.superseded_by(db, "s", "old"), ("s", "new"))
+        raw.close()
 
 
 class ExcerptTest(TempDB):

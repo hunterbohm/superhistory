@@ -182,16 +182,14 @@ class CheckTest(unittest.TestCase):
         self.ask(ASK, model=model)
         self.assertAlmostEqual(model.timeouts[0], 4.0, places=1)
 
-    def test_pick_reads_the_title_and_the_part_of_a_long_record_that_matched(self):
-        filler = " ".join(f"word{i}" for i in range(200))
-        self.add("gmail", "test:a", f"Kickoff notes from the owner call. {filler} Dana Connect launch moved",
-                 title="Owner call")
+    def test_pick_reads_the_record_beyond_the_matched_words(self):
+        filler = " ".join(f"word{i}" for i in range(60))
+        self.add("gmail", "test:a", f"Kickoff notes from the owner call. {filler} Dana Connect launch moved")
         model = plan_and_pick("Dana Connect launch")
         self.ask(ASK, model=model)
         records = model.prompts[1].user.split("[Records]\n", 1)[1]
-        self.assertIn("Owner call", records)
+        self.assertIn("Kickoff notes from the owner call", records)
         self.assertIn("Dana Connect launch moved", records)
-        self.assertNotIn("word0 ", records)
 
     def test_pick_of_none_or_garbage_prints_nothing(self):
         self.add("gmail", "test:a", "Dana on the Connect launch date")
@@ -209,14 +207,14 @@ class CheckTest(unittest.TestCase):
         self.assertEqual(self.ask(ASK, model=model), "")
         self.assertEqual(model.systems, [check.QUERY_SYSTEM])
 
-    def test_at_most_four_records_with_excerpts_of_bounded_length(self):
+    def test_at_most_four_records_with_short_snippets(self):
         for i in range(6):
             self.add("vault", f"studio:n{i}", "Connect launch notes " + "detail " * 200)
         out = self.ask("what is the status of the Connect launch", model=plan_and_pick("Connect launch"))
         lines = out.splitlines()
         self.assertEqual(len(lines), 1 + 3 * 4)
-        for excerpt in lines[2::3]:
-            self.assertLessEqual(len(excerpt), 3 + search.EXCERPT_CHARS)
+        for snippet in lines[2::3]:
+            self.assertLessEqual(len(snippet), 3 + check.SNIPPET_CHARS)
 
     def test_current_session_is_excluded(self):
         self.add("claude_code", "test:sess-1", "we discussed the Connect launch with Dana")
@@ -349,6 +347,22 @@ class CheckTest(unittest.TestCase):
         self.assertEqual(out, "")
         self.assertLess(time.monotonic() - started, 0.35)
         self.assertEqual(self.log_entries()[-1]["error"], "TimeoutError")
+
+    def test_lookup_with_runs_the_check_over_several_stores(self):
+        self.add("gmail", "test:a", "Dana on the Connect launch date", ts="2026-10-04T10:00:00Z")
+        team_path = os.path.join(os.path.dirname(self.paths.db), "team.sqlite")
+        team = store.connect(team_path)
+        self.addCleanup(team.close)
+        store.store_item(team, "notes", "m-1/c-aaaaaaaaaaaaa:plan.md", "2026-10-03T10:00:00Z", "t",
+                         "Connect launch checklist", {"path": "/team/plan.md"})
+        team.commit()
+        mine = store.connect(self.paths.db, readonly=True)
+        self.addCleanup(mine.close)
+        stores = [("mine", mine), ("team", team)]
+        found = check.lookup_with(lambda query, limit, keep: search.search_stores(stores, query, limit=limit, keep=keep),
+                                  ASK, [], "sess-1", set(), plan_and_pick("Dana Connect launch"), 5.0, None)
+        self.assertEqual(sorted((h["store"], h["source_id"]) for h in found.hits),
+                         [("mine", "test:a"), ("team", "m-1/c-aaaaaaaaaaaaa:plan.md")])
 
     def test_lookup_returns_the_query_candidates_and_hits(self):
         self.add("gmail", "test:a", "Dana on the Connect launch date", ts="2026-10-04T10:00:00Z")

@@ -3,7 +3,8 @@ though its item was not masked whole. Each sequence here mixes the writes that i
 older kb make, on a few items whose text holds canaries split across chunk and call boundaries. After every sequence:
 - no reader shows a piece of a canary: search's hits, their render, the lookup's prompt, `kb get`, and the
   summarizer's input, each as kb sends or prints it;
-- no row reads as current unless its whole item masks clean.
+- no row reads as current unless its whole item masks clean, and no current item's row records a hash of other text
+  than its stored title and text.
 
 KB_FUZZ_SEQUENCES and KB_FUZZ_SEED change the run. A failure names its sequence, which reruns on its own with
 KB_FUZZ_ONLY.
@@ -24,7 +25,7 @@ import unittest
 from unittest import mock
 
 from kb import ai, check, cli, ingest, search, store, summarize
-from kb.mask import mask, mask_all
+from kb.mask import INVISIBLE, mask, mask_all
 from kb.sources import Item
 from tests import legacy_store
 
@@ -64,7 +65,11 @@ class Planted:
         return value
 
     def token(self):
-        return self._value("sk-ant-api03-fz{}" + "Q" * 20)
+        token = self._value("sk-ant-api03-fz{}" + "Q" * 20)
+        if self.r.random() < 0.2:  # split by a character a reader does not see
+            cut = self.r.randint(1, len(token) - 1)
+            token = token[:cut] + self.r.choice(("\u200b", "\u200d", "\u2060", "\u00ad", "\ufeff")) + token[cut:]
+        return token
 
     def keyed(self):
         return self.r.choice(("password=", "api_key: ", "secret_token=", "PASSWORD = ")) + self._value("fz{}Kq12345678")
@@ -134,14 +139,14 @@ def op_ingest(db, r, p):
     """kb's own write, as ingest makes it."""
     sid, title, text = r.choice(IDS), p.title(), p.text()
     p.items[sid] = (title, text)
-    ingest.apply(db, "notes", "desk", Item(sid, TS, title, text, p.meta(sid), 0))
+    ingest.apply(db, "notes", "desk:", Item(sid, TS, title, text, p.meta(sid), 0), "desk")
 
 
 def op_moved(db, r, p):
     """The same text under new metadata, which store_item gives the rows without rewriting them."""
     sid = r.choice(IDS)
     if sid in p.items:
-        ingest.apply(db, "notes", "desk", Item(sid, TS, *p.items[sid], p.meta(sid), 0))
+        ingest.apply(db, "notes", "desk:", Item(sid, TS, *p.items[sid], p.meta(sid), 0), "desk")
 
 
 def _rows(r, p, sid, text):
@@ -226,9 +231,10 @@ def op_delete(db, r, p):
 
 
 def op_supersede(db, r, p):
-    ids = [i for (i,) in db.execute("SELECT id FROM docs")]
-    if len(ids) > 1:
-        db.execute("UPDATE docs SET superseded_by=? WHERE id=?", tuple(r.sample(ids, 2)))
+    items = db.execute("SELECT DISTINCT source, source_id FROM docs").fetchall()
+    if len(items) > 1:
+        (source, source_id), new = r.sample(items, 2)
+        store.mark_superseded(db, source, source_id, tuple(new), "c-abcdefghijklm")
 
 
 OPERATIONS = {name[3:]: fn for name, fn in globals().items() if name.startswith("op_")}
@@ -253,12 +259,15 @@ def not_masked_whole(db):
     for rid, kind, source, sid, ts, title, content, meta in rows:
         if rid not in fresh:
             continue
+        item_title = title
         if kind == "raw":
-            content = "".join(c for (c,) in db.execute(
-                "SELECT content FROM docs WHERE source=? AND source_id=? AND kind='raw' "
-                "ORDER BY json_extract(metadata, '$.chunk')", (source, sid)))
+            chunks = db.execute("SELECT title, content FROM docs WHERE source=? AND source_id=? AND kind='raw' "
+                                "ORDER BY json_extract(metadata, '$.chunk')", (source, sid)).fetchall()
+            item_title, content = chunks[0][0], "".join(c for _, c in chunks)
         if (mask(content), mask(title), mask(ts), mask_all(json.loads(meta))) != (content, title, ts, json.loads(meta)):
             problems.append(f"row {rid} ({kind} {sid}) reads as current, but its item does not mask clean")
+        if kind in store.ITEM_KINDS and json.loads(meta).get("hash") != store.item_hash(item_title, content):
+            problems.append(f"row {rid} ({kind} {sid}) reads as current, but records a hash of other text")
     return problems
 
 
@@ -280,7 +289,7 @@ def shown(db, path):
     for (rid,) in db.execute("SELECT min(id) FROM docs GROUP BY source, source_id, kind"):
         printed = io.StringIO()
         with contextlib.redirect_stdout(printed), contextlib.suppress(cli.Fail, store.NeedsRebuild):
-            cli.cmd_get(paths, config, types.SimpleNamespace(id=rid, offset=None))
+            cli.cmd_get(paths, config, types.SimpleNamespace(id=rid, offset=0))
         out.append(printed.getvalue())
     for source, sid, title in db.execute("SELECT source, source_id, max(title) FROM docs WHERE kind='raw' "
                                          "GROUP BY source, source_id").fetchall():
@@ -315,7 +324,7 @@ def run_sequence(seq, root, ops=None):
                 problems.append("a store with a row of no mask version opened")
             except store.NeedsRebuild:
                 pass
-        text = "\n".join(shown(db, path))
+        text = INVISIBLE.sub("", "\n".join(shown(db, path)))  # as a reader sees it
         problems += [f"a reader shows {piece!r}" for piece in sorted(planted.pieces) if piece in text]
         squeezed = re.sub(r"\s+|\\[nr]", "", text)  # a key's body read through its line breaks
         problems += [f"a reader shows {body[i:i + 12]!r} of a key" for body in planted.bodies
