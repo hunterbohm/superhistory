@@ -31,11 +31,22 @@ FONTS = {"Newsreader": "ofl/newsreader/Newsreader%5Bopsz,wght%5D.ttf", "Inter": 
 
 
 def lookup_seconds(results, tool, rows):
-    """The median of the tool's lookups timed alone (latency.jsonl), or of its month run when it has no such run.
-    README's table reads the same numbers."""
+    """The median of the tool's lookups timed alone (latency.jsonl), or of its month run when it has no such run, and
+    whether it was timed alone. README's table reads the same numbers."""
     path = os.path.join(results, "latency.jsonl")
     alone = [r["seconds"] for r in run.read_jsonl(path) if r["tool"] == tool] if os.path.exists(path) else []
-    return statistics.median(alone or [r["lookup_seconds"] for r in rows])
+    return statistics.median(alone or [r["lookup_seconds"] for r in rows]), bool(alone)
+
+
+def seconds_note(found):
+    """Says where the seconds panel's numbers come from, so a month run's timings never read as timed alone."""
+    from_run = [f["label"] for f in found.values() if not f["alone"]]
+    if not from_run:
+        return "median of lookups timed alone"
+    if len(from_run) == len(found):
+        return "median of each tool's lookups during its month run"
+    whose = "its month run" if len(from_run) == 1 else "their month runs"
+    return f"median of lookups timed alone ({', '.join(from_run)}: {whose})"
 
 
 def measures(results):
@@ -49,7 +60,7 @@ def measures(results):
                        "right": sum(r["correct"] for r in answerable) / len(answerable),
                        "quiet": sum(not r["context"] for r in none) / len(none),
                        "tokens": statistics.mean(r["context_tokens"] + r["tool_tokens"] for r in rows),
-                       "seconds": lookup_seconds(results, tool, rows),
+                       **dict(zip(("seconds", "alone"), lookup_seconds(results, tool, rows))),
                        "answerable": len(answerable), "none": len(none)}
     return found
 
@@ -107,7 +118,7 @@ body {{ margin: 0; background: {PAPER}; }}
 {panel(840, 170, "Added nothing when nothing fit", f"{first['none']} questions with nothing to find", found, "quiet", 1, pct)}
 {panel(80, 520, "Tokens added per question", "mean, lookup plus what the agent read; fewer is cheaper", found, "tokens",
        tokens, lambda v: f"{v:,.0f}")}
-{panel(840, 520, "Seconds per lookup", "median of lookups timed alone (Mem0: its month run)", found, "seconds", seconds,
+{panel(840, 520, "Seconds per lookup", seconds_note(found), found, "seconds", seconds,
        lambda v: f"{v:.2f} s")}
 <text x="80" y="{HEIGHT - 34}" class="f">Same answer model and judge for every tool; rivals self-hosted. Method and every row: bench/README.md</text>
 </svg></body></html>"""

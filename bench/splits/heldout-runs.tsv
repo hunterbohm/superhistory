@@ -2,3 +2,12 @@ date	test	label	run	code	commit
 2026-10-27T18:00:08Z	month	baseline	b-baseline:check	5688365eec9c1c5d	e66d49d71bf0096f03b1fbbcdf6bed4e529f80a3
 2026-10-27T18:00:09Z	locomo	baseline	locomo10-with-summaries-test-baseline	5688365eec9c1c5d	e66d49d71bf0096f03b1fbbcdf6bed4e529f80a3
 2026-10-27T18:01:07Z	longmemeval-s	baseline	s-without-summaries-test-baseline	5688365eec9c1c5d	e66d49d71bf0096f03b1fbbcdf6bed4e529f80a3
+2026-10-27T21:27:03Z	month	midpoint	b-midpoint:check	6e91b2e5de5aac0c	2d060122b471ed4725ce89f2e935cc353fd190cf
+2026-10-27T21:27:03Z	locomo	midpoint	locomo10-with-summaries-test-midpoint	6e91b2e5de5aac0c	2d060122b471ed4725ce89f2e935cc353fd190cf
+2026-10-27T21:27:54Z	longmemeval-s	midpoint	s-without-summaries-test-midpoint	6e91b2e5de5aac0c	d57ec3111b1aaa308a7a468a827db4c0adc037a3
+2026-11-02T03:59:49Z	month	final	b-final:check	3ac9ae3f32cb4585	5d09b6eb12ee16ba967c3c4530727e5d20d06747
+2026-11-02T03:59:49Z	month	baseline-paired	b-baseline-paired:check	5688365eec9c1c5d	5d09b6eb12ee16ba967c3c4530727e5d20d06747
+2026-11-02T03:59:49Z	longmemeval-s	final	s-without-summaries-test-final	3ac9ae3f32cb4585	5d09b6eb12ee16ba967c3c4530727e5d20d06747
+2026-11-02T03:59:49Z	longmemeval-s	baseline-paired	s-without-summaries-test-baseline-paired	5688365eec9c1c5d	5d09b6eb12ee16ba967c3c4530727e5d20d06747
+2026-11-02T03:59:49Z	locomo	final	locomo10-with-summaries-test-final	3ac9ae3f32cb4585	5d09b6eb12ee16ba967c3c4530727e5d20d06747
+2026-11-02T03:59:49Z	locomo	baseline-paired	locomo10-with-summaries-test-baseline-paired	5688365eec9c1c5d	5d09b6eb12ee16ba967c3c4530727e5d20d06747
