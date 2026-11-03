@@ -1510,6 +1510,46 @@ class ReviewTwentyThreeTest(unittest.TestCase):
                                                 {"args": ["twine", "upload", "--comment", "note: -p release-2026"]}))
                 self.assertIn("release-2026", text)
 
+
+class ReviewTwentyFourTest(unittest.TestCase):
+    """The twenty-fourth review's findings, under the coordinator's five-item bar."""
+
+    def test_provider_tokens_before_ordinary_punctuation(self):
+        from kb import gitleaks
+        from tests.test_gitleaks import examples
+        names = [rule[0] for rule in gitleaks.RULES]
+        for name in ("digitalocean-pat", "databricks-api-token", "adobe-client-secret"):
+            for secret in examples(names.index(name), 2):
+                for text in (f"{secret},active", f"{secret};{secret}", f"tokens=[{secret}]", f"({secret})", f"{secret}."):
+                    with self.subTest(name=name, text=text):
+                        self.assertNotIn(secret, mask(text))
+                for reader in ("codex", "claude_code"):
+                    with self.subTest(name=name, reader=reader):
+                        text = stored(reader, tool_call(reader, "Bash", {"command": f"printf '{secret},active\\n'"}))
+                        self.assertNotIn(secret, text)
+
+    def test_a_computer_use_type_action(self):
+        typed = "q8Zr2Lm7Xk4Vp9Nt3Bw6Hc1"
+        for name in ("computer", "mcp__desktop__computer"):
+            self.assertEqual(typed_secrets(name, {"action": "type", "text": typed}), {"action": "type", "text": "[masked]"})
+        for args in ({"action": "type", "text": "hello from the deploy notes"}, {"action": "key", "text": "ctrl+s"},
+                     {"action": "left_click", "coordinate": [12, 34]}):
+            with self.subTest(args=args):
+                self.assertEqual(typed_secrets("computer", args), args)
+        for reader in READERS:
+            with self.subTest(reader=reader):
+                text = stored(reader, tool_call(reader, "computer", {"action": "type", "text": typed}))
+                self.assertNotIn(typed, text)
+                self.assertIn("computer", text)
+
+    def test_a_flag_inside_an_argument_list_item_keeps_the_items_text(self):
+        masked = mask_all(["curl", "--data-raw", "note: -u feature:preview", "https://example.com"])
+        self.assertEqual(masked[3], "https://example.com")
+        self.assertTrue(masked[2].startswith("note: -u feature:"), masked)
+        self.assertEqual(mask_all(["mongosh", "-p", "Tr0ub4dor 9"])[-1], "[masked]")
+        self.assertEqual(mask_all(["keytool", "-alias", "team's cert", "-storepass", "Tr0ub4dor9"])[-1], "[masked]")
+        self.assertNotIn("Tr0ub4dor9", mask_all(["curl", "-u", "deploy:Tr0ub4dor9", "https://example.com"])[2])
+
 # Commands as an argument list, each flag's value its own item: (the list, the items masked).
 ARGV = (
     (["login", "--password", PASSWORD], {2}), (["--token", SUB], {1}), (["--api-key", SUB, "--verbose"], {1}),
