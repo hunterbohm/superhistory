@@ -1439,6 +1439,38 @@ class ReviewTwentyOneTest(unittest.TestCase):
 
         self.assertLess(took(8000), 16 * max(took(1000), 0.01))
 
+
+class ReviewTwentyTwoTest(unittest.TestCase):
+    """The twenty-second review's findings, under the coordinator's split bar."""
+
+    def test_a_flag_inside_a_quoted_argument_is_no_quoted_flag(self):
+        for text in ('twine upload --comment "-p release-2026" dist/*', "twine upload --comment '-p release-2026' dist/*",
+                     'keytool -list -v -alias "-storepass example" -keystore k.jks',
+                     'aws configure set region "aws_secret_access_key example"'):
+            for form in (text, json.dumps(text)):
+                with self.subTest(text=form):
+                    self.assertEqual(mask(form), form)
+
+    def test_a_long_quoted_path_to_a_program(self):
+        for depth in (25, 100):
+            path = "/opt/" + "toolchains/" * depth + "keytool"
+            for text in (f'"{path}" -storepass Tr0ub4dor9', f"'{path}' -list -storepass Tr0ub4dor9"):
+                for form in (text, json.dumps(text)):
+                    with self.subTest(depth=depth, text=form[:20]):
+                        self.assertNotIn("Tr0ub4dor9", mask(form))
+
+    def test_quoted_programs_named_again_and_again_cost_time_in_proportion(self):
+        def took(text):
+            started = time.process_time()
+            mask(text)
+            return time.process_time() - started
+
+        for name, shape in (("piped", lambda n: '"keytool" -list | ' * n),
+                            ("in a substitution", lambda n: "mongosh $(echo " + '"keytool" -list | ' * n + ")"),
+                            ("on one line after a long path", lambda n: '"/opt/' + "a/" * 2000 + 'keytool" ' + "x " * n)):
+            with self.subTest(shape=name):
+                self.assertLess(took(shape(8000)), 16 * max(took(shape(1000)), 0.01))
+
 # Commands as an argument list, each flag's value its own item: (the list, the items masked).
 ARGV = (
     (["login", "--password", PASSWORD], {2}), (["--token", SUB], {1}), (["--api-key", SUB, "--verbose"], {1}),
