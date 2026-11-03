@@ -1471,6 +1471,45 @@ class ReviewTwentyTwoTest(unittest.TestCase):
             with self.subTest(shape=name):
                 self.assertLess(took(shape(8000)), 16 * max(took(shape(1000)), 0.01))
 
+
+class ReviewTwentyThreeTest(unittest.TestCase):
+    """The twenty-third review's findings, under the coordinator's split bar."""
+
+    def test_a_quoted_first_word_of_a_two_word_command(self):
+        for text in ('"az" login -u me@x.com -p Tr0ub4dor9', "'az' login -p Tr0ub4dor9",
+                     '"aws" configure set aws_secret_access_key wJx9Rk2Lq7Zp4Mn8Bv3Cx6Tz1Yh5Gf0Ds2Ae7Kq'):
+            for form in (text, json.dumps(text), repr(text)):
+                with self.subTest(text=form):
+                    masked = mask(form)
+                    self.assertNotIn("Tr0ub4dor9", masked)
+                    self.assertNotIn("wJx9Rk2Lq7Zp4Mn8", masked)
+
+    def test_a_directory_named_as_the_program(self):
+        for text in ('"/opt/keytool/bin/keytool" -storepass Tr0ub4dor9', '"/srv/mongosh/bin/mongosh" -p Tr0ub4dor9',
+                     "/opt/twine/bin/twine upload -p Tr0ub4dor9 dist/*",
+                     '"C:\\jarsigner\\bin\\jarsigner.exe" -keypass Tr0ub4dor9 a.jar k'):
+            for form in (text, json.dumps(text), repr(text)):
+                with self.subTest(text=form):
+                    self.assertNotIn("Tr0ub4dor9", mask(form))
+        for text in ("keytool\\n-storepass example", "see /opt/keytool/ for the docs"):
+            with self.subTest(text=text):
+                self.assertEqual(mask(text), text)
+
+    def test_an_argument_list_keeps_each_items_bounds(self):
+        self.assertEqual(mask_all(["twine", "upload", "--comment", "note: -p release-2026", "dist/*"])[3],
+                         "note: -p release-2026")
+        self.assertEqual(mask_all(["keytool", "-alias", "team's cert", "-storepass", "Tr0ub4dor9"])[-1], "[masked]")
+        self.assertEqual(mask_all(["mongosh", "--eval", "db.x.find({a: '$b'})", "-p", "Tr0ub4dor9"])[-1], "[masked]")
+        self.assertEqual(mask_all(["mongosh", "-p", "Tr0ub4dor 9"])[-1], "[masked]")
+        for reader in READERS:
+            with self.subTest(reader=reader):
+                items = ["keytool", "-alias", "team's cert", "-storepass", "Tr0ub4dor9"]
+                text = stored(reader, tool_call(reader, "mcp__runner__exec", {"args": items}))
+                self.assertNotIn("Tr0ub4dor9", text)
+                text = stored(reader, tool_call(reader, "mcp__runner__exec",
+                                                {"args": ["twine", "upload", "--comment", "note: -p release-2026"]}))
+                self.assertIn("release-2026", text)
+
 # Commands as an argument list, each flag's value its own item: (the list, the items masked).
 ARGV = (
     (["login", "--password", PASSWORD], {2}), (["--token", SUB], {1}), (["--api-key", SUB, "--verbose"], {1}),
