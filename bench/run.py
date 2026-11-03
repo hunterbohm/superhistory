@@ -384,6 +384,7 @@ def main(argv=None):
     if args.cmd == "table":
         print(table(args.out))
         return 0
+    gateway.require()
     if args.cmd == "latency":
         try:
             latency(args)
@@ -450,7 +451,7 @@ def main(argv=None):
     earlier = json.load(open(meta_path)).get("tools", []) if os.path.exists(meta_path) else []
     names = {t["tool"] for t in ran}
     meta = {"date": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"), **source,
-            "answer_model": ANSWER_MODEL, "judge_model": setup.judge, "base_url": gateway.BASE_URL,
+            "answer_model": ANSWER_MODEL, "judge_model": setup.judge, "base_url": gateway.base_url(),
             "questions": len(questions), "workers": args.workers,
             "tools": [t for t in earlier if t["tool"] not in names] + ran}
     with open(meta_path, "w", encoding="utf-8") as fh:

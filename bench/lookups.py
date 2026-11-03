@@ -94,6 +94,7 @@ def main(argv=None):
     p.add_argument("--tests", default=",".join(TESTS))
     p.add_argument("--workers", type=int, default=1)
     args = p.parse_args(argv)
+    gateway.require()
     os.makedirs(OUT, exist_ok=True)
     stopped = None
     for test in args.tests.split(","):

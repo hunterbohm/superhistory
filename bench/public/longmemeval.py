@@ -172,6 +172,7 @@ def main(argv=None):
     print(f"{name}: {json.dumps(planned)}", file=sys.stderr)
     if args.count:
         return 0
+    gateway.require()
     common.log_held_out("longmemeval-s", args, name)
     meta = {"test": "longmemeval", "set": args.set, "data_revision": REVISION, "data_sha256": SETS[args.set][1],
             "judge_model": JUDGE_MODEL, "questions": len(cases), "planned": planned}

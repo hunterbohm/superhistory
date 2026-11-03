@@ -97,6 +97,41 @@ class StalledAnswer(io.BufferedReader):
         super().__init__(Stalled(first, wait))
 
 
+class ConfigTest(unittest.TestCase):
+    """The endpoint and the key come from settings only: nothing is assumed when they are unset."""
+
+    def setUp(self):
+        for patch in (mock.patch.object(gateway, "BASE_URL", ""), mock.patch.object(gateway, "KEY_FILE", ""),
+                      mock.patch.dict(os.environ, {}, clear=False)):
+            patch.start()
+            self.addCleanup(patch.stop)
+        os.environ.pop("BENCH_API_KEY", None)
+
+    def test_an_unset_endpoint_stops_with_a_message_that_names_the_setting(self):
+        with self.assertRaises(SystemExit) as stop:
+            gateway.require()
+        self.assertIn("BENCH_BASE_URL", str(stop.exception))
+        with self.assertRaises(gateway.NotConfigured):
+            gateway.post("/v1/messages", {})
+
+    def test_an_unset_key_stops_with_a_message_that_names_both_settings(self):
+        with mock.patch.object(gateway, "BASE_URL", "http://model.test"):
+            with self.assertRaises(SystemExit) as stop:
+                gateway.require()
+        self.assertIn("BENCH_API_KEY", str(stop.exception))
+        self.assertIn("BENCH_KEY_FILE", str(stop.exception))
+
+    def test_the_key_comes_from_the_environment_first_then_the_key_file(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = os.path.join(folder, "key")
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write("file-key\n")
+            with mock.patch.object(gateway, "KEY_FILE", path):
+                self.assertEqual((gateway.key_source(), gateway._key()), (f"file:{path}", "file-key"))
+                with mock.patch.dict(os.environ, {"BENCH_API_KEY": "env-key"}):
+                    self.assertEqual((gateway.key_source(), gateway._key()), ("env:BENCH_API_KEY", "env-key"))
+
+
 class RateLimitTest(unittest.TestCase):
     def setUp(self):
         gateway.LIMITED.clear()
@@ -104,6 +139,9 @@ class RateLimitTest(unittest.TestCase):
         env = mock.patch.dict(os.environ, {"BENCH_API_KEY": "test"})
         env.start()
         self.addCleanup(env.stop)
+        base = mock.patch.object(gateway, "BASE_URL", "http://model.test")
+        base.start()
+        self.addCleanup(base.stop)
 
     def post_with(self, *replies):
         calls = []
@@ -550,6 +588,9 @@ class Mem0RateLimitTest(unittest.TestCase):
         key = mock.patch.dict(os.environ, {"BENCH_API_KEY": "test"})
         key.start()
         self.addCleanup(key.stop)
+        base = mock.patch.object(gateway, "BASE_URL", "http://model.test")
+        base.start()
+        self.addCleanup(base.stop)
 
     def load(self, add):
         from tools import mem0
