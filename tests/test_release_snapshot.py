@@ -482,6 +482,20 @@ class ArchiveExactTest(SourceCase):
         found = rs.check_archive(self.release.repo, self.release.archive, self.prefix)
         self.assertTrue(found.ok, found.findings)
 
+    def test_bytes_after_the_gzip_stream_or_the_tar_stream_fail(self):
+        raw = self.release.archive.read_bytes()
+        path = self.tmp / "junk.tar.gz"
+        path.write_bytes(raw + b"junk")
+        found = rs.check_archive(self.release.repo, path, self.prefix)
+        self.assertFalse(found.ok)
+        self.assertIn("clean gzip", "\n".join(f.text for f in found.findings))
+        import gzip
+        inner = gzip.decompress(raw)
+        path.write_bytes(gzip.compress(inner + b"\0" * 1024 + b"tail"))
+        self.assertFalse(rs.check_archive(self.release.repo, path, self.prefix).ok)
+        path.write_bytes(b"not an archive")
+        self.assertFalse(rs.check_archive(self.release.repo, path, self.prefix).ok)
+
     def test_a_file_swapped_for_another_of_the_same_count_fails(self):
         found = self.verdict(self.edit("docs/b.md", name=self.prefix + "docs/c.md"))
         self.assertFalse(found.ok)
@@ -1047,6 +1061,38 @@ class T(unittest.TestCase):
         self.out = self.tmp / "out2"
         self.assert_changed(self.tampered("os.makedirs(os.path.join(snap, 'empty', 'folder'))"), "working tree")
 
+    def test_a_suite_that_edits_the_notes_fails_the_credential_check_on_what_is_on_disk(self):
+        notes = str(self.out / "RELEASE_NOTES.md")
+        body = ("    def test_edit(self):\n        open(%r, 'a').write(%r + %r + '\\n')\n" % (notes, CREDENTIAL[:6], CREDENTIAL[6:]))
+        release = self.built(body)
+        self.assertFalse(release.check("credential").ok, release.report())
+        self.assertIn("RELEASE_NOTES.md", [f.where for f in release.check("credential").findings])
+        self.assertFalse(release.check("suites").ok)
+        self.assertFalse(release.ok)
+
+    def test_every_check_runs_after_the_installer_and_the_suites(self):
+        calls = []
+
+        def around(name, original):
+            def wrapper(*args, **kw):
+                calls.append(name + " start")
+                try:
+                    return original(*args, **kw)
+                finally:
+                    calls.append(name + " end")
+            return wrapper
+
+        with mock.patch.object(rs, "run_suites", around("suites", rs.run_suites)), \
+                mock.patch.object(rs, "check_history", around("history", rs.check_history)), \
+                mock.patch.object(rs, "check_credential", around("credential", rs.check_credential)), \
+                mock.patch.object(rs, "check_patterns", around("patterns", rs.check_patterns)), \
+                mock.patch.object(rs, "check_dataset", around("dataset", rs.check_dataset)), \
+                mock.patch.object(rs, "check_archive", around("archive", rs.check_archive)):
+            self.built()
+        done = calls.index("suites end")
+        for name in ("history", "credential", "patterns", "dataset", "archive"):
+            self.assertGreater(calls.index(name + " start"), done, calls)
+
     def test_the_tests_run_with_a_home_that_is_not_the_real_one(self):
         body = "    def test_home(self):\n        self.assertNotEqual(os.environ['HOME'], %r)\n" % os.path.expanduser("~")
         self.assertTrue(self.built(body).check("suites").ok)
@@ -1266,6 +1312,44 @@ class InstallTest(SourceCase):
         else:
             os.kill(pid, 9)
             self.fail("the command's own child outlived the timeout")
+
+    def wrapped_installer(self, before):
+        script = self.tmp / "wrapped.sh"
+        script.write_text("#!/bin/sh\n%s\nexec sh %s \"$@\"\n" % (before, INSTALLER))
+        return script
+
+    def test_an_installer_that_adds_the_credential_to_the_notes_fails_the_credential_and_install_checks(self):
+        notes = self.out / "RELEASE_NOTES.md"
+        wrapped = self.wrapped_installer("printf '%%s\\n' '%s' >> '%s'" % (CREDENTIAL, notes))
+        release = self.build(installer=wrapped)
+        self.assertFalse(release.check("credential").ok, release.report())
+        self.assertIn("RELEASE_NOTES.md", [f.where for f in release.check("credential").findings])
+        found = release.check("install")
+        self.assertFalse(found.ok)
+        self.assertTrue(any("snapshot changed" in f.text and "notes" in f.text for f in found.findings), found.findings)
+        self.assertFalse(release.ok)
+
+    def test_an_installer_that_replaces_the_archive_fails_the_archive_and_install_checks(self):
+        wrapped = self.wrapped_installer("for f in '%s'/*.tar.gz; do printf junk >> \"$f\"; done" % self.out)
+        release = self.build(installer=wrapped)
+        self.assertFalse(release.check("archive").ok)
+        self.assertFalse(release.check("install").ok)
+
+    def test_every_check_runs_after_the_installer(self):
+        calls = []
+
+        def around(name, original):
+            def wrapper(*args, **kw):
+                calls.append(name)
+                return original(*args, **kw)
+            return wrapper
+
+        with mock.patch.object(rs, "install_check", around("install", rs.install_check)), \
+                mock.patch.object(rs, "check_credential", around("credential", rs.check_credential)), \
+                mock.patch.object(rs, "check_patterns", around("patterns", rs.check_patterns)), \
+                mock.patch.object(rs, "check_archive", around("archive", rs.check_archive)):
+            self.build(installer=INSTALLER)
+        self.assertEqual(calls[0], "install", calls)
 
     def test_the_command_runs_the_install_check_when_given_an_installer(self):
         code, text = self.run_main("--installer", str(INSTALLER))
