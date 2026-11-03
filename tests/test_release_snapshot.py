@@ -1314,6 +1314,39 @@ class T(unittest.TestCase):
         self.assertTrue(found.ok, found.findings)
         self.assertIn("skipped", found.summary)
 
+    OUTER = """import unittest
+
+
+class Outer(unittest.TestCase):
+    def test_outer(self):
+        class Inner(unittest.TestCase):
+            @unittest.skip('an inner reason')
+            def test_inner(self):
+                pass
+
+        unittest.TextTestRunner(verbosity=2).run(unittest.defaultTestLoader.loadTestsFromTestCase(Inner))
+%s
+"""
+
+    def test_skips_inside_a_tests_own_runner_are_not_the_suites(self):
+        found = self.built(files={"tests/test_t.py": self.OUTER % ""}).check("suites")
+        self.assertTrue(found.ok, found.findings)
+        self.assertIn("1 suite, 1 tests, 0 skipped", found.summary)
+        self.assertFalse(any("an inner reason" in n for n in found.notes), found.notes)
+
+    def test_an_outer_skip_is_listed_with_its_reason_beside_a_tests_own_runner(self):
+        outer = "\n    @unittest.skip('an outer reason')\n    def test_skipped(self):\n        pass\n"
+        found = self.built(files={"tests/test_t.py": self.OUTER % outer}).check("suites")
+        self.assertTrue(found.ok, found.findings)
+        self.assertIn("1 suite, 2 tests, 1 skipped", found.summary)
+        self.assertTrue(any("skipped 1: an outer reason" in n for n in found.notes), found.notes)
+        self.assertFalse(any("an inner reason" in n for n in found.notes), found.notes)
+
+    def test_a_suite_that_writes_no_result_fails_and_says_so(self):
+        found = self.built("    def test_quit(self):\n        os._exit(0)\n").check("suites")
+        self.assertFalse(found.ok)
+        self.assertTrue(any("result" in f.text for f in found.findings), found.findings)
+
     def test_the_tests_run_inside_the_snapshot_where_the_left_out_files_are_absent(self):
         body = "    def test_absent(self):\n        self.assertFalse(os.path.exists('bench/rows.jsonl'))\n" \
                "        self.assertTrue(os.path.exists('README.md'))\n"
