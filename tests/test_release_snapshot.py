@@ -1,15 +1,13 @@
-import base64
-import bz2
 import contextlib
 import copy
 import gzip
+import hashlib
 import io
-import lzma
 import os
-import random
 import re
 import shutil
 import ssl
+import struct
 import subprocess
 import sys
 import tarfile
@@ -18,7 +16,6 @@ import textwrap
 import time
 import unittest
 import zlib
-import zipfile
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -347,29 +344,6 @@ class PatternTest(SourceCase):
         found = rs.check_patterns(release.repo, self.patterns)
         self.assertEqual([f.where for f in found.findings], ["docs/a.md:1"])
 
-    def test_an_archive_member_that_differs_from_the_tree_is_scanned_by_name_and_contents(self):
-        release = self.build(self.commit(self.base_files(**{"docs/a.md": "fine\n"})))
-        prefix = "widgetly-1.2.3/"
-        path = self.tmp / "tampered.tar.gz"
-        with tarfile.open(str(release.archive)) as tar:
-            members = [(m, tar.extractfile(m).read() if m.isfile() else None) for m in tar.getmembers()]
-        with tarfile.open(str(path), "w:gz") as out:
-            for info, data in members:
-                if info.name == prefix + "docs/a.md":
-                    data = b"fine\nsee Acmecorp\n"
-                    info.size = len(data)
-                out.addfile(info, io.BytesIO(data) if data is not None else None)
-            extra = tarfile.TarInfo(prefix + "boxroom.txt")
-            extra.size = 1
-            out.addfile(extra, io.BytesIO(b"x"))
-        found = rs.check_patterns(release.repo, self.patterns, archive=path, prefix=prefix)
-        self.assertEqual(sorted(f.where for f in found.findings), ["boxroom.txt", "docs/a.md:2"])
-
-    def test_the_same_hit_in_the_tree_and_in_the_archive_is_reported_once(self):
-        release = self.build(self.commit(self.base_files(**{"docs/a.md": "see Acmecorp\n"})))
-        found = rs.check_patterns(release.repo, self.patterns, archive=release.archive, prefix="widgetly-1.2.3/")
-        self.assertEqual([f.where for f in found.findings], ["docs/a.md:1"])
-
     def test_a_symlink_target_is_checked(self):
         write(self.src, self.base_files())
         os.symlink("acmecorp.txt", self.src / "link")
@@ -623,126 +597,89 @@ def gz(data):
     return gzip.compress(data, mtime=0)
 
 
-def tar_of(name, data):
-    out = io.BytesIO()
-    with tarfile.open(fileobj=out, mode="w") as tar:
-        info = tarfile.TarInfo(name)
-        info.size = len(data)
-        tar.addfile(info, io.BytesIO(data))
-    return out.getvalue()
+def png_bytes(width=32, height=32):
+    def chunk(kind, data):
+        return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data) & 0xffffffff)
+    rows = b"".join(b"\0" + bytes(v % 256 for x in range(width) for v in (x * 8, y * 8, (x + y) * 4)) for y in range(height))
+    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0))
+            + chunk(b"IDAT", zlib.compress(rows)) + chunk(b"IEND", b""))
 
 
-def zip_of(name, data):
-    out = io.BytesIO()
-    with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as archive:
-        archive.writestr(name, data)
-    return out.getvalue()
+def sha256(data):
+    return hashlib.sha256(data).hexdigest()
 
 
-def hidden_forms():
-    b64 = base64.b64encode(SECRET)
-    return {
-        "x/plain.gz": gz(SECRET), "x/two.gz": gz(gz(SECRET)), "x/plain.bz2": bz2.compress(SECRET),
-        "x/plain.xz": lzma.compress(SECRET), "x/plain.zlib": zlib.compress(SECRET),
-        "x/plain.zip": zip_of("inner.txt", SECRET), "x/plain.tar": tar_of("inner.txt", SECRET),
-        "x/plain.tar.gz": gz(tar_of("inner.txt", SECRET)),
-        "x/u16le.txt": SECRET.decode().encode("utf-16-le"), "x/u16be.txt": SECRET.decode().encode("utf-16-be"),
-        "x/u16bom.txt": SECRET.decode().encode("utf-16"),
-        "x/u32le.txt": SECRET.decode().encode("utf-32-le"), "x/u32be.txt": SECRET.decode().encode("utf-32-be"),
-        "x/u32bom.txt": SECRET.decode().encode("utf-32"),
-        "x/b64.txt": b"token: " + b64 + b" and more text\n", "x/b64url.txt": b"v=" + base64.urlsafe_b64encode(SECRET + b"??>>") + b"\n",
-        "x/b64wrap.txt": base64.encodebytes(SECRET * 3), "x/b64glued.txt": b"ab" + b64 + b"\n",
-        "x/b64.json": b'{"blob": "' + base64.b64encode(SECRET.decode().encode("utf-16-le")) + b'"}\n',
-        "x/nested.gz": gz(base64.b64encode(SECRET.decode().encode("utf-16-le"))),
-        "x/named.zip": zip_of("zq-4417" + "-kettle.txt", b"fine\n"),
-    }
+class FilesTest(SourceCase):
+    BINARIES = "tools/release_binaries.tsv"
+    NOT_TEXT = {"x/notes.gz": gz(b"fine\n"), "x/chart.png": png_bytes(),
+                "x/wide.txt": "fine words\n".encode("utf-16"), "x/latin.txt": b"caf\xe9\n", "x/nul.txt": b"a\0b\n"}
 
-
-class EncodedContentTest(SourceCase):
-    def commit_bytes(self, files):
+    def commit_bytes(self, files, listed=None, links=()):
         for name, data in files.items():
             path = self.src / name
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(data.encode() if isinstance(data, str) else data)
-        write(self.src, self.base_files())
+        extra = {self.BINARIES: listed} if listed is not None else {}
+        write(self.src, self.base_files(**extra))
+        for name, target in links:
+            (self.src / name).parent.mkdir(parents=True, exist_ok=True)
+            os.symlink(target, str(self.src / name))
         git(self.src, "add", "-A")
-        git(self.src, "commit", "-q", "-m", "blobs")
+        git(self.src, "commit", "-q", "-m", "files")
 
-    @staticmethod
-    def paths(found):
-        return {re.sub(r"^v1\.2\.3\.tar\.gz:widgetly-1\.2\.3/", "", rs.split_where(f.where)[0].split(" [")[0]) for f in found.findings}
+    def wheres(self, found):
+        return sorted(f.where for f in found.findings)
 
-    def test_content_inside_compression_encodings_and_base64_cannot_hide_from_either_scan(self):
-        forms = hidden_forms()
-        clean = {"x/clean.gz": gz(b"nothing to see here\n"), "x/clean.txt": b"a" * 5 + b"0123456789abcdef" * 4 + b"\n",
-                 "x/bin.dat": bytes(random.Random(7).randrange(256) for _ in range(3000)), "x/plain.txt": b"plain words\n"}
-        self.commit_bytes(dict(forms, **clean))
+    def test_a_file_that_is_not_utf8_text_without_a_nul_fails_unless_it_is_listed(self):
+        self.commit_bytes(dict(self.NOT_TEXT, **{"x/plain.txt": "plain words, caf\u00e9\n"}))
         release = self.build()
-        self.assertEqual(self.paths(release.check("credential")) & set(clean), set())
-        self.assertEqual(self.paths(release.check("patterns")) & set(clean), set())
-        self.assertEqual(self.paths(release.check("credential")), set(forms))
-        self.assertEqual(self.paths(release.check("patterns")), set(forms) - {"x/named.zip"})
+        found = release.check("files")
+        self.assertFalse(found.ok)
         self.assertFalse(release.ok)
+        self.assertEqual(self.wheres(found), sorted(self.NOT_TEXT))
+        self.assertTrue(all("not UTF-8 text" in f.text for f in found.findings), found.findings)
 
-    def test_the_view_a_hit_came_from_is_named(self):
-        self.commit_bytes({"x/plain.gz": gz(SECRET), "x/nested.gz": hidden_forms()["x/nested.gz"]})
-        wheres = [f.where for f in self.build().check("patterns").findings]
-        self.assertIn("x/plain.gz [gzip]:1", wheres)
-        self.assertTrue(any(w.startswith("x/nested.gz [gzip>base64>utf-16-le]") for w in wheres), wheres)
-
-    def test_a_hit_inside_a_compressed_file_is_excused_by_an_exact_entry_for_that_file(self):
-        row = ("see Acme" + "corp rows\n").encode()
-        files = {"x/rows.gz": gz(row + b"another line\n"), EXCEPTIONS: tsv(("x/rows.gz", "see Acmecorp rows", "a reply that uses an ordinary word"))}
-        self.commit_bytes(files)
-        found = self.build().check("patterns")
+    def test_a_listed_binary_with_its_sha256_passes(self):
+        listed = tsv(*[(name, sha256(data), "a made-up binary for a test") for name, data in sorted(self.NOT_TEXT.items())])
+        self.commit_bytes(self.NOT_TEXT, listed)
+        found = self.build().check("files")
         self.assertTrue(found.ok, found.findings)
-        self.assertEqual([f.where for f in found.allowed], ["x/rows.gz [gzip]:1"])
-        self.assertEqual(found.notes, [])
+        self.assertIn("%d listed binaries" % len(self.NOT_TEXT), found.summary)
 
-    def test_what_cannot_be_read_fails_both_scans_and_is_never_skipped(self):
-        broken = {"x/zstd.zst": b"\x28\xb5\x2f\xfd" + b"\x00" * 40, "x/cut.gz": gz(SECRET * 50)[:40],
-                  "x/lz4.bin": b"\x04\x22\x4d\x18" + b"\x00" * 40, "x/seven.7z": b"7z\xbc\xaf\x27\x1c" + b"\x00" * 40,
-                  "x/bad.zip": zip_of("a.txt", b"hello world" * 20)[:-30]}
-        self.commit_bytes(broken)
-        release = self.build()
-        for check in ("credential", "patterns"):
-            found = release.check(check)
-            self.assertFalse(found.ok, check)
-            self.assertEqual(self.paths(found), set(broken), check)
-            self.assertTrue(all("cannot be read" in f.text for f in found.findings), found.findings)
+    def test_a_listed_binary_changed_after_it_was_listed_fails(self):
+        before = png_bytes()
+        after = png_bytes(width=33)
+        self.commit_bytes({"x/chart.png": after}, tsv(("x/chart.png", sha256(before), "a made-up chart")))
+        found = self.build().check("files")
+        self.assertEqual(self.wheres(found), ["x/chart.png"])
+        self.assertIn(sha256(after), found.findings[0].text)
 
-    def test_a_file_that_inflates_past_the_limit_or_nests_too_deep_is_refused(self):
-        deep = SECRET
-        for _ in range(12):
-            deep = gz(deep)
-        self.commit_bytes({"x/bomb.gz": gz(b"\0" * 5000), "x/deep.gz": deep})
-        with mock.patch.object(rs, "MAX_DECODED", 1000):
-            found = self.build().check("patterns")
-        self.assertEqual(self.paths(found), {"x/bomb.gz", "x/deep.gz"})
-        text = "\n".join(f.text for f in found.findings)
-        self.assertIn("larger than", text)
+    def test_a_list_entry_that_names_no_file_or_a_text_file_fails(self):
+        listed = tsv(("x/gone.png", sha256(b"gone"), "removed since"), ("README.md", sha256(README.encode()), "not binary"))
+        self.commit_bytes({}, listed)
+        found = self.build().check("files")
+        self.assertEqual(self.wheres(found), [self.BINARIES + ": README.md", self.BINARIES + ": x/gone.png"])
 
-    def test_nesting_up_to_the_limit_is_read(self):
-        deep = SECRET
-        for _ in range(5):
-            deep = gz(deep)
-        self.commit_bytes({"x/deep.gz": deep})
-        self.assertEqual(self.paths(self.build().check("patterns")), {"x/deep.gz"})
+    def test_a_list_line_that_is_not_a_path_a_sha256_and_a_reason_stops_the_run(self):
+        for listed in ("x/a.png\tnot-a-hash\ta reason\n", "x/a.png\t%s\n" % sha256(b"a")):
+            self.commit_bytes({"x/a.png": b"a"}, listed)
+            with self.assertRaisesRegex(rs.ReleaseError, self.BINARIES):
+                self.build()
 
-    def test_an_archive_member_that_differs_from_the_tree_is_read_inside_too(self):
-        release = self.build(self.commit(self.base_files(**{"docs/a.md": "fine\n"})))
-        prefix = "widgetly-1.2.3/"
-        path = self.tmp / "tampered.tar.gz"
-        with tarfile.open(str(release.archive)) as tar:
-            members = [(m, tar.extractfile(m).read() if m.isfile() else None) for m in tar.getmembers()]
-        with tarfile.open(str(path), "w:gz") as out:
-            for info, data in members:
-                if info.name == prefix + "docs/a.md":
-                    data = gz(SECRET)
-                    info.size = len(data)
-                out.addfile(info, io.BytesIO(data) if data is not None else None)
-        found = rs.check_patterns(release.repo, self.patterns, archive=path, prefix=prefix)
-        self.assertEqual([f.where for f in found.findings], ["docs/a.md [gzip]:1"])
+    def test_a_link_that_points_out_of_the_tree_fails(self):
+        inside = [("docs/up", "../README.md"), ("top", "docs/a.md"), ("docs/self", "."), ("dangling", "docs/none.md")]
+        outside = [("docs/out", "../../etc/passwd"), ("abs", "/etc/passwd"), ("deep/x/y", "../../../outside")]
+        self.commit_bytes({"docs/a.md": "fine\n"}, links=inside + outside)
+        found = self.build().check("files")
+        self.assertEqual(self.wheres(found), sorted(name for name, _ in outside))
+        self.assertTrue(all("outside the tree" in f.text for f in found.findings), found.findings)
+
+    def test_a_submodule_entry_fails(self):
+        self.commit_bytes({})
+        git(self.src, "update-index", "--add", "--cacheinfo", "160000,%s,sub" % git(self.src, "rev-parse", "HEAD"))
+        git(self.src, "commit", "-q", "-m", "submodule")
+        found = self.build().check("files")
+        self.assertEqual(self.wheres(found), ["sub"])
 
 
 class ForbiddenNamesTest(SourceCase):
@@ -770,19 +707,6 @@ class ForbiddenNamesTest(SourceCase):
         release = self.build(self.commit(files))
         self.assertFalse(release.ok)
         self.assertIn("tag:1", [f.where for f in release.check("patterns").findings])
-
-    def test_an_archive_folder_name_is_scanned_from_the_archive_itself(self):
-        release = self.build(self.commit(self.base_files()))
-        prefix = "widgetly-%s/" % PORT
-        path = self.tmp / "renamed.tar.gz"
-        with tarfile.open(str(release.archive)) as tar:
-            members = [(m, tar.extractfile(m).read() if m.isfile() else None) for m in tar.getmembers()]
-        with tarfile.open(str(path), "w:gz") as out:
-            for info, data in members:
-                info.name = prefix + info.name.split("/", 1)[1] if "/" in info.name else prefix.rstrip("/")
-                out.addfile(info, io.BytesIO(data) if data is not None else None)
-        found = rs.check_patterns(release.repo, self.patterns, archive=path, prefix=prefix)
-        self.assertEqual([f.where for f in found.findings], ["archive folder %s" % prefix.rstrip("/")])
 
     def test_a_clean_repo_name_and_tag_pass(self):
         release = self.build(self.commit(self.base_files()))
@@ -939,6 +863,19 @@ class ExceptionsTest(SourceCase):
         found = self.patterns_of({"a.txt": "my boxroom and Acmecorp, not unboxroom or x-boxroom\n"},
                                  [("a.txt", " boxroom", "a room"), ("a.txt", "Acmecorp", "a firm")])
         self.assertTrue(found.ok, found.findings)
+
+    def test_an_overlap_search_that_stops_at_its_limit_fails_and_says_so(self):
+        self.with_patterns("[0-9]{65}")
+        found = self.patterns_of({"a.txt": "7" * 129 + "\n"}, [("a.txt", "7" * 128, "all but the last digit")])
+        self.assertFalse(found.ok)
+        self.assertEqual([f.where for f in found.findings], ["a.txt:1"])
+        self.assertIn("stopped", found.findings[0].text)
+
+    def test_blanking_a_match_finds_no_match_the_text_does_not_hold(self):
+        self.with_patterns("quux|[^q]uuxzz")
+        found = self.patterns_of({"a.txt": "quuxzz\n"}, [("a.txt", "quux", "the only match")])
+        self.assertTrue(found.ok, found.findings)
+        self.assertEqual([f.where for f in found.allowed], ["a.txt:1"])
 
     def test_a_file_name_cannot_be_excepted(self):
         found = self.patterns_of({"acmecorp-notes.txt": "fine\n"},
@@ -1234,6 +1171,14 @@ class T(unittest.TestCase):
         self.assert_changed(self.tampered("os.chmod(os.path.join(snap, 'README.md'), 0o755)"), "working tree")
         self.out = self.tmp / "out2"
         self.assert_changed(self.tampered("os.makedirs(os.path.join(snap, 'empty', 'folder'))"), "working tree")
+
+    def test_a_folder_link_pointed_at_another_folder_is_a_change(self):
+        os.symlink("target", str(self.src / "link"))
+        snap = str(self.out / "repo")
+        body = ("    def test_tamper(self):\n        link = os.path.join(%r, 'link')\n"
+                "        os.remove(link)\n        os.symlink('tests', link)\n" % snap)
+        found = self.built(body, files={"target/a.txt": "fine\n"}).check("suites")
+        self.assert_changed(found, "working tree")
 
     def test_a_suite_that_edits_the_notes_fails_the_credential_check_on_what_is_on_disk(self):
         notes = str(self.out / "RELEASE_NOTES.md")
