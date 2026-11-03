@@ -1222,6 +1222,14 @@ def _run(text, rules, origin=None, named=None, fired=None):
     patterns, keyed, reading = rules
     size = len(text)
     note = fired.append if fired is not None else (lambda _: None)
+    # gitleaks' rules read the text the pass was given too, before any pattern here cuts a token: GitLab's own shape
+    # takes a routable token's first part and leaves ".aa1234567", and a link's reading a webhook's start. Each token
+    # found so is hidden whole at the end.
+    whole = _gitleaks_spans(text) if reading == "named" else []
+    untracked = whole and origin is None
+    if untracked:
+        origin = list(range(size))
+    given = origin
     for pattern in patterns:
         edits = [(m.start(), m.end(), "[masked]") for m in pattern.finditer(text)
                  if pattern not in (BASIC, BEARER) or not _scheme_words(m)]
@@ -1266,7 +1274,17 @@ def _run(text, rules, origin=None, named=None, fired=None):
             if edits:
                 note(edits)
             text, origin = _edit(text, origin, edits)
-    return text, origin
+    if whole:
+        added = bytearray(max([c for c in origin if c >= 0] + [c for c in given if c >= 0], default=-1) + 1)
+        for start, end in whole:
+            for i in range(start, end):
+                if given[i] >= 0:
+                    added[given[i]] = 1
+        hidden, came = _hide(text, origin, added)
+        if hidden != text:
+            note(whole)
+        text, origin = hidden, came
+    return text, None if untracked else origin
 
 
 def _pass(text, rules):
