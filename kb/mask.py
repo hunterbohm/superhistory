@@ -2014,7 +2014,7 @@ _CODE_VALUE_KEYWORDS = frozenset(("value", "text", "keys"))
 # What a call's own selector argument needs: a page's or a frame's fill or type (page.fill(selector, value)), not an
 # element's, a locator's or the keyboard's, which take the text first (send_keys("...", "\\n"), keyboard.type).
 _CODE_SELECTOR_METHODS = frozenset(("fill", "type"))
-_CODE_ELEMENT_NAMES = _CODE_LOCATOR_NAMES - {"page", "frame", "mainFrame", "main_frame"}
+_CODE_ELEMENT_NAMES = _CODE_LOCATOR_NAMES - {"page", "frame", "mainFrame", "main_frame", "browser", "driver"}
 # A variable for a page, a frame or a driver, by its name's last word ("loginPage", "login_page", "page2").
 _CODE_PAGE_WORDS = frozenset(("page", "frame", "driver", "browser", "element", "locator", "keyboard"))
 
@@ -2118,7 +2118,7 @@ def _code_tokens(text):
     first quote on each of its lines, so a comment ends where its code's line does (_comment_end)."""
     tokens, spans, breaks = [], [(0, len(text), None)], None
     depths = {}  # the text's own lines, by where each starts: how often the code on it is escaped
-    loose, stretches = [], []  # quotes that opened no string, and each stretch read, with its escaping
+    loose, stretches, comments = [], [], []  # quotes that opened no string, each stretch read, the comments
     while spans:
         i, stop, escaped = spans.pop()
         stretches.append((i, stop, escaped))
@@ -2141,8 +2141,10 @@ def _code_tokens(text):
                         depths[line] = (len(quote.group(1)) + 1).bit_length() - 1 if quote else 0
                     depth = depths[line]
                 i = _comment_end(text, m.end(), stop, depth)
+                comments.append((at, i))
                 continue
             if c.startswith("/*"):
+                comments.append((at, m.end()))
                 i = m.end()
                 continue
             if c[0] == "\\" and c[-1] in "nrt":
@@ -2176,7 +2178,7 @@ def _code_tokens(text):
             tokens.append((kind, at, m.end()))
             i = m.end()
     tokens.sort(key=lambda t: t[1])
-    return tokens, sorted(loose), stretches
+    return tokens, sorted(loose), stretches, sorted(comments)
 
 
 def _code_text(text, token):
@@ -2243,13 +2245,18 @@ def _typed_values(text, labels, typed):
 _REGEX_IN_BRACKETS = re.compile(r"(?<=[(,:=])\s*/((?:\\.|[^/\\\n])+)/[a-z]*(?=\s*(?:[,})\]]|$))")
 
 
-def _receiver_strings(text, tokens, k, limit=200):
+def _receiver_strings(text, tokens, k, comments=(), limit=200):
     """The strings in the chain of calls before tokens[k], read back over names, dots and whole brackets, as
     'page.getByRole("textbox", {name: "Password"})' or 'driver.find_element(By.ID, "password")' gives a field's labels.
     A chain is joined by dots: it reads no further back than a name with no dot before it, or a bracket that follows
     no name or bracket, so another statement's strings are never this field's. An object's key ({"name": ...}) names
     an option, not the field."""
-    strings, names, depth, stop, close = [], [], 0, max(-1, k - limit), None
+    strings, names, depth, stop, close, close_k = [], [], 0, max(-1, k - limit), None, None
+    comment_starts = [a for a, _ in comments]
+
+    def in_comment(at):
+        j = bisect.bisect_right(comment_starts, at) - 1
+        return j >= 0 and comments[j][0] <= at < comments[j][1]
     k -= 1
     while k > stop:
         kind = tokens[k][0]
@@ -2260,11 +2267,15 @@ def _receiver_strings(text, tokens, k, limit=200):
                 strings.append(text[slice(*_code_text(text, tokens[k]))])
             if not depth:  # a regex literal in the brackets ("getByLabel(/Password/i)", {name: /Password/i}) too
                 for regex in _REGEX_IN_BRACKETS.finditer(text, tokens[k][2], close):
-                    strings.append(re.sub(r"\\.|[\^$.*+?()\[\]{}|]", " ", regex.group(1)).strip())
+                    if not in_comment(regex.start(1)):  # a regex in a comment names no field
+                        strings.append(re.sub(r"\\.|[\^$.*+?()\[\]{}|]", " ", regex.group(1)).strip())
                 if k == 0 or tokens[k - 1][0] not in ("n", ")", "]"):
-                    break  # a bracket that calls or indexes nothing starts no chain
+                    # a bracket that calls or indexes nothing starts the chain: a receiver in brackets,
+                    # (await page.$("#password")), gives its own names
+                    names += [text[t[1]:t[2]] for t in tokens[k + 1:close_k] if t[0] == "n"]
+                    break
         elif kind in ")]":
-            depth, close = 1, tokens[k][1]
+            depth, close, close_k = 1, tokens[k][1], k
         elif kind == "n":
             names.append(text[tokens[k][1]:tokens[k][2]])
             if k == 0 or tokens[k - 1][0] != ".":
@@ -2354,7 +2365,7 @@ def _typed_code_edits(text):
     selector) ask for a secret. A value typed from a variable stays."""
     if not _CODE_HINT.search(text):
         return []
-    tokens, loose, stretches = _code_tokens(text)
+    tokens, loose, stretches, comments = _code_tokens(text)
     stretches = _Stretches(text, stretches)
     starts = [t[1] for t in tokens]
     edits = []
@@ -2376,7 +2387,7 @@ def _typed_code_edits(text):
         args = _split_arguments(text, arguments)
         if not any(t[0] == "s" for _, ts in args for t in ts):
             continue
-        labels, names = _receiver_strings(text, tokens, bisect.bisect_left(starts, call.start()))
+        labels, names = _receiver_strings(text, tokens, bisect.bisect_left(starts, call.start()), comments)
         own = [ts for kw, ts in args if kw in _CODE_FIELD_KEYWORDS]
         positional = [ts for kw, ts in args if kw is None]
         # the call's own selector, page.fill(selector, text) on any page or variable holding one: a lone string first,
