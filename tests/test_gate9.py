@@ -2093,6 +2093,58 @@ class ReviewThirtyEightTest(unittest.TestCase):
         self.assertLess(took[4000], 6 * max(took[1000], 0.05), took)
 
 
+class ReviewThirtyNineTest(unittest.TestCase):
+    """The thirty-ninth review's findings: a call's own selector with its value given by keyword, a named frame before
+    a call's own selector, and an unclosed call whose search for a stray quote ran past the code that holds it."""
+
+    TYPED = (
+        'page.fill("#password", value="sunshine")',
+        'page.frame(name="login").fill("#password", "sunshine")',
+    )
+
+    def test_each_value_is_masked(self):
+        for code in self.TYPED:
+            for text in (code, json.dumps(code), json.dumps({"code": code}), json.dumps(json.dumps(code))):
+                with self.subTest(text=text[:70]):
+                    self.assertNotIn("sunshine", mask(text))
+
+    def test_an_unclosed_call_never_masks_past_the_code_that_holds_it(self):
+        record = json.dumps({"code": 'page.fill("#password", "sunshine"', "cwd": "/srv"})
+        for after in ("\nDon't retry.\n", "\nIt's 'done'.\n", ""):
+            text = record + after
+            with self.subTest(after=after):
+                masked = mask(text)
+                self.assertNotIn("sunshine", masked)
+                self.assertTrue(masked.endswith('"cwd": "/srv"}' + after), masked)
+
+
+class ReviewFortyTest(unittest.TestCase):
+    """The fortieth review's findings: quoted option keys read as a selector's value or as a field's label, and a
+    chain read back across a statement into another call's strings."""
+
+    TYPED = (
+        'page.getByLabel("Password").fill("sunshine", {"timeout": 5000})',
+        'await page.getByRole("textbox", {"name": "Password"}).fill("sunshine");',
+        'page.get_by_role("textbox", **{"name": "Password"}).fill("sunshine")',
+        'page.get_by_label("Password hint").fill("first pet")\npage.get_by_label("Password").fill("sunshine")',
+        'await page.getByLabel("Password hint").fill("first pet"); await page.getByLabel("Password").fill("sunshine");',
+    )
+
+    def test_each_password_is_masked(self):
+        for code in self.TYPED:
+            for text in (code, json.dumps(code), json.dumps({"code": code}), json.dumps(json.dumps(code))):
+                with self.subTest(text=text[:70]):
+                    self.assertNotIn("sunshine", mask(text))
+
+    def test_a_field_after_another_statement_keeps_its_own_label(self):
+        for code in ('print("Password")\npage.get_by_label("Email").fill("me@example.com")',
+                     'console.log("Password"); await page.getByLabel("Email").fill("me@example.com");',
+                     'page.get_by_label("Password").fill(pw)\npage.get_by_label("Email").fill("me@example.com")'):
+            for text in (code, json.dumps(code), json.dumps({"code": code})):
+                with self.subTest(text=text[:70]):
+                    self.assertEqual(mask(text), text)
+
+
 # Commands as an argument list, each flag's value its own item: (the list, the items masked).
 ARGV = (
     (["login", "--password", PASSWORD], {2}), (["--token", SUB], {1}), (["--api-key", SUB, "--verbose"], {1}),
