@@ -205,9 +205,10 @@ Known limits:
   even for a password ("Type your password", "Password to view your account"), and an ordinary field labelled only
   "Password" or "PIN" has what is typed masked. With no label, as Chrome DevTools names a field by its id alone, it
   is masked only when it is shaped like a credential and not like a code identifier. Code that types into a page is
-  read the same way: a typing tool called with its input written as an object, as Codex's code mode calls one, and
-  Playwright's fill, type and pressSequentially on a field found by its label, placeholder, role's name or selector.
-  A value typed from a variable stays, and other ways of writing such code are not read.
+  read the same way: a typing tool called with its input written as an object, as Codex's code mode calls one, and a
+  string typed into a field a locator found (Playwright's fill, type and press_sequentially in JavaScript or Python,
+  Selenium's send_keys, WebdriverIO's setValue, Puppeteer's page.type), whose locator's strings name the field. A
+  value typed from a variable, or built at run time, stays, and other ways of writing such code are not read.
 - kb reads a secret that one colour code or one invisible character splits, or glues to a word, and still hides all
   that kb's earlier mask hid. Shapes built from more than that are not all read: a secret split by two kinds of
   invisible character at once ("pass<soft hyphen>word=..." with a link inside the value), what an older kb left
@@ -222,7 +223,7 @@ Known limits:
 - Masking costs time in proportion to the text, but a text in which kb's newer readings fire is masked a second time
   beside kb's earlier mask, so a long run of built shapes is slow: 4,000 soft-hyphen-split passwords with a link
   inside each (160 KB) take about 10 s, 30,000 command lines with a password each (900 KB) about 14 s, and 256 KB of
-  nothing but Playwright fill calls with a password each about 6 s.
+  nothing but Playwright fill calls with a password each about 8 s.
 - Where a later pass cuts into a placeholder, a bracket can be left beside it ("[masked]]"), or two placeholders stand
   side by side ("[masked][masked]"); no character of the secret is left.
 - A password with a comma, a semicolon or a bracket in it is masked whole in quotes, in an XML element or on a line of
