@@ -640,26 +640,29 @@ def scan_patterns(repo, patterns, exceptions, extra):
     entries = tree_entries(repo)
     blobs = read_blobs(repo, {sha for mode, sha, name in entries if mode in ARCHIVE_MODES})
     candidates = []
+    # A checked text (the notes, the commit identity) and a committed file are told apart, so an entry for a text never
+    # covers a file that shares its name.
+    texts = set(extra or {})
     for mode, sha, name in entries:
         if mode in ARCHIVE_MODES:
-            candidates.extend((member_key(name),) + hit for hit in grep_matches(patterns, blobs[sha]))
+            candidates.extend((member_key(name), False) + hit for hit in grep_matches(patterns, blobs[sha]))
     for name, text in sorted((extra or {}).items()):
-        candidates.extend((name,) + hit for hit in grep_matches(patterns, text.encode()))
+        candidates.extend((name, True) + hit for hit in grep_matches(patterns, text.encode()))
     bad_paths = [name for _, _, name in entries if grep_text(patterns, name)]
     strings = {}
     for path, string, _ in exceptions:
         strings.setdefault(path, []).append(string)
     used, findings, allowed = set(), [], []
     entries_listed = {(path, string) for path, string, _ in exceptions}
-    for path, number, line, spans, finished in candidates:
+    for path, is_text, number, line, spans, finished in candidates:
         fields = line.split(b"\t")
-        if path == EXCEPTIONS_PATH and not line.startswith(b"#") and len(fields) == 3 and (show(fields[0]), show(fields[1])) in entries_listed:
+        if not is_text and path == EXCEPTIONS_PATH and not line.startswith(b"#") and len(fields) == 3 and (show(fields[0]), show(fields[1])) in entries_listed:
             # the list's own copy of an entry's string, with the tabs around it, is no hit
             spans = [(start, end) for start, end in spans if not (len(fields[0]) <= start and end <= len(fields[0]) + len(fields[1]) + 2)]
             if finished and not spans:
                 continue
-        covers = [(start, end, (path, string)) for string in strings.get(path, ())
-                  for start, end in occurrences(line, string.encode())]
+        covers = [] if (path in texts) != is_text else [
+            (start, end, (path, string)) for string in strings.get(path, ()) for start, end in occurrences(line, string.encode())]
         uncovered = not spans or not finished
         for start, end in spans:
             over = [key for s, e, key in covers if s <= start and end <= e]
