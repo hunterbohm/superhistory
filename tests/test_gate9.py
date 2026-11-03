@@ -1789,6 +1789,19 @@ class ReviewThirtyOneTest(unittest.TestCase):
         for text in (f"{record}|200|GET /health\n", f"{record}|200|GET /health|graph-api\n"):
             self.assertEqual(mask(text), text)
 
+    def test_code_that_types_costs_time_in_proportion(self):
+        import time
+        for unit in ("getByLabel('Password').fill('", "getByLabel('", ".fill('a', '", 'browser_type({"text":"',
+                     "browser_type({element: 'Password', text: 'x'}); ", "getByRole('textbox', { name: '"):
+            with self.subTest(unit=unit):
+                took = {}
+                for size in (1 << 16, 1 << 18):
+                    text = unit * (size // len(unit))
+                    started = time.process_time()
+                    mask(text)
+                    took[size] = time.process_time() - started
+                self.assertLess(took[1 << 18], 8 * max(took[1 << 16], 0.02), took)
+
     def test_ordinary_code_that_types_into_a_page_stays(self):
         for code in self.ORDINARY:
             for text in (code, json.dumps({"code": code})):
