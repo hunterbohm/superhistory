@@ -1990,6 +1990,71 @@ class ReviewThirtySixTest(unittest.TestCase):
                     self.assertEqual(mask(text), text)
 
 
+class ReviewThirtySevenTest(unittest.TestCase):
+    """The thirty-seventh review's findings, inside the frozen shapes, which the coordinator's design for typing calls
+    masks by itself: a value in extra brackets, a triple-quoted value holding its own escaped delimiter, a comment
+    whose escaped quotes make a plain line read as escaped, and a page held in any variable."""
+
+    TYPED = (
+        ('page.get_by_label("Password").fill(("Autofill(\'42\')!"))', ("Autofill", "42")),
+        ('page.get_by_label("Password").fill("""sun\\"""shine""")', ("sun", "shine")),
+        ('page.get_by_label("Password").fill(\n # See C:\\notes and \\"example\\"\n "sunshine"\n)', ("sunshine",)),
+        ('const login = await browser.newPage();\nawait login.type("#password", "sunshine");', ("sunshine",)),
+    )
+
+    def test_each_is_masked_as_written_and_escaped_once_or_twice(self):
+        for code, parts in self.TYPED:
+            for text in (code, json.dumps(code), json.dumps({"code": code}), json.dumps(json.dumps(code))):
+                masked = mask(text)
+                for part in parts:
+                    with self.subTest(text=text[:70], part=part):
+                        self.assertNotIn(part, masked)
+
+
+class TypingCallDesignTest(unittest.TestCase):
+    """The coordinator's design for code that types: in a typing call whose field names a secret, the mask runs from
+    the value's first string through the call's last string that is not its field, and to the end of the line after a
+    quote that closes nothing. Its four costs, each pinned to the span and no more, and what must stay."""
+
+    COSTS = (
+        # a comment or code between the value and a later string argument
+        ('page.fill("#password", "sunshine", # note\n timeout="5s")', 'page.fill("#password", "[masked]")'),
+        # a later options string
+        ('page.type("#password", "sunshine", {delay: "50"})', 'page.type("#password", "[masked]"})'),
+        # a two-string call on an object that is no page, its first string naming a secret
+        ('field.type("password", "string")', 'field.type("password", "[masked]")'),
+        # the rest of the line after a quote that closes nothing, and nothing past that line
+        ('page.fill("#password", "sun"shine"); page.click("#login")\nawait done()',
+         'page.fill("#password", "[masked]\nawait done()'),
+    )
+    STAY = (
+        'Buffer.from("password").fill("x")', 'new Array(4).fill("password").fill("x")',
+        'homePage.type("#search", "sunshine")', 'secrets.get("password").type("text/plain")', 'subpages.fill("password")',
+        'pageCount.fill("x")', 'page.fill("#password", password)', 'page.fill("#password", f"{pw}")',
+        'page.fill("#password", `${pw}`)', 'page.fill("#password", os.environ["PW"])',
+        'page.get_by_label("Password").fill(decrypt("vault:pw"))', '# see C:\\notes\nprint("sunshine")',
+    )
+
+    def test_each_cost_is_the_span_and_no_more_as_written_and_in_json(self):
+        for code, expected in self.COSTS:
+            with self.subTest(code=code[:60]):
+                self.assertEqual(mask(code), expected)
+            with self.subTest(code=code[:60], wrapped="string"):
+                self.assertEqual(json.loads(mask(json.dumps(code))), expected)
+            with self.subTest(code=code[:60], wrapped="object"):
+                self.assertEqual(json.loads(mask(json.dumps({"code": code, "cwd": "/srv"}))),
+                                 {"code": expected, "cwd": "/srv"})
+            with self.subTest(code=code[:60], wrapped="object twice"):
+                self.assertEqual(json.loads(json.loads(mask(json.dumps(json.dumps({"code": code, "cwd": "/srv"}))))),
+                                 {"code": expected, "cwd": "/srv"})
+
+    def test_what_must_stay_stays(self):
+        for code in self.STAY:
+            for text in (code, json.dumps(code), json.dumps({"code": code}), json.dumps(json.dumps(code))):
+                with self.subTest(text=text[:70]):
+                    self.assertEqual(mask(text), text)
+
+
 # Commands as an argument list, each flag's value its own item: (the list, the items masked).
 ARGV = (
     (["login", "--password", PASSWORD], {2}), (["--token", SUB], {1}), (["--api-key", SUB, "--verbose"], {1}),
