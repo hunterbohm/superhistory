@@ -2170,6 +2170,31 @@ class ReviewFortyOneTest(unittest.TestCase):
         self.assertNotIn("sunshine", mask('page.frame(name="login").type("#password", "sunshine")'))
 
 
+class ReviewFortyTwoTest(unittest.TestCase):
+    """The forty-second review's findings, all in reading the field inside the coordinator's rule: a page a browser
+    returns, a locator in brackets before its call, and a regex inside a comment in a locator's brackets."""
+
+    TYPED = (
+        'browser.new_page().fill("#password", "sunshine")',
+        'await browser.newPage().then(p => p)\nawait (await browser.newPage()).type("#password", "sunshine")',
+        '(await page.$("#password")).type("sunshine");',
+        '(await page.waitForSelector("#password")).type("sunshine");',
+    )
+
+    def test_each_password_is_masked(self):
+        for code in self.TYPED:
+            for text in (code, json.dumps(code), json.dumps({"code": code}), json.dumps(json.dumps(code))):
+                with self.subTest(text=text[:70]):
+                    self.assertNotIn("sunshine", mask(text))
+
+    def test_a_regex_inside_a_comment_names_no_field(self):
+        for code in ('page.getByRole("textbox", {name: "Email", /* name: /Password/, */ exact: true}).fill("me@example.com")',
+                     'page.get_by_role("textbox", name="Email",  # name=re.compile("Password")\n).fill("me@example.com")'):
+            for text in (code, json.dumps(code), json.dumps({"code": code})):
+                with self.subTest(text=text[:70]):
+                    self.assertEqual(mask(text), text)
+
+
 # Commands as an argument list, each flag's value its own item: (the list, the items masked).
 ARGV = (
     (["login", "--password", PASSWORD], {2}), (["--token", SUB], {1}), (["--api-key", SUB, "--verbose"], {1}),
