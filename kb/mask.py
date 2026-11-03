@@ -454,9 +454,10 @@ def _kb_edges(source):
     return re.sub(r"\\b(\)*)$", r"(?![A-Za-z0-9])\1", source)  # and end before "_" too ("_AKIA..._")
 
 
-# A keyword every token of a rule holds, for the rules whose own keywords are only the provider's name: a token alone,
-# as cat or printenv prints one, holds no name, so these rules are read where their own token's mark is too.
-_TOKEN_KEYWORDS = {"airtable-personnal-access-token": ("pat",), "facebook-access-token": ("|", "%")}
+# A keyword every token of a rule holds, for a rule whose own keyword is only the provider's name: a token alone, as cat
+# or printenv prints one, holds no name, so Airtable's is read where its own mark is too. Facebook's is not: its shape,
+# digits, "|" and a hex run, is also a pipe-separated record's, so it is read only by "facebook", as gitleaks reads it.
+_TOKEN_KEYWORDS = {"airtable-personnal-access-token": ("pat",)}
 _GITLEAKS = [(re.compile(_kb_edges(source), re.ASCII), group, entropy, keywords + _TOKEN_KEYWORDS.get(name, ()),
               [re.compile(a) for a in allowed], stopwords)
              for name, source, group, entropy, keywords, allowed, stopwords in gitleaks.RULES]
@@ -700,13 +701,13 @@ _NETRC_HOST = re.compile(r"[ \t]*machine[ \t]+(?:localhost|\S*[.:0-9])")
 
 def _netrc_prose(line, value):
     """Whether a line that reads as a .netrc entry is a sentence: no host after "machine", and its login and its
-    password both short words in small letters ("default login page password field.", "machine learning login page
-    password field."), where a .netrc file names a host and a user and holds a password."""
+    password both words of letters ("default login page password requirements.", "machine learning login page
+    password self-service"), where a .netrc file names a host and a user and holds a password."""
     if _NETRC_HOST.match(line):
         return False
     login = _NETRC_LOGIN.search(line)
-    return bool(login and re.fullmatch(r"[a-z]{1,12}", login.group(1))
-                and re.fullmatch(r"[a-z]{1,10}[.,;:!?]?", value))
+    return bool(login and re.fullmatch(r"[A-Za-z]+", login.group(1))
+                and re.fullmatch(r"[A-Za-z]+(?:['-][A-Za-z]+)*[.,;:!?]?", value))
 
 
 def _plain_line_end(text, start):
