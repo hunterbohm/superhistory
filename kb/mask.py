@@ -428,11 +428,12 @@ def _base64_of(word):
 
 _KEY_WORDS = (b"PRIVATE KEY", b"SECRET KEY")
 _ENCODED_KEY = re.compile("|".join(re.escape(code) for word in _KEY_WORDS for code in _base64_of(word)))
-_WRAP = r"[ \t\r]*(?:\r?\n|\\r\\n|\\n)[ \t]*"
+_BREAK = r"(?:\r?\n|(?:\\+r)?\\+n)"  # a line break, plain or escaped once or more, as JSON in JSON writes it
+_WRAP = rf"[ \t\r]*{_BREAK}[ \t]*"
 # A run of base64, with each line after it that it wraps onto: a line that is base64 from its indentation to its end,
 # however short. A run shorter than 16 starts one only when lines follow it. A run can start just after a backslash,
 # so the letter of an escape such as \n can lead it. Which of the lines hold a key is _key_range's to say.
-_WRAPPED_LINE = rf"{_WRAP}(?:[A-Za-z0-9+/]+={{0,2}}|={{1,2}})(?=[ \t\r]*(?:\r?\n|\\r\\n|\\n|\\?[\"'<]|\Z))"
+_WRAPPED_LINE = rf"{_WRAP}(?:[A-Za-z0-9+/]+={{0,2}}|={{1,2}})(?=[ \t\r]*(?:{_BREAK}|\\*[\"'<]|\Z))"
 _WRAPPED_BASE64 = re.compile(rf"(?<![A-Za-z0-9+/])(?:[A-Za-z0-9+/]{{16,}}={{0,2}}(?:{_WRAPPED_LINE})*"
                              rf"|[A-Za-z0-9+/]+={{0,2}}(?:{_WRAPPED_LINE})+)")
 _UNWRAP = re.compile(_WRAP)
@@ -619,7 +620,8 @@ def _key_range(joined, starts, ends, found, floor):
             if footer:  # the key ends with the group holding its footer's last byte
                 after = footer.end() - len(recent)
                 at += (after + 2) // 3 * 4
-                bottom, ended, below = max(bottom, bisect.bisect_right(ends, at - 1)), True, below[(after + 2) // 3 * 3:]
+                bottom, ended = max(bottom, bisect.bisect_right(ends, at - 1)), True
+                below = below[(after + 2) // 3 * 3:]
             elif other:
                 break
             else:
