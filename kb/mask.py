@@ -373,10 +373,12 @@ COMMAND_FLAGS = (
      rf"\s{_quoted('-p')}[ \t]+{_FLAG_QUOTE}", False),
     (r"keytool|jarsigner", rf"\s{_quoted('-(?:src|dest|new)?(?:storepass|keypass)')}[ \t]+{_FLAG_QUOTE}", "dash"),
     # aws configure set's secret settings, and a .netrc line's password, its fields in any order but with a login
-    # among them, so "the machine room password sheet" is no .netrc line. A setting's name is read once, its key word
+    # among them, so "the machine room password sheet" is no .netrc line, and "default" only where a line or a quoted
+    # string starts, as a .netrc file writes it ("the default login page password field" is prose). A setting's name is read once, its key word
     # looked for ahead: read around the key word, a run of key words took time in the square of its length.
     (rf"aws{_FLAG_QUOTE}\s+configure\s+set", rf"\s{_quoted(_AWS_SETTING)}[ \t]+{_FLAG_QUOTE}", False),
-    (r"(?:machine[ \t]+[^\s]+|default)(?=(?:[ \t]+(?:password|account)[ \t]+[^\s]+)*[ \t]+login[ \t]+[^\s])",
+    (r"(?:machine[ \t]+[^\s]+|(?:^|(?<=\n)|(?<=\\n)|(?<=[\"']))[ \t]*default)"
+     r"(?=(?:[ \t]+(?:password|account)[ \t]+[^\s]+)*[ \t]+login[ \t]+[^\s])",
      r"\spassword[ \t]+(?:\\?['\"])?", "field"),
 )
 _MAIN_COMMANDS = 5  # main's own rows of COMMAND_FLAGS; the rest are this PR's
@@ -426,12 +428,13 @@ _AUTH_FIELD = re.compile(rf"(?i)((?:(?<![A-Za-z0-9_.-])|{_AFTER_ESCAPE})auth{_QU
 # \w and \b; the group holding the secret; the least entropy it has; keywords one of which a text holds before the rule
 # is read; and what marks a secret as none, the rule's and gitleaks' own for every rule.
 # gitleaks ends many tokens only at a space, a quote, a backtick, ";" or a line break. kb ends them too at a mark no token
-# goes on through, as CSV's comma, a closing bracket and a sentence's full stop do ("dop_v1_...,active"), and lets
-# Azure's client secret, whose letters take a full stop, stand inside brackets and braces too.
+# goes on through, as CSV's comma, a closing bracket, a sentence's full stop, Markdown's "**" and any backslash that
+# starts an escape do ("dop_v1_...,active", "**dop_v1_...**", '"dop_v1_...\\"' in JSON in JSON), and lets
+# Azure's client secret, whose letters take a full stop, stand inside brackets, braces and Markdown's "**" too.
 _TOKEN_EDGES = (
-    (r"""(?=[\x60'"\s;]|\\[nr]|$)""", r"""(?=[\x60'"\s;,.:)\]}>|&!?<]|\\[nr]|$)"""),
-    (r"""(?:^|[\\'"\x60\s>=:(,)])""", r"""(?:^|[\\'"\x60\s>=:(,)\[{])"""),
-    (r"""(?=$|[\\'"\x60\s<),])""", r"""(?=$|[\\'"\x60\s<),\]};|&])"""),
+    (r"""(?=[\x60'"\s;]|\\[nr]|$)""", r"""(?=[\x60'"\s;,.:)\]}>|&!?<*\\]|$)"""),
+    (r"""(?:^|[\\'"\x60\s>=:(,)])""", r"""(?:^|[\\'"\x60\s>=:(,)\[{*])"""),
+    (r"""(?=$|[\\'"\x60\s<),])""", r"""(?=$|[\\'"\x60\s<),\]};|&*])"""),
 )
 
 
