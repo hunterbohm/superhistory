@@ -1317,6 +1317,76 @@ class ReviewNineteenTest(unittest.TestCase):
         self.assertNotIn("Tr0ub4dor9", mask(text))
 
 
+
+class ReviewTwentyTest(unittest.TestCase):
+    """The twentieth review's findings, under the coordinator's split bar."""
+
+    def test_a_java_password_that_starts_with_a_dash(self):
+        for text in ("keytool -list -storepass -Tr0ub4dor9", "jarsigner -keypass -Zk9qTr0ub4dor app.jar alias",
+                     "keytool -list -storepass -qjrxvnmwkzpt",
+                     "keytool -importkeystore -deststorepass -Tr0ub4dor9 -srckeystore a.p12"):
+            with self.subTest(text=text):
+                self.assertNotIn("Tr0ub4dor", mask(text))
+        for text in ("keytool -list -storepass -keystore k.jks", "jarsigner -keypass -providerName SunPKCS11 a.jar k",
+                     "keytool -list -storepass -J-Xmx512m", "mongosh -p --quiet", "az login -p -h"):
+            with self.subTest(text=text):
+                self.assertEqual(mask(text), text, "an option of the command's own, not a password")
+
+    def test_a_quoted_command_or_one_named_by_its_windows_file(self):
+        for text in ('"keytool" -list -storepass Tr0ub4dor9', "'mongosh' -u admin -p Tr0ub4dor9",
+                     '"/usr/lib/jvm/bin/keytool" -list -storepass Tr0ub4dor9',
+                     '"C:\\Program Files\\Java\\jdk-21\\bin\\keytool.exe" -list -storepass Tr0ub4dor9',
+                     "keytool.exe -list -storepass Tr0ub4dor9", "mongosh.exe -u admin -p Tr0ub4dor9"):
+            for form in (text, json.dumps(text)):
+                with self.subTest(text=form):
+                    self.assertNotIn("Tr0ub4dor9", mask(form))
+
+    def test_a_flag_in_a_quoted_script_over_several_lines_is_the_scripts(self):
+        for text in ("mongosh --eval 'print(\"ssh -p 2222 host\")\n'", "mongosh --eval \"print('ssh -p 2222 host')\n\"",
+                     "mongosh --eval 'db.x.find()\nprint(\"ssh -p 2222 host\")\n'"):
+            for form in (text, json.dumps(text)):
+                with self.subTest(text=form):
+                    self.assertEqual(mask(form), form)
+        self.assertNotIn("Tr0ub4dor9", mask("mongosh -p Tr0ub4dor9 --eval '\nprint(1)\n'"))
+
+    def test_a_netrc_password_that_starts_with_a_hash(self):
+        for text in ("machine api.example.com login deploy password #Tr0ub4dor9",
+                     "machine api.example.com login deploy password #Tr0ub4dor9 # rotated monthly"):
+            with self.subTest(text=text):
+                self.assertNotIn("Tr0ub4dor9", mask(text))
+                self.assertIn("api.example.com login deploy password", mask(text))
+
+    def test_netrc_fields_in_any_order(self):
+        for text in ("machine api.example.com password Tr0ub4dor9 login deploy",
+                     "machine api.example.com account ops password Tr0ub4dor9 login deploy",
+                     "default password Tr0ub4dor9 login deploy"):
+            for form in (text, json.dumps(text)):
+                with self.subTest(text=form):
+                    self.assertNotIn("Tr0ub4dor9", mask(form))
+        for text in ("the machine learning password reset flow", "a machine room password sheet"):
+            with self.subTest(text=text):
+                self.assertEqual(mask(text), text)
+
+    def test_four_words_of_a_sentence_are_read_as_main_reads_them(self):
+        for text, main in (("password: read from smtp logs", "password: [masked] from smtp logs"),
+                           ("password: just copy from docs", "password: [masked] copy from docs"),
+                           ("password: plan menu soup cake", "password: [masked] menu soup cake")):
+            with self.subTest(text=text):
+                self.assertEqual(mask(text), main)
+
+    def test_two_keys_masked_alike_keep_both_values(self):
+        first, second = "shpat_" + "a1b2c3d4" * 4, "shpat_" + "e5f6a7b8" * 4
+        masked = mask_all({first: "first", second: "second", "[masked]": "third"})
+        self.assertEqual(sorted(masked.values()), ["first", "second", "third"])
+        self.assertFalse(any(first in k or second in k for k in masked), masked)
+        self.assertEqual(mask_all({"ghp_" + "Zq7Lm2Xc9Vb4Nn8Kk3Jj6Hh1Gg5Ff0Dd2Ss": 1, "plain": 2})["plain"], 2)
+        for reader in READERS:
+            with self.subTest(reader=reader):
+                text = stored(reader, tool_call(reader, "mcp__store__put", {first: "first", second: "second"}))
+                self.assertIn("first", text)
+                self.assertIn("second", text)
+                self.assertNotIn(first[6:], text)
+
 # Commands as an argument list, each flag's value its own item: (the list, the items masked).
 ARGV = (
     (["login", "--password", PASSWORD], {2}), (["--token", SUB], {1}), (["--api-key", SUB, "--verbose"], {1}),
