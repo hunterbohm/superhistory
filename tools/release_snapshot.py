@@ -45,6 +45,7 @@ import argparse
 import concurrent.futures
 import contextlib
 import dataclasses
+import functools
 import gzip
 import hashlib
 import http.server
@@ -433,22 +434,41 @@ def grep_text(patterns, data):
     return hits
 
 
-def grep_matches(patterns, data):
-    if not data:
-        return []
-    lines = data.split(b"\n")
-    starts = [0]
-    for line in lines[:-1]:
-        starts.append(starts[-1] + len(line) + 1)
-    spans = {}
-    for row in grep_run(grep_command(patterns, "-o", "-b"), input=data).split(b"\n"):
+@functools.lru_cache(maxsize=8)
+def pattern_lines(path):
+    with open(path, "rb") as fh:
+        return tuple(line for line in fh.read().split(b"\n") if line)
+
+
+def one_pattern_spans(pattern, text):
+    out = grep_run(["grep", "-a", "-i", "-E", "-o", "-b", "-e", pattern], input=text + b"\n")
+    spans = set()
+    for row in out.split(b"\n"):
         if row:
-            number, offset, text = row.split(b":", 2)
-            begin = int(offset) - starts[int(number) - 1]
-            spans.setdefault(int(number), []).append((begin, begin + len(text)))
-    for number, _ in grep_text(patterns, data):
-        spans.setdefault(number, [])
-    return [(number, lines[number - 1], spans[number]) for number in sorted(spans)]
+            offset, _, match = row.partition(b":")
+            spans.add((int(offset), int(offset) + len(match)))
+    return spans
+
+
+def every_span(patterns, line, rounds=64):
+    spans = set()
+    for pattern in pattern_lines(patterns):
+        found, text = set(), line
+        for _ in range(rounds):
+            fresh = one_pattern_spans(pattern, text) - found
+            if not fresh:
+                break
+            found |= fresh
+            blanked = bytearray(text)
+            for start, _end in fresh:
+                blanked[start] = 0
+            text = bytes(blanked)
+        spans |= found
+    return sorted(spans)
+
+
+def grep_matches(patterns, data):
+    return [(number, line, every_span(patterns, line)) for number, line in grep_text(patterns, data)]
 
 
 def read_blobs(repo, shas):
