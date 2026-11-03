@@ -739,6 +739,12 @@ class FilesTest(SourceCase):
         self.assertTrue(all("outside the tree" in f.text for f in found.findings), found.findings)
 
     def test_a_path_that_is_not_utf8_fails_and_exceptions_match_names_exactly(self):
+        probe = self.src / os.fsdecode(b"\xff.probe")
+        try:
+            probe.write_bytes(b"")
+        except OSError as error:  # macOS's file system refuses such a name; the release is built on Linux
+            self.skipTest("this file system refuses a file name that is not UTF-8: " + error.strerror)
+        probe.unlink()
         self.commit_bytes({os.fsdecode(b"\xff.txt"): "Acmecorp\n", "\ufffd.txt": "Acmecorp\n",
                            EXCEPTIONS: tsv(("\ufffd.txt", "Acmecorp", "a made-up firm"))})
         release = self.build()
