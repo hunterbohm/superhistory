@@ -564,6 +564,25 @@ class OtherKeyFormatTest(unittest.TestCase):
                                      f"[masked]{brk}{after}")
         self.assertEqual(mask("[masked]\nnext steps"), "[masked]\nnext steps")
 
+    def test_a_body_line_with_words_after_it_on_its_line_stays_masked(self):
+        # A snippet joins a key's lines, so its last line can carry the next words ("MIIEvQ... notes deploy").
+        import base64
+        import random
+        r = random.Random(53)
+        line = base64.b64encode(made_up_private_key(r)).decode()[:64]
+        for text in (f"[masked]{line[20:]}\n{line} notes deploy harbor", f"[masked]\n{line}\n{line} notes deploy"):
+            with self.subTest(text=text[:20]):
+                self.assertNotIn(line[8:40], mask(text))
+
+    def test_an_id_reads_a_keys_rest_as_main_does(self):
+        # An id that reads as holding a secret is refused, with its item: only a key's body start begins its rest.
+        import base64
+        import random
+        r = random.Random(59)
+        line = base64.b64encode(bytes(r.randrange(256) for _ in range(48))).decode()
+        self.assertFalse(secret_in_id(f"plan [masked]\n{line}"))
+        self.assertTrue(secret_in_id(f"plan [masked]\nMIIE{line}"))
+
     def test_a_pem_key_then_an_unarmoured_certificate_and_text_shows_both(self):
         # main and #29 took the certificate and the text after it for the key's rest.
         import base64
