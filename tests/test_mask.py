@@ -1220,9 +1220,9 @@ class KeyShapeTest(unittest.TestCase):
 
     def test_a_base64_key_wrapped_at_every_width_is_masked_whole_in_place(self):
         """Each kind of key file, alone or after a certificate, base64 wrapped at every width from 1 to its length, in a
-        field's value, a JSON string, under a heading and after prose: everything from the line that holds its
-        header's first byte through its last line is one placeholder, and the text around it stays. One kind and one
-        line break for each width; KB_KEY_CASES of 20000 or more reads every kind with every break."""
+        field's value, a JSON string, one in JSON, under a heading and after prose: everything from the line that holds
+        its header's first byte through its last line is one placeholder, and the text around it stays. One kind and
+        one line break for each width; KB_KEY_CASES of 20000 or more reads every kind with every break."""
         import base64
         import json
         import os
@@ -1241,8 +1241,9 @@ class KeyShapeTest(unittest.TestCase):
                     f"={base64.b64encode(bytes(r.randrange(256) for _ in range(3))).decode()}\n-----END {label}-----\n")
 
         cert = f"-----BEGIN CERTIFICATE-----\n{body(48)}\n-----END CERTIFICATE-----\n"
-        encrypted = ("-----BEGIN RSA PRIVATE KEY-----\nProc-Type: 4,ENCRYPTED\nDEK-Info: AES-128-CBC,00112233445566778899AABBCCDDEEFF\n\n"
-                     f"{body(96)}\n-----END RSA PRIVATE KEY-----\n")
+        encrypted = ("-----BEGIN RSA PRIVATE KEY-----\nProc-Type: 4,ENCRYPTED\n"
+                     f"DEK-Info: AES-128-CBC,00112233445566778899AABBCCDDEEFF\n\n{body(96)}\n"
+                     "-----END RSA PRIVATE KEY-----\n")
         files = [("", pem("PRIVATE KEY")), ("", pem("RSA PRIVATE KEY")), ("", pem("EC PRIVATE KEY")),
                  ("", pem("OPENSSH PRIVATE KEY")), ("", pem("ENCRYPTED PRIVATE KEY")), ("", encrypted),
                  ("", pgp("PGP PRIVATE KEY BLOCK")), ("", pgp("PGP SECRET KEY BLOCK")), (cert, pem("PRIVATE KEY")),
@@ -1251,15 +1252,16 @@ class KeyShapeTest(unittest.TestCase):
         every = int(os.environ.get("KB_KEY_CASES", "3000")) >= 20000
 
         def placed(lines, brk, cut):
-            """(the text, what it masks to) for the block's lines in each place: everything from line `cut` is the key's."""
+            """(the text, what it masks to) for the block's lines in each place, the key's from line `cut` on."""
             head = brk.join(lines[:cut] + [""])
             line_end = {"\\n": "\\n", "\r\n": "\r\n"}.get(brk, "\n")
             block, masked = brk.join(lines), head + "[masked]"
             yield "field", f"tls.key: {block}{line_end}ca.crt: none", f"tls.key: {masked}{line_end}ca.crt: none"
             if brk != "\\n":
                 value = {"tls.key": block, "note": "rotate after the review"}
-                yield "JSON", json.dumps(value), json.dumps(dict(value, **{"tls.key": "[masked]"})).replace(
-                    "[masked]", json.dumps(head)[1:-1] + "[masked]")
+                hidden = dict(value, **{"tls.key": masked})
+                yield "JSON", json.dumps(value), json.dumps(hidden)
+                yield "JSON in JSON", json.dumps(json.dumps(value)), json.dumps(json.dumps(hidden))
             yield "heading", f"Plan{line_end}{block}{line_end}next steps", f"Plan{line_end}{masked}{line_end}next steps"
             yield ("prose", f"here is the key {block}{line_end}it rotates after the review",
                    f"here is the key {masked}{line_end}it rotates after the review")
