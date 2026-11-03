@@ -549,7 +549,7 @@ def _gitleaks_edits(text):
 # Which mask() a stored row was masked with. A row of another version, or of none, is masked again when read and by
 # the next ingest. The patterns change it by themselves; bump REVISION when the code that applies them changes what
 # it masks.
-REVISION = 23
+REVISION = 24
 VERSION = f"r{REVISION}-" + hashlib.sha256(repr((REVISION, [p.pattern for p in SECRET_PATTERNS + PREFIXED_SECRETS], KEYED_SECRET.pattern,
                                 ENV_KEY_SECRET.pattern, JSON_SECRET.pattern, FLAG_SECRET.pattern, AUTH_SECRET.pattern,
                                 COMMAND_FLAGS, PASSWORD_NAME.pattern, sorted(PLACEHOLDERS), REFERENCE.pattern,
@@ -598,6 +598,7 @@ _KEY_WORD_AT = {code: (k, -(-8 * k // 6)) for word in _KEY_WORDS for k, code in 
 _KEY_FRAME = re.compile(rb"-----(BEGIN|END) (?:[A-Z0-9 ]*PRIVATE KEY|PGP (?:PRIVATE|SECRET) KEY BLOCK)-----")
 _KEY_FOOTER = re.compile(rb"-----END (?:[A-Z0-9 ]*PRIVATE KEY|PGP (?:PRIVATE|SECRET) KEY BLOCK)-----")
 _NOT_TEXT = re.compile(rb"[^\t\n\r\x20-\x7e]")
+_BYTE_ORDER_MARK = b"\xef\xbb\xbf"
 _LINE_BREAKS = re.compile(rb"[\r\n]*")
 
 
@@ -639,6 +640,12 @@ def _frame(joined, starts, found):
             len(before) >= 8 and b" " in before or before[-1:] in (b" ", b"\t"))  # "Note: -----BEGIN ..."
         opens = opens or m.start() % 3 == 0 and not continues and (
             first == opened or line < len(starts) and starts[line] == first)
+        # or after the byte order mark a file saved on Windows starts with, where the encoded text starts: the mark
+        # is a group of its own, the one before the header's
+        mark = first - 4
+        mark_line = bisect.bisect_left(starts, mark)
+        opens = opens or before == _BYTE_ORDER_MARK and m.start() % 3 == 0 and (
+            mark == opened or mark_line < len(starts) and starts[mark_line] == mark)
         closes = decoded[m.end():m.end() + 1] in (b"\r", b"\n") or m.end() == len(decoded) and closed
         return (m.group(1), first) if opens and closes else None
     return None
@@ -721,24 +728,34 @@ def _written_key_spans(text):
 _UNSEEN_ESCAPED = re.compile(rf"(?<!\\)\\*(?:{_CSI}|{_ESCAPED_INVISIBLE})|[\x00-\x08\x0e-\x1b\x7f-\x84\x86-\x9f{_FORMAT_CHARACTERS}]")
 
 
+def _unseen_view(text):
+    """(`text` without the characters a reader does not see, at any depth of escaping, and for each of its characters
+    where it stands in `text`), so a run one of them splits reads whole."""
+    if not INVISIBLE.search(text):
+        return text, range(len(text))
+    kept, pieces, last = [], [], 0
+    for m in _UNSEEN_ESCAPED.finditer(text):
+        # An escaped form takes only its own backslashes: one where a run of them is odd, two (an escape escaped
+        # again, as JSON in JSON writes one) where it is even; the rest escape each other, as a line break's does
+        # in "\\<ZWSP>n" written as JSON.
+        run = len(m.group()) - len(m.group().lstrip("\\"))
+        start = m.start() + (run - 1 if run % 2 else run - 2) if run else m.start()
+        pieces.append(text[last:start])
+        kept += range(last, start)
+        last = m.end()
+    pieces.append(text[last:])
+    kept += range(last, len(text))
+    return "".join(pieces), kept
+
+
 def _encoded_key_spans(text):
     """Where each private key in a file written as base64 lies in `text`, as ordered (start, end) spans: read as
-    written, and read without the characters a reader does not see (INVISIBLE), so one inside a line parts nothing."""
+    written, and read without the characters a reader does not see (_unseen_view), so one inside a line parts
+    nothing."""
     spans = _written_key_spans(text)
-    if INVISIBLE.search(text):
-        kept, pieces, last = [], [], 0
-        for m in _UNSEEN_ESCAPED.finditer(text):
-            # An escaped form takes only its own backslashes: one where a run of them is odd, two (an escape escaped
-            # again, as JSON in JSON writes one) where it is even; the rest escape each other, as a line break's does
-            # in "\\<ZWSP>n" written as JSON.
-            run = len(m.group()) - len(m.group().lstrip("\\"))
-            start = m.start() + (run - 1 if run % 2 else run - 2) if run else m.start()
-            pieces.append(text[last:start])
-            kept += range(last, start)
-            last = m.end()
-        pieces.append(text[last:])
-        kept += range(last, len(text))
-        spans += [(kept[start], kept[end - 1] + 1) for start, end in _written_key_spans("".join(pieces))]
+    view, kept = _unseen_view(text)
+    if view is not text:
+        spans += [(kept[start], kept[end - 1] + 1) for start, end in _written_key_spans(view)]
     merged = []
     for start, end in sorted(spans):
         if merged and start <= merged[-1][1]:
@@ -1344,15 +1361,9 @@ def _token_tail(text):
     the last line holding a token (_token_like) before where main's reading of it ended (its paragraph's end, the next
     header, or its footer), so that only a tail of ordinary text stays. Read once for the text: each rest then costs a
     lookup."""
-    # runs read without the characters a reader does not see, so a fragment one of them splits reads whole
-    kept, pieces, last = [], [], 0
-    for m in INVISIBLE.finditer(text):
-        pieces.append(text[last:m.start()])
-        kept += range(last, m.start())
-        last = m.end()
-    pieces.append(text[last:])
-    kept += range(last, len(text))
-    view = "".join(pieces)
+    # runs read without the characters a reader does not see, escaped at any depth, so a fragment one of them splits
+    # reads whole, in JSON in JSON too
+    view, kept = _unseen_view(text)
     tokens = [kept[m.start()] for m in _RUN.finditer(view) if _token_like(m.group())]
     # and every line that is no line of words (_WORDS_LINE) but holds a run of base64's characters, as a fragment of a
     # key alone on its line ("Bcsv") does
