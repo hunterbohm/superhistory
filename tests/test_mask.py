@@ -4,6 +4,42 @@ from unittest import mock
 from kb.mask import INVISIBLE, is_auth_code, is_auth_noise, mask, secret_in_id
 
 
+def _der(tag, *parts):
+    """A DER element: its tag, its length and `parts` as its content."""
+    body = b"".join(parts)
+    width = (len(body).bit_length() + 7) // 8
+    size = bytes([len(body)]) if len(body) < 0x80 else bytes([0x80 | width]) + len(body).to_bytes(width, "big")
+    return bytes([tag]) + size + body
+
+
+def _rsa_algorithm():
+    return _der(0x30, _der(0x06, bytes.fromhex("2a864886f70d010101")), _der(0x05))
+
+
+def made_up_public_key(r):
+    """A SubjectPublicKeyInfo of an RSA key with made-up numbers."""
+    numbers = _der(0x30, _der(0x02, b"\0" + bytes(r.randrange(256) for _ in range(256))), _der(0x02, b"\x01\x00\x01"))
+    return _der(0x30, _rsa_algorithm(), _der(0x03, b"\0" + numbers))
+
+
+def made_up_certificate(r, request=False):
+    """An X.509 certificate, or a certificate request, whose numbers and signature are made up."""
+    signed_with = _der(0x30, _der(0x06, bytes.fromhex("2a864886f70d01010b")), _der(0x05))
+    name = _der(0x30, _der(0x31, _der(0x30, _der(0x06, bytes.fromhex("550403")), _der(0x0c, b"walrus.example"))))
+    if request:
+        info = _der(0x30, _der(0x02, b"\0"), name, made_up_public_key(r), _der(0xa0))
+    else:
+        validity = _der(0x30, _der(0x17, b"261101000000Z"), _der(0x17, b"261201000000Z"))
+        info = _der(0x30, _der(0xa0, _der(0x02, b"\x02")), _der(0x02, bytes(r.randrange(1, 128) for _ in range(16))),
+                    signed_with, name, validity, name, made_up_public_key(r))
+    return _der(0x30, info, signed_with, _der(0x03, b"\0" + bytes(r.randrange(256) for _ in range(256))))
+
+
+def made_up_private_key(r):
+    """A PKCS#8 private key's DER with a made-up key inside."""
+    return _der(0x30, _der(0x02, b"\0"), _rsa_algorithm(), _der(0x04, bytes(r.randrange(256) for _ in range(600))))
+
+
 class MaskTest(unittest.TestCase):
     def assert_masked(self, text, secret):
         out = mask(text)
@@ -436,8 +472,7 @@ class OtherKeyFormatTest(unittest.TestCase):
         r = random.Random(23)
         body = base64.b64encode(bytes(r.randrange(256) for _ in range(48))).decode()
         key = base64.b64encode(f"-----BEGIN PRIVATE KEY-----\n{body}\n-----END PRIVATE KEY-----\n".encode()).decode()
-        der = bytes([0x30, 0x82, 0x01, 0x22, 0x30, 0x82, 0x01, 0x0a, 0xa0, 0x03, 0x02, 0x01, 0x02])
-        cert = base64.b64encode(der + bytes(r.randrange(256) for _ in range(280))).decode()
+        cert = base64.b64encode(made_up_certificate(r)).decode()
         for k in (key, "\n".join(textwrap.wrap(key, 76))):
             public = "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAwalrus"
             for after in (cert, "\n".join(textwrap.wrap(cert, 76)), public):
@@ -453,8 +488,7 @@ class OtherKeyFormatTest(unittest.TestCase):
         r = random.Random(29)
         body = base64.b64encode(bytes(r.randrange(256) for _ in range(48))).decode()
         key = base64.b64encode(f"-----BEGIN PRIVATE KEY-----\n{body}\n-----END PRIVATE KEY-----\n".encode()).decode()
-        der = bytes([0x30, 0x82, 0x01, 0x22, 0x30, 0x82, 0x01, 0x0a, 0xa0, 0x03, 0x02, 0x01, 0x02])
-        cert = base64.b64encode(der + bytes(r.randrange(256) for _ in range(280))).decode()
+        cert = base64.b64encode(made_up_certificate(r)).decode()
         for after in (cert, "\n".join(textwrap.wrap(cert, 76))):
             for k in (key, "\n".join(textwrap.wrap(key, 76))):
                 with self.subTest(wrapped="\n" in k, after="\n" in after):
@@ -462,35 +496,88 @@ class OtherKeyFormatTest(unittest.TestCase):
                     self.assertEqual(once, f"[masked]\n{after}\nnext steps")
                     self.assertEqual(mask(once), once)
 
-    def test_after_a_placeholder_only_a_keys_body_reads_as_the_keys_rest(self):
-        # An older kb's mask left a key's body after its placeholder: DER that starts with a version (an INTEGER),
-        # an encrypted key's PBES2 or PKCS#12 algorithm, or OpenSSH's. A certificate, a public key or a request stays.
+    def test_after_a_placeholder_base64_stays_masked_unless_it_decodes_whole_as_public_material(self):
+        # An older kb's mask left a key's body after its placeholder, whole or in part. Only base64 that decodes whole
+        # as a certificate, a certificate request, a public key or an OpenSSH public key is shown.
+        import base64
+        import random
+        import struct
+        import textwrap
+        r = random.Random(31)
+        public = {"certificate": made_up_certificate(r), "request": made_up_certificate(r, request=True),
+                  "public key": made_up_public_key(r)}
+        openssh = struct.pack(">I", 11) + b"ssh-ed25519" + struct.pack(">I", 32) + bytes(r.randrange(256)
+                                                                                    for _ in range(32))
+        for name, der in [*public.items(), ("OpenSSH public key", openssh)]:
+            encoded = base64.b64encode(der).decode()
+            for lines in (encoded, "\n".join(textwrap.wrap(encoded, 64)), "\n".join(textwrap.wrap(encoded, 76))):
+                with self.subTest(public=name, lines=lines.count("\n")):
+                    text = f"[masked]\n{lines}\nnext steps"
+                    self.assertEqual(mask(text), text)
+            cut = base64.b64encode(der[:len(der) * 2 // 3]).decode()
+            with self.subTest(cut_short=name):
+                self.assertEqual(mask(f"[masked]\n{cut}\nnext steps"), "[masked]\nnext steps")
+        noise = base64.b64encode(bytes(r.randrange(256) for _ in range(200))).decode()
+        for name, lines in (("random", noise), ("random, starting as a body does", "MIIE" + noise),
+                            ("random, wrapped", "\n".join(textwrap.wrap(noise, 64)))):
+            with self.subTest(neither=name):
+                self.assertEqual(mask(f"[masked]\n{lines}\nnext steps"), "[masked]\nnext steps")
+
+    def test_each_part_of_a_private_keys_body_after_a_placeholder_stays_masked(self):
+        import base64
+        import json
+        import random
+        import textwrap
+        r = random.Random(37)
+        lines = textwrap.wrap(base64.b64encode(made_up_private_key(r)).decode(), 64)
+        half = len(lines) // 2
+        first, second = lines[:half], lines[half:]
+        joined = "".join(second)
+        parts = {"first half": "\n".join(first), "second half": "\n".join(second),
+                 "second half, with its footer": "\n".join(second) + "\n-----END PRIVATE KEY-----",
+                 "second half, re-wrapped": "\n".join(textwrap.wrap(joined, 76)),
+                 "second half, one line": joined}
+        for name, part in parts.items():
+            for before in ("\n", "\u200b", "\n\u200b"):
+                with self.subTest(part=name, before=before):
+                    masked = mask(f"[masked]{before}{part}\nnext steps")
+                    readable = masked.replace("\n", "").replace("\u200b", "")
+                    self.assertEqual([joined[i:i + 12] for i in range(0, len(joined) - 12, 12)
+                                      if joined[i:i + 12] in readable], [])
+                    self.assertEqual([line for line in first if line in masked], [])
+                    self.assertTrue(masked.startswith("[masked]") and masked.endswith("\nnext steps"), masked)
+            with self.subTest(part=name, form="JSON"):
+                masked = mask(json.dumps({"k": f"[masked]\n{part}", "note": "next steps"}))
+                self.assertEqual([line for line in lines if line in masked], [])
+                self.assertIn('"note": "next steps"', masked)
+
+    def test_ordinary_text_after_a_keys_rest_stays(self):
         import base64
         import random
         import textwrap
-        r = random.Random(31)
-        tail = bytes(r.randrange(256) for _ in range(300))
-        keys = {"PKCS#8": "3082 04bd 020100 300d06092a864886f70d0101010500", "PKCS#1": "3082 04a4 020100 02820101",
-                "SEC1": "3077 020101 0420", "Ed25519": "302e 020100 300506032b6570",
-                "PBES2": "3082 051c 304e 06092a864886f70d01050d",
-                "PKCS#12 PBE": "3082 02a1 301b 060a2a864886f70d010c0103"}
-        others = {"certificate": "3082 0313 3082 01fb a003 020102",
-                  "public key": "3082 0122 300d 06092a864886f70d010101", "request": "3082 0256 3082 013e 020100"}
+        r = random.Random(43)
+        body = "\n".join(textwrap.wrap(base64.b64encode(made_up_private_key(r)).decode(), 64))
+        for after in ("next steps", "The rest of the note is here.", "tls.crt: none", "  - deploy the ledger"):
+            for brk in ("\n", "\r\n"):
+                with self.subTest(after=after, brk=brk):
+                    self.assertEqual(mask(f"[masked]{brk}{body.replace(chr(10), brk)}{brk}{after}"),
+                                     f"[masked]{brk}{after}")
+        self.assertEqual(mask("[masked]\nnext steps"), "[masked]\nnext steps")
 
-        def body(prefix):
-            der = bytes.fromhex(prefix.replace(" ", "")) + tail
-            return "\n".join(textwrap.wrap(base64.b64encode(der).decode(), 64))
-
-        openssh = "\n".join(textwrap.wrap(base64.b64encode(b"openssh-key-v1\0" + tail).decode(), 70))
-        for name, lines in [*((n, body(p)) for n, p in keys.items()), ("OpenSSH", openssh)]:
-            with self.subTest(key=name):
-                masked = mask(f"[masked]\n{lines}\n-----END PRIVATE KEY-----\n\nnext paragraph")
-                self.assertEqual([line for line in lines.split("\n") if line in masked], [])
-                self.assertTrue(masked.startswith("[masked]") and masked.endswith("\n\nnext paragraph"), masked)
-        for name, prefix in others.items():
-            with self.subTest(other=name):
-                text = f"[masked]\n{body(prefix)}\nnext steps"
-                self.assertEqual(mask(text), text)
+    def test_a_pem_key_then_an_unarmoured_certificate_and_text_shows_both(self):
+        # main and #29 took the certificate and the text after it for the key's rest.
+        import base64
+        import random
+        import textwrap
+        r = random.Random(47)
+        body = "\n".join(textwrap.wrap(base64.b64encode(made_up_private_key(r)).decode(), 64))
+        pem = f"-----BEGIN PRIVATE KEY-----\n{body}\n-----END PRIVATE KEY-----\n"
+        cert = base64.b64encode(made_up_certificate(r)).decode()
+        for after in (cert, "\n".join(textwrap.wrap(cert, 64)), "\n".join(textwrap.wrap(cert, 76))):
+            with self.subTest(lines=after.count("\n")):
+                once = mask(f"{pem}{after}\nnext steps")
+                self.assertEqual(once, f"[masked]\n{after}\nnext steps")
+                self.assertEqual(mask(once), once)
 
     def test_base64_of_prose_that_quotes_a_key_delimiter_stays(self):
         import base64
