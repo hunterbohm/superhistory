@@ -127,7 +127,7 @@ def _mac_off(home):
     stopped_old = _mac_stop(OLD_LABEL, home)
     if not (stopped or stopped_old):
         return "Nothing was scheduled."
-    names = LABEL if stopped and not stopped_old else OLD_LABEL if stopped_old and not stopped else f"{LABEL} and {OLD_LABEL}"
+    names = f"{LABEL} and {OLD_LABEL}" if stopped and stopped_old else LABEL if stopped else OLD_LABEL
     return f"Stopped the launchd agent {names} and removed its file."
 
 
@@ -218,7 +218,7 @@ def _linux_off(home):
     stopped_old = _linux_stop(OLD_TIMER, OLD_SERVICE, home)
     if not (stopped or stopped_old):
         return "Nothing was scheduled."
-    names = TIMER if stopped and not stopped_old else OLD_TIMER if stopped_old and not stopped else f"{TIMER} and {OLD_TIMER}"
+    names = f"{TIMER} and {OLD_TIMER}" if stopped and stopped_old else TIMER if stopped else OLD_TIMER
     return f"Stopped the systemd timer {names} and removed its files."
 
 

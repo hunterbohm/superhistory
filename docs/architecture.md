@@ -1,8 +1,8 @@
 # How the package is laid out
 
-The Python package is `kb`, named after the command. The product name lives in one constant, `kb.NAME`, and the
-folder names, job labels and printed text come from it, so a rename is one edit. `kb.LEGACY_NAME` is the name before the last rename: folders and scheduled jobs
-written under it are still read (`kb/paths.py`, `kb/schedule.py`).
+The Python package is `kb`, named after the command. The product name lives in one constant, `kb.NAME`, and the folder
+names, job labels and printed text come from it, so a rename is one edit. `kb.LEGACY_NAME` is the name before the last
+rename: folders and scheduled jobs written under it are still read (`kb/paths.py`, `kb/schedule.py`).
 
 ## Modules
 

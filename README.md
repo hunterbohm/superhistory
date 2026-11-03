@@ -2,8 +2,8 @@
 
 The knowledge base your agents check first. The command is `kb`.
 
-Superhistory collects what already happened on your computer: your Claude Code, Codex and Hermes sessions, your email and
-texts, your notes, your commits and GitHub threads. It keeps them in one SQLite file. When you send a prompt to an
+Superhistory collects what already happened on your computer: your Claude Code, Codex and Hermes sessions, your email
+and texts, your notes, your commits and GitHub threads. It keeps them in one SQLite file. When you send a prompt to an
 agent, a hook asks `kb` for anything that fits. A small model writes a search, a second pass keeps only the records
 about what you asked, and the agent gets those few records, or nothing.
 
@@ -30,8 +30,8 @@ You can also install with `pipx install ./kb-source` or `uv tool install ./kb-so
 
 Superhistory is free and open source to self-host, plus Sync at $10 a month.
 
-If you installed it when it was called Varve, nothing changes: kb keeps using your existing config, data and log folders,
-and `kb schedule on` replaces the old scheduled job with one under the new name.
+If you installed it when it was called Varve, nothing changes: kb keeps using your existing config, data and log
+folders, and `kb schedule on` replaces the old scheduled job with one under the new name.
 
 ## Try it before you connect anything
 
