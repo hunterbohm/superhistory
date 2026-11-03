@@ -130,6 +130,13 @@ def result(name, problems, summary_ok, summary_bad, findings=(), allowed=(), not
     return CheckResult(name, "FAIL" if problems else "PASS", summary, list(findings), list(allowed), list(notes))
 
 
+def guarded(name, check, *args):
+    try:
+        return check(*args)
+    except Exception as exc:
+        return CheckResult(name, "FAIL", "the check could not finish", [Finding(name, failure(exc))])
+
+
 def run(cmd, cwd=None, env=None, input=None):
     try:
         done = subprocess.run(cmd, cwd=None if cwd is None else str(cwd), env=env, input=input,
@@ -380,13 +387,13 @@ def check_credential(repo, credentials, extra=None, archive=None, tag=None):
 
     for mode, sha, name in entries:
         if has(name):
-            findings.append(Finding(show(name), "in the file's name"))
+            findings.append(Finding(esc(name), "in the file's name"))
     for sha, kind, body in object_stream(repo):
         scanned += 1
         if kind == "tree" or not has(body):
             continue
         if kind == "blob":
-            findings.extend(Finding(where, "in the file's text") for where in sorted(names.get(sha, ["unreferenced " + sha[:8]])))
+            findings.extend(Finding(esc(where), "in the file's text") for where in sorted(names.get(sha, ["unreferenced " + sha[:8]])))
         else:
             findings.append(Finding("%s %s" % (kind, sha[:8]), "in the %s" % ("commit message or author" if kind == "commit" else "object")))
     for name, text in (extra or {}).items():
@@ -397,7 +404,7 @@ def check_credential(repo, credentials, extra=None, archive=None, tag=None):
             for member in tar:
                 data = tar.extractfile(member).read() if member.isfile() else b""
                 if has(member.name.encode()) or has(data):
-                    findings.append(Finding("%s:%s" % (os.path.basename(str(archive)), member.name), "in the archive"))
+                    findings.append(Finding(esc("%s:%s" % (os.path.basename(str(archive)), member.name)), "in the archive"))
     where_text = "%d objects%s%s" % (scanned, ", the notes" if extra else "", ", the archive" if archive is not None else "")
     return result("credential", findings, "no trace of %d made-up credential%s in %s, in any case" % (len(needles), "" if len(needles) == 1 else "s", where_text),
                   "a made-up credential is still here: %d place%s" % (len(findings), "" if len(findings) == 1 else "s"), findings)
@@ -516,9 +523,9 @@ def scan_patterns(repo, patterns, exceptions, extra, archive=None, prefix=None):
             over = [key for s, e, key in covers if s <= start and end <= e]
             used.update(over)
             uncovered = uncovered or not over
-        row = Finding("%s:%d" % (path, number) if number else path, show(line)[:LINE_WIDTH])
+        row = Finding("%s:%d" % (esc(path), number) if number else esc(path), show(line)[:LINE_WIDTH])
         (findings if uncovered else allowed).append(row)
-    findings.extend(Finding(show(name), "(a file name)") for name in bad_paths)
+    findings.extend(Finding(esc(name), "(a file name)") for name in bad_paths)
     findings.sort(key=where_key)
     allowed.sort(key=where_key)
     stale = ["stale: %s: %s" % (path, string) for path, string, _ in exceptions if (path, string) not in used]
@@ -960,13 +967,13 @@ def assemble(source, commit, out, name, email, tag, title, repo_name, notes_text
 
     extra = {"RELEASE_NOTES.md": notes_text}
     release = Release(tag, snapshot, Path(repo), Path(notes), Path(archive), Path(out), [], left_out)
-    suites_result = suites_check(release, suites) if suites else CheckResult("suites", "SKIP", "not run: --no-suites given")
+    suites_result = guarded("suites", suites_check, release, suites) if suites else CheckResult("suites", "SKIP", "not run: --no-suites given")
     release.checks = [
-        check_history(repo, tag),
-        check_credential(repo, credentials, extra, archive),
-        check_patterns(repo, patterns, exceptions, dict(extra, **{"commit message": message}), archive, prefix),
-        check_dataset(repo, archive, left_out, prefix),
-        check_archive(repo, archive, prefix),
+        guarded("history", check_history, repo, tag),
+        guarded("credential", check_credential, repo, credentials, extra, archive),
+        guarded("patterns", check_patterns, repo, patterns, exceptions, dict(extra, **{"commit message": message}), archive, prefix),
+        guarded("dataset", check_dataset, repo, archive, left_out, prefix),
+        guarded("archive", check_archive, repo, archive, prefix),
         run_install_check(release, installer) if installer else CheckResult("install", "SKIP", "not run: no --installer given"),
         suites_result,
     ]
@@ -976,7 +983,7 @@ def assemble(source, commit, out, name, email, tag, title, repo_name, notes_text
 def report(release):
     top = {}
     for _, _, path in tree_entries(release.repo):
-        key = show(path).split("/", 1)[0] + ("/" if b"/" in path else "")
+        key = esc(show(path).split("/", 1)[0] + ("/" if b"/" in path else ""))
         top[key] = top.get(key, 0) + 1
     lines = ["tag: %s" % release.tag, "commit: %s" % release.commit, "repo: %s" % release.repo,
              "notes: %s" % release.notes, "archive: %s (%d bytes)" % (release.archive, os.path.getsize(str(release.archive))),
