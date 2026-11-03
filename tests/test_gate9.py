@@ -1809,6 +1809,49 @@ class ReviewThirtyOneTest(unittest.TestCase):
                     self.assertEqual(mask(text), text)
 
 
+class ReviewThirtyTwoTest(unittest.TestCase):
+    """The thirty-second review's findings: a typing call's reading ran past its own bracket, a brace inside a typed
+    password, Playwright's Python names, and code laid out over several lines."""
+
+    SECRET = "Tr0ub{4dor}-Zk9q"
+    TYPED = (
+        'text(await tools.mcp__playwright__browser_type({"element":"Password","ref":"e7","text":"Tr0ub{4dor}-Zk9q"}));',
+        'await page.get_by_label("Password").fill("Tr0ub{4dor}-Zk9q")',
+        'page.get_by_role("textbox", name="Password").fill("Tr0ub{4dor}-Zk9q")',
+        'page.get_by_placeholder("Enter your password").press_sequentially("Tr0ub{4dor}-Zk9q")',
+        'await page.getByRole("textbox", {\n  name: "Password"\n}).fill("Tr0ub{4dor}-Zk9q");',
+        'await page.getByLabel("Password").fill ("Tr0ub{4dor}-Zk9q");',
+        'await page\n  .getByLabel("Password")\n  .fill("Tr0ub{4dor}-Zk9q");',
+        'driver.find_element(By.ID, "password").send_keys("Tr0ub{4dor}-Zk9q")',
+        'await driver.findElement(By.name("password")).sendKeys("Tr0ub{4dor}-Zk9q");',
+        "await page.type('#password', 'Tr0ub{4dor}-Zk9q');",
+        "await $('#password').setValue('Tr0ub{4dor}-Zk9q');",
+    )
+    ORDINARY = (
+        'await tools.mcp__playwright__browser_type({element: "Search", text: "release notes"});\n'
+        'const validation = {label: "Password", text: "Use at least twelve characters."};',
+        'await page.get_by_label("Email").fill("me@example.com")',
+        'driver.find_element(By.ID, "search").send_keys("pelican plan")',
+        'await page.getByRole("button", {\n  name: "Password reset"\n}).click();',
+        'await page.getByLabel("Password").fill(password);',
+        'page.get_by_label("Password").fill(os.environ["PASSWORD"])',
+    )
+
+    def test_a_password_typed_by_code_in_more_shapes_is_masked(self):
+        for code in self.TYPED:
+            for text in (code, f"TOOL functions.exec: {code}", json.dumps({"code": code})):
+                with self.subTest(text=text[:70]):
+                    masked = mask(text)
+                    self.assertNotIn(self.SECRET, masked)
+                    self.assertNotIn("4dor", masked)
+
+    def test_ordinary_code_stays(self):
+        for code in self.ORDINARY:
+            for text in (code, json.dumps({"code": code})):
+                with self.subTest(text=text[:70]):
+                    self.assertEqual(mask(text), text)
+
+
 # Commands as an argument list, each flag's value its own item: (the list, the items masked).
 ARGV = (
     (["login", "--password", PASSWORD], {2}), (["--token", SUB], {1}), (["--api-key", SUB, "--verbose"], {1}),

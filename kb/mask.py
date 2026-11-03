@@ -2245,54 +2245,189 @@ def typed_secrets(name, args):
 
 
 # Code that types into a page, as a tool runs it: a typing tool called with its input written as an object, as Codex's
-# code mode calls one from JavaScript ('tools.mcp__playwright__browser_type({"element": "Password", ...})'), and
-# Playwright's own calls that fill a field found by its label, placeholder, role's name or selector. Quotes may come
-# escaped, as JSON holds code.
-_CODE_TYPING_CALL = re.compile(rf"(?i)(?<![\w$])(?:[\w$]+\.)*(?:mcp__[\w-]+__)?(?:{_TYPING_TOOL.pattern[4:]})\s*\(\s*(?=\{{)")
-_CODE_HINT = re.compile(r"(?i)(?:fill|type|press_?sequentially|input_text|set_value)\w*\s*\(")
+# code mode calls one from JavaScript ('tools.mcp__playwright__browser_type({"element": "Password", ...})'), and a call
+# that types a string into a field a locator found (Playwright's fill, type and press_sequentially in JavaScript or
+# Python, Selenium's send_keys, WebdriverIO's setValue, Puppeteer's page.type(selector, text)). Read token by token, as
+# the code is laid out, with its strings' quotes plain or escaped, as JSON holds code.
+_CODE_TYPING_CALL = re.compile(rf"(?i)(?<![\w$])(?:[\w$]+\.)*(?:mcp__[\w-]+__)?(?:{_TYPING_TOOL.pattern[4:]})\s*\(")
+_CODE_FILL_CALL = re.compile(r"\.\s*(?:fill|type|pressSequentially|press_sequentially|sendKeys|send_keys|setValue|set_value)"
+                             r"\s*\(")
+_CODE_HINT = re.compile(r"(?i)(?:fill|type|press_?sequentially|send_?keys|set_?value|input_text)\w*\s*\(")
+_CODE_NAME = re.compile(r"[A-Za-z_$][\w$]*")
 
 
-def _quoted_string(q, v):
-    """A string in code, its quote (plain or escaped) named `q` and what it holds `v`."""
-    return rf"(?P<{q}>\\*[\"'`])(?P<{v}>(?:(?!(?P={q}))(?:\\.|[^\\\n])){{0,500}}?)(?P={q})"
+def _code_string_end(text, at, stop):
+    """Where the string in code that opens at `at` ends, past its closing quote, or None: its quote plain, or escaped as
+    JSON holds code ('\\"'), when it ends only at its quote escaped as many times."""
+    j = at
+    while j < stop and text[j] == "\\":
+        j += 1
+    if j >= stop or text[j] not in "\"'`":
+        return None
+    depth, quote, k = j - at, text[j], j + 1
+    while k < stop:
+        if text[k] == "\\":
+            run = k
+            while run < stop and text[run] == "\\":
+                run += 1
+            if run < stop and text[run] == quote and run - k == depth:
+                return run + 1
+            k = run + 1  # an escape inside the string
+        elif text[k] == quote and depth == 0:
+            return k + 1
+        elif text[k] == "\n" and quote != "`":
+            return None
+        else:
+            k += 1
+    return None
 
 
-_CODE_PAIR = re.compile(rf"(?P<kq>\\*[\"'`]?)(?P<key>[A-Za-z_$][\w$]*)(?P=kq)\s*:\s*{_quoted_string('q', 'v')}")
-_FILLS = rf"(?:\s*\.\s*(?:first|last|nth|filter)\([^()\n]{{0,60}}\))*\s*\.\s*(?:fill|type|pressSequentially)\(\s*{_quoted_string('vq', 'value')}"
-_CODE_FIELDS = (
-    re.compile(rf"getBy(?:Label|Placeholder)\(\s*{_quoted_string('lq', 'label')}[^()\n]{{0,200}}?\){_FILLS}"),
-    re.compile(rf"getByRole\(\s*\\*[\"'`]\w+\\*[\"'`]\s*,\s*\{{[^{{}}\n]{{0,300}}?\bname\s*:\s*{_quoted_string('lq', 'label')}"
-               rf"[^{{}}\n]{{0,300}}\}}\s*\){_FILLS}"),
-    re.compile(rf"(?:locator|\$)\(\s*{_quoted_string('lq', 'label')}\s*\){_FILLS}"),
-    re.compile(rf"\.\s*(?:fill|type)\(\s*{_quoted_string('lq', 'label')}\s*,\s*{_quoted_string('vq', 'value')}"),
-)
+_CODE_TOKEN = re.compile(r"""(?<!\\)\\*["'`]|[{}\[\]():,=;.]|[A-Za-z_$][\w$]*""")
+
+
+def _code_tokens(text):
+    """The text read as code, once, as tokens (kind, start, end): "s" a string, "n" a name, or a bracket or mark itself.
+    A string that itself holds a typing call, as JSON holds code ('{"code": "await page.fill(...)"}'), is read as
+    the code it holds. A quote that opens no string on its line is passed over."""
+    tokens, spans = [], [(0, len(text))]
+    while spans:
+        i, stop = spans.pop()
+        while True:
+            m = _CODE_TOKEN.search(text, i, stop)
+            if not m:
+                break
+            c = m.group()
+            if c[-1] in "\"'`":
+                end = _code_string_end(text, m.start(), stop)
+                if end:
+                    inner = _code_text(text, ("s", m.start(), end))
+                    if _CODE_HINT.search(text, *inner):
+                        spans.append(inner)
+                    else:
+                        tokens.append(("s", m.start(), end))
+                    i = end
+                else:
+                    i = m.end()
+                continue
+            tokens.append(("n" if c[0].isalpha() or c[0] in "_$" else c, m.start(), m.end()))
+            i = m.end()
+    tokens.sort(key=lambda t: t[1])
+    return tokens
+
+
+def _code_text(text, token):
+    """What a string token holds, between its quotes, as (start, end)."""
+    _, start, end = token
+    j = start
+    while text[j] == "\\":
+        j += 1
+    return j + 1, end - (j - start) - 1
+
+
+def _call_arguments(tokens, k, limit=400):
+    """The tokens of a call's arguments after its "(" at tokens[k], to its own closing bracket, at most `limit`."""
+    out, depth = [], 0
+    for token in tokens[k + 1:k + 1 + limit]:
+        if token[0] in "([{":
+            depth += 1
+        elif token[0] in ")]}":
+            if depth == 0:
+                return out
+            depth -= 1
+        out.append(token)
+    return out
+
+
+def _typed_in_objects(text, tokens):
+    """The typed values a typing tool's input written in code masks: each object's ("key": "value", or key=value at
+    the call's own level) labels and typed values, read with typed_secrets' rule."""
+    objects, edits = [[[], []]], []
+    for k, token in enumerate(tokens):
+        if token[0] == "{":
+            objects.append([[], []])
+        elif token[0] == "}" and len(objects) > 1:
+            edits += _typed_values(text, *objects.pop())
+        elif token[0] == "s" and k >= 2 and tokens[k - 1][0] in ":=" and tokens[k - 2][0] in "sn":
+            name = tokens[k - 2]
+            key = text[slice(*_code_text(text, name))] if name[0] == "s" else text[name[1]:name[2]]
+            labels, typed = objects[-1]
+            if key in _LABEL_KEYS:
+                labels.append(text[slice(*_code_text(text, token))])
+            elif key in _TYPED_KEYS:
+                typed.append(_code_text(text, token))
+    while objects:
+        edits += _typed_values(text, *objects.pop())
+    return edits
+
+
+@functools.lru_cache(maxsize=4096)
+def _labels_ask_for_a_secret(labels):
+    """_asks_for_a_secret for a tuple of labels, kept: code that types into many fields repeats its labels."""
+    return _asks_for_a_secret(list(labels))
+
+
+def _typed_values(text, labels, typed):
+    secret = _labels_ask_for_a_secret(tuple(labels))
+    return [(a, b, "[masked]") for a, b in typed
+            if b > a and (secret or not labels and _password_shaped(INVISIBLE.sub("", text[a:b])))]
+
+
+def _receiver_strings(text, tokens, k, limit=200):
+    """The strings in the chain of calls before tokens[k], read back over names, dots and whole brackets, as
+    'page.getByRole("textbox", {name: "Password"})' or 'driver.find_element(By.ID, "password")' gives a field's labels."""
+    strings, depth, stop = [], 0, max(-1, k - limit)
+    k -= 1
+    while k > stop:
+        kind = tokens[k][0]
+        if depth:
+            depth += kind in ")]}"
+            depth -= kind in "([{"
+            if kind == "s":
+                strings.append(text[slice(*_code_text(text, tokens[k]))])
+        elif kind in ")]":
+            depth = 1
+        elif kind == "n":
+            if k > 0 and tokens[k - 1][0] == "n":
+                break  # "await page": the chain starts at its first name
+        elif kind != ".":
+            break
+        k -= 1
+    return strings
 
 
 def _typed_code_edits(text):
-    """Each password code types into a page, as an edit that masks it: what typed_secrets masks of a typing tool's
-    input written in code, each flat object of it read with its labels, and what Playwright fills into a field whose
-    label, placeholder, role's name or selector asks for a secret. A variable typed in stays."""
+    """Each password code types into a page, as an edit that masks it: a typing tool's input written in code, read with
+    typed_secrets' rule, and a string typed into a field whose locator's strings (its label, placeholder, role's name or
+    selector) ask for a secret. A value typed from a variable stays."""
     if not _CODE_HINT.search(text):
         return []
+    tokens = _code_tokens(text)
+    starts = [t[1] for t in tokens]
     edits = []
-    calls = [m.end() for m in _CODE_TYPING_CALL.finditer(text)]
-    for k, start in enumerate(calls):
-        stop = min(calls[k + 1] if k + 1 < len(calls) else len(text), start + 4000)
-        for obj in _FLAT_OBJECT.finditer(text, start, stop):
-            labels, typed = [], []
-            for pair in _CODE_PAIR.finditer(obj.group()):
-                if pair.group("key") in _LABEL_KEYS:
-                    labels.append(pair.group("v"))
-                elif pair.group("key") in _TYPED_KEYS and pair.group("v"):
-                    typed.append((obj.start() + pair.start("v"), obj.start() + pair.end("v"), pair.group("v")))
-            secret = _asks_for_a_secret(labels)
-            edits += [(a, b, "[masked]") for a, b, value in typed
-                      if secret or not labels and _password_shaped(INVISIBLE.sub("", value))]
-    for pattern in _CODE_FIELDS:
-        for m in pattern.finditer(text):
-            value = m.group("value")
-            if value and not re.fullmatch(r"\$\{[^}]*\}", value) and _asks_for_a_secret([m.group("label")]):
-                edits.append((m.start("value"), m.end("value"), "[masked]"))
+
+    def opening(call):  # the index of the token "(" that ends the call's match
+        k = bisect.bisect_left(starts, call.end() - 1)
+        return k if k < len(tokens) and tokens[k][0] == "(" and tokens[k][1] == call.end() - 1 else None
+
+    for call in _CODE_TYPING_CALL.finditer(text):
+        k = opening(call)
+        if k is not None:
+            edits += _typed_in_objects(text, _call_arguments(tokens, k))
+    for call in _CODE_FILL_CALL.finditer(text):
+        k = opening(call)
+        if k is None:
+            continue
+        arguments = _call_arguments(tokens, k, 20)
+        if not arguments or arguments[0][0] != "s":
+            continue
+        dot = bisect.bisect_left(starts, call.start())
+        labels, value = _receiver_strings(text, tokens, dot), arguments[0]
+        if len(arguments) > 2 and arguments[1][0] == "," and arguments[2][0] == "s":  # page.fill(selector, text)
+            labels, value = labels + [text[slice(*_code_text(text, arguments[0]))]], arguments[2]
+        a, b = _code_text(text, value)
+        if b > a and "${" not in text[a:b] and (_labels_ask_for_a_secret(tuple(labels)) if labels
+                                                   else _password_shaped(INVISIBLE.sub("", text[a:b]))):
+            edits.append((a, b, "[masked]"))
     merged = []
     for start, end, _ in sorted(edits):
         if merged and start <= merged[-1][1]:
