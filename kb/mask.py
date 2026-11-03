@@ -2071,7 +2071,10 @@ def _code_string_end(text, at, stop):
     return None
 
 
-_CODE_TOKEN = re.compile(r"""(?<![\w$\\])[rRbBuUfF]{1,2}\\*["'`]|(?<!\\)\\*["'`]|#|//|/\*[\s\S]*?\*/"""
+_CODE_TOKEN = re.compile(r"""(?<![\w$\\])[rRbBuUfF]{1,2}\\*["'`]|(?<!\\)\\*["'`]"""
+                         r"""|(?:(?<=[(,=:\[!&|?{};])|(?<=[(,=:\[!&|?{};] )|(?<=[(,=:\[!&|?{};]  ))"""
+                         r"""/(?![/*])(?:\\+[^\n]|\[(?:\\+[^\n]|[^\]\\\n])*\]|[^/\\\n\[])+/[a-z]*"""
+                         r"""|#|//|/\*[\s\S]*?\*/"""
                          r"""|(?<!\\)\\+[nrt]|[{}\[\]():,=;.]|[A-Za-z_$][\w$]*""")
 # Python's prefix and the string it opens, after a line break or tab escaped as JSON holds code ("\\tr\\"...\\"").
 _PREFIXED_QUOTE = re.compile(r"""[rRbBuUfF]{1,2}\\*["'`]""")
@@ -2145,6 +2148,9 @@ def _code_tokens(text):
                 continue
             if c.startswith("/*"):
                 comments.append((at, m.end()))
+                i = m.end()
+                continue
+            if c[0] == "/":  # a regex literal, as split(/#/) holds one: no comment starts inside it
                 i = m.end()
                 continue
             if c[0] == "\\" and c[-1] in "nrt":
@@ -2250,25 +2256,24 @@ def _receiver_strings(text, tokens, k, comments=(), limit=200):
     'page.getByRole("textbox", {name: "Password"})' or 'driver.find_element(By.ID, "password")' gives a field's labels.
     A chain is joined by dots: it reads no further back than a name with no dot before it, or a bracket that follows
     no name or bracket, so another statement's strings are never this field's. An object's key ({"name": ...}) names
-    an option, not the field."""
-    strings, names, depth, stop, close, close_k = [], [], 0, max(-1, k - limit), None, None
-    comment_starts = [a for a, _ in comments]
-
-    def in_comment(at):
-        j = bisect.bisect_right(comment_starts, at) - 1
-        return j >= 0 and comments[j][0] <= at < comments[j][1]
+    an option, not the field. Only the nearest call with strings names the field: a call before it is a container."""
+    strings, names, depth, stop, close, close_k, named = [], [], 0, max(-1, k - limit), None, None, False
+    in_comment = comments.inside if comments else (lambda at: False)
     k -= 1
     while k > stop:
         kind = tokens[k][0]
         if depth:
             depth += kind in ")]}"
             depth -= kind in "([{"
-            if kind == "s" and not (k + 1 < len(tokens) and tokens[k + 1][0] == ":"):
+            if kind == "s" and not named and not (k + 1 < len(tokens) and tokens[k + 1][0] == ":"):
                 strings.append(text[slice(*_code_text(text, tokens[k]))])
             if not depth:  # a regex literal in the brackets ("getByLabel(/Password/i)", {name: /Password/i}) too
-                for regex in _REGEX_IN_BRACKETS.finditer(text, tokens[k][2], close):
+                for regex in [] if named else _REGEX_IN_BRACKETS.finditer(text, tokens[k][2], close):
                     if not in_comment(regex.start(1)):  # a regex in a comment names no field
                         strings.append(re.sub(r"\\.|[\^$.*+?()\[\]{}|]", " ", regex.group(1)).strip())
+                # the nearest call with strings names the field; one before it is a container
+                # (page.locator("#reset-form").getByLabel("New password")), whose words are not the field's
+                named = named or bool(strings)
                 if k == 0 or tokens[k - 1][0] not in ("n", ")", "]"):
                     # a bracket that calls or indexes nothing starts the chain: a receiver in brackets,
                     # (await page.$("#password")), gives its own names
@@ -2284,6 +2289,17 @@ def _receiver_strings(text, tokens, k, comments=(), limit=200):
             break
         k -= 1
     return strings, names
+
+
+class _Spans:
+    """Sorted, separate spans of the text, such as its comments, indexed once to say whether a position is in one."""
+
+    def __init__(self, spans):
+        self.spans, self.starts = spans, [a for a, _ in spans]
+
+    def inside(self, at):
+        j = bisect.bisect_right(self.starts, at) - 1
+        return j >= 0 and self.spans[j][0] <= at < self.spans[j][1]
 
 
 class _Stretches:
@@ -2366,6 +2382,7 @@ def _typed_code_edits(text):
     if not _CODE_HINT.search(text):
         return []
     tokens, loose, stretches, comments = _code_tokens(text)
+    comments = _Spans(comments)
     stretches = _Stretches(text, stretches)
     starts = [t[1] for t in tokens]
     edits = []
@@ -2401,7 +2418,8 @@ def _typed_code_edits(text):
             or any(kw in _CODE_VALUE_KEYWORDS and any(t[0] == "s" for t in ts) for kw, ts in args)))
         if selector:
             own.append(positional[0])
-        labels += [text[slice(*_code_text(text, t))] for ts in own for t in ts if t[0] == "s"]
+        if own:  # the call's own field: the chain before it holds the page and its containers
+            labels = [text[slice(*_code_text(text, t))] for ts in own for t in ts if t[0] == "s"]
         # the value: a value= keyword's, or the first argument after the field that holds a string (send_keys may
         # take a key first, Keys.HOME)
         typed = [ts for kw, ts in args if kw in _CODE_VALUE_KEYWORDS] or [
