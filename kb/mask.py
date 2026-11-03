@@ -434,20 +434,22 @@ _AUTH_FIELD = re.compile(rf"(?i)((?:(?<![A-Za-z0-9_.-])|{_AFTER_ESCAPE})auth{_QU
 # starts an escape do ("dop_v1_...,active", "**dop_v1_...**", '"dop_v1_...\\"' in JSON in JSON), and lets
 # Azure's client secret, whose letters take a full stop, stand inside brackets, braces and Markdown's "**" too.
 _TOKEN_EDGES = (
-    (r"""(?=[\x60'"\s;]|\\[nr]|$)""", r"""(?=[\x60'"\s;,.:)\]}>|&!?<*\\_~]|$)"""),
-    (r"""(?:^|[\\'"\x60\s>=:(,)])""", r"""(?:^|[\\'"\x60\s>=:(,)\[{*_~])"""),
-    (r"""(?=$|[\\'"\x60\s<),])""", r"""(?=$|[\\'"\x60\s<),\]};|&*~_])"""),
+    (r"""(?=[\x60'"\s;]|\\[nr]|$)""", r"""(?![A-Za-z0-9])"""),
+    (r"""(?:^|[\\'"\x60\s>=:(,)])""", r"""(?:^|[^A-Za-z0-9]|(?<=%[0-9A-Fa-f]{2}))"""),
+    (r"""(?=$|[\\'"\x60\s<),])""", r"""(?=$|[^A-Za-z0-9])"""),
     (r"""(?=[\x60'"\s;]|\\[nr]|$|\b)""", r"""(?![A-Za-z0-9])"""),
     (r"""(?=[^\w-]|\Z)""", r"""(?![A-Za-z0-9-])"""),
 )
 
 
 def _kb_edges(source):
-    """A gitleaks rule's source with the token's edges kb reads (_TOKEN_EDGES), and a token that starts at a word
-    boundary allowed to start after "_" too, as Markdown's emphasis writes one ("_dapi..._")."""
+    """A gitleaks rule's source with the token's edges kb reads (_TOKEN_EDGES): a token that starts at a word boundary
+    or after no letter or digit starts after any mark ("_dapi..._") and right after an escape or a percent-encoded
+    byte ("%22dapi...%22"), and one that ends at a word boundary ends before any mark."""
     for theirs, ours in _TOKEN_EDGES:
         source = source.replace(theirs, ours)
-    source = re.sub(r"^((?:\(\?i\))?)\\b", r"\1(?<![A-Za-z0-9])", source)
+    source = re.sub(r"^((?:\(\?i\))?)(?:\\b|\(\?<!\[A-Za-z0-9\]\))",
+                    lambda m: m.group(1) + rf"(?:(?<![A-Za-z0-9])|{_AFTER_ESCAPE})", source)
     return re.sub(r"\\b(\)*)$", r"(?![A-Za-z0-9])\1", source)  # and end before "_" too ("_AKIA..._")
 
 
