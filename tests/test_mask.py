@@ -675,6 +675,43 @@ class OtherKeyFormatTest(unittest.TestCase):
                 self.assertEqual(mask(text), text)
 
 
+class ReviewTwoTest(unittest.TestCase):
+    """#34's second review: a short fragment of a key's body after a line of words in its rest, and the cost of
+    reading invisible characters in text escaped as JSON many times."""
+
+    def test_a_short_fragment_after_a_line_of_words_stays_masked(self):
+        import base64
+        import random
+        import textwrap
+        r = random.Random(71)
+        lines = textwrap.wrap(base64.b64encode(made_up_private_key(r)).decode(), 64)
+        last = lines[-1]
+        for fragment in (last[-12:], last[-8:], last[-4:], "wbZksUpjdgM=", "Zk9=", "aB3c"):
+            for words in ("next steps", "see the runbook"):
+                text = f"[masked]\n{lines[0]}\n{words}\n{fragment}\n"
+                with self.subTest(fragment=fragment, words=words):
+                    masked = mask(text)
+                    self.assertNotIn(fragment, masked)
+                    self.assertNotIn(lines[0], masked)
+        # lines of words after the last fragment stay, as before
+        self.assertEqual(mask(f"[masked]\n{lines[0]}\nnext steps\nsee the runbook\n"),
+                         "[masked]\nnext steps\nsee the runbook\n")
+
+    def test_text_escaped_as_json_many_times_costs_time_in_proportion(self):
+        import json
+        import time
+        took = {}
+        for n in (10, 12):
+            text = {"path": r"C:\tmp\file", "note": "\u200b"}
+            for _ in range(n):
+                text = json.dumps(text)
+            started = time.process_time()
+            self.assertEqual(mask(text), text)
+            took[n] = time.process_time() - started
+        # each level doubles the backslashes: 12 levels are four times the text of 10
+        self.assertLess(took[12], 8 * max(took[10], 0.05), took)
+
+
 class HeadlessKeyTest(unittest.TestCase):
     """A key's body without its header, as an older kb's row-by-row remask leaves the chunk after the header's."""
     LINE = "MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7"
