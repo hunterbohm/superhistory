@@ -520,6 +520,99 @@ class ReviewThreeTest(unittest.TestCase):
         self.assertLess(took("\\" * 16000 + "u001b[31m"), 1.0)
 
 
+class ReviewFourTest(unittest.TestCase):
+    """#37's fourth review: a view only says where to mask, so the text kept is the text as written, at any depth; the
+    fail-closed rule in unescaped views; aws by its path; and a backspace beside base64's punctuation."""
+
+    def test_a_quoted_program_name_keeps_its_string(self):
+        for cmd in (f'"keytool" -file <(cat cert.pem) -storepass {PASSWORD}',
+                    f'"/opt/jdk/bin/keytool" -file <(cat c) -storepass {PASSWORD}',
+                    f"'mongosh' -f <(cat init.js) -u admin -p {PASSWORD}"):
+            value = {"cmd": cmd, "cwd": "/srv/certs", "timeout": 30}
+            for depth in (1, 2, 3):
+                text = json.dumps(value)
+                for _ in range(depth - 1):
+                    text = json.dumps({"output": text})
+                with self.subTest(cmd=cmd[:12], depth=depth):
+                    masked = mask(text)
+                    self.assertNotIn(PASSWORD, masked)
+                    read = json.loads(masked)
+                    for _ in range(depth - 1):
+                        read = json.loads(read["output"])
+                    self.assertEqual((read["cwd"], read["timeout"]), ("/srv/certs", 30))
+                    self.assertTrue(read["cmd"].startswith(cmd.split(" -file")[0].split(" -f ")[0]), read["cmd"])
+
+    def test_a_shells_script_keeps_its_text_at_every_depth(self):
+        script = f"keytool -storepass {PASSWORD} -v"
+        items = ["bash", "-c", script]
+        for depth in (1, 2, 3):
+            text = json.dumps(items)
+            for _ in range(depth - 1):
+                text = json.dumps(text)
+            with self.subTest(depth=depth):
+                masked = mask(text)
+                self.assertNotIn(PASSWORD, masked)
+                read = masked
+                for _ in range(depth):
+                    read = json.loads(read)
+                self.assertEqual(read, ["bash", "-c", "keytool -storepass [masked] -v"])
+
+    def test_a_view_writes_nothing_back(self):
+        continued = "printf 'first" + "\\" + "\n" + "second'; keytool -storepass " + PASSWORD + " -v"
+        coloured = "keytool \x1b[1m-v\x1b[0m -storepass " + PASSWORD + " -alias 'team cert'"
+        for script in (continued, coloured):
+            for text in (json.dumps(["bash", "-c", script]), repr(["bash", "-c", script]),
+                         json.dumps({"cmd": script, "cwd": "/srv"})):
+                with self.subTest(script=script[:10], text=text[:8]):
+                    masked = mask(text)
+                    self.assertNotIn(PASSWORD, masked)
+                    self.assertEqual(masked.replace("[masked]", PASSWORD), text)
+
+    def test_the_fail_closed_rule_in_unescaped_views(self):
+        for line in (f'"keytool" -file <(cat cert.pem) -storepass {PASSWORD}',
+                     f"keytool -alias $'team\\'s cert' -storepass {PASSWORD}",
+                     f"mongosh -f <(cat init.js) -u admin -p {PASSWORD}"):
+            for depth in (2, 3):
+                text = line
+                for _ in range(depth):
+                    text = json.dumps(text)
+                with self.subTest(line=line[:10], depth=depth):
+                    masked = mask(text)
+                    self.assertNotIn(PASSWORD, masked)
+                    read = masked
+                    for _ in range(depth):
+                        read = json.loads(read)
+                    self.assertTrue(read.endswith("[masked]"), read)
+        for line in ("mongosh --eval 'print(\"ssh -p 2222 host\")'", "keytool -list -storepass $STOREPASS"):
+            text = json.dumps(json.dumps(line))
+            with self.subTest(line=line[:10]):
+                self.assertEqual(mask(text), text)
+
+    def test_aws_by_its_path_or_windows_file(self):
+        for program in ("/usr/local/bin/aws", "aws.exe", "C:\\Program Files\\Amazon\\AWSCLIV2\\aws.exe", "/opt/aws/bin/aws"):
+            items = [program, "configure", "set", "aws_secret_access_key", PASSWORD]
+            with self.subTest(program=program):
+                self.assertEqual(mask_all(items)[-1], "[masked]")
+                for text in (json.dumps(items), repr(items), " ".join(f'"{v}"' if " " in v else v for v in items)):
+                    self.assertNotIn(PASSWORD, mask(text))
+        for items in (["/usr/local/bin/awsume", "configure", "set", "aws_secret_access_key", "x" * 12],
+                      ["/usr/local/bin/aws", "configure", "set", "region", "us-east-1"]):
+            with self.subTest(items=items[0]):
+                self.assertEqual(mask_all(items)[-1], items[-1])
+
+    def test_a_backspace_beside_base64_punctuation(self):
+        for token in ("whsec_Ab3dE6gH9jK2mN5p/Q8sT1vW4yZ7bC0eF3hJ6", "whsec_Ab3dE6gH9jK2mN5p+Q8sT1vW4yZ7bC0eF3hJ6"):
+            for at in [i for i, c in enumerate(token) if c in "/+="] + [i + 1 for i, c in enumerate(token) if c in "/+="]:
+                split = token[:at] + "\b" + token[at:]
+                for text in (json.dumps(split), json.dumps(json.dumps(split))):
+                    with self.subTest(token=token[22], at=at, twice=text.startswith('"\\')):
+                        self.assertNotIn(token[-8:], mask(text))
+        for text in (r"re.compile(r'\btoken\b')", json.dumps(r"grep -P '\b/api\b' routes.txt"),
+                     json.dumps("a \\b+ b and \\b= c"), r"x = '/\b' + '\b='"):
+            with self.subTest(text=text):
+                self.assertEqual(mask(text), text)
+
+
 class RevisionTest(unittest.TestCase):
     def test_stored_rows_are_masked_again(self):
         self.assertEqual(masking.REVISION, 11)
