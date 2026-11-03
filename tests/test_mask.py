@@ -1319,12 +1319,12 @@ class RepeatTest(unittest.TestCase):
     def test_no_pattern_matches_a_placeholder_alone(self):
         from kb import mask as mask_module
         patterns = (mask_module.SECRET_PATTERNS + mask_module.PREFIXED_SECRETS
-                    + [mask_module.KEYED_SECRET, mask_module.ENV_KEY_SECRET, mask_module._GLUED_RUN,
-                       mask_module._KEY_REST])
+                    + [mask_module.KEYED_SECRET, mask_module.ENV_KEY_SECRET, mask_module._GLUED_RUN])
         for text in ("[masked]", "[masked] [masked]\n[masked]\n\n[masked]", "a [masked], b [masked].", '"[masked]"'):
             with self.subTest(text=text):
                 for pattern in patterns:
                     self.assertIsNone(pattern.search(text), pattern.pattern[:60])
+                self.assertEqual(mask_module._key_rest_edits(text), [])
                 self.assertEqual(mask_module._mask_once(text), text)
 
     def test_masked_text_masks_to_itself(self):

@@ -528,7 +528,7 @@ def _gitleaks_edits(text):
 # Which mask() a stored row was masked with. A row of another version, or of none, is masked again when read and by
 # the next ingest. The patterns change it by themselves; bump REVISION when the code that applies them changes what
 # it masks.
-REVISION = 14
+REVISION = 15
 VERSION = hashlib.sha256(repr((REVISION, [p.pattern for p in SECRET_PATTERNS + PREFIXED_SECRETS], KEYED_SECRET.pattern,
                                 ENV_KEY_SECRET.pattern, JSON_SECRET.pattern, FLAG_SECRET.pattern, AUTH_SECRET.pattern,
                                 COMMAND_FLAGS, PASSWORD_NAME.pattern, sorted(PLACEHOLDERS), REFERENCE.pattern,
@@ -1139,20 +1139,36 @@ _GLUED_RUN = re.compile(r"\[masked\](?:[A-Za-z0-9_.-]+[ \t]*(?:[:=]|=>)[ \t]*[\"
 # How every private key's body starts: DER, a SEQUENCE in long form ("MII...", "MIG...") or in short form before an
 # INTEGER or a SEQUENCE ("MHcC...", "MC4C..."), or OpenSSH's "openssh-key-v1" ("b3Bl...").
 _KEY_BODY_START = r"(?:MI[E-P][A-Za-z0-9+/]|M[A-H][A-Za-z0-9+/][Cw]|b3Bl)"
-# The rest of a key after an older kb's placeholder: base64 glued to it and running to a line break, as main's key
-# pattern leaves when it took the line break too; or a key's body from its first line, cut anywhere, after what can
-# stand between a line's start and its text: line breaks plain or escaped at any depth, quotes, "#", ">", "+", <br> and
-# spaces. main's pattern stops at the first character that is not base64 or a space, so in escaped text, in code with
-# a string a line, behind comment or quote marks and where a chunk ended between a header and its line break, it
-# leaves exactly that. The body's first line is base64 to its end, or to a quote, a backslash or a cut's "…", so a
-# word that only starts like one, followed by more words, stays. Masked through its footer, or through the end of its
-# paragraph.
+# The rest of a key after an older kb's placeholder, which fails closed: what an older mask left of a key, whole or in
+# part, stays masked, and only base64 that decodes whole as public material is shown (_public_material). It starts
+# with base64 glued to the placeholder and running to a line break, as main's key pattern leaves when it took the line
+# break too; or with a line of base64 after what can stand between a line's start and its text (line breaks plain or
+# escaped at any depth, quotes, "#", ">", "+", <br>, spaces, or a character a reader does not see): a key's body from
+# its first line, or 36 characters or more of both cases and a digit, "+" or "/", as either part of a body split or
+# re-wrapped holds. main's pattern stops at the first character that is not base64 or a space, so in escaped text, in
+# code with a string a line, behind comment or quote marks and where a chunk ended between a header and its line break,
+# it leaves exactly that. The line is base64 to its end, or to a quote, a backslash or a cut's "…", so a word that only
+# starts like one, followed by more words, stays. It runs through its footer, or to the end of its paragraph, but never
+# into a line of ordinary words (_WORDS_LINE) or a JSON object's next field (_NEXT_FIELD).
 # Each alternative takes a character no other does: quotes are _QUOTE's alone, as a run of them read two ways each
 # took time exponential in its length.
 _BEFORE_BODY = rf"(?:\\{{1,7}}[nrt]|{_QUOTE}|<br\s*/?>|[\s#>+,;|*\]])"
-_KEY_REST = re.compile(rf"\[masked\]((?:[A-Za-z0-9+/=]+[ \t\r]*(?=\n|\\(?:r\\)?n)"
-                       rf"|(?={_BEFORE_BODY}{{0,64}}{_KEY_BODY_START}[A-Za-z0-9+/=]{{36,}}[ \t\r]*(?:\n|[\\\"'<…]|\Z)))"
-                       rf"(?:(?!{_KEY_END}){_IN_PARAGRAPH})*(?:{_KEY_END})?)")
+_REST_START = re.compile(rf"[A-Za-z0-9+/=]+[ \t\r]*(?=\n|\\(?:r\\)?n)|(?:{_BEFORE_BODY}|{INVISIBLE.pattern}){{0,64}}"
+                         rf"(?:{_KEY_BODY_START}|(?=[A-Za-z0-9+/=]*[A-Z])(?=[A-Za-z0-9+/=]*[a-z])"
+                         rf"(?=[A-Za-z0-9+/=]*[0-9+/]))[A-Za-z0-9+/=]{{36,}}[ \t\r]*(?:\n|[\\\"'<…]|\Z)")
+# A line break, plain or escaped, before a line of words, as "next steps", "tls.crt: none" or "- deploy it" are: past
+# a list's or a quote's marks, a word, then a space and the next word's letter. No line of base64 holds a space, and
+# one in JSON that runs on into the next field ('...8Vk=", "note": "next steps"') starts with base64, not a word. A
+# key's footer, which holds spaces, is no such line.
+_WORDS_LINE = (r"(?:\r?\n|\\+(?:r\\+)?n)(?![ \t\"'#>*]*-----)[ \t\"'#>*-]*"
+               r"[A-Za-z][\w.'-]*[,.;:!?)]*[ \t]+[(\"']?[A-Za-z]")
+# Where a JSON string that holds a key's rest ends before the object's next field's name or its end, its quotes
+# escaped at any depth: the field after it ('", "note": "next steps"}') is no part of the key. A list of strings, one
+# line of the body each, goes on, as no field's name follows its comma.
+_NEXT_FIELD = r"\\*\"[ \t]*(?:\}|,[ \t]*\\*\"[\w.-]+\\*\"[ \t]*:)"
+_REST = re.compile(rf"(?:(?!{_KEY_END})(?!{_WORDS_LINE})(?!{_NEXT_FIELD}){_IN_PARAGRAPH})*(?:{_KEY_END})?")
+_KEY_END_TEXT = re.compile(_KEY_END)
+_ESCAPE = re.compile(r"\\+(?:[nrt]|u[0-9A-Fa-f]{4})")
 
 
 def _headless_key_edits(text):
@@ -1170,38 +1186,73 @@ def _headless_key_edits(text):
 
 
 _PLACEHOLDER = re.compile(r"\[masked\]")
-_GLUED_REST = re.compile(r"[A-Za-z0-9+/=]+[ \t\r]*(?=\n|\\(?:r\\)?n)")
-_BODY_AFTER = re.compile(rf"(?:{_BEFORE_BODY}){{0,64}}({_KEY_BODY_START}[A-Za-z0-9+/]{{20}})")
-# The algorithms an encrypted key's DER names first: PKCS#5's (PBES2, PBES1) and PKCS#12's.
-_ENCRYPTED_KEY_OIDS = (bytes.fromhex("2a864886f70d0105"), bytes.fromhex("2a864886f70d010c"))
+_OPENSSH_PUBLIC = frozenset((b"ssh-rsa", b"ssh-dss", b"ssh-ed25519", b"ssh-ed448", b"ecdsa-sha2-nistp256",
+                             b"ecdsa-sha2-nistp384", b"ecdsa-sha2-nistp521", b"sk-ssh-ed25519@openssh.com",
+                             b"sk-ecdsa-sha2-nistp256@openssh.com"))
 
 
-def _private_key_body(start):
-    """Whether 24 characters of base64 from where a key's body starts decode as a private key's: OpenSSH's, or DER
-    whose first element is a version (an INTEGER) or an encrypted key's algorithm. A certificate, a public key and a
-    certificate request start as a key's body does ("MII...") and are none."""
-    if start.startswith("b3Bl"):
+def _element(der, at, end):
+    """(tag, where its content starts, where it ends) of the DER element at `at`, which must end by `end`, or None."""
+    if at + 2 > end:
+        return None
+    tag, size, at = der[at], der[at + 1], at + 2
+    if size & 0x80:
+        width = size & 0x7f
+        if not 0 < width < 4 or at + width > end:
+            return None
+        size, at = int.from_bytes(der[at:at + width], "big"), at + width
+    return (tag, at, at + size) if at + size <= end else None
+
+
+def _elements(der, start, end):
+    """The DER elements that fill der[start:end] exactly, or None."""
+    out = []
+    while start < end:
+        element = _element(der, start, end)
+        if element is None:
+            return None
+        out.append(element)
+        start = element[2]
+    return out
+
+
+def _public_material(data):
+    """Whether bytes decoded from base64 are, whole, public material: an X.509 certificate or a certificate request
+    (what is signed, how, and the signature, the first starting with a version or a serial number), a public key
+    (SubjectPublicKeyInfo: an algorithm and the key), or an OpenSSH public key (strings, each after its length, the
+    first naming a public key's type). No private key's DER has either shape, and one cut short has none."""
+    at, strings = 0, []
+    while at + 4 <= len(data) and len(strings) < 16:
+        size = int.from_bytes(data[at:at + 4], "big")
+        strings.append(data[at + 4:at + 4 + size])
+        at += 4 + size
+    if at == len(data) and strings and strings[0] in _OPENSSH_PUBLIC:
         return True
-    der = _decoded(start, 0, 24) or b"\0\0"
-    at = 2 + (der[1] & 0x7f if der[1] & 0x80 else 0)
-    if der[0] != 0x30 or der[at:at + 1] != b"\x30":
-        return der[0] == 0x30 and der[at:at + 1] == b"\x02"
-    inner = at + 2 + (der[at + 1] & 0x7f if at + 1 < len(der) and der[at + 1] & 0x80 else 0)
-    return der[inner:inner + 1] == b"\x06" and der[inner + 2:inner + 10] in _ENCRYPTED_KEY_OIDS
+    top = _element(data, 0, len(data))
+    parts = _elements(data, top[1], top[2]) if top and top[0] == 0x30 and top[2] == len(data) else None
+    if not parts:
+        return False
+    first = [(_element(data, p[1], p[2]) or (None,))[0] for p in parts]
+    tags = [p[0] for p in parts]
+    if tags == [0x30, 0x30, 0x03]:
+        return first[0] in (0xa0, 0x02) and first[1] == 0x06
+    return tags == [0x30, 0x03] and first[0] == 0x06
 
 
 def _key_rest_edits(text):
-    """The rest of a key after an older kb's placeholder, as _KEY_REST finds it, as an edit that removes it: base64
-    glued to the placeholder, or a key's body on the lines after it, which must decode as a private key's."""
+    """The rest of a key after an older kb's placeholder (_REST_START, _REST) as an edit that removes it, unless its
+    base64 decodes whole as public material. Each placeholder outside the rest before it is read once, and each rest
+    runs once to its end, so a paragraph of many costs time in proportion."""
     edits, end = [], 0
     for at in _PLACEHOLDER.finditer(text):
-        if at.start() < end:
+        if at.start() < end or not _REST_START.match(text, at.end()):
             continue
-        body = None if _GLUED_REST.match(text, at.end()) else _BODY_AFTER.match(text, at.end())
-        m = None if body and not _private_key_body(body.group(1)) else _KEY_REST.match(text, at.start())
-        if m:
-            edits.append((m.start(1), m.end(), ""))
-            end = m.end()
+        end = _REST.match(text, at.end()).end()
+        rest = text[at.end():end]
+        data = None if _KEY_END_TEXT.search(rest) else _decoded(
+            re.sub(r"[^A-Za-z0-9+/=]", "", _ESCAPE.sub("", INVISIBLE.sub("", rest))), 0, None)
+        if not (data and _public_material(data)):
+            edits.append((at.end(), end, ""))
     return edits
 
 
