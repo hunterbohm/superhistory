@@ -864,12 +864,46 @@ class ExceptionsTest(SourceCase):
                                  [("a.txt", " boxroom", "a room"), ("a.txt", "Acmecorp", "a firm")])
         self.assertTrue(found.ok, found.findings)
 
-    def test_an_overlap_search_that_stops_at_its_limit_fails_and_says_so(self):
+    def test_a_match_past_an_exception_among_many_overlapping_ones_fails(self):
+        # 65 overlapping runs of 65 digits; the exception covers all but the last digit, and occurs once
         self.with_patterns("[0-9]{65}")
-        found = self.patterns_of({"a.txt": "7" * 129 + "\n"}, [("a.txt", "7" * 128, "all but the last digit")])
+        digits = "8" + "7" * 128
+        found = self.patterns_of({"a.txt": digits + "\n"}, [("a.txt", digits[:-1], "all but the last digit")])
+        self.assertFalse(found.ok)
+        self.assertEqual([f.where for f in found.findings], ["a.txt:1"])
+        shutil.rmtree(str(self.out))
+        whole = self.patterns_of({"a.txt": digits + "\n"}, [("a.txt", digits, "every digit")])
+        self.assertTrue(whole.ok, whole.findings)
+
+    def test_an_overlap_search_that_stops_at_its_limit_fails_and_says_so(self):
+        self.with_patterns("[0-9]{6}")
+        with mock.patch.object(rs, "OVERLAP_CHECKS", 3):
+            found = self.patterns_of({"a.txt": "7" * 12 + "\n"}, [("a.txt", "7" * 12, "every digit")])
         self.assertFalse(found.ok)
         self.assertEqual([f.where for f in found.findings], ["a.txt:1"])
         self.assertIn("stopped", found.findings[0].text)
+
+    def test_a_match_that_runs_into_a_later_match_is_found(self):
+        # grep -o reports "ab" and then "cd"; "bcd" starts inside the first and runs into the second
+        self.with_patterns("ab|bcd|cd")
+        found = self.patterns_of({"a.txt": "xabcd\n"}, [("a.txt", "ab", "one"), ("a.txt", "cd", "two")])
+        self.assertFalse(found.ok)
+        self.assertEqual([f.where for f in found.findings], ["a.txt:1"])
+        shutil.rmtree(str(self.out))
+        whole = self.patterns_of({"a.txt": "xabcd\n"}, [("a.txt", "abcd", "all three")])
+        self.assertTrue(whole.ok, whole.findings)
+
+    def test_a_match_read_with_the_byte_before_it_as_context(self):
+        # "bc" matches only where no word boundary stands before it, as inside "abc"
+        self.with_patterns("ab|\\Bbc")
+        found = self.patterns_of({"a.txt": "abc\n"}, [("a.txt", "ab", "the first match only")])
+        self.assertFalse(found.ok)
+        self.assertEqual([f.where for f in found.findings], ["a.txt:1"])
+
+    def test_a_pattern_with_a_backreference_stops_the_run(self):
+        self.with_patterns("(ab)\\1")
+        with self.assertRaisesRegex(rs.ReleaseError, "backreference"):
+            self.patterns_of({"a.txt": "abab\n"}, [])
 
     def test_blanking_a_match_finds_no_match_the_text_does_not_hold(self):
         self.with_patterns("quux|[^q]uuxzz")
