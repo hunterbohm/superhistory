@@ -507,7 +507,7 @@ def _gitleaks_edits(text):
 # Which mask() a stored row was masked with. A row of another version, or of none, is masked again when read and by
 # the next ingest. The patterns change it by themselves; bump REVISION when the code that applies them changes what
 # it masks.
-REVISION = 13
+REVISION = 14
 VERSION = hashlib.sha256(repr((REVISION, [p.pattern for p in SECRET_PATTERNS + PREFIXED_SECRETS], KEYED_SECRET.pattern,
                                 ENV_KEY_SECRET.pattern, JSON_SECRET.pattern, FLAG_SECRET.pattern, AUTH_SECRET.pattern,
                                 COMMAND_FLAGS, PASSWORD_NAME.pattern, sorted(PLACEHOLDERS), REFERENCE.pattern,
@@ -1148,9 +1148,40 @@ def _headless_key_edits(text):
     return [(start, end, "[masked]") for start, end in spans]
 
 
+_PLACEHOLDER = re.compile(r"\[masked\]")
+_GLUED_REST = re.compile(r"[A-Za-z0-9+/=]+[ \t\r]*(?=\n|\\(?:r\\)?n)")
+_BODY_AFTER = re.compile(rf"(?:{_BEFORE_BODY}){{0,64}}({_KEY_BODY_START}[A-Za-z0-9+/]{{20}})")
+# The algorithms an encrypted key's DER names first: PKCS#5's (PBES2, PBES1) and PKCS#12's.
+_ENCRYPTED_KEY_OIDS = (bytes.fromhex("2a864886f70d0105"), bytes.fromhex("2a864886f70d010c"))
+
+
+def _private_key_body(start):
+    """Whether 24 characters of base64 from where a key's body starts decode as a private key's: OpenSSH's, or DER
+    whose first element is a version (an INTEGER) or an encrypted key's algorithm. A certificate, a public key and a
+    certificate request start as a key's body does ("MII...") and are none."""
+    if start.startswith("b3Bl"):
+        return True
+    der = _decoded(start, 0, 24) or b"\0\0"
+    at = 2 + (der[1] & 0x7f if der[1] & 0x80 else 0)
+    if der[0] != 0x30 or der[at:at + 1] != b"\x30":
+        return der[0] == 0x30 and der[at:at + 1] == b"\x02"
+    inner = at + 2 + (der[at + 1] & 0x7f if at + 1 < len(der) and der[at + 1] & 0x80 else 0)
+    return der[inner:inner + 1] == b"\x06" and der[inner + 2:inner + 10] in _ENCRYPTED_KEY_OIDS
+
+
 def _key_rest_edits(text):
-    """The rest of a key after an older kb's placeholder, as _KEY_REST finds it, as an edit that removes it."""
-    return [(m.start(1), m.end(), "") for m in _KEY_REST.finditer(text)]
+    """The rest of a key after an older kb's placeholder, as _KEY_REST finds it, as an edit that removes it: base64
+    glued to the placeholder, or a key's body on the lines after it, which must decode as a private key's."""
+    edits, end = [], 0
+    for at in _PLACEHOLDER.finditer(text):
+        if at.start() < end:
+            continue
+        body = None if _GLUED_REST.match(text, at.end()) else _BODY_AFTER.match(text, at.end())
+        m = None if body and not _private_key_body(body.group(1)) else _KEY_REST.match(text, at.start())
+        if m:
+            edits.append((m.start(1), m.end(), ""))
+            end = m.end()
+    return edits
 
 
 def _replace(text, spans, replacement):
