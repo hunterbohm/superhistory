@@ -753,6 +753,13 @@ class FilesTest(SourceCase):
         self.assertEqual([f.where for f in found.findings], ["\\xff.txt:1"])
         self.assertEqual([f.where for f in found.allowed], ["\ufffd.txt:1"])
 
+    def test_only_a_refused_file_name_skips_the_test_of_one_that_is_not_utf8(self):
+        # any other failure to write the file is the test's error, never a skip
+        result = unittest.TestResult()
+        with mock.patch.object(Path, "write_bytes", side_effect=OSError(5, "Input/output error")):
+            FilesTest("test_a_path_that_is_not_utf8_fails_and_exceptions_match_names_exactly").run(result)
+        self.assertEqual((len(result.errors), len(result.skipped)), (1, 0), result.skipped)
+
     def test_a_submodule_entry_fails(self):
         self.commit_bytes({})
         git(self.src, "update-index", "--add", "--cacheinfo", "160000,%s,sub" % git(self.src, "rev-parse", "HEAD"))
