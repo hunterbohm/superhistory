@@ -70,6 +70,9 @@ for _index, _rule in enumerate(gitleaks.RULES):
 # Slack's keywords are literal parts of every real token ("xoxe.xoxb-", "hooks.slack.com"); the sampler reads their "."
 # as any character, so its examples can lack them.
 _KEYWORDS_IN_EVERY_REAL_TOKEN = {"slack-config-access-token", "slack-webhook-url"}
+# gitleaks reads Facebook's access token only by the word "facebook": its shape, 15 or 16 digits, "|" and 27 to 40
+# letters and digits, is also a pipe-separated record's (a microsecond timestamp and a trace id), so kb reads it so too.
+_READ_ONLY_BY_ITS_NAME = {"facebook-access-token"}
 
 
 class BareTokenTest(unittest.TestCase):
@@ -78,7 +81,7 @@ class BareTokenTest(unittest.TestCase):
 
     def test_each_rules_token_alone(self):
         for index, rule in enumerate(gitleaks.RULES):
-            if rule[0] in _KEYWORDS_IN_EVERY_REAL_TOKEN:
+            if rule[0] in _KEYWORDS_IN_EVERY_REAL_TOKEN | _READ_ONLY_BY_ITS_NAME:
                 continue
             for secret in examples(index, 2):
                 with self.subTest(rule=rule[0], secret=secret):
