@@ -591,6 +591,19 @@ class OtherKeyFormatTest(unittest.TestCase):
             with self.subTest(text=text[:20]):
                 self.assertNotIn(line[8:40], mask(text))
 
+    def test_a_placeholder_inside_another_keys_rest_reads_its_own(self):
+        # A rest that stops at a JSON string's end runs on through the last token before its footer; a placeholder it
+        # passes on that line still reads its own rest, which here runs on to the next line.
+        import base64
+        import random
+        import textwrap
+        r = random.Random(61)
+        lines = textwrap.wrap(base64.b64encode(made_up_private_key(r)).decode(), 64)
+        text = (f'{{"key": "[masked]\\n{lines[0]}\\n{lines[1]}"}} the plan [masked]<br>{lines[2]}<br>{lines[3]}<br>'
+                f"-----END PRIVATE KEY----- notes # [masked]# {lines[4]}\n# {lines[5][:32]}")
+        masked = mask(text)
+        self.assertEqual([line[:32] for line in lines[:6] if line[:32] in masked], [], masked)
+
     def test_an_id_reads_a_keys_rest_as_main_does(self):
         # An id that reads as holding a secret is refused, with its item: only a key's body start begins its rest.
         import base64
