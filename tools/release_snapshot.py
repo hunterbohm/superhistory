@@ -48,6 +48,7 @@ import os
 import posixpath
 import re
 import shutil
+import signal
 import site
 import ssl
 import subprocess
@@ -127,6 +128,25 @@ def run(cmd, cwd=None, env=None, input=None):
     except OSError as exc:
         raise ReleaseError("could not run %s: %s" % (cmd[0], exc))
     return done
+
+
+def run_group(argv, timeout, cwd=None, env=None):
+    proc = subprocess.Popen(argv, cwd=None if cwd is None else str(cwd), env=env, stdin=subprocess.DEVNULL,
+                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, start_new_session=True)
+    try:
+        out, _ = proc.communicate(timeout=timeout)
+    except BaseException:
+        os.killpg(proc.pid, signal.SIGKILL)
+        try:
+            proc.communicate(timeout=10)
+        except subprocess.TimeoutExpired:
+            pass
+        raise
+    return proc.returncode, out
+
+
+def failure(exc):
+    return "%s: %s" % (type(exc).__name__, exc)
 
 
 def git_bytes(cwd, *args, env=None, isolated=False, input=None):
@@ -561,6 +581,13 @@ def serve(out_dir, tag, log=None):
 
 
 def run_install_check(release, installer, timeout=300):
+    try:
+        return install_check(release, installer, timeout)
+    except Exception as exc:
+        return CheckResult("install", "FAIL", "the install check could not finish", [Finding("install", failure(exc))])
+
+
+def install_check(release, installer, timeout):
     requests, findings = [], []
     with tempfile.TemporaryDirectory(prefix="release-install-") as tmp:
         home = os.path.join(tmp, "home")
@@ -572,13 +599,12 @@ def run_install_check(release, installer, timeout=300):
             env = {"HOME": home, "PATH": os.pathsep.join([pybin, "/usr/bin", "/bin"]), "TMPDIR": tmp,
                    "SUPERHISTORY_REPO": served.url, "CURL_CA_BUNDLE": served.cafile}
             try:
-                installed = subprocess.run(["sh", str(installer)], env=env, cwd=tmp, stdin=subprocess.DEVNULL,
-                                           stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=timeout)
+                code, output = run_group(["sh", str(installer)], timeout, cwd=tmp, env=env)
             except subprocess.TimeoutExpired:
-                return CheckResult("install", "FAIL", "the installer ran past %d seconds" % timeout, [Finding("installer")])
-        text = show(installed.stdout)
-        if installed.returncode:
-            findings.append(Finding("installer", "exit %d" % installed.returncode))
+                return CheckResult("install", "FAIL", "the installer ran past %d seconds" % timeout, [Finding("installer", "ran past %d seconds" % timeout)])
+        text = show(output)
+        if code:
+            findings.append(Finding("installer", "exit %d" % code))
             findings.extend(Finding("installer", line) for line in text.splitlines()[-10:])
             return CheckResult("install", "FAIL", "the site's installer failed", findings)
         wanted = ["/releases/latest", "/archive/refs/tags/%s.tar.gz" % release.tag]
@@ -589,12 +615,17 @@ def run_install_check(release, installer, timeout=300):
         if not os.path.exists(command):
             findings.append(Finding(command[len(home) + 1:], "the installer left no kb command"))
         else:
-            helped = subprocess.run([command, "--help"], env=env, cwd=tmp, stdin=subprocess.DEVNULL,
-                                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=timeout)
-            help_text = show(helped.stdout)
-            if helped.returncode or "usage" not in help_text.lower():
-                findings.append(Finding("kb --help", "exit %d" % helped.returncode))
-                findings.extend(Finding("kb --help", line) for line in help_text.splitlines()[:10])
+            try:
+                code, output = run_group([command, "--help"], timeout, cwd=tmp, env=env)
+            except subprocess.TimeoutExpired:
+                findings.append(Finding("kb --help", "ran past %d seconds" % timeout))
+            except OSError as exc:
+                findings.append(Finding("kb --help", failure(exc)))
+            else:
+                help_text = show(output)
+                if code or "usage" not in help_text.lower():
+                    findings.append(Finding("kb --help", "exit %d" % code))
+                    findings.extend(Finding("kb --help", line) for line in help_text.splitlines()[:10])
     if findings:
         return CheckResult("install", "FAIL", "the site's installer ran but the install is not whole", findings)
     return CheckResult("install", "PASS", "the site's installer fetched %s from a local https server and `kb --help` ran from ~/.local/bin" % release.tag)
@@ -620,18 +651,19 @@ def run_suite(suite, repo, env, timeout):
     if exe is None:
         return suite.label, None, 0, [], ["%s is not on PATH" % suite.argv[0]]
     try:
-        done = subprocess.run([exe] + suite.argv[1:], cwd=str(repo), env=env, stdout=subprocess.PIPE,
-                              stderr=subprocess.STDOUT, timeout=timeout)
+        code, output = run_group([exe] + suite.argv[1:], timeout, cwd=repo, env=env)
     except subprocess.TimeoutExpired:
         return suite.label, None, 0, [], ["ran past %d seconds" % timeout]
-    text = done.stdout.decode("utf-8", "replace")
+    except OSError as exc:
+        return suite.label, None, 0, [], [failure(exc)]
+    text = output.decode("utf-8", "replace")
     ran = re.search(r"(?m)^Ran (\d+) tests? in", text)
     count = int(ran.group(1)) if ran else 0
     reasons = [m.group(1)[1:-1] for m in SKIPPED.finditer(text)]
     counted = re.search(r"\(.*skipped=(\d+)", text)
     problems = []
-    if done.returncode:
-        problems.append("exit %d" % done.returncode)
+    if code:
+        problems.append("exit %d" % code)
         lines = [l for l in text.splitlines() if re.match(r"(FAIL|ERROR): ", l)]
         problems.extend(lines[:10] or [l for l in text.splitlines() if l.strip()][-5:])
     if not count:
@@ -640,7 +672,7 @@ def run_suite(suite, repo, env, timeout):
         problems.append("%d skipped without a reason" % sum(1 for r in reasons if not r.strip()))
     if counted and int(counted.group(1)) > len(reasons):
         problems.append("%d skipped with no reason shown" % (int(counted.group(1)) - len(reasons)))
-    return suite.label, done.returncode, count, reasons, problems
+    return suite.label, code, count, reasons, problems
 
 
 def run_suites(repo, suites, timeout=SUITE_TIMEOUT):
