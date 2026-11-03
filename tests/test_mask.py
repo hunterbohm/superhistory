@@ -712,6 +712,37 @@ class ReviewTwoTest(unittest.TestCase):
         self.assertLess(took[12], 8 * max(took[10], 0.05), took)
 
 
+class ReviewThreeTest(unittest.TestCase):
+    """#34's third review: a key's fragment shaped like a capitalised word after a line of words, and base64 after a
+    password's placeholder read as a key's rest."""
+
+    def test_a_fragment_shaped_like_a_word_after_a_line_of_words_stays_masked(self):
+        body = "MC4CAQAwBQYDK2VwBCIEIB8fZU0y2GY4kmBqqFAZvcDVa7p01PZM4AlhlsBc"
+        for fragment in ("Bcsv", "Bc", "MIIE", "kqzt", "2026", "x/Yz", "QmFz"):
+            for words in ("next steps", "see the runbook"):
+                with self.subTest(fragment=fragment, words=words):
+                    masked = mask(f"[masked]\n{body}\n{words}\n{fragment}\n")
+                    self.assertNotIn(fragment, masked.replace(words, ""))
+                    self.assertNotIn(body, masked)
+        # lines of plain words after the last fragment stay, as before
+        self.assertEqual(mask(f"[masked]\n{body}\nnext steps\nSee the runbook.\n"),
+                         "[masked]\nnext steps\nSee the runbook.\n")
+
+    def test_base64_after_a_passwords_placeholder_is_no_keys_rest(self):
+        import base64
+        encoded = base64.b64encode(b'{"note":"next steps","enabled":true,"mode":"normal"}').decode()
+        for line in ("password: TestValue9!", "PASSWORD=TestValue9!", '"password": "TestValue9!",', "api_key=Zq7vRt2LmX9kQ"):
+            text = f"{line}\n{encoded}\nnext steps"
+            with self.subTest(line=line):
+                masked = mask(text)
+                self.assertNotIn("TestValue9!", masked)
+                self.assertIn(encoded, masked)
+                self.assertIn("next steps", masked)
+        # a key's own body line after such a placeholder is still a key's rest, as on main
+        line = "MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7VJTUt9Us8cKj"
+        self.assertEqual(mask(f"private_key: [masked]\n{line}\n"), "private_key: [masked]")
+
+
 class HeadlessKeyTest(unittest.TestCase):
     """A key's body without its header, as an older kb's row-by-row remask leaves the chunk after the header's."""
     LINE = "MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7"
