@@ -832,9 +832,12 @@ def _flag_value_counts(m, always, unseen):
 
 
 # A line break after the shell's continuation mark, a backslash, or a backtick (PowerShell) or a caret (cmd) after a
-# space, as written and escaped once or twice as JSON writes it: the command goes on past it.
-_CONTINUATION = re.compile(r"(?:\\|(?<=[ \t])[`^])\r?\n|(?:\\\\\\\\|(?<=[ \t])[`^])(?:\\\\r)?\\\\n"
-                           r"|(?:\\\\|(?<=[ \t])[`^])(?:\\r)?\\n")
+# space, as written and escaped once or twice as JSON writes it: the command goes on past it. The backslashes are a run
+# no backslash stands before, as long as the depth's own (one, three, six), so an escaped backslash before an "n", as
+# a Windows path escaped as JSON holds one ("C:\\\\new"), is no continuation.
+_CONTINUATION = re.compile(r"(?:(?<!\\)\\|(?<=[ \t])[`^])\r?\n"
+                           r"|(?:(?<!\\)\\\\\\\\|(?<=[ \t])[`^])(?:\\\\r)?\\\\n"
+                           r"|(?:(?<!\\)\\\\|(?<=[ \t])[`^])(?:\\r)?\\n")
 # What of a command's line kb reads plainly, as _command_line reads it, from where the command's name ends: words,
 # spaces, a redirection, a variable, quotes plain or escaped as JSON holds them, and a substitution with nothing nested.
 _SIMPLE_SUBSTITUTION = r"\$\(\([^()'\"`$\\]*\)\)|\$\([^()'\"`$\\]*\)|`[^`'\"$\\]*`|\$\{\w*\}|\$(?![('{\[])"
@@ -892,9 +895,10 @@ def _unread_flag_edits(text, line_pattern, flag, always, done, literals=()):
     read plainly (_PLAIN_ARGUMENTS), as shell grammar it does not follow ("$'team\\'s cert'", "<(...)", an escaped quote
     or a nested substitution escaped twice), the first password its flag finds there that no reading masked (`done`,
     where its value starts) is masked from the value to the end of that line: kb cannot tell where a part it does not
-    read ends, so a pipe or ";" there may be quoted. A password inside one of `literals`, a JSON string, is left for
-    that string read decoded (_string_edits), where the string's end bounds the mask; outside every string the mask
-    runs to the line's end, so it never leaves the string that holds the line."""
+    read ends, so a pipe or ";" there may be quoted. Quotes that open right at the value are the value's own, and the
+    mask covers what they hold. A JSON string of `literals` that holds the password and more is the command's own,
+    left for that string read decoded (_string_edits), where its end bounds the mask, or another's, which the
+    command's line does not reach; either way the mask never leaves the string. Elsewhere it runs to the line's end."""
     edits, covered = [], 0
     for line in line_pattern.finditer(text):
         if line.start() < covered:
@@ -909,9 +913,11 @@ def _unread_flag_edits(text, line_pattern, flag, always, done, literals=()):
         for m in flag.finditer(text, max(begin, plain - 1), end):
             if m.start(2) in done or text.startswith("[masked]", m.start(2)) or not _flag_value_counts(m, always, True):
                 continue
-            if _holding(literals, m.start(2)) is not None:
-                break  # the password is inside a JSON string: read it decoded, where the string's end bounds the mask
-            edits.append((m.start(2), len(text[:end].rstrip(" \t")), "[masked]"))
+            held = _holding(literals, m.start(2))
+            if held is not None and held[0] != m.start(2) - 1:
+                break  # a JSON string holds the password and more: the command's own, read decoded, or another's
+            stop_at = held[1] - 1 if held is not None else end  # quotes that open at the value: mask what they hold
+            edits.append((m.start(2), len(text[:min(end, stop_at)].rstrip(" \t")), "[masked]"))
             break
     return edits
 
@@ -1038,7 +1044,10 @@ def _view_edits(text, view, split, base):
                 k = 1 if strings[i].group(1) is not None else 2
                 decoded, starts, ends = _decoded(read, strings[i].start(k), strings[i].end(k))
                 parts = _masked_parts(decoded, masked)
-                listed += [(strings[i].start(k), strings[i].end(k))] if parts is None else _back_to(starts, ends, parts)
+                if parts is None and len(items[i]) == len(decoded):
+                    parts = _masked_parts(items[i], masked)  # placed by the exact decoding, mapped by this view's
+                if parts is not None:
+                    listed += _back_to(starts, ends, parts)
     if base:  # the fail-closed rule, on the text as written and in each JSON string it holds, read as its own text
         literals = _literals(read)
         if read != text:
@@ -2119,8 +2128,45 @@ def _masked_items(items, key):
     if len(items) == 2:  # a name and its value, as a list of headers holds them
         out[1] = _pair_value(items[0], items[1], out[1], listed=True)
     for i, masked in _flag_values(items).items():
-        out[i] = masked
+        out[i] = _joined_masks(items[i], out[i], masked) if isinstance(out[i], str) else masked
     return out
+
+
+def _joined_masks(original, one, other):
+    """`original` with every stretch masked that `one` or `other`, two readings of it, masks: a reading only adds
+    masks. Where a reading cannot be placed in the original, the one that masks more of it stands."""
+    parts = [_masked_parts(original, version) for version in (one, other)]
+    if None in parts:
+        return min((one, other), key=lambda version: len(version.replace("[masked]", "")))
+    hidden = sorted(parts[0] + parts[1])
+    joined = []
+    for start, end in hidden:
+        if joined and start <= joined[-1][1]:
+            joined[-1] = (joined[-1][0], max(joined[-1][1], end))
+        else:
+            joined.append((start, end))
+    out, at = [], 0
+    for start, end in joined:
+        out += [original[at:start], "[masked]"]
+        at = end
+    return "".join(out) + original[at:]
+
+
+_PROBE = "Qz8vRt2LmX9kWp4Ys7Nb3Hc"  # a made-up value shaped like a password, long enough for every reading
+
+
+@functools.lru_cache(maxsize=4096)
+def _may_take_a_secret(flag):
+    """Whether a list item `flag` may be a flag whose next item a reading takes for a secret: a one-letter flag, which
+    only its command says ("-p"), a flag one of COMMAND_FLAGS' rows reads, or one the readings of text read by itself
+    ("--password", "--api-key"). The rest ("-J-Xmx512m", "--port") never mask the item after them, so a list of many
+    options costs no line reading for each."""
+    if re.fullmatch(r"-[A-Za-z]", flag):
+        return True
+    lines = (f" {flag} {_PROBE}", f" {flag} deploy:{_PROBE}")  # a value, and curl's "user:password"
+    if any(row.search(line) for _, row, _ in _COMMANDS for line in lines):
+        return True
+    return _PROBE not in mask(f"{flag} {_PROBE}") or _PROBE not in mask(f"{flag}={_PROBE}")
 
 
 def _flag_values(items):
@@ -2141,9 +2187,9 @@ def _flag_values(items):
             named = i - 1
         if not (isinstance(item, str) and item):
             continue
-        after_flag = isinstance(flag, str) and flag.startswith("-") and len(flag) <= 64
+        is_flag = isinstance(flag, str) and flag.startswith("-") and len(flag) <= 64
         # A shell's -c script is a command line of its own, read as one.
-        if after_flag and _SHELL_SCRIPT_FLAG.match(flag) and i >= 2 and isinstance(items[i - 2], str) \
+        if is_flag and _SHELL_SCRIPT_FLAG.match(flag) and i >= 2 and isinstance(items[i - 2], str) \
                 and _SHELL.search(items[i - 2]):
             read = mask(item)
             if read != item:
@@ -2151,8 +2197,8 @@ def _flag_values(items):
             continue
         # aws configure set's secret setting names its value a secret though the name starts with no "-", so it
         # counts as a flag.
-        after_flag = after_flag or (isinstance(flag, str) and _aws_setting_item(items, i - 1))
-        glued = not after_flag and item.startswith("-") and len(item.split(None, 1)) == 2
+        after_flag = is_flag and _may_take_a_secret(flag) or isinstance(flag, str) and _aws_setting_item(items, i - 1)
+        glued = not is_flag and item.startswith("-") and len(item.split(None, 1)) == 2  # after a flag: its value
         if not (after_flag or glued):
             continue
         start = i
