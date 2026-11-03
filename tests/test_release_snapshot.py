@@ -3,7 +3,9 @@ import io
 import os
 import re
 import shutil
+import ssl
 import subprocess
+import sys
 import tarfile
 import tempfile
 import unittest
@@ -15,6 +17,8 @@ from tools import release_snapshot as rs
 
 REPO = Path(__file__).resolve().parent.parent
 INSTALLER = Path(__file__).resolve().parent / "fixtures" / "release" / "site_install.sh"
+EXCEPTIONS = "tools/release_exceptions.tsv"
+ROWS = "bench/DATASET_ROWS.txt"
 CREDENTIAL = "zq-4417-kettle"
 AUTHOR = "Pat Example <pat@example.invalid>"
 PATTERNS = "\\bacmecorp\\b\n(^|[^-a-z0-9])boxroom\\b\n"
@@ -43,9 +47,6 @@ Run the tests.
 """
 GIT_ENV = {"GIT_AUTHOR_NAME": "Src Author", "GIT_AUTHOR_EMAIL": "src@example.invalid",
            "GIT_COMMITTER_NAME": "Src Author", "GIT_COMMITTER_EMAIL": "src@example.invalid"}
-
-
-OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
 
 def git(cwd, *args, env=None):
@@ -85,7 +86,7 @@ class SourceCase(unittest.TestCase):
 
     def base_files(self, **extra):
         files = {"README.md": README, "kb/__init__.py": '__version__ = "1.2.3"\n',
-                 "pyproject.toml": "[project]\nname = \"widgetly\"\n", "install.sh": "#!/bin/sh\n"}
+                 "pyproject.toml": "[project]\nname = \"widgetly\"\n", "install.sh": "#!/bin/sh\n", ROWS: ""}
         files.update(extra)
         return files
 
@@ -93,9 +94,11 @@ class SourceCase(unittest.TestCase):
         self.commit(self.base_files(**{"notes.txt": "login is %s\n" % CREDENTIAL}), "first")
         return self.commit({"notes.txt": "nothing here\n"}, "second")
 
-    def run_main(self, *extra, rev="HEAD"):
+    def run_main(self, *extra, rev="HEAD", suites=False):
         argv = [rev, str(self.out), "--source", str(self.src), "--author", AUTHOR, "--patterns", str(self.patterns),
                 "--credential", CREDENTIAL, "--repo-name", "widgetly", *extra]
+        if not suites:
+            argv.append("--no-suites")
         stdout = io.StringIO()
         with contextlib.redirect_stdout(stdout):
             code = rs.main(argv)
@@ -281,29 +284,6 @@ class PatternTest(SourceCase):
         release = self.build(self.commit(self.base_files()))
         self.assertTrue(release.check("patterns").ok)
 
-    def test_a_link_to_an_allowed_repo_is_not_a_hit(self):
-        files = {"README.md": README + "\nSee https://github.com/acmecorp/widgetly for more.\n",
-                 "pyproject.toml": 'Homepage = "https://github.com/AcmeCorp/widgetly"\nIssues = "git+https://github.com/acmecorp/widgetly.git"\n'}
-        release = self.build(self.commit(self.base_files(**files)), allow_links=["acmecorp/widgetly"])
-        found = release.check("patterns")
-        self.assertTrue(found.ok, found.findings)
-        self.assertEqual(len(found.allowed), 3)
-
-    def test_other_links_and_other_text_on_a_link_line_still_hit(self):
-        files = {"a.txt": "https://github.com/acmecorp/other\n",
-                 "b.txt": "https://github.com/acmecorp/widgetly-fork\n",
-                 "c.txt": "https://github.com/acmecorp/widgetly and boxroom\n",
-                 "d.txt": "https://github.com/acmecorp/widgetly\nhttps://example.invalid/acmecorp\n"}
-        release = self.build(self.commit(self.base_files(**files)), allow_links=["acmecorp/widgetly"])
-        found = release.check("patterns")
-        self.assertEqual(sorted(f.where for f in found.findings), ["a.txt:1", "b.txt:1", "c.txt:1", "d.txt:2"])
-
-    def test_an_allowed_file_is_listed_apart_and_does_not_fail(self):
-        head = self.commit(self.base_files(LICENSE="Copyright Acmecorp\n"))
-        found = self.build(head, allow_files=["LICENSE"]).check("patterns")
-        self.assertTrue(found.ok)
-        self.assertEqual([f.where for f in found.allowed], ["LICENSE:1"])
-
     def test_a_symlink_target_is_checked(self):
         write(self.src, self.base_files())
         os.symlink("acmecorp.txt", self.src / "link")
@@ -387,9 +367,10 @@ class CommandTest(SourceCase):
         code, text = self.run_main()
         self.assertEqual(code, 0, text)
         self.assertIn("tag: v1.2.3", text)
-        for name in ("history", "credential", "patterns", "archive"):
+        for name in ("history", "credential", "patterns", "dataset", "archive"):
             self.assertRegex(text, r"(?m)^PASS %s" % name)
         self.assertRegex(text, r"(?m)^SKIP install")
+        self.assertRegex(text, r"(?m)^SKIP suites")
         self.assertEqual((self.out / "CHECKS.txt").read_text(), text)
 
     def test_a_failed_check_exits_one_and_still_writes_the_folder(self):
@@ -416,10 +397,322 @@ class CommandTest(SourceCase):
         self.assertIn("release_snapshot:", stderr.getvalue())
 
 
-@unittest.skipUnless(shutil.which("curl") and shutil.which("tar"), "the installer needs curl and tar")
+def tsv(*rows):
+    return "".join("\t".join(row) + "\n" for row in rows)
+
+
+class ExceptionsTest(SourceCase):
+    def patterns_of(self, files, entries, **kw):
+        files = dict(files)
+        files[EXCEPTIONS] = tsv(*entries) if not isinstance(entries, str) else entries
+        return self.build(self.commit(self.base_files(**files)), **kw).check("patterns")
+
+    def test_a_hit_is_excepted_where_its_file_and_its_string_match(self):
+        found = self.patterns_of({"docs/a.md": "fine\nsee Acmecorp today\n"}, [("docs/a.md", "Acmecorp", "a made-up firm")])
+        self.assertTrue(found.ok, found.findings)
+        self.assertEqual([f.where for f in found.allowed], ["docs/a.md:2"])
+        self.assertEqual(found.notes, [])
+
+    def test_the_same_string_in_another_file_still_fails(self):
+        files = {"docs/a.md": "Acmecorp\n", "docs/b.md": "Acmecorp\n"}
+        found = self.patterns_of(files, [("docs/a.md", "Acmecorp", "a made-up firm")])
+        self.assertEqual([f.where for f in found.findings], ["docs/b.md:1"])
+
+    def test_another_string_in_the_same_file_still_fails(self):
+        files = {"docs/a.md": "Acmecorp\nboxroom\n"}
+        found = self.patterns_of(files, [("docs/a.md", "Acmecorp", "a made-up firm")])
+        self.assertEqual([f.where for f in found.findings], ["docs/a.md:2"])
+
+    def test_the_string_is_literal_and_exact(self):
+        files = {"a.md": "see Acmecorp today\n"}
+        for string in ("acmecorp", "Acme.*", "Acmecorp today!", "Acmecorp.", "[A]cmecorp"):
+            shutil.rmtree(str(self.out), ignore_errors=True)
+            found = self.patterns_of(files, [("a.md", string, "no")])
+            self.assertEqual([f.where for f in found.findings], ["a.md:1"], string)
+            self.assertEqual(len(found.notes), 1, string)
+
+    def test_other_text_on_the_line_that_hits_still_fails(self):
+        found = self.patterns_of({"a.md": "Acmecorp and boxroom\n"}, [("a.md", "Acmecorp", "a made-up firm")])
+        self.assertEqual([f.where for f in found.findings], ["a.md:1"])
+        self.assertEqual(found.notes, [])
+
+    def test_every_occurrence_of_the_string_on_a_line_is_covered(self):
+        found = self.patterns_of({"a.md": "Acmecorp, then Acmecorp\n"}, [("a.md", "Acmecorp", "a made-up firm")])
+        self.assertTrue(found.ok)
+        self.assertEqual(len(found.allowed), 1)
+
+    def test_more_than_one_entry_can_cover_a_line(self):
+        found = self.patterns_of({"a.md": "Acmecorp and boxroom\n"},
+                                 [("a.md", "Acmecorp", "a made-up firm"), ("a.md", "boxroom", "a made-up room")])
+        self.assertTrue(found.ok, found.findings)
+
+    def test_a_file_name_cannot_be_excepted(self):
+        found = self.patterns_of({"acmecorp-notes.txt": "fine\n"},
+                                 [("acmecorp-notes.txt", "acmecorp-notes.txt", "no")])
+        self.assertEqual([f.where for f in found.findings], ["acmecorp-notes.txt"])
+
+    def test_an_entry_that_matches_nothing_is_reported_as_stale_and_does_not_fail(self):
+        files = {"a.md": "Acmecorp\nhello\n", "b.md": "hello\n"}
+        entries = [("a.md", "Acmecorp", "a made-up firm"), ("a.md", "hello", "not a hit"),
+                   ("b.md", "Acmecorp", "wrong file"), ("gone.md", "Acmecorp", "no such file")]
+        found = self.patterns_of(files, entries)
+        self.assertTrue(found.ok, found.findings)
+        self.assertEqual(found.notes, ["stale: a.md: hello", "stale: b.md: Acmecorp", "stale: gone.md: Acmecorp"])
+        self.assertIn("3 stale", found.summary)
+
+    def test_an_entry_for_a_line_that_still_fails_is_not_stale(self):
+        found = self.patterns_of({"a.md": "Acmecorp boxroom\n"}, [("a.md", "Acmecorp", "a made-up firm")])
+        self.assertFalse(found.ok)
+        self.assertEqual(found.notes, [])
+
+    def test_the_lists_own_lines_are_not_scanned_but_its_name_still_is(self):
+        found = self.patterns_of({"a.md": "Acmecorp\n"}, [("a.md", "Acmecorp", "a made-up firm")])
+        self.assertTrue(found.ok)
+        self.assertFalse([f for f in found.findings + found.allowed if f.where.startswith(EXCEPTIONS)])
+
+    def test_the_list_is_read_from_the_commit_not_the_working_tree(self):
+        head = self.commit(self.base_files(**{"a.md": "Acmecorp\n", EXCEPTIONS: tsv(("a.md", "Acmecorp", "a made-up firm"))}))
+        write(self.src, {EXCEPTIONS: ""})
+        self.assertTrue(self.build(head).check("patterns").ok)
+
+    def test_blank_lines_and_comment_lines_are_skipped(self):
+        text = "# the reviewed exceptions\n\n" + tsv(("a.md", "Acmecorp", "a made-up firm")) + "\n"
+        self.assertTrue(self.patterns_of({"a.md": "Acmecorp\n"}, text).ok)
+
+    def test_a_reason_may_hold_spaces_and_a_string_may_hold_spaces(self):
+        found = self.patterns_of({"a.md": "see Acmecorp Ltd today\n"}, [("a.md", "Acmecorp Ltd", "a made-up firm, named in full")])
+        self.assertTrue(found.ok, found.findings)
+
+    def test_a_list_that_is_not_a_path_a_string_and_a_reason_stops_the_run(self):
+        for n, text in enumerate(["a.md\tAcmecorp\n", "a.md\tAcmecorp\t\n", "\tAcmecorp\treason\n", "a.md\t\treason\n",
+                                  "a.md\tAcmecorp\treason\textra\n", "a.md Acmecorp reason\n"]):
+            self.out = self.tmp / ("out%d" % n)
+            head = self.commit(self.base_files(**{EXCEPTIONS: text}))
+            with self.assertRaisesRegex(rs.ReleaseError, r"release_exceptions.tsv.*line 1"):
+                self.build(head)
+            self.assertFalse(self.out.exists())
+
+    def test_the_report_names_excepted_hits_and_stale_entries(self):
+        self.commit(self.base_files(**{"a.md": "Acmecorp\n", EXCEPTIONS: tsv(("a.md", "Acmecorp", "a made-up firm"), ("b.md", "x", "stale"))}))
+        code, text = self.run_main()
+        self.assertEqual(code, 0, text)
+        self.assertRegex(text, r"(?m)^PASS patterns: .*1 excepted.*1 stale")
+        self.assertIn("excepted a.md: 1 hit", text)
+        self.assertIn("stale: b.md: x", text)
+
+    def test_the_old_allow_options_are_gone(self):
+        self.commit(self.base_files())
+        for option in ("--allow-link", "--allow-file"):
+            with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+                self.run_main(option, "x")
+
+
+class DatasetRowsTest(SourceCase):
+    def rows(self, *lines):
+        return "".join(lines)
+
+    def with_rows(self, rows, **files):
+        return self.commit(self.base_files(**dict(files, **{ROWS: rows})))
+
+    def test_a_missing_list_stops_the_run_before_anything_is_written(self):
+        head = self.commit(self.base_files(), remove=[ROWS])
+        with self.assertRaisesRegex(rs.ReleaseError, "DATASET_ROWS.txt"):
+            self.build(head)
+        self.assertFalse(self.out.exists())
+        with contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(self.run_main(rev=head)[0], 2)
+
+    def test_listed_files_are_left_out_and_everything_else_stays(self):
+        head = self.with_rows("bench/rows/a.jsonl\tquotes LoCoMo\nbench/rows/b.jsonl\tquotes LongMemEval\n",
+                              **{"bench/rows/a.jsonl": "{}\n", "bench/rows/b.jsonl": "{}\n", "bench/rows/c.md": "table\n",
+                                 "bench/table.md": "numbers\n"})
+        release = self.build(head)
+        kept = git(release.repo, "ls-tree", "-r", "--name-only", "HEAD").splitlines()
+        every = git(self.src, "ls-tree", "-r", "--name-only", head).splitlines()
+        self.assertEqual(kept, [n for n in every if n not in ("bench/rows/a.jsonl", "bench/rows/b.jsonl")])
+        self.assertFalse((release.repo / "bench" / "rows" / "a.jsonl").exists())
+        self.assertTrue((release.repo / "bench" / "rows" / "c.md").exists())
+        self.assertEqual(release.left_out, ["bench/rows/a.jsonl", "bench/rows/b.jsonl"])
+        with tarfile.open(str(release.archive)) as tar:
+            self.assertFalse([n for n in tar.getnames() if n.endswith(".jsonl")])
+
+    def test_the_list_itself_ships_and_the_source_is_untouched(self):
+        head = self.with_rows("bench/a.jsonl\tquotes LoCoMo\n", **{"bench/a.jsonl": "{}\n"})
+        before = git(self.src, "count-objects", "-v")
+        release = self.build(head)
+        self.assertIn(ROWS, git(release.repo, "ls-files").splitlines())
+        self.assertEqual(git(self.src, "count-objects", "-v"), before)
+        self.assertEqual(git(self.src, "ls-tree", "-r", "--name-only", head).count("bench/a.jsonl"), 1)
+
+    def test_a_leftover_index_is_not_left_in_the_repo(self):
+        head = self.with_rows("bench/a.jsonl\tquotes LoCoMo\n", **{"bench/a.jsonl": "{}\n"})
+        release = self.build(head)
+        self.assertEqual(sorted(p.name for p in (release.repo / ".git").iterdir() if "index" in p.name), ["index"])
+        self.assertEqual(git(release.repo, "status", "--porcelain"), "")
+
+    def test_pattern_and_credential_hits_in_a_left_out_file_do_not_count(self):
+        head = self.with_rows("bench/a.jsonl\tquotes LoCoMo\n",
+                              **{"bench/a.jsonl": "Acmecorp %s\n" % CREDENTIAL})
+        release = self.build(head)
+        self.assertTrue(release.ok, release.report())
+
+    def test_the_dataset_check_passes_and_says_how_many_were_left_out(self):
+        head = self.with_rows("bench/a.jsonl\tquotes LoCoMo\n", **{"bench/a.jsonl": "{}\n"})
+        found = self.build(head).check("dataset")
+        self.assertTrue(found.ok)
+        self.assertIn("1 file", found.summary)
+
+    def test_the_dataset_check_fails_if_a_listed_file_is_in_the_tree_or_the_archive(self):
+        head = self.with_rows("bench/a.jsonl\tquotes LoCoMo\n", **{"bench/a.jsonl": "{}\n"})
+        release = self.build(head)
+        self.assertFalse(rs.check_dataset(self.src, release.archive, ["bench/a.jsonl"], "widgetly-1.2.3/").ok)
+        self.assertFalse(rs.check_dataset(release.repo, release.archive, ["README.md"], "widgetly-1.2.3/").ok)
+        self.assertTrue(rs.check_dataset(release.repo, release.archive, ["bench/a.jsonl"], "widgetly-1.2.3/").ok)
+
+    def test_a_listed_path_that_is_not_a_file_in_the_commit_stops_the_run(self):
+        for n, listed in enumerate(["bench/missing.jsonl", "bench"]):
+            self.out = self.tmp / ("out%d" % n)
+            head = self.with_rows("%s\treason\n" % listed, **{"bench/a.jsonl": "{}\n"})
+            with self.assertRaisesRegex(rs.ReleaseError, "not a file"):
+                self.build(head)
+            self.assertFalse(self.out.exists())
+
+    def test_a_path_that_is_not_exact_stops_the_run(self):
+        for n, listed in enumerate(["/etc/passwd", "../x", "bench/../README.md", "bench//a.jsonl", "bench/a.jsonl/", "bench/*.jsonl", " bench/a.jsonl"]):
+            self.out = self.tmp / ("out%d" % n)
+            head = self.with_rows("%s\treason\n" % listed, **{"bench/a.jsonl": "{}\n"})
+            with self.assertRaisesRegex(rs.ReleaseError, "DATASET_ROWS.txt"):
+                self.build(head)
+
+    def test_a_line_without_a_path_a_tab_and_a_reason_stops_the_run(self):
+        for n, line in enumerate(["bench/a.jsonl\n", "bench/a.jsonl\t\n", "\treason\n", "bench/a.jsonl reason\n"]):
+            self.out = self.tmp / ("out%d" % n)
+            head = self.with_rows(line, **{"bench/a.jsonl": "{}\n"})
+            with self.assertRaisesRegex(rs.ReleaseError, r"DATASET_ROWS.txt.*line 1"):
+                self.build(head)
+
+    def test_blank_and_comment_lines_are_skipped_and_a_path_may_repeat(self):
+        head = self.with_rows("# rows that quote a dataset\n\nbench/a.jsonl\tr\nbench/a.jsonl\tr again\n", **{"bench/a.jsonl": "{}\n"})
+        self.assertEqual(self.build(head).left_out, ["bench/a.jsonl"])
+
+    def test_the_list_is_read_from_the_commit_not_the_working_tree(self):
+        head = self.with_rows("bench/a.jsonl\tr\n", **{"bench/a.jsonl": "{}\n"})
+        write(self.src, {ROWS: ""})
+        self.assertEqual(self.build(head).left_out, ["bench/a.jsonl"])
+
+    def test_the_report_says_what_was_left_out(self):
+        self.with_rows("bench/a.jsonl\tr\n", **{"bench/a.jsonl": "{}\n"})
+        code, text = self.run_main()
+        self.assertEqual(code, 0, text)
+        self.assertIn("left out: 1 (bench/a.jsonl)", text)
+
+
+class SuitesTest(SourceCase):
+    TESTS = """import os
+import unittest
+
+
+class T(unittest.TestCase):
+    def test_ok(self):
+        self.assertTrue(True)
+%s
+"""
+
+    def suites(self, repo):
+        return rs.default_suites(repo, interpreters=(sys.executable,))
+
+    def built(self, body="", files=None, rows="", **kw):
+        files = dict(files or {})
+        files.setdefault("tests/test_t.py", self.TESTS % body)
+        files.setdefault("tests/__init__.py", "")
+        files[ROWS] = rows
+        head = self.commit(self.base_files(**files))
+        return self.build(head, suites=self.suites, **kw)
+
+    def test_suites_that_pass_or_skip_with_a_reason_pass_and_the_skips_are_listed(self):
+        body = "    @unittest.skip('needs a network')\n    def test_net(self):\n        pass\n"
+        found = self.built(body).check("suites")
+        self.assertTrue(found.ok, found.findings)
+        self.assertIn("2 tests", found.summary)
+        self.assertIn("1 skipped", found.summary)
+        self.assertTrue(any("needs a network" in n for n in found.notes), found.notes)
+
+    def test_a_failing_test_fails_the_release(self):
+        found = self.built("    def test_bad(self):\n        self.fail('broken on purpose')\n")
+        self.assertFalse(found.ok)
+        self.assertFalse(found.check("suites").ok)
+        self.assertTrue(any("test_bad" in f.text for f in found.check("suites").findings))
+
+    def test_a_skip_without_a_reason_fails(self):
+        found = self.built("    @unittest.skip('')\n    def test_quiet(self):\n        pass\n").check("suites")
+        self.assertFalse(found.ok)
+        self.assertTrue(any("without a reason" in f.text for f in found.findings), found.findings)
+
+    def test_a_suite_that_runs_no_tests_fails(self):
+        found = self.built(files={"tests/test_t.py": "x = 1\n"}).check("suites")
+        self.assertFalse(found.ok)
+
+    def test_the_tests_run_inside_the_snapshot_where_the_left_out_files_are_absent(self):
+        body = "    def test_absent(self):\n        self.assertFalse(os.path.exists('bench/rows.jsonl'))\n" \
+               "        self.assertTrue(os.path.exists('README.md'))\n"
+        found = self.built(body, files={"bench/rows.jsonl": "{}\n"}, rows="bench/rows.jsonl\tquotes a dataset\n").check("suites")
+        self.assertTrue(found.ok, found.findings)
+
+    def test_the_tests_run_with_a_home_that_is_not_the_real_one(self):
+        body = "    def test_home(self):\n        self.assertNotEqual(os.environ['HOME'], %r)\n" % os.path.expanduser("~")
+        self.assertTrue(self.built(body).check("suites").ok)
+
+    def test_the_tests_still_find_the_packages_installed_for_the_user(self):
+        import site
+        body = "    def test_site(self):\n        import site\n        self.assertEqual(site.getuserbase(), %r)\n" % site.getuserbase()
+        found = self.built(body).check("suites")
+        self.assertTrue(found.ok, found.findings)
+
+    def test_a_suite_that_leaves_files_in_the_snapshot_fails(self):
+        body = "    def test_mess(self):\n        open('leftover.txt', 'w').close()\n"
+        found = self.built(body).check("suites")
+        self.assertFalse(found.ok)
+        self.assertTrue(any("leftover.txt" in f.text for f in found.findings), found.findings)
+
+    def test_an_interpreter_that_is_missing_fails_that_suite_only(self):
+        self.commit(self.base_files(**{"tests/test_t.py": self.TESTS % "", "tests/__init__.py": ""}))
+        release = self.build(suites=lambda repo: rs.default_suites(repo, interpreters=("no-such-python-9.9", sys.executable)))
+        found = release.check("suites")
+        self.assertFalse(found.ok)
+        self.assertTrue(any("no-such-python-9.9" in f.text and "PATH" in f.text for f in found.findings), found.findings)
+        self.assertTrue(any(sys.executable in n for n in found.notes), found.notes)
+
+    def test_bench_tests_run_one_folder_at_a_time(self):
+        files = {"bench/test_a.py": self.TESTS % "", "bench/sub/test_b.py": self.TESTS % "", "bench/data.py": "x = 1\n"}
+        found = self.built(files=files).check("suites")
+        self.assertTrue(found.ok, found.findings)
+        labels = [n.split(":")[0] for n in found.notes if n.startswith("bench")]
+        self.assertEqual(labels, ["bench", "bench/sub"])
+
+    def test_a_failing_bench_test_fails_the_release(self):
+        files = {"bench/test_a.py": self.TESTS % "    def test_bad(self):\n        self.fail('x')\n"}
+        self.assertFalse(self.built(files=files).check("suites").ok)
+
+    def test_the_default_suites_name_the_main_suite_for_each_interpreter_and_python3_for_bench(self):
+        self.commit(self.base_files(**{"bench/test_a.py": "x = 1\n", "tests/test_t.py": "x = 1\n"}))
+        release = self.build()
+        found = rs.default_suites(release.repo)
+        self.assertEqual([(s.label, s.argv[0]) for s in found],
+                         [("python3 tests", "python3"), ("python3.9 tests", "python3.9"), ("bench", "python3")])
+        self.assertEqual(found[0].argv[1:], ["-m", "unittest", "discover", "-v", "-s", "tests", "-t", "."])
+
+    def test_no_suites_means_the_check_is_skipped_not_passed(self):
+        found = self.build(self.commit(self.base_files())).check("suites")
+        self.assertEqual(found.status, "SKIP")
+        self.assertTrue(found.ok)
+
+
+@unittest.skipUnless(shutil.which("curl") and shutil.which("tar") and shutil.which("openssl"),
+                     "the installer needs curl and tar, and the https server needs openssl for a throwaway certificate")
 class InstallTest(SourceCase):
     def setUp(self):
         super().setUp()
+        write(self.src, {ROWS: ""})
         for name in ("kb", "install.sh", "pyproject.toml", "README.md", "LICENSE"):
             origin = REPO / name
             if origin.is_dir():
@@ -429,18 +722,33 @@ class InstallTest(SourceCase):
         git(self.src, "add", "-A")
         git(self.src, "commit", "-q", "-m", "the real package")
 
+    def trusting(self, cafile):
+        return urllib.request.build_opener(urllib.request.ProxyHandler({}),
+                                           urllib.request.HTTPSHandler(context=ssl.create_default_context(cafile=str(cafile))))
+
     def test_the_server_redirects_latest_and_serves_the_archive_for_the_tag_only(self):
         release = self.build()
-        with rs.serve(self.out, release.tag) as base:
-            opened = OPENER.open(base + "/releases/latest")
+        with rs.serve(self.out, release.tag) as served:
+            base, opener = served.url, self.trusting(served.cafile)
+            self.assertRegex(base, r"^https://127\.0\.0\.1:\d+$")
+            opened = opener.open(base + "/releases/latest")
             self.assertEqual(opened.geturl(), base + "/releases/tag/" + release.tag)
-            body = OPENER.open(base + "/archive/refs/tags/%s.tar.gz" % release.tag).read()
+            body = opener.open(base + "/archive/refs/tags/%s.tar.gz" % release.tag).read()
             self.assertEqual(body, release.archive.read_bytes())
             for path in ("/archive/refs/tags/v0.0.1.tar.gz", "/releases/tag/v0.0.1", "/RELEASE_NOTES.md", "/repo/README.md"):
                 with self.assertRaises(urllib.error.HTTPError) as caught:
-                    OPENER.open(base + path)
+                    opener.open(base + path)
                 caught.exception.close()
                 self.assertEqual(caught.exception.code, 404, path)
+
+    def test_the_server_speaks_https_only_with_a_certificate_that_only_its_own_file_vouches_for(self):
+        release = self.build()
+        with rs.serve(self.out, release.tag) as served:
+            plain = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+            with self.assertRaises(urllib.error.URLError):
+                plain.open(served.url + "/releases/latest")
+            with self.assertRaises(Exception):
+                plain.open(served.url.replace("https://", "http://") + "/releases/latest")
 
     def test_the_sites_installer_installs_kb_from_the_served_release(self):
         release = self.build()

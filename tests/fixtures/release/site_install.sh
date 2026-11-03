@@ -21,25 +21,29 @@ main() {
 
 	repo="${SUPERHISTORY_REPO:-$DEFAULT_REPO}"
 	repo="${repo%/}"
+	# Every request and every redirect stays on https, so the code this runs never travels unencrypted.
 	case "$repo" in
 		https://*) ;;
-		http://127.0.0.1:* | http://localhost:*) ;;
-		*) fail "the repo address must start with https://, not $repo" ;;
+		*) fail "the repo address must start with https://." ;;
 	esac
 
 	# GitHub answers /releases/latest with a redirect to the newest release, /releases/tag/<tag>.
-	latest="$(curl -fsSL -o /dev/null -w '%{url_effective}' "$repo/releases/latest")" ||
+	latest="$(curl -fsSL --proto =https --proto-redir =https -o /dev/null -w '%{url_effective}' "$repo/releases/latest")" ||
 		fail "found no release at $repo/releases/latest."
+	case "$latest" in
+		*/releases/tag/?*) ;;
+		*) fail "found no release at $repo/releases/latest." ;;
+	esac
 	tag="${latest##*/releases/tag/}"
 	case "$tag" in
-		'' | *[!A-Za-z0-9._-]*) fail "found no release at $repo/releases/latest." ;;
+		*[!A-Za-z0-9._-]*) fail "the newest release's tag has characters other than letters, digits, dots, dashes and underscores." ;;
 	esac
 
 	work="$(mktemp -d)"
 	trap 'rm -rf "$work"' EXIT
 	trap 'exit 130' INT TERM
 	say "Downloading $tag from $repo"
-	curl -fsSL "$repo/archive/refs/tags/$tag.tar.gz" -o "$work/release.tar.gz" ||
+	curl -fsSL --proto =https --proto-redir =https "$repo/archive/refs/tags/$tag.tar.gz" -o "$work/release.tar.gz" ||
 		fail "could not download $repo/archive/refs/tags/$tag.tar.gz."
 	mkdir "$work/src"
 	tar -xzf "$work/release.tar.gz" -C "$work/src" || fail "could not unpack release $tag."

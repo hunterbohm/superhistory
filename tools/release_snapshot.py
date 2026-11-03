@@ -2,8 +2,7 @@
 """Builds the launch release from one commit: a fresh git repo with no history, its notes, its archive, its checks.
 
     python3 tools/release_snapshot.py COMMIT OUT_DIR --author "Name <email>" --patterns FILE --credential TEXT
-        [--credential TEXT ...] [--allow-link OWNER/NAME ...] [--allow-file PATH ...] [--repo-name NAME]
-        [--installer install.sh] [--source REPO]
+        [--credential TEXT ...] [--repo-name NAME] [--installer install.sh] [--no-suites] [--source REPO]
 
 OUT_DIR must be absent or empty. It gets:
 
@@ -16,24 +15,41 @@ Nothing is pushed, and nothing is created on GitHub. The private values are argu
 snapshot's own check would find them here. The exit code is 0 when every check that ran passed, 1 when one failed
 (the folder is still written, for a look), and 2 when the run could not start.
 
+Two lists ship in COMMIT and steer the run. Both are tab-separated, and a blank line or a line starting with # is
+skipped:
+
+    bench/DATASET_ROWS.txt         <path><TAB><reason>. Every listed file is left out of the snapshot. The run does not
+                                   start without this file, or when a line is not an exact path to a file in COMMIT.
+    tools/release_exceptions.tsv   <path><TAB><string><TAB><reason>. A pattern hit is excepted only where its file
+                                   equals the path and the line's matching text is the exact string, never a pattern.
+
 The checks:
 
     history     the repo holds one commit with no parent, one branch, one tag, no remote
     credential  no object in the repo, the notes or the archive holds a made-up credential, in any case
     patterns    no file's text or name, no symlink target, no note and no commit message matches a line of the
-                patterns file, read as `grep -i -E -f` reads it. A link to a repo named by --allow-link is not a
-                hit, and neither is a file named by --allow-file; both are listed apart.
+                patterns file, read as `grep -i -E -f` reads it, unless the exceptions list excepts the hit. The
+                list's own lines are not scanned. An entry that matches nothing is reported as stale.
+    dataset     no file named in DATASET_ROWS.txt is in the tree or the archive
     archive     the archive holds the same files as the tree, under one folder, with install.sh in it
-    install     --installer: the site's installer, run against a local server of this folder, installs `kb`
+    install     --installer: the site's installer, run against a local https server of this folder (a throwaway
+                certificate from openssl, trusted through CURL_CA_BUNDLE), installs `kb`
+    suites      the snapshot's own tests, run inside the snapshot: tests/ under python3 and python3.9, and each
+                folder of bench/ that holds test files, under python3. Every test must pass or skip with a reason,
+                and the run must leave the snapshot as it found it. --no-suites skips this check.
 """
 import argparse
+import concurrent.futures
 import contextlib
 import dataclasses
 import gzip
 import http.server
 import os
+import posixpath
 import re
 import shutil
+import site
+import ssl
 import subprocess
 import sys
 import tarfile
@@ -45,6 +61,10 @@ SHOWN_FILES = 40
 SHOWN_LINES = 3
 LINE_WIDTH = 160
 VERSION_FILE = "kb/__init__.py"
+EXCEPTIONS_PATH = "tools/release_exceptions.tsv"
+ROWS_PATH = "bench/DATASET_ROWS.txt"
+SUITE_TIMEOUT = 3600
+SKIPPED = re.compile(r"\.\.\. skipped ('.*'|\".*\")\s*$", re.M)
 TAG_REF = "refs/tags/"
 ISOLATED = {"GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1"}
 
@@ -66,6 +86,7 @@ class CheckResult:
     summary: str
     findings: list = dataclasses.field(default_factory=list)
     allowed: list = dataclasses.field(default_factory=list)
+    notes: list = dataclasses.field(default_factory=list)
 
     @property
     def ok(self):
@@ -81,6 +102,7 @@ class Release:
     archive: object
     out: object
     checks: list
+    left_out: list = dataclasses.field(default_factory=list)
 
     def check(self, name):
         return next(c for c in self.checks if c.name == name)
@@ -93,9 +115,9 @@ class Release:
         return report(self)
 
 
-def result(name, problems, summary_ok, summary_bad, findings=(), allowed=()):
+def result(name, problems, summary_ok, summary_bad, findings=(), allowed=(), notes=()):
     summary = summary_bad if problems else summary_ok
-    return CheckResult(name, "FAIL" if problems else "PASS", summary, list(findings), list(allowed))
+    return CheckResult(name, "FAIL" if problems else "PASS", summary, list(findings), list(allowed), list(notes))
 
 
 def run(cmd, cwd=None, env=None, input=None):
@@ -143,6 +165,41 @@ def parse_author(text):
     if not found:
         raise ReleaseError('--author must look like "Name <email>"')
     return found.group(1), found.group(2)
+
+
+def commit_file(source, commit, path):
+    listed = git_bytes(source, "ls-tree", "-z", commit, "--", path)
+    if not listed:
+        return None
+    return git_bytes(source, "cat-file", "blob", "%s:%s" % (commit, path)).decode("utf-8", "replace")
+
+
+def table_rows(text, name, width):
+    rows = []
+    for number, line in enumerate(text.splitlines(), 1):
+        if not line.strip() or line.startswith("#"):
+            continue
+        fields = line.split("\t")
+        if len(fields) != width or not all(f.strip() for f in fields):
+            raise ReleaseError("%s line %d is not %d tab-separated, non-empty fields" % (name, number, width))
+        rows.append(fields)
+    return rows
+
+
+def read_exceptions(text):
+    return [tuple(row) for row in table_rows(text or "", EXCEPTIONS_PATH, 3)]
+
+
+def read_rows(text, source, commit):
+    files = {show(name) for mode, sha, name in tree_entries(source, commit)}
+    listed = []
+    for path, reason in table_rows(text, ROWS_PATH, 2):
+        exact = path == posixpath.normpath(path) and not path.startswith("/") and ".." not in path.split("/")
+        if not exact or path not in files:
+            raise ReleaseError("%s lists %r, which is not a file in the commit (a path must be exact, from the top)" % (ROWS_PATH, path))
+        if path not in listed:
+            listed.append(path)
+    return sorted(listed)
 
 
 def read_version(source, commit):
@@ -312,17 +369,6 @@ def check_credential(repo, credentials, extra=None, archive=None, tag=None):
                   "a made-up credential is still here: %d place%s" % (len(findings), "" if len(findings) == 1 else "s"), findings)
 
 
-def link_regex(slugs):
-    for slug in slugs:
-        if not re.match(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$", slug):
-            raise ReleaseError("--allow-link takes OWNER/NAME, not %r" % slug)
-    if not slugs:
-        return None
-    alternatives = b"|".join(re.escape(s.encode()) for s in slugs)
-    return re.compile(rb"(?:(?:git\+)?https?://|git@)?github\.com[/:](?:" + alternatives + rb")(?![A-Za-z0-9_-])"
-                      rb"(?:\.git)?(?:/[^\s\"'<>)\]`]*)?", re.I)
-
-
 def grep_command(patterns, *more):
     return ["grep", "-a", "-n", "-i", "-E", "-f", str(patterns), *more]
 
@@ -352,11 +398,9 @@ def grep_tree(patterns, root):
     return hits
 
 
-def check_patterns(repo, patterns, allow_links=(), allow_files=(), extra=None):
-    link = link_regex(list(allow_links))
-    allow_files = set(allow_files)
+def check_patterns(repo, patterns, exceptions=(), extra=None):
     entries = tree_entries(repo)
-    candidates = grep_tree(patterns, repo)
+    candidates = [c for c in grep_tree(patterns, repo) if c[0] != EXCEPTIONS_PATH]
     links = [(show(name), git_bytes(repo, "cat-file", "blob", sha, isolated=True)) for mode, sha, name in entries if mode == "120000"]
     for index in grep_lines(patterns, [target for _, target in links]):
         candidates.append((links[index][0], 0, links[index][1]))
@@ -367,25 +411,34 @@ def check_patterns(repo, patterns, allow_links=(), allow_files=(), extra=None):
     if any(b"\n" in name for name in paths):
         raise ReleaseError("a file name holds a line break, which this check cannot read")
     bad_paths = [paths[i] for i in grep_lines(patterns, paths)]
-    stripped = [(c, link.sub(b" ", c[2]) if link else c[2]) for c in candidates]
-    changed = [i for i, (c, text) in enumerate(stripped) if text != c[2]]
-    still = {changed[i] for i in grep_lines(patterns, [stripped[i][1] for i in changed])}
+    strings = {}
+    for path, string, _ in exceptions:
+        strings.setdefault(path, []).append(string.encode())
+    used, rest = set(), []
+    for path, number, original in candidates:
+        text = original
+        for string in strings.get(path, ()):
+            if string in original:
+                used.add((path, string.decode()))
+                text = text.replace(string, b" ")
+        rest.append(text)
+    changed = [i for i, (c, text) in enumerate(zip(candidates, rest)) if text != c[2]]
+    still = {changed[i] for i in grep_lines(patterns, [rest[i] for i in changed])}
     findings, allowed = [], []
-    for position, ((path, number, original), text) in enumerate(stripped):
+    for position, (path, number, original) in enumerate(candidates):
         row = Finding("%s:%d" % (path, number) if number else path, show(original)[:LINE_WIDTH])
-        if path in allow_files or (text != original and position not in still):
+        if rest[position] != original and position not in still:
             allowed.append(row)
         else:
             findings.append(row)
-    for name in bad_paths:
-        row = Finding(show(name), "(a file name)")
-        (allowed if show(name) in allow_files else findings).append(row)
+    findings.extend(Finding(show(name), "(a file name)") for name in bad_paths)
     findings.sort(key=where_key)
     allowed.sort(key=where_key)
-    summary_ok = "0 hits in %d files and names" % len(entries)
-    if allowed:
-        summary_ok += "; %d allowed, listed below" % len(allowed)
-    return result("patterns", findings, summary_ok, "%d hits in %d files" % (len(findings), len(group(findings))), findings, allowed)
+    stale = ["stale: %s: %s" % (path, string) for path, string, _ in exceptions if (path, string) not in used]
+    tail = "".join(["; %d excepted" % len(allowed) if allowed else "", "; %d stale" % len(stale) if stale else ""])
+    return result("patterns", findings, "0 hits outside the exceptions list in %d files and names%s" % (len(entries), tail),
+                  "%d hits outside the exceptions list in %d files%s" % (len(findings), len(group(findings)), tail),
+                  findings, allowed, stale)
 
 
 def where_key(finding):
@@ -420,6 +473,17 @@ def check_archive(release_repo, archive, prefix):
                   "; ".join(problems), [Finding(p) for p in problems])
 
 
+def check_dataset(repo, archive, listed, prefix):
+    present = {show(name) for _, _, name in tree_entries(repo)}
+    with tarfile.open(str(archive)) as tar:
+        packed = {n[len(prefix):] for n in tar.getnames() if n.startswith(prefix)}
+    back = [p for p in listed if p in present or p in packed]
+    count = "%d file%s" % (len(listed), "" if len(listed) == 1 else "s")
+    return result("dataset", back, "%s named in %s left out of the tree and the archive" % (count, ROWS_PATH),
+                  "%d listed file%s still in the snapshot" % (len(back), "" if len(back) == 1 else "s"),
+                  [Finding(p, "listed in %s" % ROWS_PATH) for p in back])
+
+
 def serve_handler(out_dir, tag, log):
     class Handler(http.server.BaseHTTPRequestHandler):
         def log_message(self, fmt, *args):
@@ -430,7 +494,7 @@ def serve_handler(out_dir, tag, log):
                 log.append(self.path)
             if self.path == "/releases/latest":
                 self.send_response(302)
-                self.send_header("Location", "http://%s/releases/tag/%s" % (self.headers.get("Host"), tag))
+                self.send_header("Location", "https://%s/releases/tag/%s" % (self.headers.get("Host"), tag))
                 self.send_header("Content-Length", "0")
                 self.end_headers()
             elif self.path == "/releases/tag/" + tag:
@@ -458,17 +522,42 @@ def serve_handler(out_dir, tag, log):
     return Handler
 
 
+@dataclasses.dataclass
+class Served:
+    url: str
+    cafile: str
+
+
+def make_certificate(folder):
+    config = os.path.join(folder, "openssl.cnf")
+    with open(config, "w") as fh:
+        fh.write("[req]\ndistinguished_name = dn\nprompt = no\nx509_extensions = ext\n[dn]\nCN = 127.0.0.1\n"
+                 "[ext]\nsubjectAltName = IP:127.0.0.1\nbasicConstraints = critical,CA:TRUE\n"
+                 "keyUsage = critical,digitalSignature,keyCertSign\n")
+    cert, key = os.path.join(folder, "cert.pem"), os.path.join(folder, "key.pem")
+    done = run(["openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "2", "-config", config,
+                "-keyout", key, "-out", cert])
+    if done.returncode:
+        raise ReleaseError("could not make a throwaway certificate with openssl: %s" % done.stderr.decode("utf-8", "replace").strip())
+    return cert, key
+
+
 @contextlib.contextmanager
 def serve(out_dir, tag, log=None):
-    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), serve_handler(out_dir, tag, log))
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-    try:
-        yield "http://127.0.0.1:%d" % server.server_address[1]
-    finally:
-        server.shutdown()
-        server.server_close()
-        thread.join()
+    with tempfile.TemporaryDirectory(prefix="release-cert-") as folder:
+        cert, key = make_certificate(folder)
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), serve_handler(out_dir, tag, log))
+        context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        context.load_cert_chain(cert, key)
+        server.socket = context.wrap_socket(server.socket, server_side=True)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            yield Served("https://127.0.0.1:%d" % server.server_address[1], cert)
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join()
 
 
 def run_install_check(release, installer, timeout=300):
@@ -479,9 +568,9 @@ def run_install_check(release, installer, timeout=300):
         os.makedirs(home)
         os.makedirs(pybin)
         os.symlink(sys.executable, os.path.join(pybin, "python3"))
-        with serve(release.out, release.tag, requests) as base:
+        with serve(release.out, release.tag, requests) as served:
             env = {"HOME": home, "PATH": os.pathsep.join([pybin, "/usr/bin", "/bin"]), "TMPDIR": tmp,
-                   "SUPERHISTORY_REPO": base}
+                   "SUPERHISTORY_REPO": served.url, "CURL_CA_BUNDLE": served.cafile}
             try:
                 installed = subprocess.run(["sh", str(installer)], env=env, cwd=tmp, stdin=subprocess.DEVNULL,
                                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=timeout)
@@ -508,7 +597,75 @@ def run_install_check(release, installer, timeout=300):
                 findings.extend(Finding("kb --help", line) for line in help_text.splitlines()[:10])
     if findings:
         return CheckResult("install", "FAIL", "the site's installer ran but the install is not whole", findings)
-    return CheckResult("install", "PASS", "the site's installer fetched %s from a local server and `kb --help` ran from ~/.local/bin" % release.tag)
+    return CheckResult("install", "PASS", "the site's installer fetched %s from a local https server and `kb --help` ran from ~/.local/bin" % release.tag)
+
+
+@dataclasses.dataclass
+class Suite:
+    label: str
+    argv: list
+
+
+def default_suites(repo, interpreters=("python3", "python3.9")):
+    suites = [Suite("%s tests" % py, [py, "-m", "unittest", "discover", "-v", "-s", "tests", "-t", "."]) for py in interpreters]
+    folders = {posixpath.dirname(show(name)) for _, _, name in tree_entries(repo)
+               if show(name).startswith("bench/") and re.search(r"(^|/)test_[^/]*\.py$", show(name))}
+    suites.extend(Suite(folder, [interpreters[0], "-m", "unittest", "discover", "-v", "-s", folder, "-p", "test_*.py"])
+                  for folder in sorted(folders))
+    return suites
+
+
+def run_suite(suite, repo, env, timeout):
+    exe = shutil.which(suite.argv[0])
+    if exe is None:
+        return suite.label, None, 0, [], ["%s is not on PATH" % suite.argv[0]]
+    try:
+        done = subprocess.run([exe] + suite.argv[1:], cwd=str(repo), env=env, stdout=subprocess.PIPE,
+                              stderr=subprocess.STDOUT, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return suite.label, None, 0, [], ["ran past %d seconds" % timeout]
+    text = done.stdout.decode("utf-8", "replace")
+    ran = re.search(r"(?m)^Ran (\d+) tests? in", text)
+    count = int(ran.group(1)) if ran else 0
+    reasons = [m.group(1)[1:-1] for m in SKIPPED.finditer(text)]
+    counted = re.search(r"\(.*skipped=(\d+)", text)
+    problems = []
+    if done.returncode:
+        problems.append("exit %d" % done.returncode)
+        lines = [l for l in text.splitlines() if re.match(r"(FAIL|ERROR): ", l)]
+        problems.extend(lines[:10] or [l for l in text.splitlines() if l.strip()][-5:])
+    if not count:
+        problems.append("ran no tests")
+    if any(not r.strip() for r in reasons):
+        problems.append("%d skipped without a reason" % sum(1 for r in reasons if not r.strip()))
+    if counted and int(counted.group(1)) > len(reasons):
+        problems.append("%d skipped with no reason shown" % (int(counted.group(1)) - len(reasons)))
+    return suite.label, done.returncode, count, reasons, problems
+
+
+def run_suites(repo, suites, timeout=SUITE_TIMEOUT):
+    with tempfile.TemporaryDirectory(prefix="release-suites-") as home:
+        env = {k: v for k, v in os.environ.items() if k not in ("PYTHONPATH", "KB_HOME")}
+        env.setdefault("PYTHONUSERBASE", site.getuserbase())
+        env.update({"HOME": home, "PYTHONDONTWRITEBYTECODE": "1"})
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, len(suites))) as pool:
+            runs = list(pool.map(lambda suite: run_suite(suite, repo, env, timeout), suites))
+    findings, notes, total, skipped = [], [], 0, 0
+    for label, code, count, reasons, problems in runs:
+        total += count
+        skipped += len(reasons)
+        notes.append("%s: %d tests, %d skipped, %s" % (label, count, len(reasons), "failed" if problems else "passed"))
+        tally = {}
+        for reason in reasons:
+            tally[reason] = tally.get(reason, 0) + 1
+        notes.extend("  %s skipped %d: %s" % (label, n, r) for r, n in sorted(tally.items(), key=lambda kv: -kv[1])[:15])
+        findings.extend(Finding(label, p) for p in problems)
+    left = git(repo, "status", "--porcelain", isolated=True)
+    findings.extend(Finding("snapshot", "left behind: %s" % line) for line in left.splitlines())
+    failed = sum(1 for run_ in runs if run_[4])
+    count = "%d suite%s, %d tests, %d skipped, each with a reason" % (len(runs), "" if len(runs) == 1 else "s", total, skipped)
+    return result("suites", findings, count + ", 0 failed", "%s; %d failed%s" % (count, failed, ", files left behind" if left else ""),
+                  findings, (), notes)
 
 
 def clear(path, created):
@@ -520,13 +677,11 @@ def clear(path, created):
         shutil.rmtree(full, ignore_errors=True) if os.path.isdir(full) else os.remove(full)
 
 
-def build(source, rev, out, *, author, patterns, credentials, allow_links=(), allow_files=(), repo_name=None,
-          installer=None):
+def build(source, rev, out, *, author, patterns, credentials, repo_name=None, installer=None, suites=None):
     credentials = list(credentials)
     if not credentials or not all(c.strip() for c in credentials):
         raise ReleaseError("give at least one made-up credential to look for, each non-blank")
     read_patterns(patterns)
-    link_regex(list(allow_links))
     name, email = parse_author(author)
     done = run(["git", "rev-parse", "--verify", "--quiet", rev + "^{commit}"], cwd=source)
     if done.returncode:
@@ -540,6 +695,12 @@ def build(source, rev, out, *, author, patterns, credentials, allow_links=(), al
     readme = shown.stdout.decode("utf-8", "replace")
     title = readme_parts(readme)[0]
     notes_text = release_notes(readme, tag)
+    exceptions = read_exceptions(commit_file(source, commit, EXCEPTIONS_PATH))
+    rows = commit_file(source, commit, ROWS_PATH)
+    if rows is None:
+        raise ReleaseError("%s is missing from the commit: it names the bench files whose rows quote LoCoMo or "
+                           "LongMemEval text, and the run does not start without it" % ROWS_PATH)
+    left_out = read_rows(rows, source, commit)
     repo_name = repo_name or re.sub(r"[^a-z0-9._-]+", "-", title.lower()).strip("-")
     out = os.path.abspath(str(out))
     if os.path.isdir(out) and os.listdir(out):
@@ -548,14 +709,26 @@ def build(source, rev, out, *, author, patterns, credentials, allow_links=(), al
     os.makedirs(out, exist_ok=True)
     try:
         return assemble(source, commit, out, name, email, tag, title, repo_name, notes_text, patterns, credentials,
-                        allow_links, allow_files, installer)
+                        exceptions, left_out, installer, suites)
     except BaseException:
         clear(out, created)
         raise
 
 
-def assemble(source, commit, out, name, email, tag, title, repo_name, notes_text, patterns, credentials, allow_links,
-             allow_files, installer):
+def snapshot_tree(repo, commit, left_out):
+    if not left_out:
+        return git(repo, "rev-parse", "%s^{tree}" % commit, isolated=True)
+    env = {"GIT_INDEX_FILE": os.path.join(repo, ".git", "release-index")}
+    git(repo, "read-tree", commit, env=env, isolated=True)
+    git(repo, "update-index", "--force-remove", "-z", "--stdin", env=env, isolated=True,
+        input=b"".join(path.encode() + b"\0" for path in left_out))
+    tree = git(repo, "write-tree", env=env, isolated=True)
+    os.remove(env["GIT_INDEX_FILE"])
+    return tree
+
+
+def assemble(source, commit, out, name, email, tag, title, repo_name, notes_text, patterns, credentials, exceptions,
+             left_out, installer, suites):
     repo = os.path.join(out, "repo")
     git(out, "init", "-q", "--template=", repo, isolated=True)
     git(repo, "symbolic-ref", "HEAD", "refs/heads/main", isolated=True)
@@ -569,7 +742,7 @@ def assemble(source, commit, out, name, email, tag, title, repo_name, notes_text
     ident = {"GIT_AUTHOR_NAME": name, "GIT_AUTHOR_EMAIL": email, "GIT_AUTHOR_DATE": stamp,
              "GIT_COMMITTER_NAME": name, "GIT_COMMITTER_EMAIL": email, "GIT_COMMITTER_DATE": stamp}
     message = "%s %s" % (title, tag)
-    tree = git(repo, "rev-parse", "%s^{tree}" % commit, isolated=True)
+    tree = snapshot_tree(repo, commit, left_out)
     snapshot = git(repo, "commit-tree", tree, "-m", message, env=ident, isolated=True)
     git(repo, "update-ref", "refs/heads/main", snapshot, isolated=True)
     git(repo, "tag", tag, snapshot, isolated=True)
@@ -591,17 +764,16 @@ def assemble(source, commit, out, name, email, tag, title, repo_name, notes_text
             packed.write(tar)
 
     extra = {"RELEASE_NOTES.md": notes_text}
-    release = Release(tag, snapshot, Path(repo), Path(notes), Path(archive), Path(out), [])
+    release = Release(tag, snapshot, Path(repo), Path(notes), Path(archive), Path(out), [], left_out)
     release.checks = [
         check_history(repo, tag),
         check_credential(repo, credentials, extra, archive),
-        check_patterns(repo, patterns, allow_links, allow_files, dict(extra, **{"commit message": message})),
+        check_patterns(repo, patterns, exceptions, dict(extra, **{"commit message": message})),
+        check_dataset(repo, archive, left_out, prefix),
         check_archive(repo, archive, prefix),
+        run_install_check(release, installer) if installer else CheckResult("install", "SKIP", "not run: no --installer given"),
+        run_suites(repo, suites(repo)) if suites else CheckResult("suites", "SKIP", "not run: --no-suites given"),
     ]
-    if installer:
-        release.checks.append(run_install_check(release, installer))
-    else:
-        release.checks.append(CheckResult("install", "SKIP", "not run: no --installer given"))
     return release
 
 
@@ -612,10 +784,11 @@ def report(release):
         top[key] = top.get(key, 0) + 1
     lines = ["tag: %s" % release.tag, "commit: %s" % release.commit, "repo: %s" % release.repo,
              "notes: %s" % release.notes, "archive: %s (%d bytes)" % (release.archive, os.path.getsize(str(release.archive))),
-             "files: %d (%s)" % (sum(top.values()), ", ".join("%s %d" % item for item in sorted(top.items())))]
+             "files: %d (%s)" % (sum(top.values()), ", ".join("%s %d" % item for item in sorted(top.items()))),
+             "left out: %d%s" % (len(release.left_out), " (%s%s)" % (", ".join(release.left_out[:5]), ", ..." if len(release.left_out) > 5 else "") if release.left_out else "")]
     for check in release.checks:
         lines.append("%s %s: %s" % (check.status, check.name, check.summary))
-        for label, found in (("", check.findings), ("allowed ", check.allowed)):
+        for label, found in (("", check.findings), ("excepted ", check.allowed)):
             grouped = group(found)
             if check.name != "patterns" and not label:
                 lines.extend("    %s%s%s" % (f.where, ": " if f.text else "", f.text) for f in found[:SHOWN_LINES * 3])
@@ -626,6 +799,7 @@ def report(release):
                 lines.extend("        %s: %s" % (r.where, r.text) for r in rows[:SHOWN_LINES])
             if len(grouped) > SHOWN_FILES:
                 lines.append("    %s... and %d more files" % (label, len(grouped) - SHOWN_FILES))
+        lines.extend("    " + note for note in check.notes)
     lines.append("RESULT: %s" % ("PASS" if release.ok else "FAIL"))
     return "\n".join(lines) + "\n"
 
@@ -646,17 +820,14 @@ def main(argv=None):
     parser.add_argument("--patterns", required=True, help="a file of grep -E patterns that nothing public may match")
     parser.add_argument("--credential", action="append", default=[], required=True,
                         help="a made-up credential that must not appear anywhere in the snapshot (repeatable)")
-    parser.add_argument("--allow-link", action="append", default=[], metavar="OWNER/NAME",
-                        help="a GitHub repo whose links are not hits (repeatable)")
-    parser.add_argument("--allow-file", action="append", default=[], metavar="PATH",
-                        help="a file whose pattern hits are listed but do not fail (repeatable)")
     parser.add_argument("--repo-name", help="the public repo's name, for the archive's folder (default: the README title)")
     parser.add_argument("--installer", help="the site's install.sh, to run against a local server of the output")
+    parser.add_argument("--no-suites", action="store_true", help="skip the check that runs the snapshot's own tests")
     args = parser.parse_args(argv)
     try:
         release = build(args.source or toplevel(None), args.commit, args.out, author=args.author,
-                        patterns=args.patterns, credentials=args.credential, allow_links=args.allow_link,
-                        allow_files=args.allow_file, repo_name=args.repo_name, installer=args.installer)
+                        patterns=args.patterns, credentials=args.credential, repo_name=args.repo_name,
+                        installer=args.installer, suites=None if args.no_suites else default_suites)
     except ReleaseError as exc:
         print("release_snapshot: %s" % exc, file=sys.stderr)
         return 2
