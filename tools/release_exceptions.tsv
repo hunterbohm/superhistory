@@ -1,0 +1,39 @@
+LICENSE	Hunter Bohm	the copyright holder named in the MIT licence
+bench/month-b/items.jsonl	414 768 1024	screen widths in pixels, in a shell command in a made-up coding session: they read as a phone number
+bench/month-b/items.jsonl	720 555 0192	a made-up phone number in the 555-01xx block reserved for fiction, from the fictional month
+bench/month-b/items.jsonl	720 555 0193	a made-up phone number in the 555-01xx block reserved for fiction, from the fictional month
+bench/month-b/items.jsonl	720-555-0186	a made-up phone number in the 555-01xx block reserved for fiction, from the fictional month
+bench/month-b/questions.jsonl	720-555-0177	a made-up phone number in the 555-01xx block reserved for fiction, from the fictional month
+bench/month-b/questions.jsonl	720-555-0186	a made-up phone number in the 555-01xx block reserved for fiction, from the fictional month
+bench/month/noise/sessions.py	414 768 1024	screen widths in pixels, in a shell command in a made-up coding session: they read as a phone number
+bench/month/stories_b/client2.py	720-555-0186	a made-up phone number in the 555-01xx block reserved for fiction, from the fictional month
+bench/month/stories_b/client3.py	720 555 0192	a made-up phone number in the 555-01xx block reserved for fiction, from the fictional month
+bench/month/stories_b/client3.py	720 555 0193	a made-up phone number in the 555-01xx block reserved for fiction, from the fictional month
+bench/month/stories_b/client3.py	720-555-0177	a made-up phone number in the 555-01xx block reserved for fiction, from the fictional month
+bench/results/hillclimb/month/a-k2/check.jsonl	720 555 0186	a made-up phone number in the 555-01xx block reserved for fiction, quoted in a recorded answer about the fictional month
+bench/results/hillclimb/month/a-k3/check.jsonl	720 555 0186	a made-up phone number in the 555-01xx block reserved for fiction, quoted in a recorded answer about the fictional month
+bench/results/hillclimb/month/a-noise1/check.jsonl	720 555 0186	a made-up phone number in the 555-01xx block reserved for fiction, quoted in a recorded answer about the fictional month
+bench/results/hillclimb/month/b-baseline-paired/check.jsonl	720-555-0177	a made-up phone number in the 555-01xx block reserved for fiction, quoted in a recorded answer about the fictional month
+bench/results/hillclimb/month/b-baseline-paired/check.jsonl	720-555-0186	a made-up phone number in the 555-01xx block reserved for fiction, quoted in a recorded answer about the fictional month
+bench/results/hillclimb/month/b-baseline/check.jsonl	720-555-0177	a made-up phone number in the 555-01xx block reserved for fiction, quoted in a recorded answer about the fictional month
+bench/results/hillclimb/month/b-baseline/check.jsonl	720-555-0186	a made-up phone number in the 555-01xx block reserved for fiction, quoted in a recorded answer about the fictional month
+bench/results/hillclimb/month/b-final/check.jsonl	720 555 0192	a made-up phone number in the 555-01xx block reserved for fiction, quoted in a recorded answer about the fictional month
+bench/results/hillclimb/month/b-final/check.jsonl	720 555 0193	a made-up phone number in the 555-01xx block reserved for fiction, quoted in a recorded answer about the fictional month
+bench/results/hillclimb/month/b-final/check.jsonl	720-555-0177	a made-up phone number in the 555-01xx block reserved for fiction, quoted in a recorded answer about the fictional month
+bench/results/hillclimb/month/b-final/check.jsonl	720-555-0186	a made-up phone number in the 555-01xx block reserved for fiction, quoted in a recorded answer about the fictional month
+bench/results/hillclimb/month/b-final/claude-mem.jsonl	720-555-0177	a made-up phone number in the 555-01xx block reserved for fiction, quoted in a recorded answer about the fictional month
+bench/results/hillclimb/month/b-final/claude-mem.jsonl	720-555-0186	a made-up phone number in the 555-01xx block reserved for fiction, quoted in a recorded answer about the fictional month
+bench/results/hillclimb/month/b-final/mem0.jsonl	720-555-0177	a made-up phone number in the 555-01xx block reserved for fiction, quoted in a recorded answer about the fictional month
+bench/results/hillclimb/month/b-final/mem0.jsonl	720-555-0186	a made-up phone number in the 555-01xx block reserved for fiction, quoted in a recorded answer about the fictional month
+bench/results/hillclimb/month/b-final/supermemory.jsonl	720 555 0192	a made-up phone number in the 555-01xx block reserved for fiction, quoted in a recorded answer about the fictional month
+bench/results/hillclimb/month/b-final/supermemory.jsonl	720 555 0193	a made-up phone number in the 555-01xx block reserved for fiction, quoted in a recorded answer about the fictional month
+bench/results/hillclimb/month/b-final/supermemory.jsonl	720-555-0177	a made-up phone number in the 555-01xx block reserved for fiction, quoted in a recorded answer about the fictional month
+bench/results/hillclimb/month/b-final/supermemory.jsonl	720-555-0186	a made-up phone number in the 555-01xx block reserved for fiction, quoted in a recorded answer about the fictional month
+bench/results/hillclimb/month/b-final/supermemory.jsonl	800-555-0100	a made-up customer-support number from the 555-01xx block reserved for fiction, in a rival tool's recorded memory of the fictional month
+bench/results/hillclimb/month/b-midpoint/check.jsonl	720 555 0192	a made-up phone number in the 555-01xx block reserved for fiction, quoted in a recorded answer about the fictional month
+bench/results/hillclimb/month/b-midpoint/check.jsonl	720 555 0193	a made-up phone number in the 555-01xx block reserved for fiction, quoted in a recorded answer about the fictional month
+bench/results/hillclimb/month/b-midpoint/check.jsonl	720-555-0177	a made-up phone number in the 555-01xx block reserved for fiction, quoted in a recorded answer about the fictional month
+bench/results/hillclimb/month/b-midpoint/check.jsonl	720-555-0186	a made-up phone number in the 555-01xx block reserved for fiction, quoted in a recorded answer about the fictional month
+bench/results/month/check-cards.jsonl	720-555-0186	a made-up phone number in the 555-01xx block reserved for fiction, quoted in a recorded answer about the fictional month
+bench/results/month/claude-mem.jsonl	720-555-0186	a made-up phone number in the 555-01xx block reserved for fiction, quoted in a recorded answer about the fictional month
+demo/month/items.jsonl	414 768 1024	screen widths in pixels, in a shell command in a made-up coding session: they read as a phone number
