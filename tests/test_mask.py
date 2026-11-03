@@ -939,6 +939,30 @@ class ReviewSixTest(unittest.TestCase):
                     self.assertEqual(mask(text), text)
 
 
+class ReviewSevenTest(unittest.TestCase):
+    """#34's seventh review: a key's fragment split by an invisible character inside a line of words, and base64 of
+    documentation whose quoted header follows a short label at a wrap."""
+
+    def test_a_fragment_split_by_an_invisible_character_after_a_line_of_words_stays_masked(self):
+        head = "[masked]\nMC4CAQAwBQYDK2VwBCIEIAABAgMEBQYHCAkKCwwNDg8QERIT\nnotes deploy "
+        for fragment in ("ABCDEFGH​abcdefgh", "Zq7v​Rt2L", "abcd­EFGH1234"):
+            with self.subTest(fragment=repr(fragment)):
+                masked = mask(head + fragment)
+                self.assertNotIn(fragment.split("​")[0].split("­")[0], masked)
+
+    def test_base64_of_documentation_quoting_a_header_after_a_short_label_stays(self):
+        import base64
+        import textwrap
+        for label in (b"Note: ", b"See: ", b"e.g. ", b"Tip:\t"):
+            doc = (b"The following example shows the opening delimiter.\n" + label
+                   + b"-----BEGIN PRIVATE KEY-----\nRead the documentation before importing.\n")
+            encoded = base64.b64encode(doc).decode()
+            for width in range(40, 81, 4):
+                text = "\n".join(textwrap.wrap(encoded, width))
+                with self.subTest(label=label, width=width):
+                    self.assertEqual(mask(text), text)
+
+
 class HeadlessKeyTest(unittest.TestCase):
     """A key's body without its header, as an older kb's row-by-row remask leaves the chunk after the header's."""
     LINE = "MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7"
