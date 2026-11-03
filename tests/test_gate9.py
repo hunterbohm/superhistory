@@ -1620,6 +1620,41 @@ class ReviewTwentySixTest(unittest.TestCase):
                 with self.subTest(text=form):
                     self.assertNotIn("Tr0ub4dor9", mask(form))
 
+
+class ReviewTwentySevenTest(unittest.TestCase):
+    """The twenty-seventh review's findings, under the coordinator's five-item bar."""
+
+    def test_a_provider_token_after_a_colour_code_that_follows_letters(self):
+        secret = "dapi" + "0123456789abcdef" * 2
+        for text in (f"prefix\x1b[31m{secret}", f"prefix\x1b[01;31m\x1b[K{secret}\x1b[m\x1b[K",
+                     f"key=\x1b[1m{secret}\x1b[0m", json.dumps(f"prefix\x1b[31m{secret}")):
+            with self.subTest(text=text):
+                self.assertNotIn(secret, mask(text))
+        for reader in READERS:
+            with self.subTest(reader=reader):
+                self.assertNotIn(secret, stored(reader, tool_call(reader, "Bash", {"command": f"echo prefix\x1b[31m{secret}"})))
+
+    def test_an_azure_client_secret_right_after_an_escape(self):
+        secret = "AbC7Q~a1B2c3D4e5F6g7H8i9J0k1L2m3N4p5Q6"
+        for text in (json.dumps({"stdout": "ready\n" + secret}), json.dumps({"stdout": "ready\t" + secret}),
+                     repr("ready\n" + secret), "ready%0A" + secret):
+            with self.subTest(text=text):
+                self.assertNotIn(secret, mask(text))
+
+    def test_a_netrc_machine_only_where_a_line_starts(self):
+        for text in ("Focus the machine learning login page password field.",
+                     "Open the machine room login page password field first."):
+            for form in (text, json.dumps(text)):
+                with self.subTest(text=form):
+                    self.assertEqual(mask(form), form)
+        for text in ("machine api.example.com login deploy password Tr0ub4dor9",
+                     "  machine api.example.com login deploy password Tr0ub4dor9",
+                     "$ cat ~/.netrc\nmachine api.example.com login deploy password Tr0ub4dor9",
+                     "machine a.example.com login u password Qz8rLm2xWq machine b.example.com login v password Tr0ub4dor9"):
+            for form in (text, json.dumps(text)):
+                with self.subTest(text=form):
+                    self.assertNotIn("Tr0ub4dor9", mask(form))
+
 # Commands as an argument list, each flag's value its own item: (the list, the items masked).
 ARGV = (
     (["login", "--password", PASSWORD], {2}), (["--token", SUB], {1}), (["--api-key", SUB, "--verbose"], {1}),
