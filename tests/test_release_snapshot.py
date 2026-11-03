@@ -1622,6 +1622,18 @@ class InstallTest(SourceCase):
         self.assertFalse(result.ok)
         self.assertIn("exec failed on purpose", "\n".join(f.text for f in result.findings))
 
+    def test_a_group_that_empties_on_its_own_as_it_is_checked_is_no_leftover(self):
+        calls = []
+
+        def killpg(pgid, sig):
+            calls.append(sig)
+            if sig:
+                raise ProcessLookupError(3, "No such process")
+
+        with mock.patch.object(rs.os, "killpg", side_effect=killpg):
+            self.assertEqual(rs.run_group(["true"], timeout=10), (0, b""))
+        self.assertEqual(calls[0], 0)
+
     def test_a_command_that_runs_past_its_time_loses_its_whole_process_group(self):
         marker = self.tmp / "grandchild.pid"
         started = time.time()
