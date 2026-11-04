@@ -4,12 +4,14 @@ by a continuation, a program name or flag inside a colour code, and a command gi
 secrets only."""
 import ast
 import json
+import os
 import shlex
 import subprocess
+import tempfile
 import time
 import unittest
 
-from kb import mask as masking
+from kb import mask as masking, store
 from kb.mask import mask, mask_all
 
 PASSWORD = "Zq7vRt2LmX9k"
@@ -1119,6 +1121,54 @@ class ReviewTwelveTest(unittest.TestCase):
                 for text in (str(subprocess.CalledProcessError(1, items)), json.dumps(items), " ".join(items)):
                     self.assertEqual(mask(text), text)
 
+
+
+class ReviewThirteenTest(unittest.TestCase):
+    """The thirteenth review's finding: strings that each hold a deeply nested list, encoded once more at each step,
+    made the parse-whole reading re-enter mask_all until Python's recursion ran out, so masking raised and the row was
+    dropped. The bracket depth is now counted across those steps, and past the guard's depth the span is read as text
+    is, fail-closed."""
+
+    @staticmethod
+    def nested(innermost, steps, depth):
+        s = json.dumps(innermost)
+        for _ in range(steps):
+            s = "[" * depth + json.dumps(s) + "]" * depth
+        return s
+
+    def test_lists_nested_through_encoded_strings_mask_without_raising(self):
+        for steps, depth in ((8, 60), (12, 40), (3, 63), (2, 99)):
+            for innermost in (["keytool"], ["keytool", "-storepass", PASSWORD]):
+                text = self.nested(innermost, steps, depth)
+                with self.subTest(steps=steps, depth=depth, innermost=innermost):
+                    masked = mask(text)
+                    if PASSWORD not in json.dumps(innermost):
+                        self.assertEqual(masked, text)
+                    self.assertEqual(mask_all({"out": text})["out"], masked)
+
+    def test_many_encoding_steps_cost_time_in_proportion(self):
+        # each step's json.dumps doubles the backslashes before, so the text doubles with each step
+        for innermost in (["keytool"], ["keytool", "-storepass", PASSWORD]):
+            small, large = self.nested(innermost, 13, 1), self.nested(innermost, 14, 1)
+            with self.subTest(innermost=innermost):
+                self.assertLess(took(large), 1.0)
+                self.assertLess(took(large), 4 * took(small) + 0.05)
+
+    def test_such_a_row_is_stored(self):
+        text = self.nested(["keytool"], 8, 60)
+        with tempfile.TemporaryDirectory() as tmp:
+            db = store.connect(os.path.join(tmp, "kb.sqlite"))
+            try:
+                store.store_item(db, "codex", "c-r13", "2026-11-01T10:00:00Z", "nested", text, {})
+                self.assertEqual(db.execute("SELECT count(*) FROM docs").fetchone()[0], 1)
+            finally:
+                db.close()
+
+    def test_a_password_two_steps_down_still_masks(self):
+        for steps, depth in ((2, 1), (2, 3), (3, 2)):
+            text = self.nested(["keytool", "-list", "-storepass", PASSWORD], steps, depth)
+            with self.subTest(steps=steps, depth=depth):
+                self.assertNotIn(PASSWORD, mask(text))
 
 
 class RevisionTest(unittest.TestCase):
