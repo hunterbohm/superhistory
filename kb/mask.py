@@ -399,6 +399,8 @@ _ANY_COMMAND = re.compile(r"(?i)curl|mysql|mariadb|sshpass|login|redis-cli|mongo
 # aws configure set's row, and aws's options that take a value (its global options): a setting's name right after one
 # is that option's value, as "token" is in "aws configure set --profile token ...", not the setting.
 _AWS_FLAG = next(row[1] for row, (command, _, _) in zip(_COMMANDS, COMMAND_FLAGS) if command.startswith("aws"))
+# A line's continuation as a word of its own: a backslash before the line break, raw or escaped once or more ("\\\\n").
+_CONTINUATION_WORD = re.compile(r"(?:\\+[rn]?)+")
 _AWS_VALUE_OPTIONS = frozenset(("--profile", "--region", "--output", "--endpoint-url", "--query", "--ca-bundle",
                                 "--color", "--cli-read-timeout", "--cli-connect-timeout", "--cli-binary-format"))
 # A field name that by itself names a secret, as a dict's key does, "pass" and "pwd" too.
@@ -760,14 +762,17 @@ tsadigestalg tsapolicyid v validity verbose verify version
 
 def _flag_matches(text, flag, start, end):
     """flag.finditer(text, start, end), but for aws configure set's row not where the setting's name is the value of
-    one of aws's options that take one (_AWS_VALUE_OPTIONS), as written or in quotes, plain or escaped; the setting
-    may come right after it. Only the 48 characters before a name are read for the option."""
+    one of aws's options that take one (_AWS_VALUE_OPTIONS), as written or in quotes, plain or escaped, with a line's
+    continuation or none between them; the setting may come right after it. Only the 96 characters before a name are
+    read for the option."""
     at = start
     while True:
         m = flag.search(text, at, end)
         if m is None:
             return
-        words = text[max(start, m.start() - 48):m.start()].split() if flag is _AWS_FLAG else ()
+        words = text[max(start, m.start() - 96):m.start()].split() if flag is _AWS_FLAG else []
+        while words and _CONTINUATION_WORD.fullmatch(words[-1]):
+            words.pop()
         if words and words[-1].strip("'\"\\").lower() in _AWS_VALUE_OPTIONS:
             at = m.start() + 1
             continue
@@ -902,10 +907,11 @@ def _quote_marks(text, quote):
 
 
 # A string's prefix before its opening quote: Python's r, b, u, f and t and their pairs (rb, fr), C and C++'s L, u8 and
-# R, C#'s @ and $, and Rust's r#. It counts right after a bracket, a comma, "=", ":" or the line's start, and not before
-# a word's ending ("B's", "T'd"), where the quote is an apostrophe.
+# R, C#'s @ and $, and Rust's r#. It counts where an opening quote would, after a bracket, a comma, "=", ":", a space or
+# the line's start, and not where a single quote stands before a word's ending ("B's", "T'd", "U're") and a space or a
+# mark, as an apostrophe does; a string's own word ("Re-enter"), or a double quote's ("Re enter"), is no ending.
 _STRING_PREFIX = re.compile(r"[rRbBuUfFtT]{1,2}|u8R?|LR?|\$@|@\$|[@$]|b?r#{1,3}")
-_WORD_ENDING = re.compile(r"(?i)(?:s|t|d|m|ll|re|ve)\b")
+_WORD_ENDING = re.compile(r"(?i)(?:s|t|d|m|ll|re|ve)(?=[\s.,;!?]|\Z)")
 
 
 def _opens_a_string(text, at, line):
@@ -913,10 +919,10 @@ def _opens_a_string(text, at, line):
     bracket, a comma, "=", ":" or a space, or after a string's prefix (_STRING_PREFIX) there."""
     if at == line or text[at - 1] in " \t([{,=:":
         return True
-    if _WORD_ENDING.match(text, at + 1):
+    if text[at] == "'" and _WORD_ENDING.match(text, at + 1):
         return False
     for start in range(at - 1, max(line, at - 5) - 1, -1):
-        if _STRING_PREFIX.fullmatch(text, start, at) and (start == line or text[start - 1] in "([{,=:"):
+        if _STRING_PREFIX.fullmatch(text, start, at) and (start == line or text[start - 1] in " \t([{,=:"):
             return True
     return False
 
@@ -1962,17 +1968,38 @@ _LABEL_PART = re.compile(r"[A-Za-z0-9_-]+|[^A-Za-z0-9\s_-]+")
 _LABEL_PART_MARK = re.compile(r"[^A-Za-z0-9\s_-]+")
 
 
-def _names_a_secret(label):
-    """Whether one label names a secret and nothing else: a secret's word or run of words, and besides it only a form's
-    own words, joining words, numbers, and a credential's kind (read with a neighbour as well, as camel case splits
-    "GitHub") before the secret or after a mark or joining word. One pass, so a long label costs time in proportion to
-    its length."""
-    words = []  # each word, and "" where a mark stands
+def _label_words(label):
+    """A label's words, in lower case, and "" where a mark stands."""
+    words = []
     for part in _LABEL_PART.finditer(label):
         if _LABEL_PART_MARK.fullmatch(part.group(0)):
             words.append("")
         else:
             words += [word.lower() for word in _LABEL_WORD.findall(part.group(0))]
+    return words
+
+
+def _typing_verb(words):
+    """Where the label's "type" is its verb, a form's word ("Type your password", "Re-type password", "Please type
+    your PIN", "#typePassword"), not the secret's kind ("Password type", "Type of password", "Type: password"): after
+    only a form's words, with a word after it that is no joining word. -1 where it has none."""
+    k = 0
+    while k < len(words) and not words[k]:
+        k += 1
+    while k < len(words) and words[k] in _FORM_WORDS:
+        k += 1
+    if k + 1 < len(words) and words[k] == "type" and words[k + 1] and words[k + 1] not in _JOINING_WORDS:
+        return k
+    return -1
+
+
+def _names_a_secret(label):
+    """Whether one label names a secret and nothing else: a secret's word or run of words, and besides it only a form's
+    own words, joining words, numbers, and a credential's kind (read with a neighbour as well, as camel case splits
+    "GitHub") before the secret or after a mark or joining word. One pass, so a long label costs time in proportion to
+    its length."""
+    words = _label_words(label)  # each word, and "" where a mark stands
+    verb = _typing_verb(words)
     in_run = set()
     for k in range(len(words)):
         for run in _SECRET_RUNS:
@@ -1991,19 +2018,21 @@ def _names_a_secret(label):
         if (word in _SECRET_KINDS or k and words[k - 1] + word in _SECRET_KINDS
                 or k + 1 < len(words) and word + words[k + 1] in _SECRET_KINDS) and not after_secret:
             kind = True
-        elif word not in _FORM_WORDS and not word.isdigit():
+        elif word not in _FORM_WORDS and not word.isdigit() and k != verb:
             return False
     return secret or kind and "tokens" in words
 
 
 def _asks_for_a_secret(labels):
     """Whether a field's labels ask for a secret: one names a secret and nothing else (_names_a_secret), and none is
-    about one or finds them (_ABOUT_WORDS), read word by word after a selector's own attribute names are taken out
-    ("input[name=password]")."""
+    about one or finds them (_ABOUT_WORDS, but "type" as the label's verb, _typing_verb), read word by word after a
+    selector's own attribute names are taken out ("input[name=password]")."""
     asks = False
     for label in labels:
         label = _without_attribute_names(label)
-        if _ABOUT_WORDS.intersection(w.lower() for w in _LABEL_WORD.findall(label)):
+        words = _label_words(label)
+        verb = _typing_verb(words)
+        if any(word in _ABOUT_WORDS and k != verb for k, word in enumerate(words)):
             return False
         asks = asks or _names_a_secret(label)
     return asks
