@@ -1493,6 +1493,24 @@ class Base64ReviewFifteenTest(unittest.TestCase):
                             self.assertEqual(once, f"[masked]\n{after}\n{words}")
                             self.assertEqual(mask(once), once)
 
+    def test_a_chain_of_certificates_and_a_line_of_words_after_a_key_are_kept(self):
+        import base64
+        import random
+        import textwrap
+        r = random.Random(1519)
+        key = Base64ReviewFourteenTest.key64()
+        chain = made_up_certificate(r) + made_up_certificate(r)
+        # one stream, or one per element, the first ending in base64's padding (a bundle, 2 bytes past whole groups)
+        streams = ([base64.b64encode(chain).decode()],
+                   [base64.b64encode(Base64ReviewFourteenTest.bundle(r)).decode(), self.certificate(r)])
+        for parts in streams:
+            for after in ("\n".join(parts), "\n".join(line for part in parts for line in textwrap.wrap(part, 64))):
+                for words in ("deploy on port 8080", "next steps"):
+                    with self.subTest(lines=after.count("\n"), words=words, streams=len(parts)):
+                        once = mask(f"{key}\n{after}\n{words}")
+                        self.assertEqual(once, f"[masked]\n{after}\n{words}")
+                        self.assertEqual(mask(once), once)
+
     def test_after_a_placeholder_a_certificate_then_a_private_keys_lines_stay_masked(self):
         import base64
         import random
