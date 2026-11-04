@@ -2087,7 +2087,7 @@ _WORDS_LINE = (r"(?:\r?\n|(?<!\\)\\+(?:r\\+)?n)(?![ \t\"'#>*]*-----)[ \t\"'#>*-]
 # escaped at any depth: the field after it ('", "note": "next steps"}') is no part of the key. A list of strings, one
 # line of the body each, goes on, as no field's name follows its comma.
 _NEXT_FIELD = r"(?<!\\)\\*\"[ \t]*(?:\}|,[ \t]*\\*\"[\w.-]+\\*\"[ \t]*:)"
-_REST = re.compile(rf"(?:(?!{_KEY_END})(?!{_WORDS_LINE})(?!{_NEXT_FIELD}){_IN_PARAGRAPH})*(?:{_KEY_END})?")
+_REST = re.compile(rf"((?:(?!{_KEY_END})(?!{_WORDS_LINE})(?!{_NEXT_FIELD}){_IN_PARAGRAPH})*)(?:{_KEY_END})?")
 _KEY_END_TEXT = re.compile(_KEY_END)
 _PEM_HEADER = re.compile("-----BEGIN ")
 # A run of backslashes is tried once, from its start: tried at each of them, a long run took time in its square.
@@ -2454,35 +2454,93 @@ def _public_rest(rest):
     return bool(data) and _public_material(data)
 
 
-def _key_rest_edits(text, starts=_REST_START):
-    """The rest of a key after an older kb's placeholder (`starts`, _REST) as an edit that removes it, unless its
-    base64 decodes whole as public material. Each placeholder outside the core of the rest before it is read once, and
-    each core runs once to its end, so a paragraph of many costs time in proportion."""
-    spans, core, covered, tail, past = [], 0, 0, None, None
-    older = _STORED_ROW.get()
+def _rest_ends(text):
+    """Where main's reading of a key's rest (_REST) from each place in `text` ends, read once for each stretch: it
+    reads a character at a time up to the first place where one of its stops holds, whatever its start, so every start
+    before that place ends where the first did, and many placeholders in one paragraph cost time in proportion. Places
+    are asked for in order."""
+    last = [-1, -1, -1]  # where the last reading started, where its stop holds, where it ended
+
+    def end(at):
+        if not last[0] <= at <= last[1]:
+            m = _REST.match(text, at)
+            last[:] = at, m.end(1), m.end()
+        return last[2]
+    return end
+
+
+def _key_rests(text, starts=_REST_START):
+    """Each key's rest after an older kb's placeholder (`starts`, _REST) that main's reading would remove, in order, as
+    (where it starts, where it ends, whether it stays): it stays where it starts with public material and holds no run
+    of base64 past it (_public_first), and is removed unless its base64 decodes whole as public material. Base64 glued
+    to a placeholder that starts no rest, as before a line break escaped twice, is read so too, but only to stay: such
+    a run's own reading (_glued_run_edits) masks it otherwise, as main's does. Each placeholder outside the core of the
+    rest before it is read once, and each core runs once to its end, so a paragraph of many costs time in proportion."""
+    core, covered, tail, past, ends = 0, 0, None, None, _rest_ends(text)
+    start = _ID_REST_START if starts is _REST_START and not _STORED_ROW.get() else starts
     for at in _PLACEHOLDER.finditer(text):
-        start = _ID_REST_START if starts is _REST_START and not older else starts
-        if at.start() < core or not start.match(text, at.end()):
+        if at.start() < core:
             continue
-        reach = _REST.match(text, at.end()).end()
+        rest = start.match(text, at.end())
+        if not rest and not _BASE64_CHARACTER.match(text, at.end()):
+            continue
+        reach = ends(at.end())
         tail = tail or _token_tail(text)
         end = tail(reach)  # a placeholder past the core, in the tail, still reads its own rest
         if end <= covered:  # which ends inside one already masked, read before the public material past it, which
-            core = reach  # reads on to `end`: many such in one tail took time in its square
+            core = reach if rest else core  # reads on to `end`: many such in one tail took time in its square
             continue
         past = past or _runs_past(text)
         if _public_first(text, at.end(), end, past):
-            continue  # public material, then no run of base64 through all main hides: no key's rest
+            yield at.end(), end, True  # public material, then no run of base64 through all main hides: no key's rest
+            continue
+        if not rest:
+            continue
         core = reach
         if not _public_rest(text[at.end():end]):
-            spans.append((at.end(), end))
             covered = max(covered, end)
-    edits = []
-    for start, end in spans:  # in order of their starts; one in a tail can run past it
-        if edits and start <= edits[-1][1]:
+            yield at.end(), end, False
+
+
+class _Rests(list):
+    """_key_rest_edits' edits, and in `stays` where each rest it keeps as public material starts and ends."""
+    stays = ()
+
+
+def _key_rest_edits(text, starts=_REST_START):
+    """The rest of a key after an older kb's placeholder (_key_rests) as an edit that removes it, unless it stays; the
+    stretches of those that stay are its `stays`."""
+    edits, stays = _Rests(), []
+    for start, end, kept in _key_rests(text, starts):  # in order of their starts; one in a tail can run past it
+        if kept:
+            stays.append((start, end))
+        elif edits and start <= edits[-1][1]:
             edits[-1] = (edits[-1][0], max(edits[-1][1], end), "")
         else:
             edits.append((start, end, ""))
+    edits.stays = stays
+    return edits
+
+
+def _glued_run_edits(text, rests):
+    """Each run of characters glued to a placeholder (_GLUED_RUN) as an edit that masks it with the placeholder, as
+    main's does, but for a run of whole public material (_public_prefix) inside a key's rest that the reading of keys'
+    rests in force (`rests`, _key_rest_edits) keeps as public material (its `stays`), from that run's own placeholder
+    or one before it: that rest stays only as the run's lines are public material, and the run masked alone left the
+    lines after it to read as a key's fragment, which took the rest with it. Such a run stays, and only its placeholder
+    is replaced, as main's edit replaces it. A reading that keeps no rest, as main's, masks every such run."""
+    edits, stays, i = [], None, 0
+    for m in _GLUED_RUN.finditer(text):
+        at = m.start() + len("[masked]")
+        if stays is None:
+            stays = getattr(rests(text), "stays", ())
+        while i + 1 < len(stays) and stays[i + 1][0] <= at:  # the last to start by it, which ends last
+            i += 1
+        if stays and stays[i][0] <= at < stays[i][1] and _public_prefix(
+                [line for line, _, _ in _base64_lines(text, at, stays[i][1])]):
+            edits.append((m.start(), at, "[masked]"))
+        else:
+            edits.append((m.start(), m.end(), "[masked]"))
     return edits
 
 
@@ -2570,8 +2628,7 @@ def _run(text, rules, origin=None, named=None, fired=None):
             note(pattern)
         text, origin = _edit(text, origin, edits)
     rests = (lambda text: _key_rest_edits(text, _ID_REST_START)) if reading == "plain" else _key_rest_edits
-    for edits in (_docker_login_edits, rests, _headless_key_edits,
-                  lambda text: [(m.start(), m.end(), "[masked]") for m in _GLUED_RUN.finditer(text)]):
+    for edits in (_docker_login_edits, rests, _headless_key_edits, lambda text: _glued_run_edits(text, rests)):
         text, origin = _edit(text, origin, edits(text))
     for pattern, main in zip(PREFIXED_SECRETS if reading != "main" else _MAIN_PREFIXED, _MAIN_PREFIXED):
         found = list(pattern.finditer(text))
@@ -2917,13 +2974,16 @@ def _main_once(text, origin):
 
 def _passes(text, step):
     """`step`, a pass that tracks where each character came from, repeated until it changes nothing: (the text, where
-    each of its characters came from in `text`, whether it still changed after MAX_PASSES)."""
+    each of its characters came from in `text`, whether it still changed after MAX_PASSES). The pass that changes
+    nothing is counted too, as it can put a placeholder down for one, with what was glued to it kept
+    (_glued_run_edits)."""
     origin = list(range(len(text)))
     for _ in range(MAX_PASSES):
         masked, came = step(text, list(range(len(text))))
+        origin = [origin[c] if c >= 0 else -1 for c in came]
         if masked == text:
             return text, origin, False
-        text, origin = masked, [origin[c] if c >= 0 else -1 for c in came]
+        text = masked
     return text, origin, True
 
 
