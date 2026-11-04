@@ -9,8 +9,10 @@ came from (mask_with_origin).
 This branch (#34) reads a key's rest more narrowly than main, by design and with the coordinator's exception for it:
 past a key's rest, ordinary text (a line of words, a JSON object's next field) and base64 that decodes whole as public
 material stay, which main's reading takes (tests/test_mask_against_main.py's key_rest_changes). A difference from
-today's main counts as by design only where today's main's reading of a key's rest, swapped in, explains it, and no
-run of base64 past public material shows four characters or more (by_design). Anything else fails."""
+today's main counts as by design only where today's main's reading of a key's rest, swapped in, explains it, no run
+of base64 past public material shows four characters or more, and each run of text shown so, masked alone by today's
+main, comes back unchanged, so no password or token today's main would hide among those words shows (by_design).
+Anything else fails."""
 import hashlib
 import importlib.util
 import json
@@ -75,7 +77,8 @@ _BASE64_RUN = re.compile(r"(?<![A-Za-z0-9+/])(?=[A-Za-z0-9+/]*[A-Z])(?=[A-Za-z0-
 def by_design(text, shown):
     """Of `shown`, positions this branch shows that today's main hides, those it shows by design (the module's
     docstring): where today's main's reading of a key's rest, swapped in for this branch's, hides them too; but none of
-    a run of base64 past public material of which four characters or more show."""
+    a run of base64 past public material of which four characters or more show, nor of a run of them that today's
+    main, masking it alone, changes."""
     saved, head._key_rest_edits = head._key_rest_edits, main._key_rest_edits
     try:
         explained = set(shown) & hidden(head, text)
@@ -90,6 +93,9 @@ def by_design(text, shown):
         seen = explained.intersection(range(m.start(), m.end())) - public
         if len(seen) >= 4:
             explained -= seen
+    for start, end in runs(sorted(explained)):
+        if main.mask(text[start:end]) != text[start:end]:
+            explained -= set(range(start, end))
     return explained
 
 
