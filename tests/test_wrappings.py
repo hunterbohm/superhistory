@@ -1551,6 +1551,35 @@ class ReviewEighteenTest(unittest.TestCase):
                     self.assertNotIn(PASSWORD, json.dumps(mask_all(items)))
                     self.assertNotIn(PASSWORD, mask(json.dumps(items)))
 
+
+class ReviewNineteenTest(unittest.TestCase):
+    """The nineteenth review's finding: past the 64 items before a flag, a long item beside where a command is named
+    was cut to its ends and where it names commands, which dropped the ";" that ended the command's line inside it, so
+    the command read on into the items after it and masked an ssh port ("-p 2222") that main keeps."""
+
+    @staticmethod
+    def ssh(script, fillers):
+        return ["ssh", "-o", "ProxyCommand=" + script] + ["-o", "SendEnv=TERM"] * fillers + ["-p", "2222", "example.invalid"]
+
+    def test_a_command_whose_line_ends_inside_a_long_item_takes_no_later_flag(self):
+        a = self.ssh("echo mongosh " + "x" * 150 + "; exec nc %h %p # " + "y" * 150, 35)
+        self.assertEqual(mask_all(a)[-3:], ["-p", "2222", "example.invalid"])
+        for text in (json.dumps(a), str(subprocess.CalledProcessError(1, a)), shlex.join(a), json.dumps(shlex.join(a))):
+            with self.subTest(text=text[:20]):
+                self.assertIn("2222", mask(text))
+
+    def test_a_long_item_past_the_64_items_before_a_flag_reads_as_it_does_among_them(self):
+        # where the command's line ends inside the item, and where it runs on past it
+        for name in ("mongosh", "twine", "sshpass", "docker login", "az login"):
+            for end in ("; exec nc %h %p", " | tee log", " && true", " # a note", "\\n next", ""):
+                for script in (f"echo {name} {'x' * 150}{end} {'y' * 150}", f"{'x' * 300} {name} --quiet{end}",
+                               f"{name} {'x' * 150}{end} curl {'y' * 150}"):
+                    far, near = self.ssh(script, 35), self.ssh(script, 3)
+                    with self.subTest(name=name, end=end, at=script.index(name)):
+                        self.assertEqual(mask_all(far)[-2], mask_all(near)[-2])
+                        self.assertEqual("2222" in mask(json.dumps(far)), "2222" in mask(json.dumps(near)))
+
+
 class RevisionTest(unittest.TestCase):
     def test_stored_rows_are_masked_again(self):
         self.assertEqual(masking.REVISION, 13)
