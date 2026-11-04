@@ -604,7 +604,7 @@ def _gitleaks_edits(text):
 # Which mask() a stored row was masked with. A row of another version, or of none, is masked again when read and by
 # the next ingest. The patterns change it by themselves; bump REVISION when the code that applies them changes what
 # it masks.
-REVISION = 30
+REVISION = 31
 VERSION = f"r{REVISION}-" + hashlib.sha256(repr((REVISION, [p.pattern for p in SECRET_PATTERNS + PREFIXED_SECRETS], KEYED_SECRET.pattern,
                                 ENV_KEY_SECRET.pattern, JSON_SECRET.pattern, FLAG_SECRET.pattern, AUTH_SECRET.pattern,
                                 COMMAND_FLAGS, PASSWORD_NAME.pattern, sorted(PLACEHOLDERS), REFERENCE.pattern,
@@ -722,7 +722,13 @@ def _frame(joined, starts, found):
         continues = bool(before) and _reads_as_text(before) and (
             len(before) >= 8 and (b" " in before or _letters_past_ascii(before) >= 2)
             or before[-1:] in (b" ", b"\t"))  # "Note: -----BEGIN ..."
-        opens = opens or m.start() % 3 == 0 and not continues and (
+        # A line of the block starts there only as its wrapping breaks, however short the text before it ("例：",
+        # "Ex:"): one stream wrapped at one width writes every line but its last as long as the next, where a key in a
+        # stream of its own starts after another's last, shorter line (_wrapping_break). A key there still ends at its
+        # footer, which a line break opens.
+        wrapped = bool(before) and _reads_as_text(before) and 0 < line < len(starts) and starts[line] == first and (
+            _wrapping_break(starts, line, len(joined)))
+        opens = opens or m.start() % 3 == 0 and not continues and not wrapped and (
             first == opened or line < len(starts) and starts[line] == first)
         # or after the byte order mark a file saved on Windows starts with, where the encoded text starts: the mark
         # is a group of its own, the one before the header's
@@ -733,6 +739,15 @@ def _frame(joined, starts, found):
         closes = decoded[m.end():m.end() + 1] in (b"\r", b"\n") or m.end() == len(decoded) and closed
         return (m.group(1), first) if opens and closes else None
     return None
+
+
+def _wrapping_break(starts, line, size):
+    """Whether the break before line `line` of a joined base64 block (`starts`, each line's start; `size`, the block's
+    length) is the block's own wrapping: the line before it is as long as this one, or, for the block's last line,
+    which a wrapping leaves shorter, no shorter than it."""
+    before = starts[line] - starts[line - 1]
+    own = (starts[line + 1] if line + 1 < len(starts) else size) - starts[line]
+    return before == own or line + 1 == len(starts) and before > own
 
 
 def _footer_ahead(joined, starts, found):
@@ -2143,7 +2158,13 @@ def _public_material(data, bundles=True):
     first = [(_element(data, p[1], p[2]) or (None,))[0] for p in parts]
     tags = [p[0] for p in parts]
     if tags == [0x30, 0x30, 0x03]:
-        return first[0] in (0xa0, 0x02) and first[1] == 0x06
+        if first[1] != 0x06:
+            return False
+        if first[0] in (0xa0, 0x02):
+            return True
+        # a list of revoked certificates in version 1, which starts with how it is signed, then its issuer and when
+        signed = _elements(data, parts[0][1], parts[0][2]) or []
+        return [e[0] for e in signed[:3]] in ([0x30, 0x30, 0x17], [0x30, 0x30, 0x18])
     if tags == [0x06, 0xa0]:
         return bundles and data[parts[0][1]:parts[0][2]] == _PKCS7_SIGNED_DATA and _certificate_bundle(data, *parts[1][1:])
     return tags == [0x30, 0x03] and first[0] == 0x06
@@ -2197,6 +2218,58 @@ def _token_tail(text):
     return through
 
 
+# A line of base64 as a key's rest or public material is written, past what can stand around it (quotes, comment and
+# quote marks, a list's punctuation), read without the characters a reader does not see.
+_BASE64_ONLY_LINE = re.compile(r"[ \t\r\"'#>*,;|\]]*([A-Za-z0-9+/]+=*)?[ \t\r\"',;]*")
+_ANY_LINE_OF_BASE64 = re.compile(r"(?<![A-Za-z0-9+/=])(?=[A-Za-z0-9+/=]*[A-Z])(?=[A-Za-z0-9+/=]*[a-z])"
+                                 r"(?=[A-Za-z0-9+/=]*[0-9+/])[A-Za-z0-9+/=]{36,}")
+
+
+def _public_first(text, start, end):
+    """Whether text[start:end], what main reads as a key's rest after a placeholder, starts with whole lines of base64
+    that decode to public material, one element or a run of them as a chain of certificates is (_public_material), and
+    holds no line of base64 past them: then it is no key's rest, and the lines after the material, a port's number or
+    an acronym among their words ("port 8080", "HTTP", "build 20261104"), are its own. A run of base64 lines that
+    holds a private key's bytes too decodes to no such run. Read once, in time in proportion."""
+    chunks, at, last = [], start, start
+    for brk in itertools.chain(_LINE_BREAK.finditer(text, start, end), [None]):
+        stop = brk.start() if brk else end
+        line = _BASE64_ONLY_LINE.fullmatch(INVISIBLE.sub("", _KEY_ESCAPE.sub("", text[at:stop])))
+        if line is None:
+            break
+        if line.group(1):
+            chunks.append(line.group(1))
+            last = stop
+        if brk is None:
+            break
+        at = brk.end()
+    # each stream decoded alone: one ends at base64's padding, as each element encoded alone does
+    streams, current = [], []
+    for chunk in chunks:
+        current.append(chunk)
+        if chunk.endswith("="):
+            streams.append("".join(current))
+            current = []
+    streams.append("".join(current))
+    parts = [_base64_decoded(stream, 0, None) if len(stream) % 4 == 0 else None for stream in streams if stream]
+    if not parts or not all(parts):
+        return False
+    data, at = b"".join(parts), 0
+    while at < len(data):
+        element = _element(data, at, len(data))
+        if element is None or not _public_material(data[at:element[2]]):
+            return False
+        at = element[2]
+    return not _ANY_LINE_OF_BASE64.search(INVISIBLE.sub("", text[last:end]))
+
+
+def _public_rest(rest):
+    """Whether the text after a placeholder decodes whole, as base64, to public material (_public_material)."""
+    data = None if _KEY_END_TEXT.search(rest) else _base64_decoded(
+        re.sub(r"[^A-Za-z0-9+/=]", "", _KEY_ESCAPE.sub("", INVISIBLE.sub("", rest))), 0, None)
+    return bool(data) and _public_material(data)
+
+
 def _key_rest_edits(text, starts=_REST_START):
     """The rest of a key after an older kb's placeholder (`starts`, _REST) as an edit that removes it, unless its
     base64 decodes whole as public material. Each placeholder outside the core of the rest before it is read once, and
@@ -2207,15 +2280,15 @@ def _key_rest_edits(text, starts=_REST_START):
         start = _ID_REST_START if starts is _REST_START and not older else starts
         if at.start() < core or not start.match(text, at.end()):
             continue
-        core = _REST.match(text, at.end()).end()
+        reach = _REST.match(text, at.end()).end()
+        if _public_first(text, at.end(), reach):
+            continue  # public material, then no line of base64: no key's rest, and the lines after it are its own
+        core = reach
         tail = tail or _token_tail(text)
         end = tail(core)  # a placeholder past the core, in the tail, still reads its own rest
         if end <= covered:  # which ends inside one already masked
             continue
-        rest = text[at.end():end]
-        data = None if _KEY_END_TEXT.search(rest) else _base64_decoded(
-            re.sub(r"[^A-Za-z0-9+/=]", "", _KEY_ESCAPE.sub("", INVISIBLE.sub("", rest))), 0, None)
-        if not (data and _public_material(data)):
+        if not _public_rest(text[at.end():end]):
             spans.append((at.end(), end))
             covered = max(covered, end)
     edits = []
