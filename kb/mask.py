@@ -2682,16 +2682,18 @@ _LEAD_ITEM = 256
 
 def _lead_item(items, j, cut):
     """items[j] as the line before a later flag reads it: whole up to _LEAD_ITEM characters; past that, its first and
-    last 64 and the 64 on each side of where it first and last names a command (_COMMAND_NAME), joined by "...", which
-    no command's name runs into, so the command it names is still read and each later flag reads a few hundred
-    characters of it. Cut once for the list (`cut`)."""
+    last 64 and the 64 on each side of where it first and last names each command it names (_COMMAND_NAME), joined by
+    "...", which no command's name runs into, so every command it names is still read, and each later flag reads at
+    most a few thousand characters of it, as few commands have names. Cut once for the list (`cut`)."""
     item = items[j]
     if len(item) <= _LEAD_ITEM:
         return item
     if j not in cut:
         spans = [(0, 64), (len(item) - 64, len(item))]
-        names = list(_COMMAND_NAME.finditer(item))
-        spans += [(max(0, m.start() - 64), m.end() + 64) for m in names[:1] + names[-1:]]
+        names = {}  # each command's name: where the item first and last names it
+        for m in _COMMAND_NAME.finditer(item):
+            names.setdefault(m.group(1).lower(), [m, m])[1] = m
+        spans += [(max(0, m.start() - 64), m.end() + 64) for pair in names.values() for m in pair]
         merged = []
         for start, end in sorted(spans):
             if merged and start <= merged[-1][1]:
