@@ -910,7 +910,12 @@ class ReviewNineTest(unittest.TestCase):
         self.assertEqual(mask_all(small), small)
         little, lots = took_call(lambda: mask_all(small)), took_call(lambda: mask_all(large))
         self.assertLess(lots, 6 * little + 0.2, (little, lots))  # four times the list, about four times the CPU
-        self.assertLess(lots, 1.0, lots)  # within a few times main's 0.2 s for 2,000 overrides (CPU time)
+        # Within a few times main's 0.2 s for 2,000 overrides: the list's reading adds little to masking each of its items
+        # alone, the cost every list pays, measured in the same run so the machine's load weighs on both alike (alone,
+        # 0.70 s against 0.2 s on main; 3.6 s before the fix).
+        floor = took_call(lambda: [mask(item) for item in large])
+        self.assertLess(lots, 1.5 * floor + 0.2, (floor, lots))
+        self.assertLess(lots, 2.0, lots)
 
 
 class RevisionTest(unittest.TestCase):
