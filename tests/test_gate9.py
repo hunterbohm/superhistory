@@ -2214,11 +2214,17 @@ class ReviewFortyThreeTest(unittest.TestCase):
                     self.assertNotIn("sunshine", mask(text))
 
     def test_a_containers_name_is_not_its_childs(self):
-        for code in ('page.locator("#password-form").getByLabel("Email").fill("me@example.com")',
-                     'page.get_by_test_id("password-reset").get_by_label("Email").fill("me@example.com")'):
+        for code in ('page.get_by_test_id("password-reset").get_by_label("Email").fill("me@example.com")',):
             for text in (code, json.dumps(code), json.dumps({"code": code})):
                 with self.subTest(text=text[:70]):
                     self.assertEqual(mask(text), text)
+
+    def test_a_container_that_asks_for_a_secret_marks_its_child(self):
+        """Flipped by the union rule (round 45): a container whose own selector asks for a secret names its fields."""
+        code = 'page.locator("#password-form").getByLabel("Email").fill("me@example.com")'
+        for wrap in (lambda t: t, json.dumps, lambda t: json.dumps({"code": t})):
+            with self.subTest(text=wrap(code)[:70]):
+                self.assertEqual(mask(wrap(code)), wrap(code.replace("me@example.com", "[masked]")))
 
     def test_many_commented_records_cost_time_in_proportion(self):
         import time
@@ -2282,6 +2288,83 @@ class ReviewFortyFourTest(unittest.TestCase):
         for text in (code, json.dumps(code), json.dumps({"code": code}), json.dumps(json.dumps(code))):
             with self.subTest(text=text[:70]):
                 self.assertNotIn("sunshine", mask(text))
+
+
+
+class UnionFieldTest(unittest.TestCase):
+    """The union rule for a code typing call's field (round 45): any one string of a locator call in its chain, or of
+    its own selector, that asks for a secret on its own names the field so, and no other string takes that back.
+    Strings of other calls in the chain (filter, describe) are not read."""
+
+    WRAPS = (lambda t: t, json.dumps, lambda t: json.dumps({"code": t}), lambda t: json.dumps(json.dumps(t)))
+
+    def masks(self, value, *codes):
+        for code in codes:
+            for wrap in self.WRAPS:
+                with self.subTest(text=wrap(code)[:90]):
+                    self.assertEqual(mask(wrap(code)), wrap(code.replace(value, "[masked]")))
+
+    def stays(self, *codes):
+        for code in codes:
+            for wrap in self.WRAPS:
+                with self.subTest(text=wrap(code)[:90]):
+                    self.assertEqual(mask(wrap(code)), wrap(code))
+
+    # round 44's findings
+    def test_a_strategy_takes_no_secret_back(self):
+        self.masks("sunshine", 'driver.find_element("id", "password").send_keys("sunshine")',
+                   'driver.find_element("name", "password").send_keys("sunshine")',
+                   'driver.find_element(by="id", value="password").send_keys("sunshine")')
+
+    def test_describe_names_no_field(self):
+        self.masks("sunshine", 'page.getByLabel("Password").describe("Sign in field").fill("sunshine")')
+
+    def test_stays_a_filter_that_names_a_secret(self):
+        self.stays('page.getByLabel("Email").filter({hasNotText: "Password"}).fill("me@example.com")',
+                   'page.get_by_label("Email").filter(has_not_text="Password").fill("me@example.com")')
+
+    # three shapes inside the rule no review had reported: a field's own locator under the one that names it
+    def test_a_child_locator_under_a_secret_field(self):
+        self.masks("sunshine", 'page.getByLabel("Password").locator("input").fill("sunshine")',
+                   'page.get_by_role("group", name="Password").get_by_role("textbox").fill("sunshine")',
+                   'page.locator("#password-field").locator("input").fill("sunshine")')
+
+    # masked by design
+    def test_by_design_a_container_that_asks_for_a_secret_marks_its_fields(self):
+        self.masks("me@example.com", 'page.locator("#password-form").getByLabel("Email").fill("me@example.com")')
+        self.masks("sam", 'page.locator("#credentials").getByLabel("Username").fill("sam")')
+
+    def test_by_design_an_options_value_in_a_locator_call(self):
+        self.masks("me@example.com", 'page.locator("input", {hasNotText: "Password"}).fill("me@example.com")')
+
+    def test_by_design_a_frame_named_for_the_secret(self):
+        self.masks("me@example.com", 'page.frame(name="password").fill("#email", "me@example.com")')
+
+    # must stay
+    def test_stays_describe_text_on_a_plain_field(self):
+        self.stays('page.getByLabel("Email").describe("password field").fill("me@example.com")')
+
+    def test_stays_a_container_named_with_another_word(self):
+        self.stays('page.locator(".password-section").getByLabel("Email").fill("me@example.com")',
+                   'page.get_by_test_id("password-reset").get_by_label("Email").fill("me@example.com")',
+                   'page.locator("#change-password").getByLabel("Email").fill("me@example.com")',
+                   'page.getByRole("dialog", {name: "Change password"}).getByLabel("Email").fill("me@example.com")')
+
+    def test_stays_a_strategy_beside_a_plain_field(self):
+        self.stays('driver.find_element("id", "username").send_keys("sam")',
+                   'driver.find_element("id", "password_hint").send_keys("first pet")')
+
+    def test_stays_a_chain_on_no_page(self):
+        self.stays('Buffer.from("password").fill("x")')
+
+    def test_stays_prose(self):
+        self.stays('To fill the password field, call page.getByLabel("Password").fill(value) with the value.',
+                   'The login form has a Password field and an Email field; fill("your text") types into the focus.')
+
+    def test_ordinary_texts_stay(self):
+        from tests import ordinary
+        changed = [t for t in ordinary.texts(4000) if mask(t) != t]
+        self.assertEqual(changed, [])
 
 
 # Commands as an argument list, each flag's value its own item: (the list, the items masked).
