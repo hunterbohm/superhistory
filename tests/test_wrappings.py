@@ -45,6 +45,16 @@ def forms(line):
     return {"raw": line, "json": json.dumps(line), "json twice": json.dumps(json.dumps(line))}
 
 
+def took_call(fn):
+    best = None
+    for _ in range(3):
+        started = time.process_time()
+        fn()
+        spent = time.process_time() - started
+        best = spent if best is None else min(best, spent)
+    return best
+
+
 def took(text):
     best = None
     for _ in range(3):
@@ -795,6 +805,34 @@ class ReviewSevenTest(unittest.TestCase):
                      "the list [1, 2, 3] and {a: b}"):
             with self.subTest(text=text):
                 self.assertEqual(mask(text), text)
+
+
+class ArgumentListCostTest(unittest.TestCase):
+    """A list's reading costs a small constant per item: four times the list under about six times the time, both as a
+    value (mask_all) and as JSON in text, so a long list of plain options does not cost the square of its length."""
+
+    @staticmethod
+    def _items(n):
+        items = ["keytool"]
+        for i in range(n):
+            items += ["-v", "opt%d" % i]
+        return items + ["-storepass", PASSWORD]
+
+    def test_mask_all_cost(self):
+        small, large = self._items(500), self._items(2000)
+        self.assertNotIn(PASSWORD, json.dumps(mask_all(small)))
+        self.assertNotIn(PASSWORD, json.dumps(mask_all(large)))
+        little, lots = took_call(lambda: mask_all(small)), took_call(lambda: mask_all(large))
+        self.assertLess(lots, 6 * little + 0.2, (little, lots))  # four times the list, about four times the CPU
+        self.assertLess(lots, 3.0, lots)  # a small constant per item: CPU time (process_time), not inflated by load
+
+    def test_json_in_text_cost(self):
+        small, large = json.dumps(self._items(500)), json.dumps(self._items(2000))
+        self.assertNotIn(PASSWORD, mask(small))
+        self.assertNotIn(PASSWORD, mask(large))
+        little, lots = took(small), took(large)
+        self.assertLess(lots, 6 * little + 0.2, (little, lots))
+        self.assertLess(lots, 5.0, lots)
 
 
 class RevisionTest(unittest.TestCase):
