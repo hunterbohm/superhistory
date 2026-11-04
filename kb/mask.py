@@ -375,12 +375,13 @@ _SHELL_SCRIPT_FLAG = re.compile(r"-[a-z]*c[a-z]*\Z")
 
 
 def _aws_sets(items):
-    """For each index j, whether "aws", "configure" and "set" come in that order among the 64 items before items[j],
-    with any options between them ("aws --profile team configure set --region us-east-1 ..."), in one pass: then a
-    secret-setting name at j is aws configure set's, and items[j + 1] the secret, though the name starts with no "-"."""
+    """For each index j, whether "aws", "configure" and "set" come in that order before items[j], with any options
+    between them ("aws --profile team configure set --region us-east-1 ..."), in one pass: then a secret-setting name
+    at j is aws configure set's, and items[j + 1] the secret, though the name starts with no "-". However many options
+    come between, the list is the one command's."""
     found, program, configure, done = [], None, None, None  # done: where the last whole "aws configure set" begins
     for j, item in enumerate(items):
-        found.append(done is not None and j - done <= 64)
+        found.append(done is not None)
         if not isinstance(item, str):
             continue
         word = item.lower()
@@ -430,6 +431,12 @@ _COMMANDS = [(re.compile(rf"(?i)(?:(?<![A-Za-z0-9_.-])|{_AFTER_ESCAPE})(?:{comma
               re.compile(rf"({flag})((?:{_CLOSE}[^ \t\n\r'\"])+)"), always)
              for n, (command, flag, always) in enumerate(COMMAND_FLAGS)]
 _ANY_COMMAND = re.compile(r"(?i)curl|mysql|mariadb|sshpass|login|redis-cli|mongo|twine|keytool|jarsigner|aws")
+# In a list of arguments, an item names one of COMMAND_FLAGS' commands where the name stands whole, as a program's
+# does, past a path and before a ".exe": "mongo-ca", "KEYTOOL_HOME=/opt/java" and "aws_session_token" name none. A
+# command named by two words ("docker login", "az login") is named by its "login".
+_COMMAND_NAME = re.compile(rf"(?i)(?:(?<![A-Za-z0-9_.-])|{_AFTER_ESCAPE})(curl|mysql(?:dump|admin)?|mariadb(?:-dump)?|"
+                           rf"sshpass|login|redis-cli|mongo(?:sh|dump|restore|export|import)?|twine|keytool|jarsigner|"
+                           rf"aws){_PROGRAM_END}")
 # A field name that by itself names a secret, as a dict's key does, "pass" and "pwd" too.
 _SECRET_FIELD = re.compile(rf"(?:{_KEY_NAME[4:]}|{_ENV_KEY_NAME}|pass|pwd)$", re.I)
 # In an item id, a value counts by its key's name only in assignment form, "token=...", "token=>..." or "token:...",
@@ -2409,21 +2416,23 @@ def _shells_open(items):
 
 def _flag_values(items):
     """{index: the item masked} for each item of a list that the command line before it reads more of as a secret than
-    the item alone: an item after a flag, read after the line of up to 64 items before it, and the command named
-    before those, if any: a command given as its arguments holds a flag and its value in two items, as ["login",
-    "--password", "..."] or ["mongosh", "-u", "admin", "-p", "..."] does. The items are joined as a shell quotes them,
-    so each keeps its bounds: a flag inside one ("note: -p release-2026") or an apostrophe ("team's cert") reads as
-    part of it. Where that line reads more of the item as a secret than the item alone does, the item, one argument,
-    is masked whole when what the line masks starts it, as a flag's value; when it starts inside it, as a flag the item
-    only quotes does, the item keeps its text up to the mask, as the line reads it. An item that starts with a flag and
-    holds a space ("-storepass ...") holds a flag and its value in one, but after a flag, whose value it may be
-    ("--comment", "-p release-2026"): read unquoted after that line, it keeps its flag."""
-    found, named = {}, None  # named: the last item that names a command, before the one read
+    the item alone: an item after a flag, read after the line of up to 64 items before it and, past those, the items
+    around where each command is first and last named before it (_COMMAND_NAME), so an option's value that names one
+    ("-alias", "mongo") takes no other command's place: a command given as its arguments holds a flag and its value in
+    two items, as ["login", "--password", "..."] or ["mongosh", "-u", "admin", "-p", "..."] does. The items are joined
+    as a shell quotes them, so each keeps its bounds: a flag inside one ("note: -p release-2026") or an apostrophe
+    ("team's cert") reads as part of it. Where that line reads more of the item as a secret than the item alone does,
+    the item, one argument, is masked whole when what the line masks starts it, as a flag's value; when it starts inside
+    it, as a flag the item only quotes does, the item keeps its text up to the mask, as the line reads it. An item that
+    starts with a flag and holds a space ("-storepass ...") holds a flag and its value in one, but after a flag, whose
+    value it may be ("--comment", "-p release-2026"): read unquoted after that line, it keeps its flag."""
+    found, named = {}, {}  # named: for each command named before the item read, the first and last items naming it
     shells, aws = _shells_open(items), _aws_sets(items)
     for i in range(1, len(items)):
         flag, item = items[i - 1], items[i]
-        if isinstance(flag, str) and _ANY_COMMAND.search(flag):
-            named = i - 1
+        if isinstance(flag, str):
+            for m in _COMMAND_NAME.finditer(flag):
+                named.setdefault(m.group(1).lower(), [i - 1, i - 1])[1] = i - 1
         if not (isinstance(item, str) and item):
             continue
         is_flag = isinstance(flag, str) and flag.startswith("-") and len(flag) <= 64
@@ -2445,8 +2454,10 @@ def _flag_values(items):
         while start > 0 and i - start < 64 and isinstance(items[start - 1], str):
             start -= 1
         lead = list(items[start:i])
-        if named is not None and named < start and start > 0 and isinstance(items[start - 1], str):
-            lead = [v for v in items[max(0, named - 2):min(named + 3, start)] if isinstance(v, str)] + lead
+        if start > 0 and isinstance(items[start - 1], str):  # past the 64 items, a few around each command's name
+            near = sorted({j for k in {k for pair in named.values() for k in pair if k < start}
+                           for j in range(max(0, k - 2), min(k + 3, start))})
+            lead = [items[j] for j in near if isinstance(items[j], str)] + lead
         line = re.sub(r"[\r\n]", " ", " ".join(map(shlex.quote, lead)))  # the lead is context; a newline in it ends nothing
         head = mask(line) + " "
         if after_flag:
