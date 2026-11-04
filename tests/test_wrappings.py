@@ -910,6 +910,7 @@ class ReviewNineTest(unittest.TestCase):
         self.assertEqual(mask_all(small), small)
         little, lots = took_call(lambda: mask_all(small)), took_call(lambda: mask_all(large))
         self.assertLess(lots, 6 * little + 0.2, (little, lots))  # four times the list, about four times the CPU
+        self.assertLess(lots, 1.0, lots)  # within a few times main's 0.2 s for 2,000 overrides (CPU time)
 
 
 class RevisionTest(unittest.TestCase):
