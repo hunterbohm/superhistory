@@ -4,6 +4,7 @@ import bisect
 import contextvars
 import functools
 import hashlib
+import itertools
 import json
 import logging
 import math
@@ -435,7 +436,10 @@ _ANY_COMMAND = re.compile(r"(?i)curl|mysql|mariadb|sshpass|login|redis-cli|mongo
 # is that option's value, as "token" is in "aws configure set --profile token ...", not the setting.
 _AWS_FLAG = next(row[1] for row, (command, _, _) in zip(_COMMANDS, COMMAND_FLAGS) if command.startswith("aws"))
 # A line's continuation as a word of its own: a backslash before the line break, raw or escaped once or more ("\\\\n").
-_CONTINUATION_WORD = re.compile(r"(?:\\+[rn]?)+")
+# Each run of backslashes is read one way only, so a long run before another character costs time in proportion.
+_CONTINUATION_WORD = re.compile(r"\\+(?:[rn]\\+)*[rn]?")
+# A word of a command line, for reading the option before aws configure set's setting.
+_LINE_WORD = re.compile(r"\S+")
 _AWS_VALUE_OPTIONS = frozenset(("--profile", "--region", "--output", "--endpoint-url", "--query", "--ca-bundle",
                                 "--color", "--cli-read-timeout", "--cli-connect-timeout", "--cli-binary-format"))
 # In a list of arguments, an item names one of COMMAND_FLAGS' commands where the name stands whole, as a program's
@@ -804,19 +808,24 @@ tsadigestalg tsapolicyid v validity verbose verify version
 def _flag_matches(text, flag, start, end):
     """flag.finditer(text, start, end), but for aws configure set's row not where the setting's name is the value of
     one of aws's options that take one (_AWS_VALUE_OPTIONS), as written or in quotes, plain or escaped, with a line's
-    continuation or none between them; the setting may come right after it. Only the 96 characters before a name are
-    read for the option."""
-    at = start
+    continuation or none between them; the setting may come right after it. The option is the word before the name,
+    however many spaces and continuations stand between: the line's words are found once, so a long line costs time in
+    proportion."""
+    at, words, word_starts = start, None, None
     while True:
         m = flag.search(text, at, end)
         if m is None:
             return
-        words = text[max(start, m.start() - 96):m.start()].split() if flag is _AWS_FLAG else []
-        while words and _CONTINUATION_WORD.fullmatch(words[-1]):
-            words.pop()
-        if words and words[-1].strip("'\"\\").lower() in _AWS_VALUE_OPTIONS:
-            at = m.start() + 1
-            continue
+        if flag is _AWS_FLAG:
+            if words is None:
+                words = [(w.start(), w.end()) for w in _LINE_WORD.finditer(text, start, end)]
+                word_starts = [a for a, _ in words]
+            k = bisect.bisect_left(word_starts, m.start()) - 1
+            while k >= 0 and _CONTINUATION_WORD.fullmatch(text, words[k][0], min(words[k][1], m.start())):
+                k -= 1
+            if k >= 0 and text[words[k][0]:min(words[k][1], m.start())].strip("'\"\\").lower() in _AWS_VALUE_OPTIONS:
+                at = m.start() + 1
+                continue
         at = m.end()
         yield m
 
@@ -1507,13 +1516,47 @@ def _opens_a_string(text, at, line):
     return False
 
 
+@functools.lru_cache(maxsize=64)
+def _typing_brackets(text):
+    """The brackets of each typing call in code (_CODE_FILL_CALL, _CODE_TYPING_CALL) as the typing reader reads them,
+    from its "(" through its closing bracket, or through the end of the code that holds it where none closes it: (the
+    spans' starts in order, and for each the furthest any span up to it reaches)."""
+    if not _CODE_HINT.search(text):
+        return (), ()
+    tokens, _, stretches, _ = _code_tokens(text)
+    stretches = _Stretches(text, stretches)
+    starts, spans = [t[1] for t in tokens], []
+    for pattern in (_CODE_FILL_CALL, _CODE_TYPING_CALL):
+        for call in pattern.finditer(text):
+            k = bisect.bisect_left(starts, call.end() - 1)
+            if k < len(tokens) and tokens[k][0] == "(" and tokens[k][1] == call.end() - 1:
+                bound = stretches.holding(tokens[k][1])[1]
+                _, close = _call_span(tokens, k, bound)
+                spans.append((tokens[k][1], tokens[close][1] + 1 if close is not None else bound))
+    spans.sort()
+    return tuple(a for a, _ in spans), tuple(itertools.accumulate((b for _, b in spans), max))
+
+
+def _in_typing_brackets(text, start, end):
+    """Whether text[start:end] reaches into a typing call's own brackets (_typing_brackets): some span starts before
+    `end` and reaches past `start`."""
+    starts, reach = _typing_brackets(text)
+    k = bisect.bisect_left(starts, end)
+    return k > 0 and reach[k - 1] > start
+
+
 def _quoted_password_span(m):
-    """_password_span, but not for a name inside a string that the quote after its ":" or "=" closes: in
+    """_password_span, but not where the match reaches into a typing call's own brackets, which the typing reader
+    reads (the coordinator's rule after rounds 48 to 51: a label's ":" and closing quote, in
+    page.get_by_label(r'Re enter password:').fill(...), opened no value there), and not for a name inside a string
+    that the quote after its ":" or "=" closes: in
     getByLabel("Password:").fill(...) or get_by_label(r"Password:").fill(...) the name is a label's, and that quote
     opens no value. The name is in such a string when the nearest quote of its kind before it on its line opens one
     (_opens_a_string); one after a letter, a digit or other punctuation closes a string or is an apostrophe ("it's",
     "users'"). A name whose own quote closes before the ":" ('"password": "..."') is read."""
     separator, text = m.group(2), m.string
+    if _in_typing_brackets(text, m.start(), m.end() + 1):  # the value's closing quote included
+        return None
     quote = separator[-1]
     if not separator.startswith(quote):
         marks, lines = _quote_marks(text, quote)
