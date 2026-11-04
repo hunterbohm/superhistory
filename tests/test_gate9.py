@@ -2427,6 +2427,82 @@ class ReviewFortySixTest(unittest.TestCase):
                    "page.getByPlaceholder('Filter, e.g. (/token/i)').fill('release notes')")
 
 
+class ReviewFortySevenTest(unittest.TestCase):
+    """The forty-seventh review's findings and their kin: a dotted and(...) or or(...) read as the keyword, a selector=
+    keyword on a variable no page check knew, and finder calls the union's list lacked; and a locator call given as
+    the typing call's own field argument (user.type(screen.getByLabelText(...), text))."""
+
+    WRAPS, masks, stays = UnionFieldTest.WRAPS, UnionFieldTest.masks, UnionFieldTest.stays
+
+    def test_a_dotted_and_or_or_is_another_call_in_the_chain(self):
+        self.masks("sunshine",
+                   'page.getByLabel("Password").and(page.getByRole("textbox")).fill("sunshine")',
+                   'page.getByLabel("Password").or(page.getByLabel("Email")).fill("sunshine")',
+                   'page.getByLabel("Password").and (page.getByRole("textbox")).fill("sunshine")')
+
+    def test_stays_a_dotted_and_or_or_with_no_secret_field(self):
+        self.stays('page.getByLabel("Email").and(page.getByRole("textbox")).fill("me@example.com")',
+                   'page.getByLabel("Email").or(page.getByLabel("Username")).fill("me@example.com")')
+
+    def test_a_selector_keyword_on_any_variable(self):
+        self.masks("sunshine",
+                   'p.fill(value="sunshine", selector="#password")',
+                   'p.type(selector="#password", text="sunshine")',
+                   'tab.fill(selector="#password", value="sunshine")')
+
+    def test_stays_a_selector_keyword_for_another_field(self):
+        self.stays('p.fill(value="me@example.com", selector="#email")',
+                   'tab.type(selector="#search", text="release notes")')
+
+    def test_the_finder_calls_the_list_lacked(self):
+        self.masks("sunshine",
+                   '(await p.waitForXPath(`//*[@id="password"]`)).type("sunshine")',
+                   '(await page.waitFor("#password")).type("sunshine")',
+                   'browser.shadow$("#password").setValue("sunshine")',
+                   'browser.shadow$$("input[name=password]")[0].setValue("sunshine")',
+                   'browser.react$("Input", {props: {type: "password"}}).setValue("sunshine")',
+                   'browser.react$$("PasswordInput")[0].setValue("sunshine")',
+                   'browser.custom$("byTestId", "password").setValue("sunshine")',
+                   '$("#password").addValue("sunshine")',
+                   '(await screen.findByLabelText("Password")).type("sunshine")',
+                   'screen.queryByLabelText("Password").type("sunshine")',
+                   'screen.getAllByLabelText("Password")[0].type("sunshine")',
+                   '(await page.J("#password")).type("sunshine")',
+                   '(await page.JJ("input[name=password]"))[0].type("sunshine")',
+                   '(await page.xpath("//input[@name=\'password\']"))[0].type("sunshine")')
+
+    def test_cypress_finders(self):
+        self.masks("sunshine",
+                   'cy.get("#password").type("sunshine")',
+                   "cy.get('input[name=\"password\"]').clear().type('sunshine')",
+                   'cy.get("form").find("#password").type("sunshine", {log: false})',
+                   'cy.findByLabelText("Password").type("sunshine")',
+                   'cy.contains("label", "Password").parent().find("input").type("sunshine")')
+
+    def test_seleniums_explicit_wait(self):
+        self.masks("sunshine",
+                   'WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.ID, "password")))'
+                   '.send_keys("sunshine")',
+                   'wait.until(ExpectedConditions.visibilityOfElementLocated(By.id("password"))).sendKeys("sunshine");',
+                   'await driver.wait(until.elementLocated(By.css("#password")), 5000).sendKeys("sunshine");')
+
+    def test_a_locator_call_as_the_calls_own_field(self):
+        self.masks("sunshine",
+                   'await user.type(screen.getByLabelText("Password"), "sunshine")',
+                   'await userEvent.type(await screen.findByLabelText("Password"), "sunshine")',
+                   'ActionChains(driver).send_keys_to_element(driver.find_element(By.ID, "password"), "sunshine")'
+                   '.perform()')
+
+    def test_stays_the_kin_on_another_field(self):
+        self.stays('cy.get("#email").type("sam@example.com")',
+                   'cy.get("#password-reset").find("#email").type("sam@example.com")',
+                   'await user.type(screen.getByLabelText("Email"), "me@example.com")',
+                   'browser.shadow$("#search").setValue("release notes")',
+                   'WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.ID, "email")))'
+                   '.send_keys("me@example.com")',
+                   'settings.get("password_hint").type("first pet")')
+
+
 # Commands as an argument list, each flag's value its own item: (the list, the items masked).
 ARGV = (
     (["login", "--password", PASSWORD], {2}), (["--token", SUB], {1}), (["--api-key", SUB, "--verbose"], {1}),
