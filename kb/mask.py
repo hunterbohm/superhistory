@@ -726,8 +726,10 @@ def _frame(joined, starts, found):
         # "Ex:"): one stream wrapped at one width writes every line but its last as long as the next, where a key in a
         # stream of its own starts after another's last, shorter line (_wrapping_break). A key there still ends at its
         # footer, which a line break opens.
+        # A word alone on each line above, as written ("RENT", "Walrus"), is a heading over a key in a stream of its
+        # own, whatever its letters decode to ("DCS"): base64 of a label writes letters of both cases and digits.
         wrapped = bool(before) and _reads_as_text(before) and 0 < line < len(starts) and starts[line] == first and (
-            _wrapping_break(starts, line, len(joined)))
+            _wrapping_break(starts, line, len(joined))) and not _headings(joined, starts, first - (len(before) + 2) // 3 * 4, line)
         opens = opens or m.start() % 3 == 0 and not continues and not wrapped and (
             first == opened or line < len(starts) and starts[line] == first)
         # or after the byte order mark a file saved on Windows starts with, where the encoded text starts: the mark
@@ -748,6 +750,16 @@ def _wrapping_break(starts, line, size):
     before = starts[line] - starts[line - 1]
     own = (starts[line + 1] if line + 1 < len(starts) else size) - starts[line]
     return before == own or line + 1 == len(starts) and before > own
+
+
+_HEADING_WORD = re.compile(r"[a-z]+|[A-Z][a-z]*|[A-Z]+")
+
+
+def _headings(joined, starts, start, line):
+    """Whether each line of a joined base64 block from the one holding `start` up to line `line` is, as written, one
+    word in one case ("rent", "Walrus", "SENTRY"), as a heading over a key is."""
+    first = max(bisect.bisect_right(starts, max(start, 0)) - 1, 0)
+    return first < line and all(_HEADING_WORD.fullmatch(joined, starts[k], starts[k + 1]) for k in range(first, line))
 
 
 def _footer_ahead(joined, starts, found):
