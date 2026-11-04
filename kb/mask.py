@@ -1254,20 +1254,6 @@ _UNESCAPED = [_unescaped(levels) for levels in (4, 3, 2, 1, 0)]
 _QUOTE_ESCAPE = re.compile(r'(?<!\\)\\+(?=["'"'"'])')
 
 
-def _argument_items(source):
-    """The strings of a list or a tuple JSON or Python writes, or None."""
-    try:
-        items = json.loads(source)
-    except ValueError:
-        try:
-            with warnings.catch_warnings():
-                warnings.simplefilter("ignore")
-                items = ast.literal_eval(source)
-        except (ValueError, SyntaxError, MemoryError, RecursionError):
-            return None
-    return tuple(items) if isinstance(items, (list, tuple)) and all(isinstance(v, str) for v in items) else None
-
-
 def _masked_parts(decoded, masked):
     """Where in `decoded`, an item as written, `masked`, the item as _flag_values masks it, hides something: the
     stretches each "[masked]" stands for, the text around them kept as it is. None where they do not line up, as
@@ -1416,11 +1402,12 @@ def _containers(text, i=0, n=None, brackets=None):
 def _parse_container(source):
     """`source`, a bracketed span, parsed as a list, dict or tuple by json.loads or, failing that, Python's
     ast.literal_eval, or None where it does not parse to one of those. The size, depth and digit guards run before
-    this, and every parser error falls back to None."""
+    this, and every parser error falls back to None: TypeError too, which ast.literal_eval raises for a key or a set
+    member that is a list or a dict ({[]: "keytool"})."""
     for parse in (json.loads, _literal_eval):
         try:
             value = parse(source)
-        except (ValueError, SyntaxError, RecursionError, MemoryError):
+        except (ValueError, SyntaxError, TypeError, RecursionError, MemoryError):
             continue
         if isinstance(value, (list, dict, tuple)):
             return value
