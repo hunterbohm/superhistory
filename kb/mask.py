@@ -2318,11 +2318,12 @@ def _key_rest_edits(text, starts=_REST_START):
         reach = _REST.match(text, at.end()).end()
         tail = tail or _token_tail(text)
         end = tail(reach)  # a placeholder past the core, in the tail, still reads its own rest
+        if end <= covered:  # which ends inside one already masked, read before the public material past it, which
+            core = reach  # reads on to `end`: many such in one tail took time in its square
+            continue
         if _public_first(text, at.end(), end):
             continue  # public material, then no run of base64 through all main hides: no key's rest
         core = reach
-        if end <= covered:  # which ends inside one already masked
-            continue
         if not _public_rest(text[at.end():end]):
             spans.append((at.end(), end))
             covered = max(covered, end)
