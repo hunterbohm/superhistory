@@ -1163,6 +1163,21 @@ class ReviewThirteenTest(unittest.TestCase):
             finally:
                 db.close()
 
+    def test_a_command_line_escaped_past_the_parse_levels_still_masks(self):
+        # strings are decoded as deep as before the parse levels were counted; only parsing whole stops sooner
+        for times in range(8, 14):
+            text = f'keytool -alias "team cert" -storepass {PASSWORD}'
+            for _ in range(times):
+                text = json.dumps(text)
+            with self.subTest(times=times):
+                self.assertNotIn(PASSWORD, mask(text))
+
+    def test_lists_nested_past_the_parse_levels_cost_time_in_proportion(self):
+        for steps, depth in ((10, 40), (12, 40)):
+            text = self.nested(["keytool", "-storepass", PASSWORD], steps, depth)
+            with self.subTest(steps=steps, depth=depth):
+                self.assertLess(took(text), 3.0)
+
     def test_a_password_two_steps_down_still_masks(self):
         for steps, depth in ((2, 1), (2, 3), (3, 2)):
             text = self.nested(["keytool", "-list", "-storepass", PASSWORD], steps, depth)
