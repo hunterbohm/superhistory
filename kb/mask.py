@@ -1991,7 +1991,8 @@ _TYPING_NAMES = _TYPING_TOOL.pattern.split(")?", 1)[1]  # the tool's own names, 
 # library's prefix ("browser_type"), not any method named fill or type, as an array's is.
 _CODE_TYPING_CALL = re.compile(rf"(?i)(?<![\w$])(?:[\w$]+\.)*(?:mcp__[\w-]+__(?:{_TYPING_TOOL.pattern[4:]})"
                                rf"|(?:browser|puppeteer|playwright)_{_TYPING_NAMES})\s*\(")
-_CODE_FILL_CALL = re.compile(r"\.\s*(?:fill|type|pressSequentially|press_sequentially|sendKeys|send_keys|setValue|set_value)"
+_CODE_FILL_CALL = re.compile(r"\.\s*(?:fill|type|pressSequentially|press_sequentially|sendKeys|send_keys|SendKeys|setValue"
+                             r"|set_value)"
                              r"\s*\(")
 _CODE_HINT = re.compile(r"(?i)(?:fill|type|press_?sequentially|send_?keys|set_?value|input_text)\w*\s*\(")
 # A string that holds code, as JSON holds it: a typing call's "(" in it, and a quote of the code's own, plain or
@@ -2263,9 +2264,11 @@ _REGEX_IN_BRACKETS = re.compile(r"(?<=[(,:=])\s*/((?:\\.|[^/\\\n])+)/[a-z]*(?=\s
 
 
 # The calls whose strings name a field, as the field rule lists them: a locator's getBy*/get_by_*, locator, $, frame,
-# find_element and their kin. Another call in the chain (filter, describe, nth, and, or) names none.
-_CODE_FIELD_CALLS = re.compile(r"(?:getBy|get_by_)\w+|locator|\$\$?|frame|find_elements?|findElements?"
-                               r"|querySelector(?:All)?|query_selector(?:_all)?|element")
+# find_element and their kin (a frame locator, Selenium 3's find_element_by_*, C#'s FindElement, Puppeteer's $x, a wait
+# for a selector). Another call in the chain (filter, describe, nth, and, or) names none.
+_CODE_FIELD_CALLS = re.compile(r"(?:getBy|get_by_)\w+|locator|frameLocator|frame_locator|\$\$?|\$x|frame"
+                               r"|find_elements?(?:_by_\w+)?|findElements?|FindElements?|querySelector(?:All)?"
+                               r"|query_selector(?:_all)?|waitForSelector|wait_for_selector|element")
 
 
 def _receiver_strings(text, tokens, k, comments=(), limit=200):
@@ -2286,19 +2289,20 @@ def _receiver_strings(text, tokens, k, comments=(), limit=200):
             if kind == "s" and not (k + 1 < len(tokens) and tokens[k + 1][0] == ":"):
                 inside.append(text[slice(*_code_text(text, tokens[k]))])
             if not depth:
-                bare = k == 0 or tokens[k - 1][0] not in ("n", ")", "]")
-                if bare or kind == "(" and tokens[k - 1][0] == "n" and _CODE_FIELD_CALLS.fullmatch(
+                if k == 0 or tokens[k - 1][0] not in ("n", ")", "]"):
+                    # a bracket that calls or indexes nothing starts the chain: a receiver in brackets,
+                    # (await page.$("#password")), is a chain of its own, read as one, its calls' strings and names
+                    held, held_names = _receiver_strings(text, tokens, close_k, comments, limit)
+                    strings += held
+                    names += held_names
+                    break
+                if kind == "(" and tokens[k - 1][0] == "n" and _CODE_FIELD_CALLS.fullmatch(
                         text, tokens[k - 1][1], tokens[k - 1][2]):
                     strings += inside  # a regex literal in the brackets ("getByLabel(/Password/i)") too
                     for regex in _REGEX_IN_BRACKETS.finditer(text, tokens[k][2], close):
                         if not in_comment(regex.start(1)):  # a regex in a comment names no field
                             strings.append(re.sub(r"\\.|[\^$.*+?()\[\]{}|]", " ", regex.group(1)).strip())
                 inside = []
-                if bare:
-                    # a bracket that calls or indexes nothing starts the chain: a receiver in brackets,
-                    # (await page.$("#password")), gives its own names
-                    names += [text[t[1]:t[2]] for t in tokens[k + 1:close_k] if t[0] == "n"]
-                    break
         elif kind in ")]":
             depth, close, close_k = 1, tokens[k][1], k
         elif kind == "n":
