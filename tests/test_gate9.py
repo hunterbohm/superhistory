@@ -2576,6 +2576,28 @@ class ReviewFortyNineTest(unittest.TestCase):
                 self.assertEqual(mask(text), text.replace("Xk9,mP2;qL7v", "[masked]"))
 
 
+class AwsOptionValueTest(unittest.TestCase):
+    """Found in #37's twelfth review: in aws configure set, a value of one of aws's options that take one ("--profile
+    token") was read as the secret setting's name, masking the setting after it and leaving its value readable."""
+
+    WRAPS, masks, stays = UnionFieldTest.WRAPS, UnionFieldTest.masks, UnionFieldTest.stays
+
+    def test_an_options_value_is_not_the_setting(self):
+        self.masks("Zq7vRt2LmX9k",
+                   "aws configure set --profile token aws_secret_access_key Zq7vRt2LmX9k",
+                   "aws configure set --region us-east-1 --profile secret aws_session_token Zq7vRt2LmX9k",
+                   "aws configure set --profile 'token' aws_secret_access_key Zq7vRt2LmX9k",
+                   "aws configure set '--profile' token aws_secret_access_key Zq7vRt2LmX9k",
+                   "aws configure set --output token --query password default.aws_session_token Zq7vRt2LmX9k",
+                   "aws configure set aws_secret_access_key Zq7vRt2LmX9k --profile token",
+                   "aws configure set --profile=token aws_secret_access_key Zq7vRt2LmX9k")
+
+    def test_stays_a_setting_after_an_options_value(self):
+        self.stays("aws configure set --profile token max_attempts 10",
+                   "aws configure set --profile token region us-west-2",
+                   "aws configure set --profile ci_token output json")
+
+
 # Commands as an argument list, each flag's value its own item: (the list, the items masked).
 ARGV = (
     (["login", "--password", PASSWORD], {2}), (["--token", SUB], {1}), (["--api-key", SUB, "--verbose"], {1}),
