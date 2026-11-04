@@ -1129,6 +1129,119 @@ class ReviewTwelveTest(unittest.TestCase):
                             self.assertNotIn(line[at:at + 12], masked)
 
 
+class Base64ReviewThirteenTest(unittest.TestCase):
+    """#34's thirteenth review: a base64-encoded sentence past ASCII that quotes a key's header lost the text after it;
+    a base64 key wrapped with lone carriage returns, and one in JSON written with escaped tabs, \\u000a line breaks or
+    escaped slashes, showed lines. Prose in any UTF-8 reads as prose, a lone carriage return is a line break, and a
+    key is read with JSON's escapes read once and twice too."""
+
+    @staticmethod
+    def pem(cr=False):
+        import base64
+        import random
+        der = bytes.fromhex("302e020100300506032b657004220420") + bytes(random.Random(13).randrange(256) for _ in range(32))
+        text = (b"-----BEGIN PRIVATE KEY-----\n" + base64.b64encode(der) + b"\n-----END PRIVATE KEY-----\n")
+        return text.replace(b"\n", b"\r") if cr else text
+
+    @staticmethod
+    def pgp():
+        return ("-----BEGIN PGP PRIVATE KEY BLOCK-----\nComment: " + "??? " * 32 + "\n\n" + "YWJjMTIz" * 20
+                + "\n=abcd\n-----END PGP PRIVATE KEY BLOCK-----\n").encode()
+
+    @staticmethod
+    def lines(data, width):
+        import base64
+        import textwrap
+        return textwrap.wrap(base64.b64encode(data).decode(), width)
+
+    def assertNoLineShown(self, lines, masked):
+        for line in lines:
+            for at in range(0, len(line) - 11, 4):
+                piece = line[at:at + 12]
+                self.assertNotIn(piece, masked)
+                self.assertNotIn(piece.replace("/", "\\/"), masked)
+
+    def test_a_base64_sentence_past_ascii_that_quotes_a_header_is_kept(self):
+        import base64
+        import textwrap
+        for sentence in ("The documentation for café shows this opening delimiter -----BEGIN PRIVATE KEY-----\n"
+                         "Read the documentation before importing.\n",
+                         "Naïve copies show -----BEGIN RSA PRIVATE KEY-----\nand nothing after it.\n",
+                         "この文書は見出し -----BEGIN PRIVATE KEY-----\nを引用します。\n",
+                         "Le guide cité montre -----BEGIN OPENSSH PRIVATE KEY-----\npuis la suite du texte.\n"):
+            for width in (60, 64, 76):
+                # pads 0 to 2, and the one that puts the header's first byte where a wrapped line starts
+                aligned = -len(sentence.encode().split(b"-----")[0]) % (width // 4 * 3)
+                for pad in sorted({0, 1, 2, aligned}):
+                    data = ("x" * pad + sentence).encode()
+                    block = "\n".join(textwrap.wrap(base64.b64encode(data).decode(), width))
+                    for text in (block, json.dumps(block)):
+                        with self.subTest(sentence=sentence[:20], pad=pad, width=width, json=text is not block):
+                            self.assertEqual(mask(text), text)
+
+    def test_a_key_wrapped_with_lone_carriage_returns_is_masked_whole(self):
+        for width in (64, 76):
+            lines = self.lines(self.pem(), width)
+            for block in ("\r".join(lines), "\r".join(lines) + "\rnext steps", "notes\r" + "\r".join(lines) + "\r"):
+                for times in range(3):
+                    text = block
+                    for _ in range(times):
+                        text = json.dumps(text)
+                    with self.subTest(width=width, block=block[:6], times=times):
+                        self.assertNoLineShown(lines, mask(text))
+
+    def test_a_key_whose_own_lines_end_in_carriage_returns_is_masked_whole(self):
+        for width in (64, 76):
+            lines = self.lines(self.pem(cr=True), width)
+            for brk in ("\n", "\r", "\r\n"):
+                for times in range(3):
+                    text = brk.join(lines)
+                    for _ in range(times):
+                        text = json.dumps(text)
+                    with self.subTest(width=width, brk=repr(brk), times=times):
+                        self.assertNoLineShown(lines, mask(text))
+
+    def test_a_key_in_json_with_escaped_tabs_line_breaks_and_slashes_is_masked_whole(self):
+        for data in (self.pem(), self.pgp()):
+            for width in (64, 76):
+                lines = self.lines(data, width)
+                block = "\n".join(lines)
+                once = {
+                    "tabs": json.dumps("\t" + "\n\t".join(lines)),
+                    "unicode line feed": json.dumps(block).replace("\\n", "\\u000a"),
+                    "unicode carriage return and line feed": json.dumps(block).replace("\\n", "\\u000d\\u000a"),
+                    "escaped slashes": json.dumps(block).replace("/", "\\/"),
+                    "tabs and escaped slashes": json.dumps("\t" + "\n\t".join(lines)).replace("/", "\\/"),
+                }
+                for name, text in once.items():
+                    self.assertEqual(json.loads(text).replace("\t", "").replace("\r\n", "\n"), block)
+                    for times in (1, 2):
+                        with self.subTest(data=data[11:20], width=width, form=name, times=times):
+                            self.assertNoLineShown(lines, mask(text if times == 1 else json.dumps(text)))
+
+    def test_ordinary_json_with_escapes_is_kept(self):
+        for value in ("C:\\Users\\build\\notes\\README.txt", "line one\n\tindented two\r\nthree", "a/b/c and d\\/e",
+                      "café\u2028naïve \u00e9t\u00e9",
+                      "QUJDREVGR0hJSktMTU5PUA==\n\tQUJDREVGR0hJSktMTU5PUA=="):
+            for text in (json.dumps(value), json.dumps(value).replace("/", "\\/"), json.dumps(json.dumps(value))):
+                with self.subTest(text=text[:30]):
+                    self.assertEqual(mask(text), text)
+
+    def test_carriage_returns_and_escapes_cost_time_in_proportion(self):
+        import time
+
+        def took(text):
+            started = time.process_time()
+            mask(text)
+            return time.process_time() - started
+        for shape in (lambda n: "QUJDREVGR0hJSktMTU5P" + "\r" * n + "x", lambda n: ("QUJD\r" * n) + "x",
+                      lambda n: "QUJDREVGR0hJSktMTU5P" + "\\r" * n + "x", lambda n: "\\" * n + "QUJD",
+                      lambda n: "QUJD\\/" * n, lambda n: "QUJD\\t\\n" * n):
+            small, large = shape(20000), shape(40000)
+            with self.subTest(shape=small[:12]):  # twice the text, at most a little over twice the time
+                self.assertLess(took(large), 3.5 * took(small) + 0.1)
+
+
 class HeadlessKeyTest(unittest.TestCase):
     """A key's body without its header, as an older kb's row-by-row remask leaves the chunk after the header's."""
     LINE = "MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7"
