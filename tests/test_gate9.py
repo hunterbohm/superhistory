@@ -2399,6 +2399,34 @@ class ReviewFortyFiveTest(unittest.TestCase):
                    '(page.getByLabel("Password").filter({hasText: "Sign in"})).fill("sunshine")')
 
 
+
+class ReviewFortySixTest(unittest.TestCase):
+    """The forty-sixth review's findings: a listed finder on a variable no page check knew, a receiver in brackets after
+    a keyword ("return (...)", "await (...)") read as a call to it, and a regex looked for inside a label's quotes."""
+
+    WRAPS, masks, stays = UnionFieldTest.WRAPS, UnionFieldTest.masks, UnionFieldTest.stays
+
+    def test_a_listed_finder_names_a_page_on_any_variable(self):
+        self.masks("sunshine",
+                   'd.find_element_by_id("password").send_keys("sunshine")',
+                   'd.find_elements_by_name("password")[0].send_keys("sunshine")',
+                   'd.FindElements(By.Id("password"))[0].SendKeys("sunshine");',
+                   '(await p.waitForSelector("#password")).type("sunshine")',
+                   'p.wait_for_selector("#password").fill("sunshine")',
+                   '(await p.$x("//input[@name=\'password\']"))[0].type("sunshine")')
+
+    def test_a_receiver_in_brackets_after_a_keyword(self):
+        self.masks("sunshine",
+                   'return (page.getByLabel("Password")).fill("sunshine");',
+                   '(await (page.$("#password"))).type("sunshine")',
+                   'yield (page.get_by_label("Password")).fill("sunshine")',
+                   'void (page.getByLabel("Password")).fill("sunshine");')
+
+    def test_stays_a_regex_inside_a_labels_quotes(self):
+        self.stays('page.getByLabel("Search (/password/)").fill("release notes")',
+                   "page.getByPlaceholder('Filter, e.g. (/token/i)').fill('release notes')")
+
+
 # Commands as an argument list, each flag's value its own item: (the list, the items masked).
 ARGV = (
     (["login", "--password", PASSWORD], {2}), (["--token", SUB], {1}), (["--api-key", SUB, "--verbose"], {1}),
