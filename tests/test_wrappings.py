@@ -995,7 +995,7 @@ class ReviewTenTest(unittest.TestCase):
     def took_uncached(text):
         """took(text), each run reading the text afresh: the container reading is cached per text."""
         def run():
-            masking._container_edits.cache_clear()
+            masking._container_edits_at.cache_clear()
             mask(text)
         return took_call(run)
 
