@@ -2536,6 +2536,46 @@ class ReviewFortyEightTest(unittest.TestCase):
                 self.assertEqual(mask(text), text.replace(value, "[masked]"))
 
 
+class ReviewFortyNineTest(unittest.TestCase):
+    """The forty-ninth review's findings: a string's prefix (r"Password:", C#'s @"Password:") hid the label's opening
+    quote, so its closing quote after "Password:" was read as a quoted password's opening, masking ").fill(" and
+    breaking the call the typing reader reads; a word's apostrophe ("B's") stays an apostrophe."""
+
+    WRAPS, masks, stays = UnionFieldTest.WRAPS, UnionFieldTest.masks, UnionFieldTest.stays
+
+    def test_a_prefixed_label_keeps_its_call(self):
+        self.masks("sunshine",
+                   'page.get_by_label(r"Password:").fill("sunshine")',
+                   "page.get_by_label(R'Password:').fill('sunshine')",
+                   'page.get_by_label(f"Password:").fill("sunshine")',
+                   'page.get_by_label(rf"Password:").fill("sunshine")',
+                   'page.get_by_label(u"Password: ").fill("sunshine")',
+                   'page.get_by_label(b"Password:").fill("sunshine")',
+                   "page.get_by_label(r'New password:').fill('sunshine')")
+
+    def test_stays_a_prefixed_label_on_another_field(self):
+        self.stays('page.get_by_label(r"Search passwords:").fill("release notes")',
+                   "page.get_by_placeholder(r'Password hint:').fill('first pet')",
+                   'print(r"Password:", "set in the vault")',
+                   'await page.GetByLabel(@"Search passwords:").FillAsync("release notes");',
+                   'await page.GetByLabel($"Search passwords:").FillAsync("release notes");')
+
+    def test_a_prefixed_label_in_code_kb_does_not_type_keeps_its_text(self):
+        from tests.test_mask_against_main import main
+        for code in ('await page.GetByLabel(@"Password:").FillAsync("sunshine");',
+                     'await page.GetByLabel($"Password:").FillAsync("sunshine");',
+                     'let label = Some(r#"Password:"#).unwrap_or("x");'):
+            for wrap in self.WRAPS:
+                with self.subTest(code=wrap(code)):
+                    self.assertEqual(mask(wrap(code)), main.mask(wrap(code)))
+
+    def test_an_apostrophe_after_a_letter_still_reads_the_password(self):
+        for text in ("B's password: 'Xk9,mP2;qL7v'", "(T's password: 'Xk9,mP2;qL7v')",
+                     "note for R's team: password='Xk9,mP2;qL7v'", "Plan B's db_password: 'Xk9,mP2;qL7v'"):
+            with self.subTest(text=text):
+                self.assertEqual(mask(text), text.replace("Xk9,mP2;qL7v", "[masked]"))
+
+
 # Commands as an argument list, each flag's value its own item: (the list, the items masked).
 ARGV = (
     (["login", "--password", PASSWORD], {2}), (["--token", SUB], {1}), (["--api-key", SUB, "--verbose"], {1}),
