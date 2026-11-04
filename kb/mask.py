@@ -692,11 +692,12 @@ def _base64_decoded(joined, start, end):
         return None
 
 
-def _frame(joined, starts, found):
+def _frame(joined, starts, found, refused=False):
     """The key's header or footer that the encoded word `found` is in, as (b"BEGIN" or b"END", where the base64 group
     holding its first byte starts), or None when the word is in none, as in a field's name or a sentence about keys. A
     header or footer is a line of its own: after a line break or where the encoded text starts (a line of the block, or
-    past another stream's padding), and before a line break or where the encoded text ends."""
+    past another stream's padding), and before a line break or where the encoded text ends. With `refused`, also a
+    header after text on its decoded line where a line of the block starts, which alone starts no key (_key_spans)."""
     byte, char = _KEY_WORD_AT[found.group()]
     group = found.start() - char
     lo, hi, opened = max(group - 64, group % 4), min(group + 40, len(joined)), None
@@ -730,7 +731,7 @@ def _frame(joined, starts, found):
         # own, whatever its letters decode to ("DCS"): base64 of a label writes letters of both cases and digits.
         wrapped = bool(before) and _reads_as_text(before) and 0 < line < len(starts) and starts[line] == first and (
             _wrapping_break(starts, line, len(joined))) and not _headings(joined, starts, first - (len(before) + 2) // 3 * 4, line)
-        opens = opens or m.start() % 3 == 0 and not continues and not wrapped and (
+        opens = opens or m.start() % 3 == 0 and (refused or not continues and not wrapped) and (
             first == opened or line < len(starts) and starts[line] == first)
         # or after the byte order mark a file saved on Windows starts with, where the encoded text starts: the mark
         # is a group of its own, the one before the header's
@@ -772,10 +773,12 @@ def _footer_ahead(joined, starts, found):
     return False
 
 
-def _key_range(joined, starts, ends, found, floor):
+def _key_range(joined, starts, ends, found, floor, held=None):
     """The first and last lines of a base64 block that hold the key whose header or footer holds the encoded word
     `found`, none above line `floor`; None when no header or footer holds it. A key starts at the line with its
-    header's first byte. With none, as when the block starts inside the key, a line above is the key's while the base64
+    header's first byte. For a footer under a header that starts no key alone, after text on its decoded line (line
+    `held`, _key_spans), it starts there, whatever its bytes between: its armour comment may hold a control character.
+    With none, as when the block starts inside the key, a line above is the key's while the base64
     through it, in the groups `found` fixes, still decodes to text. A key ends at its footer and the line breaks after
     it: where the block holds its footer later, everything between header and footer is the key, whatever its bytes
     (an armour comment may hold any). With none, it ends where the text it decodes to ends: a heading, a word between
@@ -789,7 +792,9 @@ def _key_range(joined, starts, ends, found, floor):
     down = lambda p: p - (p - phase) % 4  # the group boundary at or before p
     up = lambda p: p + (phase - p) % 4  # the group boundary at or after p
     top = bisect.bisect_right(ends, first)
-    while kind == b"END" and top > floor and up(starts[top - 1]) < down(starts[top]):
+    if kind == b"END" and held is not None and floor <= held < top:
+        top = held
+    while kind == b"END" and held is None and top > floor and up(starts[top - 1]) < down(starts[top]):
         above = _base64_decoded(joined, up(starts[top - 1]), down(starts[top]))
         if above is None or not _reads_as_text(above):
             break
@@ -827,12 +832,21 @@ def _key_spans(text, lines):
     joined = "".join(text[a:b] for a, b in lines)
     ends = list(itertools.accumulate(b - a for a, b in lines))
     starts = [0] + ends[:-1]
-    spans, floor = [], 0
+    spans, floor, held = [], 0, None
     for found in _ENCODED_KEY.finditer(joined):
-        key = bisect.bisect_right(ends, found.start()) >= floor and _key_range(joined, starts, ends, found, floor)
+        if bisect.bisect_right(ends, found.start()) < floor:
+            continue
+        key = _key_range(joined, starts, ends, found, floor, held)
         if key:
             spans.append((lines[key[0]][0], lines[key[1]][1]))
-            floor = key[1] + 1
+            floor, held = key[1] + 1, None
+            continue
+        # A header after text on its decoded line, where a line of the block starts ("例：-----BEGIN ...", or
+        # another stream that fills whole lines above), starts no key alone, as a sentence quoting a header shows
+        # one; with a footer after it, the first such since the last key starts that footer's key.
+        frame = held is None and _frame(joined, starts, found, refused=True)
+        if frame and frame[0] == b"BEGIN":
+            held = bisect.bisect_right(ends, frame[1])  # the line holding its first byte
     return spans
 
 
