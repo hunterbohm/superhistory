@@ -1850,6 +1850,62 @@ class Base64ReviewSixteenTest(unittest.TestCase):
                 with self.subTest(width=width, lead=lead, older=older):
                     self.assertLess(took[400], 6 * max(took[100], 0.05), took)  # four times the text
 
+    def test_a_line_of_another_stream_that_decodes_to_words_after_a_placeholder_starts_no_keys_rest(self):
+        # A key, a line of another stream encoded alone that decodes to words, a second key, then a certificate: the
+        # line stays, as the sixteenth review asked, and in an older kb's row it came right after the first key's
+        # placeholder, so it read as the start of that key's rest, which took the certificate past the second key.
+        import base64
+        import random
+        import textwrap
+        from kb import mask as mask_module
+        r = random.Random(1607)
+        for width in (64, 76):
+            first = textwrap.wrap(base64.b64encode(Base64ReviewThirteenTest.pem()).decode(), width)
+            second = textwrap.wrap(base64.b64encode(self.pgp(r, "plain words")).decode(), width)
+            certificate = self.certificate(r, width)
+            for words in (b"notes " * 20, b"deploy the service, then check the logs. " * 3):
+                other = base64.b64encode(words[:width // 4 * 3]).decode()  # fills its line, as one stream does
+                keys = [line for line in first + second if len(line) >= 16]
+                for text in ("\n".join(first + [other] + second) + f"\n{certificate}\nnext steps",
+                             "\n".join(first) + f"\n{other}\n{certificate}\nnext steps",
+                             f"[masked]\n{other}\n{certificate}\nnext steps",
+                             f"[masked]\n{other}\n[masked]\n{certificate}\nnext steps"):
+                    kept = [other] + certificate.split("\n") + ["next steps"]
+                    for older in (False, True):
+                        for depth, written in enumerate((text, json.dumps(text), json.dumps(json.dumps(text)))):
+                            with self.subTest(width=width, words=words[:6], text=text[:9], older=older, depth=depth):
+                                if older:
+                                    with mask_module.stored_row("0123456789abcdef"):
+                                        masked = mask(written)
+                                        again = mask(masked)
+                                else:
+                                    masked = mask(written)
+                                    again = mask(masked)
+                                self.assertEqual([line for line in kept if line not in masked], [])
+                                self.assertEqual([line for line in keys if line in masked], [])
+                                self.assertEqual(again, masked)
+
+    def test_an_encoded_keys_lines_after_a_placeholder_still_read_as_its_rest(self):
+        # Guard: a line of an encoded key decodes to its PEM text, base64 runs and a header or footer, no words. Its
+        # last line can hold the footer alone, no key's bytes.
+        import base64
+        import random
+        import textwrap
+        from kb import mask as mask_module
+        r = random.Random(1608)
+        body = "\n".join(textwrap.wrap(base64.b64encode(made_up_private_key(r)).decode(), 64))
+        pem = f"-----BEGIN PRIVATE KEY-----\n{body}\n-----END PRIVATE KEY-----\n".encode()
+        for width in (64, 76):
+            lines = textwrap.wrap(base64.b64encode(pem).decode(), width)
+            for cut in (1, 2, len(lines) // 2):
+                text = "[masked]\n" + "\n".join(lines[cut:]) + "\nnext steps"
+                for depth, written in enumerate((text, json.dumps(text), json.dumps(json.dumps(text)))):
+                    with self.subTest(width=width, cut=cut, depth=depth):
+                        with mask_module.stored_row("0123456789abcdef"):
+                            masked = mask(written)
+                        self.assertEqual([line for line in lines[cut:-1] if line in masked], [])
+                        self.assertIn("next steps", masked)
+
 
 class HeadlessKeyTest(unittest.TestCase):
     """A key's body without its header, as an older kb's row-by-row remask leaves the chunk after the header's."""
