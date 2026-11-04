@@ -1913,6 +1913,63 @@ class Base64ReviewSixteenTest(unittest.TestCase):
                                 self.assertIn(words, masked)
 
 
+class Base64KeyPieceLimitTest(unittest.TestCase):
+    """The README's limit: a piece of a key's base64 with neither its header nor its footer shows, as on main, unless
+    it comes right after a placeholder and is glued to it, or the first line there is base64 alone, 40 characters or
+    more, starting as a key's body does ("MII..."); in a row an older kb stored, 36 characters or more with a capital,
+    a small letter and a digit, "+" or "/" are enough. A longer line further down does not count."""
+
+    @staticmethod
+    def masks(text, older):
+        from kb import mask as mask_module
+        if older:
+            with mask_module.stored_row("0123456789abcdef"):
+                return mask(text)
+        return mask(text)
+
+    def check(self, text, lines, fresh, older):
+        for is_older, outcome in ((False, fresh), (True, older)):
+            for depth, written in enumerate((text, json.dumps(text), json.dumps(json.dumps(text)))):
+                with self.subTest(text=text[:40], older=is_older, depth=depth):
+                    masked = self.masks(written, is_older)
+                    if outcome == "shows":
+                        self.assertEqual([line for line in lines if line not in masked], [])
+                    else:
+                        self.assertEqual([line[:16] for line in lines if line[:16] in masked], [])
+                    self.assertIn("next steps", masked)
+
+    def test_a_piece_after_a_placeholder_shows_until_its_first_line_starts_a_rest(self):
+        # 34 characters after "[masked] ", as the comparison met one; at 36, read as an older kb's rest; at 40, which
+        # is a key's body start and 36 more, read fresh too; glued to the placeholder, at any length
+        import base64
+        import random
+        r = random.Random(1609)
+        body = base64.b64encode(made_up_private_key(r)).decode()
+        self.assertTrue(body.startswith("MII"))
+        for size, glue, fresh, older in ((34, " ", "shows", "shows"), (36, " ", "shows", "masked"),
+                                         (40, " ", "masked", "masked"), (34, "", "masked", "masked")):
+            self.check(f"[masked]{glue}{body[:size]}\nnext steps", [body[:size]], fresh, older)
+
+    def test_a_piece_after_another_keys_footer_shows_until_its_first_line_starts_a_rest(self):
+        # 16 wide right after a key encoded as base64, as the comparison met two; the key's placeholder comes before it
+        import base64
+        import random
+        import textwrap
+        r = random.Random(1610)
+        key = textwrap.wrap(Base64ReviewFourteenTest.key64(), 64)
+        body = base64.b64encode(made_up_private_key(r)).decode()
+        inner, start = body[1:241], body[:240]  # from inside the body ("IIC..."), and from its start ("MIIC...")
+        for lines, fresh, older in ((textwrap.wrap(inner, 16), "shows", "shows"),
+                                    ([inner[:16], inner[16:64]] + textwrap.wrap(inner[64:], 16), "shows", "shows"),
+                                    ([inner[:48]] + textwrap.wrap(inner[48:], 16), "shows", "masked"),
+                                    ([start[:48]] + textwrap.wrap(start[48:], 16), "masked", "masked")):
+            text = "\n".join(key + lines) + "\nnext steps"
+            self.check(text, lines, fresh, older)
+            for depth, written in enumerate((text, json.dumps(text))):
+                with self.subTest(text=lines[0], depth=depth, key=True):
+                    self.assertEqual([line for line in key[:-1] if line in mask(written)], [])
+
+
 class HeadlessKeyTest(unittest.TestCase):
     """A key's body without its header, as an older kb's row-by-row remask leaves the chunk after the header's."""
     LINE = "MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7"
