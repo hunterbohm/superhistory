@@ -1990,6 +1990,30 @@ class RepeatTest(unittest.TestCase):
             self.assertEqual(mask_module.mask("keep: secret part"), "keep: [masked]secret part")
         self.assertEqual(mask_module.capped, before + 1)
 
+    def test_a_base64_key_in_text_still_changing_at_the_limit_is_masked(self):
+        # the key is hidden over what the passes leave even when they are still changing, so the one placeholder the
+        # limit puts down covers it, wherever it stands
+        import base64
+        import textwrap
+        from kb import mask as mask_module
+        pem = (b"-----BEGIN PRIVATE KEY-----\n" + base64.b64encode(bytes.fromhex("302e020100300506032b657004220420")
+               + bytes(range(32))) + b"\n-----END PRIVATE KEY-----\n")
+        lines = textwrap.wrap(base64.b64encode(pem).decode(), 64)
+        block = "\n".join(lines)
+
+        def still_changing(text):  # a pass that changes the text's end each time, as one still changing at the limit
+            return (text[:-1] + "x" + text[-1:], list(range(len(text) - 1)) + [-1, len(text) - 1], True)
+        for text in (block + "\nnotes deploy", "notes deploy\n" + block + "\nnext", "head\n" + block):
+            with self.subTest(text=text[:12]):
+                before = mask_module.capped
+                with mock.patch.object(mask_module, "_passes_masked", still_changing):
+                    masked = mask_module.mask(text)
+                    shown, _ = mask_module.mask_with_origin(text)
+                for line in lines:
+                    self.assertNotIn(line[:12], masked)
+                    self.assertNotIn(line[:12], shown)
+                self.assertEqual(mask_module.capped, before + 1)
+
     def test_plain_text_costs_one_pass(self):
         import time
         from kb import mask as mask_module
