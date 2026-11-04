@@ -2095,8 +2095,9 @@ _PKCS7_DATA = bytes.fromhex("2a864886f70d010701")
 def _certificate_bundle(data, start, end):
     """Whether data[start:end], the content of PKCS#7 signed data, is a bundle of certificates as openssl crl2pkcs7
     writes one: a version, no digest algorithm, content that names its type and holds none, certificates or lists of
-    revoked ones, each public material (_public_material), and no signer. Signed data that holds content, as a signed
-    message does, is no bundle."""
+    revoked ones, each public material but no bundle (_public_material), and no signer. Signed data that holds content,
+    as a signed message does, is no bundle, nor is a bundle inside one, which openssl never writes: read as one, a
+    bundle nested deep would recurse past Python's limit."""
     inner = _elements(data, start, end)
     if not inner or len(inner) != 1 or inner[0][0] != 0x30:
         return False
@@ -2116,17 +2117,17 @@ def _certificate_bundle(data, start, end):
             return False
         while at < stop:
             member = _element(data, at, stop)
-            if member is None or not _public_material(data[at:member[2]]):
+            if member is None or not _public_material(data[at:member[2]], bundles=False):
                 return False
             at = member[2]
     return True
 
 
-def _public_material(data):
+def _public_material(data, bundles=True):
     """Whether bytes decoded from base64 are, whole, public material: an X.509 certificate or a certificate request
     (what is signed, how, and the signature, the first starting with a version or a serial number), a public key
-    (SubjectPublicKeyInfo: an algorithm and the key), a PKCS#7 bundle of certificates (_certificate_bundle), or an
-    OpenSSH public key (strings, each after its length, the first naming a public key's type). No private key's DER
+    (SubjectPublicKeyInfo: an algorithm and the key), a PKCS#7 bundle of certificates (_certificate_bundle; with
+    `bundles` false, not one), or an OpenSSH public key (strings, each after its length, the first naming a public key's type). No private key's DER
     has any of these shapes, and one cut short has none."""
     at, strings = 0, []
     while at + 4 <= len(data) and len(strings) < 16:
@@ -2144,7 +2145,7 @@ def _public_material(data):
     if tags == [0x30, 0x30, 0x03]:
         return first[0] in (0xa0, 0x02) and first[1] == 0x06
     if tags == [0x06, 0xa0]:
-        return data[parts[0][1]:parts[0][2]] == _PKCS7_SIGNED_DATA and _certificate_bundle(data, *parts[1][1:])
+        return bundles and data[parts[0][1]:parts[0][2]] == _PKCS7_SIGNED_DATA and _certificate_bundle(data, *parts[1][1:])
     return tags == [0x30, 0x03] and first[0] == 0x06
 
 
