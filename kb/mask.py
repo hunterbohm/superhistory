@@ -2064,9 +2064,10 @@ _KEY_BODY_START = r"(?:MI[E-P][A-Za-z0-9+/]|M[A-H][A-Za-z0-9+/][Cw]|b3Bl)"
 # re-wrapped holds. main's pattern stops at the first character that is not base64 or a space, so in escaped text, in
 # code with a string a line, behind comment or quote marks and where a chunk ended between a header and its line break,
 # it leaves exactly that. The line is base64 to its end, or to a quote, a backslash or a cut's "…", so a word that only
-# starts like one, followed by more words, stays; a line that decodes from its start to words starts none, as a line of
-# words does not (_encoded_words, in _key_rests). It runs through its footer, or to the end of its paragraph, but never
-# into a line of ordinary words (_WORDS_LINE) or a JSON object's next field (_NEXT_FIELD).
+# starts like one, followed by more words, stays; a line that decodes from its start to words holds none, as a line of
+# words does not, and the rest starts past such lines where the next one starts it (_encoded_words, in _key_rests). It
+# runs through its footer, or to the end of its paragraph, but never into a line of ordinary words (_WORDS_LINE) or a
+# JSON object's next field (_NEXT_FIELD).
 # Each alternative takes a character no other does: quotes are _QUOTE's alone, as a run of them read two ways each
 # took time exponential in its length.
 _BEFORE_BODY = rf"(?:\\{{1,7}}[nrt]|{_QUOTE}|<br\s*/?>|[\s#>+,;|*\]])"
@@ -2264,6 +2265,13 @@ def _encoded_words(found):
         return False
     return (" " in words and words.isprintable() and "-----" not in words
             and not any(_token_like(m.group()) for m in _RUN.finditer(words)))
+
+
+def _line_past(text, found):
+    """Where the line that a key's rest's start (`found`) matched ends, so the next line is read from there: at the line
+    break, escape or quote that ended it, or past base64 glued to the placeholder, before its line break."""
+    end = found.end()
+    return end - 1 if end > found.start() and text[end - 1] in "\n\\\"'<…" else end
 
 
 def _token_tail(text):
@@ -2496,34 +2504,40 @@ def _key_rests(text, starts=_REST_START):
     (where it starts, where it ends, whether it stays): it stays where it starts with public material and holds no run
     of base64 past it (_public_first), and is removed unless its base64 decodes whole as public material. Base64 glued
     to a placeholder that starts no rest, as before a line break escaped twice, is read so too, but only to stay: such
-    a run's own reading (_glued_run_edits) masks it otherwise, as main's does. Each placeholder outside the core of the
-    rest before it is read once, and each core runs once to its end, so a paragraph of many costs time in proportion."""
+    a run's own reading (_glued_run_edits) masks it otherwise, as main's does. Lines that decode to words right after a
+    placeholder (_encoded_words) stay, and the rest starts past them where their next line starts one. Each placeholder
+    outside the core of the rest before it is read once, and each core runs once to its end, so a paragraph of many
+    costs time in proportion."""
     core, covered, tail, past, ends = 0, 0, None, None, _rest_ends(text)
     start = _ID_REST_START if starts is _REST_START and not _STORED_ROW.get() else starts
     for at in _PLACEHOLDER.finditer(text):
         if at.start() < core:
             continue
-        rest = start.match(text, at.end())
-        if rest and _encoded_words(rest.group()):
-            rest = None  # another stream's line of words, which starts no rest, as a line of words starts none
+        begin = at.end()
+        rest = start.match(text, begin)
+        while rest and _encoded_words(rest.group()):
+            # another stream's line of words holds no key's rest, as a line of words does not: the rest, if any,
+            # starts past it, its next line read as one right after the placeholder is
+            begin = _line_past(text, rest)
+            rest = start.match(text, begin) if begin < len(text) else None
         if not rest and not _BASE64_CHARACTER.match(text, at.end()):
             continue
-        reach = ends(at.end())
+        reach = ends(begin)
         tail = tail or _token_tail(text)
         end = tail(reach)  # a placeholder past the core, in the tail, still reads its own rest
         if end <= covered:  # which ends inside one already masked, read before the public material past it, which
             core = reach if rest else core  # reads on to `end`: many such in one tail took time in its square
             continue
         past = past or _runs_past(text)
-        if _public_first(text, at.end(), end, past):
-            yield at.end(), end, True  # public material, then no run of base64 through all main hides: no key's rest
+        if _public_first(text, begin, end, past):
+            yield begin, end, True  # public material, then no run of base64 through all main hides: no key's rest
             continue
         if not rest:
             continue
         core = reach
-        if not _public_rest(text[at.end():end]):
+        if not _public_rest(text[begin:end]):
             covered = max(covered, end)
-            yield at.end(), end, False
+            yield begin, end, False
 
 
 class _Rests(list):
