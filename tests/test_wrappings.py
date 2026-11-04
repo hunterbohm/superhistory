@@ -1293,9 +1293,92 @@ class ReviewSixteenTest(unittest.TestCase):
                 db.close()
 
 
+class ReviewSeventeenTest(unittest.TestCase):
+    """The seventeenth review's findings: a span read whole held a number Python parses but this reading could not
+    use. A hexadecimal integer thousands of digits long, which the guard on runs of decimal digits does not see,
+    raised ValueError where mask_all printed it beside its field's name; an integer too large for a float added to an
+    imaginary number raised OverflowError inside ast.literal_eval, which the parser's fallback did not catch. Either
+    raised out of mask(), and the item was dropped; main keeps both texts as they are. Such a span is read as text."""
+
+    TEXTS = ('{"command":"keytool","value":0x' + "f" * 4000 + "}", '["keytool", ' + "9" * 400 + "+1j]")
+
+    @staticmethod
+    def forms(text):
+        return text, json.dumps(text), json.dumps(json.dumps(text))
+
+    def test_the_reviews_two_texts_stay_as_main_keeps_them(self):
+        for text in self.TEXTS:
+            for form in self.forms(text):
+                with self.subTest(form=form[:60]):
+                    self.assertEqual(mask(form), form)
+                    self.assertEqual(mask_all({"output": form}), {"output": form})
+
+    def test_such_rows_are_stored(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = store.connect(os.path.join(tmp, "kb.sqlite"))
+            try:
+                for n, text in enumerate(self.TEXTS):
+                    store.store_item(db, "codex", f"c-r17-{n}", "2026-11-04T10:00:00Z", "build", text, {})
+                # the store keeps long content in chunks, in order
+                stored = "".join(content for (content,) in db.execute("SELECT content FROM docs ORDER BY rowid"))
+                for text in self.TEXTS:
+                    self.assertIn(text, stored)
+            finally:
+                db.close()
+
+    def test_a_number_of_a_thousand_digits_in_any_base_is_no_container_read_whole(self):
+        # As a run of 1,000 decimal digits is not (_DIGIT_RUN), by the number's value, however it is written.
+        under, over = 10 ** 999 - 1, 10 ** 999
+        for write in (hex, oct, bin, lambda n: hex(n).replace("0x", "0X"), lambda n: "-" + hex(n)):
+            with self.subTest(written=write(255)):
+                self.assertIsNotNone(masking._parse_container(f'["keytool", {write(under)}]'))
+                self.assertIsNone(masking._parse_container(f'["keytool", {write(over)}]'))
+                self.assertIsNone(masking._parse_container(f'{{{write(over)}: "keytool"}}'))
+                self.assertIsNone(masking._parse_container(f'["keytool", ({write(over)}, 1)]'))
+        for text in ('["keytool", ' + "9" * 400 + "+1j]", '["keytool", -' + "9" * 310 + "-2j]",
+                     '["keytool", 0x' + "f" * 300 + "+0j]"):
+            with self.subTest(text=text[-12:]):
+                self.assertIsNone(masking._parse_container(text))
+
+    def test_numbers_of_every_kind_and_size_in_containers_mask_and_hide_what_main_hides(self):
+        from tests.test_mask_against_today import hidden, main
+        rng = random.Random(17)
+
+        def digits(n, alphabet):
+            return rng.choice(alphabet[1:]) + "".join(rng.choice(alphabet) for _ in range(n - 1))
+
+        def number():
+            n = rng.choice((1, 5, 300, 999, 1000, 1200, 3000, 4400))
+            return rng.choice((
+                lambda: "0x" + digits(n, "0123456789abcdef"), lambda: "0o" + digits(n, "01234567"),
+                lambda: "0b" + digits(n, "01"), lambda: digits(min(n, 999), "0123456789"),
+                lambda: digits(rng.choice((309, 310, 400, 999)), "0123456789") + "+1j",
+                lambda: "0x" + digits(rng.choice((256, 300, 1000)), "0123456789abcdef") + rng.choice(("+1j", "-2j")),
+                lambda: rng.choice(("1e999j", "-1e400j", "0x10+1e309j", "1e999", "-1e400", "1" * 400 + ".0")),
+                lambda: "0x" + "_".join(digits(4, "0123456789abcdef") for _ in range(max(1, n // 4))),
+                lambda: "-0x" + digits(n, "0123456789abcdef")))()
+
+        shapes = (lambda v: f'["keytool", {v}, "-alias", "x"]', lambda v: f'{{"command": "keytool", "value": {v}}}',
+                  lambda v: f'{{{v}: "keytool", "n": 1}}', lambda v: f'("mongosh", {v})',
+                  lambda v: f'{{"argv": ["keytool", [{v}, {{"k": {v}}}]]}}',
+                  lambda v: f'["keytool", "-storepass", "{PASSWORD}", {v}]',
+                  lambda v: f'["keytool", {v}, "-storepass", "{PASSWORD}"]')
+        for _ in range(200):
+            text = rng.choice(shapes)(number())
+            for _ in range(rng.choice((0, 0, 1, 2))):
+                text = json.dumps(text)
+            text = rng.choice(("{}", "print({})", "Traceback line: {} failed", "cmd = {}\nnext")).format(text)
+            with self.subTest(text=text[:80]):
+                masked = mask(text)
+                mask_all({"output": text})
+                self.assertLessEqual(hidden(main, text), hidden(masking, text))
+                if PASSWORD not in main.mask(text):
+                    self.assertNotIn(PASSWORD, masked)
+
+
 class RevisionTest(unittest.TestCase):
     def test_stored_rows_are_masked_again(self):
-        self.assertEqual(masking.REVISION, 12)
+        self.assertEqual(masking.REVISION, 13)
 
 
 if __name__ == "__main__":
