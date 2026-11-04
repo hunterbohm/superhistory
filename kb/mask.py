@@ -2505,9 +2505,10 @@ def _key_rests(text, starts=_REST_START):
     of base64 past it (_public_first), and is removed unless its base64 decodes whole as public material. Base64 glued
     to a placeholder that starts no rest, as before a line break escaped twice, is read so too, but only to stay: such
     a run's own reading (_glued_run_edits) masks it otherwise, as main's does. Lines that decode to words right after a
-    placeholder (_encoded_words) stay, and the rest starts past them where their next line starts one. Each placeholder
-    outside the core of the rest before it is read once, and each core runs once to its end, so a paragraph of many
-    costs time in proportion."""
+    placeholder (_encoded_words) stay, and the rest starts past them where their next line starts one; main reads no
+    rest there, so such a rest takes none of the tail of tokens main's rest takes. Each placeholder outside the core
+    of the rest before it is read once, and each core runs once to its end, so a paragraph of many costs time in
+    proportion."""
     core, covered, tail, past, ends = 0, 0, None, None, _rest_ends(text)
     start = _ID_REST_START if starts is _REST_START and not _STORED_ROW.get() else starts
     for at in _PLACEHOLDER.finditer(text):
@@ -2524,7 +2525,8 @@ def _key_rests(text, starts=_REST_START):
             continue
         reach = ends(begin)
         tail = tail or _token_tail(text)
-        end = tail(reach)  # a placeholder past the core, in the tail, still reads its own rest
+        # a placeholder past the core, in the tail, still reads its own rest; past lines of words, main reads none
+        end = tail(reach) if begin == at.end() else reach
         if end <= covered:  # which ends inside one already masked, read before the public material past it, which
             core = reach if rest else core  # reads on to `end`: many such in one tail took time in its square
             continue
