@@ -853,7 +853,10 @@ _PLAIN_STOP = re.compile(r"\Z|[|;&)#]|" + _LINE_END)
 _SEGMENT_END = re.compile(_LINE_END)
 # A JSON string as written, or a Python one as repr and print(dict) write it in single quotes: from a quote no
 # backslash escapes to the next such quote of its kind on its line. Its body is group 1 or 2.
-_STRING_LITERAL = re.compile(r'''(?<!\\)(?:"((?:[^"\\\r\n]|\\.)*)"|'((?:[^'\\\r\n]|\\.)*)')''')
+# A quote between two of a word's letters is its apostrophe ("Couldn't", "it's"), never a Python string's opening
+# quote, as repr writes none there; a string's prefix (b'...', rb'...') still opens one.
+_STRING_LITERAL = re.compile(r'''(?<!\\)(?:"((?:[^"\\\r\n]|\\.)*)"'''
+                             r'''|(?:(?<!\w(?='\w))|(?<=(?<!\w)[bBrRuUfF])|(?<=(?<!\w)[bBrRuUfF]{2}))'((?:[^'\\\r\n]|\\.)*)')''')
 # An escape in a string's body, as JSON or Python writes one.
 _ESCAPE = re.compile(r"\\(?:u([dD][89abAB][0-9a-fA-F]{2})\\u([dD][c-fC-F][0-9a-fA-F]{2})"
                      r"|u([0-9a-fA-F]{4})|U([0-9a-fA-F]{8})|x([0-9a-fA-F]{2})|(.))", re.S)
@@ -1017,7 +1020,8 @@ def _masked_parts(decoded, masked):
 # A run of digits long enough that str-to-int is slow on Python 3.9 (no digit limit there), or that no real value
 # holds: a span with one is left for the fallback, not parsed.
 _DIGIT_RUN = re.compile(r"[0-9]{1000,}")
-_CONTAINER_MAX = 200000  # a span longer than this, or nested past _CONTAINER_DEPTH, is left for the fallback
+# A span longer than 1 MiB, the bar's item size, or nested past _CONTAINER_DEPTH, is left for the fallback.
+_CONTAINER_MAX = 1 << 20
 _CONTAINER_DEPTH = 100
 _CLOSERS = {"[": "]", "{": "}", "(": ")"}
 
@@ -1145,7 +1149,9 @@ def _container_edits(text, depth=0):
         if not _ANY_COMMAND.search(decoded):
             continue
         inner_spans, inner_masks = _container_edits(decoded, depth + 1)
-        found = _command_spans(decoded, _literals(decoded)) + list(inner_masks)
+        # as at depth 0, a line read across a container parsed in the string reads it wrongly; the container's stands
+        found = [span for span in _command_spans(decoded, _literals(decoded))
+                 if _holding(inner_spans, span[0]) is None] + list(inner_masks)
         spans.append((literal.start(), literal.end()))
         masks += _back_to(starts, ends, found)
     spans.sort()
