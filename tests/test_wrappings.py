@@ -961,17 +961,16 @@ def _scanned_containers(text, i=0, n=None):
 
 class ReviewTenTest(unittest.TestCase):
     """The tenth review's findings: aws configure set's options between "set" and the setting pushed "aws" out of the
-    six items read back, and finding the bracket spans scanned again from every bracket, quadratic where each scan
+    six items read back (options before "configure" are the follow-ups' ON-MAIN item, as in a line of text), and finding the bracket spans scanned again from every bracket, quadratic where each scan
     starts inside an earlier one's quotes."""
 
     WRAPS = ReviewEightTest.WRAPS
     masks_only_the_password = ReviewEightTest.masks_only_the_password
 
     AWS = (["aws", "configure", "set", "--profile", "team", "--region", "us-east-1", "aws_secret_access_key", PASSWORD],
-           ["aws", "--profile", "team", "--region", "us-east-1", "configure", "set", "aws_secret_access_key", PASSWORD],
            ["/usr/local/bin/aws", "configure", "set", "--profile", "ci", "--debug", "aws_session_token", PASSWORD],
            ["aws.exe", "configure", "set", "--profile", "team", "--output", "json", "--region", "eu-west-1",
-            "--no-cli-pager", "profile.team.aws_secret_access_key", PASSWORD])
+            "--no-cli-pager", "default.aws_session_token", PASSWORD])
 
     def test_aws_options_between_set_and_the_setting(self):
         for items in self.AWS:
