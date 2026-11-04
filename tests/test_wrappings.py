@@ -1492,6 +1492,41 @@ class ReadWholeErrorTest(unittest.TestCase):
                         mask(self.EVERY_STEP)
 
 
+class ReviewEighteenTest(unittest.TestCase):
+    """The eighteenth review's finding: a list's reading put a long item beside where a command is named into the line
+    it reads before every later flag, so a curl upload ("--data" and its payload) followed by many authenticated
+    transfers ("--next", "-u", ...) cost time in the square of its length, as main does not."""
+
+    @staticmethod
+    def upload(n, filler):
+        return (["curl", "--data", "a" * (100 * n), "https://example.invalid/"] + ["-H", "X-Item: opt"] * filler
+                + ["--next", "-u", "deploy:" + PASSWORD, "https://example.invalid/"] * n)
+
+    @staticmethod
+    def json_in_text(items):
+        masking._container_edits_at.cache_clear()  # each call reads the text afresh, as a new item does
+        return mask(json.dumps(items))
+
+    def test_a_long_item_and_many_later_flags_cost_time_in_proportion(self):
+        for filler in (40, 0):  # the payload past the 64 items before a flag, beside the command's name; or among them
+            small, large = self.upload(10, filler), self.upload(40, filler)
+            for form, call in (("mask_all", mask_all), ("JSON in text", self.json_in_text)):
+                with self.subTest(filler=filler, form=form):
+                    for items in (small, large):
+                        self.assertNotIn(PASSWORD, json.dumps(call(items)))
+                    little, lots = took_call(lambda: call(small)), took_call(lambda: call(large))
+                    self.assertLess(lots, 6 * little + 0.2, (little, lots))  # four times the list, about four times the CPU
+
+    def test_a_command_named_inside_a_long_item_still_reads_its_flags(self):
+        for name, flag in (("mongosh", "-p"), ("keytool", "-storepass")):
+            for before in (70, 3):  # past the 64 items before the flag, and among them
+                for named in ("x" * 300 + " " + name + " " + "y" * 300, name + " " + "y" * 600, "x" * 600 + " " + name):
+                    items = [named] + ["-v"] * before + [flag, PASSWORD]
+                    with self.subTest(name=name, before=before, at=named.index(name)):
+                        self.assertNotIn(PASSWORD, json.dumps(mask_all(items)))
+                        self.assertNotIn(PASSWORD, mask(json.dumps(items)))
+
+
 class RevisionTest(unittest.TestCase):
     def test_stored_rows_are_masked_again(self):
         self.assertEqual(masking.REVISION, 13)
