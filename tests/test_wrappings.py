@@ -1185,6 +1185,40 @@ class ReviewThirteenTest(unittest.TestCase):
                 self.assertNotIn(PASSWORD, mask(text))
 
 
+class ReviewFourteenTest(unittest.TestCase):
+    """The fourteenth review's finding: a Python literal whose key or set member is a list or a dict ({[]: "keytool"})
+    makes ast.literal_eval raise TypeError, which the parse-whole reading did not catch, so masking raised and the row
+    was dropped. Such a span is now read as text is, as any other span that does not parse."""
+
+    UNHASHABLE = ('{[]: "keytool"}', '{{}: "keytool"}', '{[1], "keytool"}', '{([],): "keytool"}',
+                  'subprocess.run(["keytool", {[]: 1}])', 'subprocess.run(("keytool", {[]: 1}))')
+    TRACEBACK = ('Traceback (most recent call last):\n  File "/srv/app/build.py", line 3, in <module>\n'
+                 '    mapping = {[]: "keytool"}\nTypeError: unhashable type: \'list\'\n')
+
+    def test_a_literal_with_an_unhashable_key_is_kept(self):
+        for source in self.UNHASHABLE + (self.TRACEBACK,):
+            for text in (source, json.dumps(source), json.dumps(json.dumps(source))):
+                with self.subTest(text=text):
+                    self.assertEqual(mask(text), text)
+                    self.assertEqual(mask_all({"out": text}), {"out": text})
+
+    def test_a_password_in_such_a_literal_still_masks(self):
+        text = '{[]: "keytool -storepass ' + PASSWORD + '"}'
+        for times in range(3):
+            with self.subTest(times=times):
+                self.assertNotIn(PASSWORD, mask(text))
+            text = json.dumps(text)
+
+    def test_such_a_row_is_stored(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = store.connect(os.path.join(tmp, "kb.sqlite"))
+            try:
+                store.store_item(db, "codex", "c-r14", "2026-11-01T10:00:00Z", "traceback", self.TRACEBACK, {})
+                self.assertEqual(db.execute("SELECT count(*) FROM docs").fetchone()[0], 1)
+            finally:
+                db.close()
+
+
 class RevisionTest(unittest.TestCase):
     def test_stored_rows_are_masked_again(self):
         self.assertEqual(masking.REVISION, 11)
