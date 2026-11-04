@@ -2262,13 +2262,20 @@ def _typed_values(text, labels, typed):
 _REGEX_IN_BRACKETS = re.compile(r"(?<=[(,:=])\s*/((?:\\.|[^/\\\n])+)/[a-z]*(?=\s*(?:[,})\]]|$))")
 
 
+# The calls whose strings name a field, as the field rule lists them: a locator's getBy*/get_by_*, locator, $, frame,
+# find_element and their kin. Another call in the chain (filter, describe, nth, and, or) names none.
+_CODE_FIELD_CALLS = re.compile(r"(?:getBy|get_by_)\w+|locator|\$\$?|frame|find_elements?|findElements?"
+                               r"|querySelector(?:All)?|query_selector(?:_all)?|element")
+
+
 def _receiver_strings(text, tokens, k, comments=(), limit=200):
-    """The strings in the chain of calls before tokens[k], read back over names, dots and whole brackets, as
-    'page.getByRole("textbox", {name: "Password"})' or 'driver.find_element(By.ID, "password")' gives a field's labels.
+    """The strings of the locator calls in the chain before tokens[k], read back over names, dots and whole brackets,
+    as 'page.getByRole("textbox", {name: "Password"})' or 'driver.find_element(By.ID, "password")' gives a field's
+    labels: each call _CODE_FIELD_CALLS names, a container's as much as the field's own, and a receiver in brackets.
     A chain is joined by dots: it reads no further back than a name with no dot before it, or a bracket that follows
     no name or bracket, so another statement's strings are never this field's. An object's key ({"name": ...}) names
-    an option, not the field. Only the nearest call with strings names the field: a call before it is a container."""
-    strings, names, depth, stop, close, close_k, named = [], [], 0, max(-1, k - limit), None, None, False
+    an option, not the field."""
+    strings, names, inside, depth, stop, close, close_k = [], [], [], 0, max(-1, k - limit), None, None
     in_comment = comments.inside if comments else (lambda at: False)
     k -= 1
     while k > stop:
@@ -2276,16 +2283,18 @@ def _receiver_strings(text, tokens, k, comments=(), limit=200):
         if depth:
             depth += kind in ")]}"
             depth -= kind in "([{"
-            if kind == "s" and not named and not (k + 1 < len(tokens) and tokens[k + 1][0] == ":"):
-                strings.append(text[slice(*_code_text(text, tokens[k]))])
-            if not depth:  # a regex literal in the brackets ("getByLabel(/Password/i)", {name: /Password/i}) too
-                for regex in [] if named else _REGEX_IN_BRACKETS.finditer(text, tokens[k][2], close):
-                    if not in_comment(regex.start(1)):  # a regex in a comment names no field
-                        strings.append(re.sub(r"\\.|[\^$.*+?()\[\]{}|]", " ", regex.group(1)).strip())
-                # the nearest call with strings names the field; one before it is a container
-                # (page.locator("#reset-form").getByLabel("New password")), whose words are not the field's
-                named = named or bool(strings)
-                if k == 0 or tokens[k - 1][0] not in ("n", ")", "]"):
+            if kind == "s" and not (k + 1 < len(tokens) and tokens[k + 1][0] == ":"):
+                inside.append(text[slice(*_code_text(text, tokens[k]))])
+            if not depth:
+                bare = k == 0 or tokens[k - 1][0] not in ("n", ")", "]")
+                if bare or kind == "(" and tokens[k - 1][0] == "n" and _CODE_FIELD_CALLS.fullmatch(
+                        text, tokens[k - 1][1], tokens[k - 1][2]):
+                    strings += inside  # a regex literal in the brackets ("getByLabel(/Password/i)") too
+                    for regex in _REGEX_IN_BRACKETS.finditer(text, tokens[k][2], close):
+                        if not in_comment(regex.start(1)):  # a regex in a comment names no field
+                            strings.append(re.sub(r"\\.|[\^$.*+?()\[\]{}|]", " ", regex.group(1)).strip())
+                inside = []
+                if bare:
                     # a bracket that calls or indexes nothing starts the chain: a receiver in brackets,
                     # (await page.$("#password")), gives its own names
                     names += [text[t[1]:t[2]] for t in tokens[k + 1:close_k] if t[0] == "n"]
@@ -2429,8 +2438,7 @@ def _typed_code_edits(text):
             or any(kw in _CODE_VALUE_KEYWORDS and any(t[0] == "s" for t in ts) for kw, ts in args)))
         if selector:
             own.append(positional[0])
-        if own:  # the call's own field: the chain before it holds the page and its containers
-            labels = [text[slice(*_code_text(text, t))] for ts in own for t in ts if t[0] == "s"]
+        labels += [text[slice(*_code_text(text, t))] for ts in own for t in ts if t[0] == "s"]  # the call's own field
         # the value: a value= keyword's, or the first argument after the field that holds a string (send_keys may
         # take a key first, Keys.HOME)
         typed = [ts for kw, ts in args if kw in _CODE_VALUE_KEYWORDS] or [
@@ -2446,7 +2454,10 @@ def _typed_code_edits(text):
                     INVISIBLE.sub("", text[a:b])):
                 edits.append((a, b, "[masked]"))
             continue
-        if not _labels_ask_for_a_secret(tuple(labels)) or all(_built_at_run_time(text, t) for t in strings):
+        # any one string that asks for a secret on its own names the field so: no other string, a container's, a
+        # strategy's ("id") or an option's, takes it back
+        if not any(_labels_ask_for_a_secret((label,)) for label in labels) or all(
+                _built_at_run_time(text, t) for t in strings):
             continue
         # from the value's first string through the call's last string that is not its field, whatever lies
         # between: a comment, a prefix, an escape or a string read wrong cannot hold any of it back
