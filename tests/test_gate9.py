@@ -2503,6 +2503,39 @@ class ReviewFortySevenTest(unittest.TestCase):
                    'settings.get("password_hint").type("first pet")')
 
 
+class ReviewFortyEightTest(unittest.TestCase):
+    """The forty-eighth review's findings: addValue missing from the typing names whose strings are values, never code,
+    and a label's closing quote after "Password:" read as a quoted password's opening quote, masking ").fill(" and
+    breaking the call the typing reader reads."""
+
+    WRAPS, masks, stays = UnionFieldTest.WRAPS, UnionFieldTest.masks, UnionFieldTest.stays
+
+    def test_what_add_value_types_is_a_value_not_code(self):
+        self.stays('browser.$("#editor").addValue(\'page.fill("#password", "release notes")\')',
+                   '$("#notes").add_value(\'driver.find_element(By.ID, "password").send_keys("release notes")\')')
+        self.masks("Abc.fill('q')Z9!", 'browser.$("#password").addValue("Abc.fill(\'q\')Z9!")')
+
+    def test_a_label_ending_in_a_colon_keeps_its_call(self):
+        self.masks("sunshine",
+                   'page.getByLabel("Password:").fill("sunshine")',
+                   'page.get_by_label("Password: ").fill("sunshine")',
+                   "page.getByLabel('New password:').fill('sunshine')")
+
+    def test_stays_a_label_ending_in_a_colon_on_another_field(self):
+        self.stays('page.getByLabel("Search passwords:").fill("release notes")',
+                   'page.getByPlaceholder("Password hint:").fill("first pet")',
+                   'print("Password:", "set in the vault")')
+
+    def test_a_quoted_password_after_its_names_own_closed_quote(self):
+        for text, value in (('DB_PASSWORD="Xk9,mP2;qL7v"', "Xk9,mP2;qL7v"),
+                            ('{"password":"Xk9,mP2;qL7v"}', "Xk9,mP2;qL7v"),
+                            ("password: 'Xk9,mP2;qL7v'", "Xk9,mP2;qL7v"),
+                            ("cmd 'db_password=\"Xk9,mP2;qL7v\"'", "Xk9,mP2;qL7v"),
+                            ('note "x" password: "Xk9,mP2;qL7v"', "Xk9,mP2;qL7v")):
+            with self.subTest(text=text):
+                self.assertEqual(mask(text), text.replace(value, "[masked]"))
+
+
 # Commands as an argument list, each flag's value its own item: (the list, the items masked).
 ARGV = (
     (["login", "--password", PASSWORD], {2}), (["--token", SUB], {1}), (["--api-key", SUB, "--verbose"], {1}),
