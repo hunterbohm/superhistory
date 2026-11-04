@@ -256,6 +256,17 @@ Known limits:
   deploy") shows, and so does a fragment that is itself a plain word inside a line of words after a key. In a row an
   older kb stored, an OpenSSH private key's private section, re-encoded alone after a placeholder, reads as public
   material and shows.
+- A piece of a private key's base64 with neither its header nor its footer shows, as on main, unless it comes right
+  after a placeholder, as one where a key was masked, and is glued to it, or the line there is base64 alone, 40
+  characters or more, starting as a key's body does ("MIIE..."). In a row an older kb stored, 36 characters or more
+  with a capital, a small letter and a digit, "+" or "/" are enough. Only the first line after the
+  placeholder counts, past any that decode to words: a piece of 34 characters after "[masked] ", or of lines 16 wide
+  after another key's footer, shows, even with a longer line further down.
+- A PGP private key block written as base64 in one stream after words, its header inside a line of the base64, with
+  a control character in the armour's headers above its body ("Comment: a\x01b"), is masked from its footer up to
+  the line holding that character. That line and those above it show, with whatever of the header, the armour's
+  headers and the block's body they hold, and so, at some offsets, does a last line holding nothing but the end of
+  the footer; main shows the whole block.
 - A knowledge base that an older kb wrote, before each row recorded how it was masked, does not open: an older kb's
   masking can leave a secret that no pattern finds afterwards. kb says so and names `kb rebuild`, which reads your
   sources into a fresh one, each as far back as its oldest item in the old one. When a source no longer has some of
