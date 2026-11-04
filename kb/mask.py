@@ -1152,6 +1152,11 @@ class _Brackets:
                 return found
             child = found
 
+    def depth(self, start):
+        """How deep the span opened at text[start], which match() found, nests: 1 for a span with none inside."""
+        found = self.walks.get(start + 1)
+        return found[1] + 1 if found else 1
+
     def match(self, start):
         """Where the balanced span opened at text[start] ends, one past its closer, or None."""
         found = self.walk(start + 1)
@@ -1237,14 +1242,28 @@ def _leaf_pairs(value, masked):
             yield from _leaf_pairs(item, mitem)
 
 
-@functools.lru_cache(maxsize=256)
+# What the parse-whole readings this one is inside have used, as mask_all reads a parsed container's strings with
+# mask() again and so this reading again: (the string levels they decoded, the bracket depth they hold). Past
+# _READ_LEVELS levels, or _CONTAINER_DEPTH brackets, in all, a span is not parsed, and the fail-closed reading runs over
+# it, so strings that each hold a deeply nested list neither run Python's recursion out nor cost time past proportion.
+_READ_DEPTH = contextvars.ContextVar("kb_mask_read_depth", default=(0, 0))
+_READ_LEVELS = 8
+
+
 def _container_edits(text, depth=0):
+    """_container_edits_at, with what the readings around this one have used (_READ_DEPTH)."""
+    levels, nest = _READ_DEPTH.get()
+    return _container_edits_at(text, depth + levels, nest)
+
+
+@functools.lru_cache(maxsize=256)
+def _container_edits_at(text, depth, nest):
     """(the top-level spans of `text` read here, the spans that mask what they hold), as (start, end) in `text`. A
     bracket span (a list, dict or tuple) is parsed whole and read as mask_all reads it; a string is decoded and read a
     level down, as a nested container or a command line, so the text's layers peel exactly as json.loads and ast do.
     A span whose parse fails or whose masks cannot be placed is not read here, so the fail-closed reading still runs
     over it. Read once per text (lru_cache), so no layer is masked twice."""
-    if depth > 16:
+    if depth > _READ_LEVELS:
         return (), ()  # deeper than any real nesting; a cap keeps a crafted chain bounded
     spans, masks = [], []
     # A span that does not parse, or whose masks will not place, is not read whole, but the spans inside it are, as a
@@ -1257,11 +1276,19 @@ def _container_edits(text, depth=0):
         if not _ANY_COMMAND.search(text, start, end) or budget < 0:
             continue
         budget -= 2 * (end - start)
+        if nest + brackets.depth(start) > _CONTAINER_DEPTH:
+            continue  # past the depth guard with the containers around it: read fail-closed, as text
         literals = list(_STRING_LITERAL.finditer(text, start, end))
         value = None if _number_run(text, start, end, literals) else _parse_container(text[start:end])
         if value is not None:
             value = _as_text(value)
-            pairs = list(_leaf_pairs(value, mask_all(value)))
+            token = _READ_DEPTH.set((depth + 1, nest + brackets.depth(start)))
+            try:
+                pairs = list(_leaf_pairs(value, mask_all(value)))
+            except RecursionError:  # a guard beside the caps: the span is read fail-closed, as text
+                value = None
+            finally:
+                _READ_DEPTH.reset(token)
         if value is None or len(literals) != len(pairs):
             todo += list(_containers(text, start + 1, end - 1, brackets))[::-1]
             continue
@@ -1291,7 +1318,7 @@ def _container_edits(text, depth=0):
         decoded, starts, ends = _decoded(text, literal.start(body), literal.end(body))
         if not _ANY_COMMAND.search(decoded):
             continue
-        inner_spans, inner_masks = _container_edits(decoded, depth + 1)
+        inner_spans, inner_masks = _container_edits_at(decoded, depth + 1, nest)
         # as at depth 0, a line read across a container parsed in the string reads it wrongly; the container's stands
         found = [span for span in _command_spans(decoded, _literals(decoded))
                  if _holding(inner_spans, span[0]) is None] + list(inner_masks)
