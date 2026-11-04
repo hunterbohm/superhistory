@@ -2071,10 +2071,15 @@ def _code_string_end(text, at, stop):
     return None
 
 
+# A regex literal starts at a "/" after one of these marks and up to two spaces. In it a run of backslashes escapes the
+# one character after it, as code escaped any number of times writes "\/", and inside a class a "/" counts only where
+# no regex could start, so each try reads text no other try reads: an unclosed one costs time in proportion.
+_REGEX_START = r"(?:(?<=[(,=:\[!&|?{};])|(?<=[(,=:\[!&|?{};] )|(?<=[(,=:\[!&|?{};]  ))"
+_NO_REGEX_START = r"(?<![(,=:\[!&|?{};])(?<![(,=:\[!&|?{};] )(?<![(,=:\[!&|?{};]  )"
 _CODE_TOKEN = re.compile(r"""(?<![\w$\\])[rRbBuUfF]{1,2}\\*["'`]|(?<!\\)\\*["'`]"""
-                         r"""|(?:(?<=[(,=:\[!&|?{};])|(?<=[(,=:\[!&|?{};] )|(?<=[(,=:\[!&|?{};]  ))"""
-                         r"""/(?![/*])(?:\\+[^\n]|\[(?:\\+[^\n]|[^\]\\\n])*\]|[^/\\\n\[])+/[a-z]*"""
-                         r"""|#|//|/\*[\s\S]*?\*/"""
+                         r"""|""" + _REGEX_START + r"""/(?![/*])(?:\\+[^\\\n]"""
+                         r"""|\[(?:\\+[^\\\n]|""" + _NO_REGEX_START + r"""/|[^\]\\\n/])*\]|[^/\\\n\[])+/[a-z]*"""
+                         r"""|#|//|/\*"""
                          r"""|(?<!\\)\\+[nrt]|[{}\[\]():,=;.]|[A-Za-z_$][\w$]*""")
 # Python's prefix and the string it opens, after a line break or tab escaped as JSON holds code ("\\tr\\"...\\"").
 _PREFIXED_QUOTE = re.compile(r"""[rRbBuUfF]{1,2}\\*["'`]""")
@@ -2127,6 +2132,7 @@ def _code_tokens(text):
         stretches.append((i, stop, escaped))
         first = len(tokens)
         opened, typing = [], 0  # the stretch's open brackets, each whether a typing call's, and how many of those
+        unclosed = False  # whether a "/*" found no "*/" after it in this stretch
         while True:
             m = _CODE_TOKEN.search(text, i, stop)
             if not m:
@@ -2146,9 +2152,14 @@ def _code_tokens(text):
                 i = _comment_end(text, m.end(), stop, depth)
                 comments.append((at, i))
                 continue
-            if c.startswith("/*"):
-                comments.append((at, m.end()))
-                i = m.end()
+            if c == "/*":  # a comment to the first "*/"; with none after it, none closes after a later "/*" either
+                end = -1 if unclosed else text.find("*/", at + 2, stop)
+                unclosed = end < 0
+                if unclosed:
+                    i = at + 1
+                    continue
+                comments.append((at, end + 2))
+                i = end + 2
                 continue
             if c[0] == "/":  # a regex literal, as split(/#/) holds one: no comment starts inside it
                 i = m.end()
