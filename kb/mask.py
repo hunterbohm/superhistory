@@ -374,14 +374,23 @@ _SHELL = re.compile(r"(?:^|/)(?:ba|z|a|k)?sh\Z")
 _SHELL_SCRIPT_FLAG = re.compile(r"-[a-z]*c[a-z]*\Z")
 
 
-def _aws_setting_item(items, i):
-    """Whether items[i] is aws configure set's secret-setting name, with "aws", "configure" and "set" among the items
-    just before it: then items[i + 1] is the secret, though the name starts with no "-"."""
-    if not _AWS_SETTING_NAME.match(items[i]):
-        return False
-    before = [v.lower() for v in items[max(0, i - 6):i] if isinstance(v, str)]
-    return any(_AWS_PROGRAM.fullmatch(re.split(r"[\\/]", v)[-1]) for v in before) \
-        and "configure" in before and "set" in before
+def _aws_sets(items):
+    """For each index j, whether "aws", "configure" and "set" come in that order among the 64 items before items[j],
+    with any options between them ("aws --profile team configure set --region us-east-1 ..."), in one pass: then a
+    secret-setting name at j is aws configure set's, and items[j + 1] the secret, though the name starts with no "-"."""
+    found, program, configure, done = [], None, None, None  # done: where the last whole "aws configure set" begins
+    for j, item in enumerate(items):
+        found.append(done is not None and j - done <= 64)
+        if not isinstance(item, str):
+            continue
+        word = item.lower()
+        if _AWS_PROGRAM.fullmatch(re.split(r"[\\/]", word)[-1]):
+            program, configure = j, None
+        elif program is not None and configure is None and word == "configure":
+            configure = j
+        elif configure is not None and word == "set":
+            done, program, configure = program, None, None
+    return found
 
 
 COMMAND_FLAGS = (
@@ -1026,48 +1035,113 @@ _CONTAINER_DEPTH = 100
 _CLOSERS = {"[": "]", "{": "}", "(": ")"}
 
 
-def _match_bracket(text, start):
-    """Where the balanced bracket span opened at `text[start]` ends (one past its closer), or None: brackets inside
-    quotes do not count, and a span over _CONTAINER_MAX long or nested past _CONTAINER_DEPTH, or malformed, is None.
-    The depth is counted here, before any parser sees the span."""
-    stack, i, n = [], start, min(len(text), start + _CONTAINER_MAX)
-    while i < n:
-        c = text[i]
-        if c in "\"'":
-            i += 1
-            while i < n and text[i] != c:
-                i += 2 if text[i] == "\\" else 1
-            i += 1
-            continue
-        if c in _CLOSERS:
-            stack.append(_CLOSERS[c])
-            if len(stack) > _CONTAINER_DEPTH:
-                return None
-            i += 1
-            continue
-        if c in "]})":
-            if not stack or stack.pop() != c:
-                return None
-            i += 1
-            if not stack:
-                return i
-            continue
-        i += 1
-    return None
+_BRACKET_OR_QUOTE = re.compile(r"[\[\]{}()\"']")
+_OPENER = re.compile(r"[\[{(]")
+_BACKSLASHES = re.compile(r"\\*")
 
 
-def _containers(text, i=0, n=None):
+class _Brackets:
+    """The balanced bracket spans of one text, each found once. A span opened at text[start] ends at its closer, one
+    past it: brackets inside quotes do not count, a backslash in quotes takes the next character with it, and a span
+    over _CONTAINER_MAX long, nested past _CONTAINER_DEPTH (counted here, before any parser sees it) or malformed is
+    None. A quote's end and the next bracket outside quotes are looked up, and what follows a position outside quotes
+    is read once whichever bracket's span reaches it, so finding a text's spans costs time in proportion to it however
+    its quotes and brackets interleave, as when every bracket opens inside an earlier one's quotes."""
+
+    def __init__(self, text):
+        self.text, self.ends, self.events, self.walks = text, None, {}, {}
+
+    def quote_end(self, at, quote):
+        """One past the quote that closes a quote whose text starts at `at`, or None."""
+        text = self.text
+        if self.ends is None:  # each quote a backslash run of even length precedes, where a quote it is not in may end
+            self.ends = {q: [m.end() - 1 for m in re.finditer(r"(?<!\\)(?:\\\\)*" + q, text)] for q in "\"'"}
+        run = _BACKSLASHES.match(text, at).end()
+        if run >= len(text):
+            return None
+        if (run - at) % 2 == 0 and text[run] == quote:
+            return run + 1
+        ends = self.ends[quote]  # past the backslashes at `at` and the character they take or leave, any such quote
+        k = bisect.bisect_left(ends, run + 1)
+        return ends[k] + 1 if k < len(ends) else None
+
+    def event(self, at):
+        """Where the next bracket outside quotes is, read from `at` outside quotes, or None."""
+        events, text, seen, found = self.events, self.text, [], None
+        while at is not None:
+            if at in events:
+                found = events[at]
+                break
+            seen.append(at)
+            match = _BRACKET_OR_QUOTE.search(text, at)
+            if match is None:
+                break
+            if match.group() not in "\"'":
+                found = match.start()
+                break
+            at = self.quote_end(match.end(), match.group())
+        for position in seen:
+            events[position] = found
+        return found
+
+    def walk(self, at):
+        """From `at`, outside quotes, the closer that ends the bracket level `at` is in, past the spans opened on that
+        level: (where it is, how deep those spans nest), or None where one of them is malformed or nothing closes it."""
+        walks, text, levels, child = self.walks, self.text, [[at, [], None]], None
+        while True:
+            level = levels[-1]
+            at, seen, opener = level
+            if opener is not None:  # the span opened at `opener` was read: it must close with its own closer
+                level[2] = None
+                if child is not None and text[child[0]] == _CLOSERS[text[opener]]:
+                    seen.append((at, 1 + child[1]))
+                    level[0] = child[0] + 1
+                    continue
+                found = None
+            elif at in walks:
+                found = walks[at]
+            else:
+                event = self.event(at)
+                if event is not None and text[event] in _CLOSERS:
+                    level[2] = event
+                    levels.append([event + 1, [], None])
+                    continue
+                found = None if event is None else (event, 0)
+            walks[at] = found
+            deepest = found[1] if found else 0
+            for position, depth in reversed(seen):
+                deepest = max(deepest, depth)
+                walks[position] = None if found is None else (found[0], deepest)
+            found = None if found is None else (found[0], deepest)  # read from where this level began
+            levels.pop()
+            if not levels:
+                return found
+            child = found
+
+    def match(self, start):
+        """Where the balanced span opened at text[start] ends, one past its closer, or None."""
+        found = self.walk(start + 1)
+        if found is None or self.text[found[0]] != _CLOSERS[self.text[start]] or found[1] + 1 > _CONTAINER_DEPTH:
+            return None
+        end = found[0] + 1
+        return end if end <= min(len(self.text), start + _CONTAINER_MAX) else None
+
+
+def _containers(text, i=0, n=None, brackets=None):
     """The top-level balanced bracket spans text[i:n] holds, in order, as (start, end), skipping brackets inside
-    quotes."""
+    quotes; `brackets`, the text's _Brackets, shares what one reading found with the next."""
     n = len(text) if n is None else n
+    brackets = brackets or _Brackets(text)
     while i < n:
-        if text[i] in _CLOSERS:
-            end = _match_bracket(text, i)
-            if end is not None:
-                yield i, end
-                i = end
-                continue
-        i += 1
+        opener = _OPENER.search(text, i, n)
+        if opener is None:
+            return
+        end = brackets.match(opener.start())
+        if end is not None:
+            yield opener.start(), end
+            i = end
+        else:
+            i = opener.start() + 1
 
 
 def _parse_container(source):
@@ -1142,7 +1216,8 @@ def _container_edits(text, depth=0):
     # A span that does not parse, or whose masks will not place, is not read whole, but the spans inside it are, as a
     # list in a call that is no literal ("Command (argv=[...]) failed") is. What the parsers and these scans read in
     # all is held to a few times the text's length, so a deep nest of spans that never parse costs time in proportion.
-    todo, budget = list(_containers(text))[::-1], 8 * len(text) + (1 << 20)
+    brackets = _Brackets(text)
+    todo, budget = list(_containers(text, brackets=brackets))[::-1], 8 * len(text) + (1 << 20)
     while todo:
         start, end = todo.pop()
         if not _ANY_COMMAND.search(text, start, end) or budget < 0:
@@ -1154,7 +1229,7 @@ def _container_edits(text, depth=0):
             value = _as_text(value)
             pairs = list(_leaf_pairs(value, mask_all(value)))
         if value is None or len(literals) != len(pairs):
-            todo += list(_containers(text, start + 1, end - 1))[::-1]
+            todo += list(_containers(text, start + 1, end - 1, brackets))[::-1]
             continue
         placed, found = True, []
         for literal, (orig, masked) in zip(literals, pairs):
@@ -1171,7 +1246,7 @@ def _container_edits(text, depth=0):
             spans.append((start, end))
             masks += found
         else:
-            todo += list(_containers(text, start + 1, end - 1))[::-1]
+            todo += list(_containers(text, start + 1, end - 1, brackets))[::-1]
     spans.sort()
     for literal in _STRING_LITERAL.finditer(text):
         if _holding(spans, literal.start()) is not None:  # inside a parsed container, read there
@@ -2344,7 +2419,7 @@ def _flag_values(items):
     holds a space ("-storepass ...") holds a flag and its value in one, but after a flag, whose value it may be
     ("--comment", "-p release-2026"): read unquoted after that line, it keeps its flag."""
     found, named = {}, None  # named: the last item that names a command, before the one read
-    shells = _shells_open(items)
+    shells, aws = _shells_open(items), _aws_sets(items)
     for i in range(1, len(items)):
         flag, item = items[i - 1], items[i]
         if isinstance(flag, str) and _ANY_COMMAND.search(flag):
@@ -2361,7 +2436,8 @@ def _flag_values(items):
             continue
         # aws configure set's secret setting names its value a secret though the name starts with no "-", so it
         # counts as a flag.
-        after_flag = is_flag and _may_take_a_secret(flag) or isinstance(flag, str) and _aws_setting_item(items, i - 1)
+        after_flag = is_flag and _may_take_a_secret(flag) or isinstance(flag, str) and bool(
+            _AWS_SETTING_NAME.match(flag)) and aws[i - 1]
         glued = not is_flag and item.startswith("-") and len(item.split(None, 1)) == 2  # after a flag: its value
         if not (after_flag or glued):
             continue
