@@ -1257,6 +1257,43 @@ def _leaf_pairs(value, masked):
             yield from _leaf_pairs(item, mitem)
 
 
+def _read_whole(text, start, end, depth, nest):
+    """The masks text[start:end], a bracketed span, takes read whole, in `text`: parsed (_parse_container), its strings
+    walked and read as mask_all reads them, a number printed beside its field's name among them, and each mask placed
+    back in its string literal. None where the span is not read whole, so the spans inside it are read instead and
+    the fail-closed reading runs over it: where it does not parse, its strings do not match the literals the scan
+    finds, a mask will not place, or any step raises. This reading only narrows the masks this PR adds, and the mask
+    with it switched off hides all it hides (_unwrapped_hidden), so a span an error leaves unread is read as main reads
+    it, and a kind of error no guard here foresaw drops no item. KeyboardInterrupt and SystemExit, no Exception, still
+    end the run. `depth` and `nest` are what the readings around this one have used (_READ_DEPTH)."""
+    try:
+        literals = list(_STRING_LITERAL.finditer(text, start, end))
+        value = None if _number_run(text, start, end, literals) else _parse_container(text[start:end])
+        if value is None:
+            return None
+        value = _as_text(value)
+        token = _READ_DEPTH.set((depth + 1, nest))
+        try:
+            pairs = list(_leaf_pairs(value, mask_all(value)))
+        finally:
+            _READ_DEPTH.reset(token)
+        if len(literals) != len(pairs):
+            return None
+        found = []
+        for literal, (orig, masked) in zip(literals, pairs):
+            if masked == orig:
+                continue
+            body = 1 if literal.group(1) is not None else 2
+            decoded, starts, ends = _decoded(text, literal.start(body), literal.end(body))
+            parts = _masked_parts(decoded, masked) if decoded == orig else None
+            if parts is None:  # the literal scan disagrees with the parse, or the mask will not place
+                return None
+            found += _back_to(starts, ends, parts)
+        return found
+    except Exception:  # any error in reading the span whole, RecursionError among them: read as a span that does not parse
+        return None
+
+
 # What the parse-whole readings this one is inside have used, as mask_all reads a parsed container's strings with
 # mask() again and so this reading again: (the string levels they decoded, the bracket depth they hold). Past
 # _READ_LEVELS levels, or _CONTAINER_DEPTH brackets, in all, a span is not parsed, and the fail-closed reading runs over
@@ -1296,36 +1333,12 @@ def _container_edits_at(text, depth, nest):
         budget -= 2 * (end - start)
         if nest + brackets.depth(start) > _CONTAINER_DEPTH:
             continue  # past the depth guard with the containers around it: read fail-closed, as text
-        literals = list(_STRING_LITERAL.finditer(text, start, end))
-        value = None if _number_run(text, start, end, literals) else _parse_container(text[start:end])
-        if value is not None:
-            value = _as_text(value)
-            token = _READ_DEPTH.set((depth + 1, nest + brackets.depth(start)))
-            try:
-                pairs = list(_leaf_pairs(value, mask_all(value)))
-            except RecursionError:  # a guard beside the caps: the span is read fail-closed, as text
-                value = None
-            finally:
-                _READ_DEPTH.reset(token)
-        if value is None or len(literals) != len(pairs):
+        found = _read_whole(text, start, end, depth, nest + brackets.depth(start))
+        if found is None:
             todo += list(_containers(text, start + 1, end - 1, brackets))[::-1]
             continue
-        placed, found = True, []
-        for literal, (orig, masked) in zip(literals, pairs):
-            if masked == orig:
-                continue
-            body = 1 if literal.group(1) is not None else 2
-            decoded, starts, ends = _decoded(text, literal.start(body), literal.end(body))
-            parts = _masked_parts(decoded, masked) if decoded == orig else None
-            if parts is None:  # the literal scan disagrees with the parse, or the mask will not place: fall back
-                placed = False
-                break
-            found += _back_to(starts, ends, parts)
-        if placed:
-            spans.append((start, end))
-            masks += found
-        else:
-            todo += list(_containers(text, start + 1, end - 1, brackets))[::-1]
+        spans.append((start, end))
+        masks += found
     spans.sort()
     for literal in _STRING_LITERAL.finditer(text):
         if _holding(spans, literal.start()) is not None:  # inside a parsed container, read there
