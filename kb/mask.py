@@ -2619,6 +2619,7 @@ def _flag_values(items):
     value it may be ("--comment", "-p release-2026"): read unquoted after that line, it keeps its flag."""
     found, named = {}, {}  # named: for each command named before the item read, the first and last items naming it
     shells, aws = _shells_open(items), _aws_sets(items)
+    cut = {}  # each long item as the line before a flag reads it, cut once (_lead_item)
     for i in range(1, len(items)):
         flag, item = items[i - 1], items[i]
         if isinstance(flag, str):
@@ -2644,11 +2645,11 @@ def _flag_values(items):
         start = i
         while start > 0 and i - start < 64 and isinstance(items[start - 1], str):
             start -= 1
-        lead = list(items[start:i])
+        lead = [_lead_item(items, j, cut) for j in range(start, i - 1)] + [items[i - 1]]  # the flag itself whole
         if start > 0 and isinstance(items[start - 1], str):  # past the 64 items, a few around each command's name
             near = sorted({j for k in {k for pair in named.values() for k in pair if k < start}
                            for j in range(max(0, k - 2), min(k + 3, start))})
-            lead = [items[j] for j in near if isinstance(items[j], str)] + lead
+            lead = [_lead_item(items, j, cut) for j in near if isinstance(items[j], str)] + lead
         line = re.sub(r"[\r\n]", " ", " ".join(map(shlex.quote, lead)))  # the lead is context; a newline in it ends nothing
         head = mask(line) + " "
         if after_flag:
@@ -2671,6 +2672,34 @@ def _flag_values(items):
             if tail != mask(item):
                 found[i] = tail
     return found
+
+
+# Past this many characters, an item in the line read before a flag (_flag_values) is read as its ends and where it
+# names a command: a payload beside a command's name ("--data" and 4 KB) is no flag's context, and read again before
+# every later flag it cost time in the square of the list.
+_LEAD_ITEM = 256
+
+
+def _lead_item(items, j, cut):
+    """items[j] as the line before a later flag reads it: whole up to _LEAD_ITEM characters; past that, its first and
+    last 64 and the 64 on each side of where it first and last names a command (_COMMAND_NAME), joined by "...", which
+    no command's name runs into, so the command it names is still read and each later flag reads a few hundred
+    characters of it. Cut once for the list (`cut`)."""
+    item = items[j]
+    if len(item) <= _LEAD_ITEM:
+        return item
+    if j not in cut:
+        spans = [(0, 64), (len(item) - 64, len(item))]
+        names = list(_COMMAND_NAME.finditer(item))
+        spans += [(max(0, m.start() - 64), m.end() + 64) for m in names[:1] + names[-1:]]
+        merged = []
+        for start, end in sorted(spans):
+            if merged and start <= merged[-1][1]:
+                merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+            else:
+                merged.append((start, end))
+        cut[j] = "...".join(item[start:end] for start, end in merged)
+    return cut[j]
 
 
 # A tool that types into a page or fills a form's fields, as browser automation names one: Playwright's browser_type
