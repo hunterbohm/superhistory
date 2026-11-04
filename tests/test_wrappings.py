@@ -1085,6 +1085,42 @@ class ReviewElevenTest(unittest.TestCase):
         self.assertLess(lots, 20.0, lots)  # each value after a secret's flag reads its line twice: a constant per value
 
 
+class ReviewTwelveTest(unittest.TestCase):
+    """The twelfth review's findings: in aws configure set, a value of one of aws's options that take one ("--profile
+    token") was read as the secret setting's name, masking the setting after it and leaving its value readable, in a
+    list as in a line."""
+
+    WRAPS = ReviewEightTest.WRAPS
+    masks_only_the_password = ReviewEightTest.masks_only_the_password
+
+    LISTS = (["aws", "configure", "set", "--profile", "token", "aws_secret_access_key", PASSWORD],
+             ["aws", "configure", "set", "--region", "us-east-1", "--profile", "secret", "aws_session_token", PASSWORD],
+             ["aws.exe", "configure", "set", "--output", "token", "--query", "password", "default.aws_session_token",
+              PASSWORD],
+             ["aws", "configure", "set", "aws_secret_access_key", PASSWORD, "--profile", "token"])
+
+    def test_an_options_value_is_not_the_setting(self):
+        for items in self.LISTS:
+            masked = ["[masked]" if item == PASSWORD else item for item in items]
+            with self.subTest(items=items):
+                self.assertEqual(mask_all(items), masked)
+            self.masks_only_the_password(str(subprocess.CalledProcessError(1, items)), json.dumps({"argv": items}),
+                                         "run: %r" % (items,), " ".join(items))
+
+    def test_the_fail_closed_rule_keeps_the_setting_after_an_options_value(self):
+        self.masks_only_the_password("aws configure set --cli-binary-format $'raw' --profile token aws_secret_access_key "
+                                     + PASSWORD)
+
+    def test_stays_a_setting_after_an_options_value(self):
+        for items in (["aws", "configure", "set", "--profile", "token", "max_attempts", "10"],
+                      ["aws", "configure", "set", "--profile", "token", "region", "us-west-2"]):
+            with self.subTest(items=items):
+                self.assertEqual(mask_all(items), items)
+                for text in (str(subprocess.CalledProcessError(1, items)), json.dumps(items), " ".join(items)):
+                    self.assertEqual(mask(text), text)
+
+
+
 class RevisionTest(unittest.TestCase):
     def test_stored_rows_are_masked_again(self):
         self.assertEqual(masking.REVISION, 11)
