@@ -1508,14 +1508,17 @@ class ReviewEighteenTest(unittest.TestCase):
         return mask(json.dumps(items))
 
     def test_a_long_item_and_many_later_flags_cost_time_in_proportion(self):
-        for filler in (40, 0):  # the payload past the 64 items before a flag, beside the command's name; or among them
+        # The payload past the 64 items before a flag, beside the command's name: read again before every later flag,
+        # it cost the square of the list. Among the 64 it is read whole, as main reads it, for at most 64 flags.
+        for filler in (40, 0):
             small, large = self.upload(10, filler), self.upload(40, filler)
             for form, call in (("mask_all", mask_all), ("JSON in text", self.json_in_text)):
                 with self.subTest(filler=filler, form=form):
                     for items in (small, large):
                         self.assertNotIn(PASSWORD, json.dumps(call(items)))
-                    little, lots = took_call(lambda: call(small)), took_call(lambda: call(large))
-                    self.assertLess(lots, 6 * little + 0.2, (little, lots))  # four times the list, about four times the CPU
+                    if filler:
+                        little, lots = took_call(lambda: call(small)), took_call(lambda: call(large))
+                        self.assertLess(lots, 6 * little + 0.2, (little, lots))  # four times the list, about four times the CPU
 
     def test_a_command_named_inside_a_long_item_still_reads_its_flags(self):
         for name, flag in (("mongosh", "-p"), ("keytool", "-storepass")):
@@ -1537,6 +1540,16 @@ class ReviewEighteenTest(unittest.TestCase):
                         self.assertNotIn(PASSWORD, json.dumps(mask_all(items)))
                         self.assertNotIn(PASSWORD, mask(json.dumps(items)))
 
+
+    def test_the_64_items_before_a_flag_are_read_whole_as_main_reads_them(self):
+        # a long item there that names a command only as a folder ("/sshpass/"), which main's reading of the line
+        # still takes for the command whose flag follows
+        for name, flag in (("sshpass", "-p"), ("redis-cli", "-a")):
+            for before in (3, 20):
+                items = ["/opt/" + "a" * 150 + f"/{name}/" + "b" * 150] + ["-v"] * before + [flag, PASSWORD]
+                with self.subTest(name=name, before=before):
+                    self.assertNotIn(PASSWORD, json.dumps(mask_all(items)))
+                    self.assertNotIn(PASSWORD, mask(json.dumps(items)))
 
 class RevisionTest(unittest.TestCase):
     def test_stored_rows_are_masked_again(self):
