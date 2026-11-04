@@ -1887,7 +1887,9 @@ class Base64ReviewSixteenTest(unittest.TestCase):
 
     def test_an_encoded_keys_lines_after_a_placeholder_still_read_as_its_rest(self):
         # Guard: a line of an encoded key decodes to its PEM text, base64 runs and a header or footer, no words. Its
-        # last line can hold the footer alone, no key's bytes.
+        # last line can hold the footer alone, no key's bytes. Past lines that decode to words, the next line is read
+        # as a rest's start, so a key's lines there, with no footer to mark them, are still its rest, and the words
+        # stay.
         import base64
         import random
         import textwrap
@@ -1897,14 +1899,18 @@ class Base64ReviewSixteenTest(unittest.TestCase):
         pem = f"-----BEGIN PRIVATE KEY-----\n{body}\n-----END PRIVATE KEY-----\n".encode()
         for width in (64, 76):
             lines = textwrap.wrap(base64.b64encode(pem).decode(), width)
+            words = base64.b64encode((b"notes " * 40)[:width // 4 * 3]).decode()
             for cut in (1, 2, len(lines) // 2):
-                text = "[masked]\n" + "\n".join(lines[cut:]) + "\nnext steps"
-                for depth, written in enumerate((text, json.dumps(text), json.dumps(json.dumps(text)))):
-                    with self.subTest(width=width, cut=cut, depth=depth):
-                        with mask_module.stored_row("0123456789abcdef"):
-                            masked = mask(written)
-                        self.assertEqual([line for line in lines[cut:-1] if line in masked], [])
-                        self.assertIn("next steps", masked)
+                for before, piece in (([], lines[cut:]), ([words], lines[cut:-3]), ([words, words], lines[cut:-3])):
+                    text = "\n".join(["[masked]"] + before + piece) + "\nnext steps"
+                    for depth, written in enumerate((text, json.dumps(text), json.dumps(json.dumps(text)))):
+                        with self.subTest(width=width, cut=cut, words=len(before), depth=depth):
+                            with mask_module.stored_row("0123456789abcdef"):
+                                masked = mask(written)
+                            self.assertEqual([line for line in lines[cut:-1] if line in piece and line in masked], [])
+                            self.assertIn("next steps", masked)
+                            if before:
+                                self.assertIn(words, masked)
 
 
 class HeadlessKeyTest(unittest.TestCase):
