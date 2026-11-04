@@ -871,6 +871,31 @@ def _password_span(m):
     return _keyed_span(m) if PASSWORD_NAME.search(name) and not _ABOUT_A_PASSWORD.search(name) else None
 
 
+@functools.lru_cache(maxsize=8)
+def _quote_marks(text, quote):
+    """Where `text` holds `quote` with no backslash escaping it, in order, and where its lines begin, after a line break
+    raw or escaped as JSON holds one."""
+    marks = [m.end() - 1 for m in re.finditer(r"(?<!\\)(?:\\\\)*" + quote, text)]
+    return marks, [m.end() for m in re.finditer(r"\n|(?<!\\)\\n", text)]
+
+
+def _quoted_password_span(m):
+    """_password_span, but not for a name inside a string that the quote after its ":" or "=" closes: in
+    getByLabel("Password:").fill(...) the name is a label's, and that quote opens no value. The name is in such a string
+    when the nearest quote of its kind before it on its line opens one, after a bracket, a comma, "=", ":", a space or
+    the line's start; one after a letter, a digit or other punctuation closes a string or is an apostrophe ("it's",
+    "users'"). A name whose own quote closes before the ":" ('"password": "..."') is read."""
+    separator, text = m.group(2), m.string
+    quote = separator[-1]
+    if not separator.startswith(quote):
+        marks, lines = _quote_marks(text, quote)
+        at, k = m.start(1), bisect.bisect_left(marks, m.start(1))
+        line = lines[bisect.bisect_right(lines, at) - 1] if lines and lines[0] <= at else 0
+        if k and marks[k - 1] >= line and (marks[k - 1] == line or text[marks[k - 1] - 1] in " \t([{,=:"):
+            return None
+    return _password_span(m)
+
+
 def _line_password_span(m):
     """Where a password's line value is, when the line holds more past where _VALUE would end it."""
     return _password_span(m) if re.search(r"[,;<>)\]}].", m.group(3)) else None
@@ -1055,7 +1080,7 @@ def _replace(text, spans, replacement):
 # The readings that take a password's value whole where KEYED_SECRET would end it early, so they come before it.
 _WHOLE_VALUES = ((XML_SECRET, _xml_span), (LINE_PASSWORD, _line_password_span), (APP_PASSWORD, _app_password_span),
                  (APP_PASSWORD_LINE, _app_password_span),
-                 *((p, _password_span) for p in QUOTED_PASSWORDS))
+                 *((p, _quoted_password_span) for p in QUOTED_PASSWORDS))
 # Main's own readings of text, as gate 9 found them: its token shapes, links, commands and named values, each read as
 # main reads it, with the four values gate 9 reads as no secret (a tokenizer's, an ARN's, a date's, a file name's)
 # read so here too. _read hides all these hide, so no reading added since can show what main's own readings hide,
@@ -2101,7 +2126,7 @@ _CODE_TOKEN = re.compile(r"""(?<![\w$\\])[rRbBuUfF]{1,2}\\*["'`]|(?<!\\)\\*["'`]
 # Python's prefix and the string it opens, after a line break or tab escaped as JSON holds code ("\\tr\\"...\\"").
 _PREFIXED_QUOTE = re.compile(r"""[rRbBuUfF]{1,2}\\*["'`]""")
 # A typing method's name, as a call that types names it: what it types is a value, never code it holds.
-_TYPING_NAME = re.compile(r"(?i)(?:fill|type|press_?sequentially|send_?keys|set_?value|input_text)\w*\Z")
+_TYPING_NAME = re.compile(r"(?i)(?:fill|type|press_?sequentially|send_?keys|set_?value|add_?value|input_text)\w*\Z")
 _ESCAPED_BREAK = re.compile(r"(?<!\\)(\\+)[nr]")
 _QUOTE_RUN = re.compile(r"""(?<!\\)(\\*)["'`]""")
 
