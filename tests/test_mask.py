@@ -1105,6 +1105,30 @@ class ReviewElevenTest(unittest.TestCase):
         self.assertIn(lines[-1], masked)
 
 
+class ReviewTwelveTest(unittest.TestCase):
+    """#34's twelfth review: a base64-encoded key split by one invisible character, which JSON writes as an escape (a
+    surrogate pair past U+FFFF), in JSON once and twice. The key is masked whole."""
+
+    def test_a_key_split_by_an_escaped_invisible_character_is_masked_whole(self):
+        import base64
+        import textwrap
+        pem = (b"-----BEGIN PRIVATE KEY-----\n" + base64.b64encode(bytes.fromhex("302e020100300506032b657004220420")
+               + bytes(range(32))) + b"\n-----END PRIVATE KEY-----\n")
+        encoded = base64.b64encode(pem).decode()
+        lines = textwrap.wrap(encoded, 76)
+        block = "\n".join(lines)
+        for invisible in ("\U000e0020", "\U000e0001", "\u200b"):
+            for times in (1, 2):
+                text = block[:100] + invisible + block[100:]
+                for _ in range(times):
+                    text = json.dumps(text)
+                with self.subTest(invisible=hex(ord(invisible)), times=times):
+                    masked = mask(text)
+                    for line in lines:
+                        for at in range(0, len(line) - 11, 4):
+                            self.assertNotIn(line[at:at + 12], masked)
+
+
 class HeadlessKeyTest(unittest.TestCase):
     """A key's body without its header, as an older kb's row-by-row remask leaves the chunk after the header's."""
     LINE = "MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7"
