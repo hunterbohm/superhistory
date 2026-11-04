@@ -431,6 +431,11 @@ _COMMANDS = [(re.compile(rf"(?i)(?:(?<![A-Za-z0-9_.-])|{_AFTER_ESCAPE})(?:{comma
               re.compile(rf"({flag})((?:{_CLOSE}[^ \t\n\r'\"])+)"), always)
              for n, (command, flag, always) in enumerate(COMMAND_FLAGS)]
 _ANY_COMMAND = re.compile(r"(?i)curl|mysql|mariadb|sshpass|login|redis-cli|mongo|twine|keytool|jarsigner|aws")
+# aws configure set's row, and aws's options that take a value (its global options): a setting's name right after one
+# is that option's value, as "token" is in "aws configure set --profile token ...", not the setting.
+_AWS_FLAG = next(row[1] for row, (command, _, _) in zip(_COMMANDS, COMMAND_FLAGS) if command.startswith("aws"))
+_AWS_VALUE_OPTIONS = frozenset(("--profile", "--region", "--output", "--endpoint-url", "--query", "--ca-bundle",
+                                "--color", "--cli-read-timeout", "--cli-connect-timeout", "--cli-binary-format"))
 # In a list of arguments, an item names one of COMMAND_FLAGS' commands where the name stands whole, as a program's
 # does, past a path and before a ".exe": "mongo-ca", "KEYTOOL_HOME=/opt/java" and "aws_session_token" name none. A
 # command named by two words ("docker login", "az login") is named by its "login".
@@ -794,6 +799,23 @@ tsadigestalg tsapolicyid v validity verbose verify version
 """.split())
 
 
+def _flag_matches(text, flag, start, end):
+    """flag.finditer(text, start, end), but for aws configure set's row not where the setting's name is the value of
+    one of aws's options that take one (_AWS_VALUE_OPTIONS), as written or in quotes, plain or escaped; the setting
+    may come right after it. Only the 48 characters before a name are read for the option."""
+    at = start
+    while True:
+        m = flag.search(text, at, end)
+        if m is None:
+            return
+        words = text[max(start, m.start() - 48):m.start()].split() if flag is _AWS_FLAG else ()
+        if words and words[-1].strip("'\"\\").lower() in _AWS_VALUE_OPTIONS:
+            at = m.start() + 1
+            continue
+        at = m.end()
+        yield m
+
+
 def _command_password_edits(text, line_pattern, flag, always, unseen=False):
     """Each password one row of COMMAND_FLAGS finds, as an edit that masks it. A command's line is read once from its
     first word, and a command in a substitution once from its own, so a line that names the command again and again
@@ -819,7 +841,7 @@ def _command_password_edits(text, line_pattern, flag, always, unseen=False):
             end = line.end()
         reading.append((end, subs))
         starts = [a for a, _ in inside]
-        for m in flag.finditer(text, line.start(), end):
+        for m in _flag_matches(text, flag, line.start(), end):
             k = bisect.bisect_right(starts, m.start()) - 1
             if k >= 0 and m.start() < inside[k][1]:
                 continue  # a flag inside a quoted argument or a substitution is another program's
@@ -936,7 +958,7 @@ def _unread_flag_edits(text, line_pattern, flag, always, done, literals=()):
             continue
         stop = _SEGMENT_END.search(text, plain)
         covered = end = stop.start() if stop else len(text)
-        for m in flag.finditer(text, max(begin, plain - 1), end):
+        for m in _flag_matches(text, flag, max(begin, plain - 1), end):
             if m.start(2) in done or text.startswith("[masked]", m.start(2)) or not _flag_value_counts(m, always, True):
                 continue
             held = _holding(literals, m.start(2))
