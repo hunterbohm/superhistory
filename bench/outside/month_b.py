@@ -182,6 +182,7 @@ def main(argv=None):
     names = args.tools.split(",")
     if set(names) - set(RIVALS):
         raise SystemExit(f"month_b.py runs only the rivals: {', '.join(RIVALS)}")
+    gateway.require()
     install()
     items = run.read_jsonl(os.path.join(run.MONTHS["b"], "items.jsonl"))
     questions = run.read_jsonl(os.path.join(run.MONTHS["b"], "questions.jsonl"))

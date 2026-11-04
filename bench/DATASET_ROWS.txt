@@ -1,0 +1,35 @@
+bench/outside/results/sample/implicit/check.jsonl.gz	LoCoMo-Conv messages with LoCoMo gold answers and sessions
+bench/outside/results/sample/implicit/mem0.jsonl.gz	LoCoMo-Conv messages with LoCoMo gold answers and sessions
+bench/outside/results/sample/implicit/none.jsonl.gz	LoCoMo-Conv messages with LoCoMo gold answers and sessions
+bench/outside/results/sample/implicit/oracle.jsonl.gz	LoCoMo-Conv messages with LoCoMo gold answers and sessions
+bench/outside/results/sample/implicit/supermemory.jsonl.gz	LoCoMo-Conv messages with LoCoMo gold answers and sessions
+bench/outside/results/sample/op/check.jsonl.gz	OP-Bench replies quoting LoCoMo conversation sessions
+bench/outside/results/sample/op/mem0.jsonl.gz	OP-Bench replies quoting LoCoMo conversation sessions
+bench/outside/results/sample/op/supermemory.jsonl.gz	OP-Bench replies quoting LoCoMo conversation sessions
+bench/results/hillclimb/locomo/locomo10-with-summaries-dev-k2.jsonl	LoCoMo questions, gold answers and sessions
+bench/results/hillclimb/locomo/locomo10-with-summaries-dev-k3.jsonl	LoCoMo questions, gold answers and sessions
+bench/results/hillclimb/locomo/locomo10-with-summaries-dev-k4.jsonl	LoCoMo questions, gold answers and sessions
+bench/results/hillclimb/locomo/locomo10-with-summaries-dev-noise1.jsonl	LoCoMo questions, gold answers and sessions
+bench/results/hillclimb/locomo/locomo10-with-summaries-dev-noise2.jsonl	LoCoMo questions, gold answers and sessions
+bench/results/hillclimb/locomo/locomo10-with-summaries-dev-noise3.jsonl	LoCoMo questions, gold answers and sessions
+bench/results/hillclimb/locomo/locomo10-with-summaries-test-baseline-paired.jsonl	LoCoMo questions, gold answers and sessions
+bench/results/hillclimb/locomo/locomo10-with-summaries-test-baseline.jsonl	LoCoMo questions, gold answers and sessions
+bench/results/hillclimb/locomo/locomo10-with-summaries-test-final.jsonl	LoCoMo questions, gold answers and sessions
+bench/results/hillclimb/locomo/locomo10-with-summaries-test-midpoint.jsonl	LoCoMo questions, gold answers and sessions
+bench/results/hillclimb/longmemeval/s-without-summaries-dev-k2.jsonl	LongMemEval questions, gold answers and sessions
+bench/results/hillclimb/longmemeval/s-without-summaries-dev-k2v1.jsonl	LongMemEval questions, gold answers and sessions
+bench/results/hillclimb/longmemeval/s-without-summaries-dev-k2v3.jsonl	LongMemEval questions, gold answers and sessions
+bench/results/hillclimb/longmemeval/s-without-summaries-dev-k3.jsonl	LongMemEval questions, gold answers and sessions
+bench/results/hillclimb/longmemeval/s-without-summaries-dev-k4.jsonl	LongMemEval questions, gold answers and sessions
+bench/results/hillclimb/longmemeval/s-without-summaries-dev-noise1.jsonl	LongMemEval questions, gold answers and sessions
+bench/results/hillclimb/longmemeval/s-without-summaries-dev-noise2.jsonl	LongMemEval questions, gold answers and sessions
+bench/results/hillclimb/longmemeval/s-without-summaries-dev-noise3.jsonl	LongMemEval questions, gold answers and sessions
+bench/results/hillclimb/longmemeval/s-without-summaries-test-baseline-paired.jsonl	LongMemEval questions, gold answers and sessions
+bench/results/hillclimb/longmemeval/s-without-summaries-test-baseline.jsonl	LongMemEval questions, gold answers and sessions
+bench/results/hillclimb/longmemeval/s-without-summaries-test-final.jsonl	LongMemEval questions, gold answers and sessions
+bench/results/hillclimb/longmemeval/s-without-summaries-test-midpoint.jsonl	LongMemEval questions, gold answers and sessions
+bench/results/hillclimb/timeouts/locomo.jsonl	LoCoMo questions, gold answers and sessions
+bench/results/public/locomo/locomo10-with-summaries.jsonl	LoCoMo questions, gold answers and sessions
+bench/results/public/longmemeval/oracle-with-summaries.jsonl	LongMemEval questions, gold answers and sessions
+bench/results/public/longmemeval/s-with-summaries-sample50-seed0.jsonl	LongMemEval questions, gold answers and sessions
+bench/results/public/longmemeval/s-without-summaries.jsonl	LongMemEval questions, gold answers and sessions

@@ -800,6 +800,7 @@ def main(argv=None):
     if args.table:
         print(sample_table(tests, names) if args.sample else table(tests, names))
         return 0
+    gateway.require()
     groups = args.groups.split(",") if args.groups else [s["sample_id"] for s in locomo.load()]
     if args.load_only:
         install_limits()

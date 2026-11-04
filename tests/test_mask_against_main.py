@@ -105,7 +105,8 @@ class gate9:
             links = [re.compile(p.pattern.replace("]*:)", "]+:)").replace("&])*%(?:25)?3A)", "&])+%(?:25)?3A)"),
                                 p.flags) for p in head.PREFIXED_SECRETS[1:3]]
             swap.update(PREFIXED_SECRETS=[head.PREFIXED_SECRETS[0], *links, *head.PREFIXED_SECRETS[3:]],
-                        _COMMANDS=head._COMMANDS[:5], _ANY_COMMAND=main._ANY_COMMAND)
+                        _COMMANDS=head._COMMANDS[:5], _ANY_COMMAND=main._ANY_COMMAND,
+                        _wrapping_edits=lambda text: [])
         self.saved = {name: getattr(head, name) for name in swap}
         for name, value in swap.items():
             setattr(head, name, value)
@@ -137,8 +138,8 @@ def key_rest_changes(text):
         head._key_rest_edits = saved
     public = set()
     for block in head._WRAPPED_BASE64.finditer(text):
-        data = re.sub(r"[^A-Za-z0-9+/=]", "", head._ESCAPE.sub("", block.group()))
-        decoded = head._decoded(data, 0, None)
+        data = re.sub(r"[^A-Za-z0-9+/=]", "", head._KEY_ESCAPE.sub("", block.group()))
+        decoded = head._base64_decoded(data, 0, None)
         if decoded and head._public_material(decoded):
             public.update(range(block.start(), block.end()))
     only_here = shown - shown_by_main
@@ -179,6 +180,14 @@ def new_readings(text):
     for pattern in head.PREFIXED_SECRETS[1:3]:
         for m in pattern.finditer(text):
             out.update(range(m.end(1), m.end()))
+    # mask-wrappings' command reading, as the pass reads it, after the secrets known by their shape: what the pass
+    # hides with it on and shows with it off.
+    wrapping, head._wrapping_edits = head._wrapping_edits, lambda text: []
+    try:
+        unwrapped = head._run(text, (head.SECRET_PATTERNS, (), "named"), list(range(len(text))))[1]
+    finally:
+        head._wrapping_edits = wrapping
+    out.update({c for c in unwrapped if c >= 0} - {c for c in origin if c >= 0})
     for line_pattern, flag, _ in head._COMMANDS[5:]:
         for line in line_pattern.finditer(text):
             for m in flag.finditer(text, line.start(), line.end()):
