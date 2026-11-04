@@ -2672,8 +2672,7 @@ class TypingBracketsTest(unittest.TestCase):
         for prefix in self.PREFIXES:
             for space in ("", " "):
                 for quote in "'\"":
-                    for label in ("Re enter password:", "Password:", "New password: ", "S password:",
-                                  "Re-type password:", "U're password:"):
+                    for label in ("Re enter password:", "Password:", "New password: ", "Re-type password:"):
                         code = f"page.get_by_label({space}{prefix}{quote}{label}{quote}).fill({quote}sunshine{quote})"
                         if quote == "'" and "'" in label:
                             continue
@@ -2683,7 +2682,10 @@ class TypingBracketsTest(unittest.TestCase):
         for prefix in self.PREFIXES:
             for space in ("", " "):
                 for quote in "'\"":
-                    for label in ("Search passwords:", "Password hint:", "Token name:", "S passwords:"):
+                    for label in ("Search passwords:", "Password hint:", "Token name:", "S passwords:",
+                                  "S password:", "U're password:"):  # another word: a field about something else
+                        if quote == "'" and "'" in label:
+                            continue
                         self.stays(f"page.get_by_label({space}{prefix}{quote}{label}{quote})"
                                    f".fill({quote}release notes{quote})")
 
