@@ -1270,6 +1270,15 @@ class ReviewSixteenTest(unittest.TestCase):
             with self.subTest(text=text):
                 self.assertEqual(off - self.hidden(text), set())
 
+    def test_such_a_text_still_changing_at_the_limit_shows_no_password(self):
+        # With one pass at most, any text with a secret is still changing at the limit.
+        with mock.patch.object(masking, "MAX_PASSES", 1), mock.patch.object(masking, "capped", 0):
+            for shape in self.SHAPES:
+                text = shape("keytool") + " -storepass " + PASSWORD + " and then the build went on"
+                with self.subTest(text=text):
+                    self.assertNotIn(PASSWORD, mask(text))
+                    self.assertNotIn(PASSWORD, masking.mask_with_origin(text)[0])
+
     def test_such_a_row_is_stored_masked(self):
         text = "build log: " + str({b"password": b"keytool"}) + " -storepass " + PASSWORD + "\n"
         with tempfile.TemporaryDirectory() as tmp:
