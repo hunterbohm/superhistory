@@ -2231,6 +2231,59 @@ class ReviewFortyThreeTest(unittest.TestCase):
         self.assertLess(took[8000], 24 * max(took[500], 0.05), took)  # sixteen times the text
 
 
+
+class ReviewFortyFourTest(unittest.TestCase):
+    """The forty-fourth review's cost finding, and two more of its kind: a regex literal left unclosed after a run of
+    backslashes (as node --check prints one), shell globs ("src/*.py") read as comments that never close, and a regex's
+    class left unclosed, each tried again from every start."""
+
+    @staticmethod
+    def _took(text):
+        import time
+        started = time.process_time()
+        out = mask(text)
+        return time.process_time() - started, out
+
+    @staticmethod
+    def _node_error(backslashes):
+        line = "const pattern = /" + "\\" * backslashes + '; page.fill("#search", "garden");'
+        return ("[stdin]:1\n" + line + "\n                ^\n\nSyntaxError: Invalid regular expression: missing /\n"
+                "    at wrapSafe (node:internal/modules/cjs/loader:1713:18)\n\nNode.js v22.23.4\n")
+
+    def test_an_unclosed_regex_after_backslashes_costs_little(self):
+        for wrap in (lambda t: t, json.dumps, lambda t: json.dumps({"stderr": t})):
+            took = {}
+            for n in (0, 30):
+                text = wrap(self._node_error(n))
+                took[n], out = self._took(text)
+                self.assertEqual(out, text)
+            self.assertLess(took[30], 24 * max(took[0], 0.05), took)
+
+    def test_globs_cost_time_in_proportion(self):
+        for wrap in (lambda t: t, json.dumps):
+            took = {}
+            for n in (500, 8000):
+                text = wrap("cp src/*.py dest/\n" * n + 'page.fill("#q", "garden")\n')
+                took[n], out = self._took(text)
+                self.assertEqual(out, text)
+            self.assertLess(took[8000], 24 * max(took[500], 0.05), took)  # sixteen times the text
+
+    def test_unclosed_regex_classes_cost_time_in_proportion(self):
+        for wrap in (lambda t: t, json.dumps):
+            took = {}
+            for n in (500, 8000):
+                text = wrap("x =/[" * n + '\npage.fill("#q", "garden")\n')
+                took[n], out = self._took(text)
+                self.assertEqual(out, text)
+            self.assertLess(took[8000], 24 * max(took[500], 0.05), took)
+
+    def test_a_regex_class_holding_a_slash_is_still_one_regex(self):
+        code = 'const name = path.match(/[^/#]+$/)[0]; await page.getByLabel("Password").fill("sunshine");'
+        for text in (code, json.dumps(code), json.dumps({"code": code}), json.dumps(json.dumps(code))):
+            with self.subTest(text=text[:70]):
+                self.assertNotIn("sunshine", mask(text))
+
+
 # Commands as an argument list, each flag's value its own item: (the list, the items masked).
 ARGV = (
     (["login", "--password", PASSWORD], {2}), (["--token", SUB], {1}), (["--api-key", SUB, "--verbose"], {1}),
