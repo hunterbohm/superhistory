@@ -879,11 +879,31 @@ def _quote_marks(text, quote):
     return marks, [m.end() for m in re.finditer(r"\n|(?<!\\)\\n", text)]
 
 
+# A string's prefix before its opening quote: Python's r, b, u, f and t and their pairs (rb, fr), C and C++'s L, u8 and
+# R, C#'s @ and $, and Rust's r#. It counts right after a bracket, a comma, "=", ":" or the line's start, and not before
+# a word's ending ("B's", "T'd"), where the quote is an apostrophe.
+_STRING_PREFIX = re.compile(r"[rRbBuUfFtT]{1,2}|u8R?|LR?|\$@|@\$|[@$]|b?r#{1,3}")
+_WORD_ENDING = re.compile(r"(?i)(?:s|t|d|m|ll|re|ve)\b")
+
+
+def _opens_a_string(text, at, line):
+    """Whether the quote at `at`, on the line starting at `line`, opens a string: at the line's start, or after a
+    bracket, a comma, "=", ":" or a space, or after a string's prefix (_STRING_PREFIX) there."""
+    if at == line or text[at - 1] in " \t([{,=:":
+        return True
+    if _WORD_ENDING.match(text, at + 1):
+        return False
+    for start in range(at - 1, max(line, at - 5) - 1, -1):
+        if _STRING_PREFIX.fullmatch(text, start, at) and (start == line or text[start - 1] in "([{,=:"):
+            return True
+    return False
+
+
 def _quoted_password_span(m):
     """_password_span, but not for a name inside a string that the quote after its ":" or "=" closes: in
-    getByLabel("Password:").fill(...) the name is a label's, and that quote opens no value. The name is in such a string
-    when the nearest quote of its kind before it on its line opens one, after a bracket, a comma, "=", ":", a space or
-    the line's start; one after a letter, a digit or other punctuation closes a string or is an apostrophe ("it's",
+    getByLabel("Password:").fill(...) or get_by_label(r"Password:").fill(...) the name is a label's, and that quote
+    opens no value. The name is in such a string when the nearest quote of its kind before it on its line opens one
+    (_opens_a_string); one after a letter, a digit or other punctuation closes a string or is an apostrophe ("it's",
     "users'"). A name whose own quote closes before the ":" ('"password": "..."') is read."""
     separator, text = m.group(2), m.string
     quote = separator[-1]
@@ -891,7 +911,7 @@ def _quoted_password_span(m):
         marks, lines = _quote_marks(text, quote)
         at, k = m.start(1), bisect.bisect_left(marks, m.start(1))
         line = lines[bisect.bisect_right(lines, at) - 1] if lines and lines[0] <= at else 0
-        if k and marks[k - 1] >= line and (marks[k - 1] == line or text[marks[k - 1] - 1] in " \t([{,=:"):
+        if k and marks[k - 1] >= line and _opens_a_string(text, marks[k - 1], line):
             return None
     return _password_span(m)
 
