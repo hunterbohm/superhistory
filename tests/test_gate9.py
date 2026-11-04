@@ -2367,6 +2367,38 @@ class UnionFieldTest(unittest.TestCase):
         self.assertEqual(changed, [])
 
 
+
+class ReviewFortyFiveTest(unittest.TestCase):
+    """The forty-fifth review's findings: locator calls the union's list lacked (a frame locator, Selenium 3's
+    find_element_by_*), and a receiver in brackets that read the strings of every call inside it, filter's and
+    describe's too; with the other calls these libraries name a field by."""
+
+    WRAPS, masks, stays = UnionFieldTest.WRAPS, UnionFieldTest.masks, UnionFieldTest.stays
+
+    def test_each_locator_call_kind_names_its_field(self):
+        self.masks("sunshine",
+                   'page.frameLocator("#password").getByRole("textbox").fill("sunshine")',
+                   'page.frame_locator("#password").get_by_role("textbox").fill("sunshine")',
+                   'driver.find_element_by_id("password").send_keys("sunshine")',
+                   'driver.find_element_by_css_selector("input[name=password]").send_keys("sunshine")',
+                   'driver.find_elements_by_name("password")[0].send_keys("sunshine")',
+                   'driver.FindElement(By.Id("password")).SendKeys("sunshine");',
+                   '(await page.waitForSelector("#password")).type("sunshine")',
+                   'page.wait_for_selector("#password").fill("sunshine")',
+                   '(await page.$x("//input[@name=\'password\']"))[0].type("sunshine")')
+
+    def test_stays_a_frame_locator_named_with_another_word(self):
+        self.stays('page.frameLocator("#login").getByLabel("Email").fill("me@example.com")',
+                   'page.frame_locator("#password-reset").get_by_label("Email").fill("me@example.com")')
+
+    def test_a_receiver_in_brackets_reads_its_own_chain(self):
+        self.stays('(page.getByLabel("Email").filter({hasNotText: "Password"})).fill("me@example.com")',
+                   '(page.get_by_label("Email").filter(has_not_text="Password")).fill("me@example.com")',
+                   '(page.getByLabel("Email").describe("Password")).fill("me@example.com")')
+        self.masks("sunshine", '(await page.$("#password")).fill("sunshine")',
+                   '(page.getByLabel("Password").filter({hasText: "Sign in"})).fill("sunshine")')
+
+
 # Commands as an argument list, each flag's value its own item: (the list, the items masked).
 ARGV = (
     (["login", "--password", PASSWORD], {2}), (["--token", SUB], {1}), (["--api-key", SUB, "--verbose"], {1}),
