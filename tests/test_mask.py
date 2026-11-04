@@ -1257,6 +1257,138 @@ class Base64ReviewThirteenTest(unittest.TestCase):
                 self.assertLess(took(large), 3.5 * took(small) + 0.1)
 
 
+class Base64ReviewFourteenTest(unittest.TestCase):
+    """#34's fourteenth review: a base64-encoded sentence in a language written without spaces that quotes a key's
+    header where a wrapped line starts lost the header and the text after it, as only words with a space read as
+    prose; and a base64 key before a PKCS#7 certificate bundle kept the bundle once, but the next mask, as kb's store
+    makes, read the key's placeholder as an older kb's and removed the bundle. Words past ASCII read as prose too, a
+    certificate bundle is public material, and masked text masks to itself."""
+
+    SENTENCES = ("この文書では秘密鍵の開始マーカーを説明-----BEGIN PRIVATE KEY-----\nRead the documentation before importing.\n",
+                 "本文档说明私钥的开始标记-----BEGIN RSA PRIVATE KEY-----\n导入前请阅读文档。\n",
+                 "เอกสารนี้อธิบายเครื่องหมายเริ่มต้น-----BEGIN OPENSSH PRIVATE KEY-----\nโปรดอ่านก่อนนำเข้า\n",
+                 "注意：-----BEGIN PRIVATE KEY-----\nの行は引用です。\n")
+
+    @staticmethod
+    def bundle(r):
+        """A PKCS#7 certificate bundle as openssl crl2pkcs7 -nocrl writes one: signed data with certificates, and no
+        content, digest algorithm or signer."""
+        signed = _der(0x30, _der(0x02, b"\x01"), _der(0x31), _der(0x30, _der(0x06, bytes.fromhex("2a864886f70d010701"))),
+                      _der(0xa0, made_up_certificate(r), made_up_certificate(r)), _der(0x31))
+        return _der(0x30, _der(0x06, bytes.fromhex("2a864886f70d010702")), _der(0xa0, signed))
+
+    @staticmethod
+    def key64():
+        import base64
+        return base64.b64encode(Base64ReviewThirteenTest.pem()).decode()
+
+    def test_a_base64_sentence_without_spaces_that_quotes_a_header_is_kept(self):
+        import base64
+        import textwrap
+        for sentence in self.SENTENCES:
+            for width in (60, 64, 76):
+                aligned = -len(sentence.encode().split(b"-----")[0]) % (width // 4 * 3)
+                for pad in sorted({0, 1, 2, aligned}):
+                    block = "\n".join(textwrap.wrap(base64.b64encode(("x" * pad + sentence).encode()).decode(), width))
+                    for text in (block, json.dumps(block)):
+                        with self.subTest(sentence=sentence[:8], pad=pad, width=width, json=text is not block):
+                            self.assertEqual(mask(text), text)
+
+    def test_a_key_after_such_a_sentence_is_still_masked_whole(self):
+        import base64
+        import textwrap
+        pem = Base64ReviewThirteenTest.pem()
+        for sentence in self.SENTENCES:
+            head = sentence.split("-----")[0].encode() + b"\n"
+            for width in (64, 76):
+                data = head + pem
+                lines = textwrap.wrap(base64.b64encode(data).decode(), width)
+                masked = mask("\n".join(lines))
+                for n, line in enumerate(lines):
+                    first = n * width // 4 * 3
+                    if first + len(base64.b64decode(line)) > len(head):  # a line holding the key's bytes
+                        with self.subTest(sentence=sentence[:8], width=width, line=n):
+                            self.assertNotIn(line, masked)
+
+    def test_a_base64_key_before_a_certificate_bundle_keeps_the_bundle_and_masks_to_itself(self):
+        import base64
+        import random
+        import textwrap
+        bundle = base64.b64encode(self.bundle(random.Random(14))).decode()
+        key = self.key64()
+        for k in (key, "\n".join(textwrap.wrap(key, 76))):
+            for after in (bundle, "\n".join(textwrap.wrap(bundle, 64)), "\n".join(textwrap.wrap(bundle, 76))):
+                with self.subTest(wrapped="\n" in k, after=after.count("\n")):
+                    once = mask(f"{k}\n{after}\nnext steps")
+                    self.assertEqual(once, f"[masked]\n{after}\nnext steps")
+                    self.assertEqual(mask(once), once)
+
+    def test_a_certificate_bundle_after_a_placeholder_is_kept(self):
+        import base64
+        import random
+        import textwrap
+        from kb import mask as mask_module
+        bundle = base64.b64encode(self.bundle(random.Random(15))).decode()
+        for after in (bundle, "\n".join(textwrap.wrap(bundle, 64))):
+            text = f"[masked]\n{after}\nnext steps"
+            for older in (False, True):
+                with self.subTest(lines=after.count("\n"), older=older):
+                    if older:
+                        with mask_module.stored_row("0123456789abcdef"):
+                            self.assertEqual(mask(text), text)
+                    else:
+                        self.assertEqual(mask(text), text)
+        # a bundle cut short, or signed data that holds content, is no bundle: it stays masked after a placeholder
+        der = self.bundle(random.Random(16))
+        for name, data in (("cut short", der[:len(der) * 2 // 3]),
+                           ("with content", der.replace(bytes.fromhex("300b06092a864886f70d010701"),
+                                                        bytes.fromhex("301206092a864886f70d010701a00504035a71"), 1))):
+            with self.subTest(neither=name):
+                self.assertEqual(mask(f"[masked]\n{base64.b64encode(data).decode()}\nnext steps"), "[masked]\nnext steps")
+
+    def test_such_a_row_is_stored_with_its_bundle(self):
+        import base64
+        import os
+        import random
+        import tempfile
+        from kb import store
+        bundle = base64.b64encode(self.bundle(random.Random(17))).decode()
+        with tempfile.TemporaryDirectory() as tmp:
+            db = store.connect(os.path.join(tmp, "kb.sqlite"))
+            try:
+                store.store_item(db, "notes", "r14", "2026-11-04T10:00:00Z", "tls", f"{self.key64()}\n{bundle}\nnext steps", {})
+                kept = "\n".join(row[0] for row in db.execute("SELECT content FROM docs"))
+                self.assertIn(bundle, kept)
+                self.assertNotIn(self.key64()[:40], kept)
+            finally:
+                db.close()
+
+    def test_masked_text_with_a_key_masks_to_itself(self):
+        import base64
+        import random
+        import textwrap
+        r = random.Random(1414)
+        key = self.key64()
+        follows = (lambda: base64.b64encode(made_up_certificate(r)).decode(),
+                   lambda: base64.b64encode(self.bundle(r)).decode(),
+                   lambda: base64.b64encode(made_up_public_key(r)).decode(),
+                   lambda: base64.b64encode(made_up_private_key(r)).decode(),
+                   lambda: base64.b64encode(bytes(r.randrange(256) for _ in range(120))).decode(),
+                   lambda: "MIIE" + base64.b64encode(bytes(r.randrange(256) for _ in range(90))).decode(),
+                   lambda: "next steps: deploy it", lambda: "password=Zq7vRt2LmX9k",
+                   lambda: "ghp_Ab3dE6gH9jK2mN5pQ8sT1vW4yZ7bC0eF3hJ6", lambda: key)
+        for n in range(300):
+            k = key if r.random() < 0.5 else "\n".join(textwrap.wrap(key, r.choice((64, 76))))
+            after = r.choice(follows)()
+            if r.random() < 0.5:
+                after = "\n".join(textwrap.wrap(after, r.choice((64, 76))))
+            text = r.choice(("", "notes\n")) + k + r.choice(("\n", "\n\n")) + after + r.choice(("", "\nnext steps"))
+            once = mask(text)
+            with self.subTest(n=n, text=text[:30]):
+                self.assertEqual(mask(once), once)
+                self.assertNotIn(key[:40], once)
+
+
 class HeadlessKeyTest(unittest.TestCase):
     """A key's body without its header, as an older kb's row-by-row remask leaves the chunk after the header's."""
     LINE = "MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7"
