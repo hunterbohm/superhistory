@@ -2703,6 +2703,17 @@ class TypingBracketsTest(unittest.TestCase):
                 if '"' not in text:  # an escaped double quote is not read as a quoted password's, on main either
                     self.assertNotIn("mP2;qL7v", mask(json.dumps(text)))
 
+    def test_a_quoted_password_inside_a_typing_calls_text_or_after_an_unclosed_one_is_still_masked(self):
+        # only a value that runs across a typing call's own bracket is skipped; a password holds none
+        for text in ("page.fill('#notes', \"db password='Xk9,mP2;qL7v'\")",
+                     "page.get_by_label('Notes').fill('set DB_PASSWORD=\"Xk9,mP2;qL7v\" first')",
+                     "page.fill('#notes',\nDB_PASSWORD='Xk9,mP2;qL7v'\nmore = 1",
+                     "page.get_by_label('Search').fill(\n  password: 'Xk9,mP2;qL7v'"):
+            with self.subTest(text=text):
+                self.assertNotIn("mP2;qL7v", mask(text))
+                if '"' not in text:  # an escaped double quote is not read as a quoted password's, on main either
+                    self.assertNotIn("mP2;qL7v", mask(json.dumps(text)))
+
 
 class ReviewFiftyOneTest(unittest.TestCase):
     """The fifty-first review's other findings: a line's continuation read by a pattern that backtracks on a run of
