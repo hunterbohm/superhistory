@@ -1,6 +1,7 @@
 import ast
 import base64
 import bisect
+import codecs
 import contextlib
 import contextvars
 import functools
@@ -484,7 +485,10 @@ def _base64_of(word):
 
 _KEY_WORDS = (b"PRIVATE KEY", b"SECRET KEY")
 _ENCODED_KEY = re.compile("|".join(re.escape(code) for word in _KEY_WORDS for code in _base64_of(word)))
-_BREAK = r"(?:\r?\n|(?:\\+r)?\\+n)"  # a line break, plain or escaped once or more, as JSON in JSON writes it
+# A line break: any that Python's splitlines reads (a lone carriage return too, as an old Mac file ends its lines), or
+# a line feed or carriage return escaped once or more, as JSON in JSON writes one. JSON's other escapes are read by
+# _json_unescaped's views.
+_BREAK = r"(?:\r?\n|[\r\x0b\x0c\x1c-\x1e\x85\u2028\u2029]|(?:\\+r)?\\+n|\\+r)"
 _WRAP = rf"[ \t\r]*{_BREAK}[ \t]*"
 # A run of base64, with each line after it that it wraps onto: a line that is base64 from its indentation to its end,
 # however short. A run shorter than 16 starts one only when lines follow it. A run can start just after a backslash,
@@ -600,7 +604,7 @@ def _gitleaks_edits(text):
 # Which mask() a stored row was masked with. A row of another version, or of none, is masked again when read and by
 # the next ingest. The patterns change it by themselves; bump REVISION when the code that applies them changes what
 # it masks.
-REVISION = 27
+REVISION = 28
 VERSION = f"r{REVISION}-" + hashlib.sha256(repr((REVISION, [p.pattern for p in SECRET_PATTERNS + PREFIXED_SECRETS], KEYED_SECRET.pattern,
                                 ENV_KEY_SECRET.pattern, JSON_SECRET.pattern, FLAG_SECRET.pattern, AUTH_SECRET.pattern,
                                 COMMAND_FLAGS, PASSWORD_NAME.pattern, sorted(PLACEHOLDERS), REFERENCE.pattern,
@@ -648,7 +652,23 @@ def _wrapped_lines(text, start, end):
 _KEY_WORD_AT = {code: (k, -(-8 * k // 6)) for word in _KEY_WORDS for k, code in enumerate(_base64_of(word))}
 _KEY_FRAME = re.compile(rb"-----(BEGIN|END) (?:[A-Z0-9 ]*PRIVATE KEY|PGP (?:PRIVATE|SECRET) KEY BLOCK)-----")
 _KEY_FOOTER = re.compile(rb"-----END (?:[A-Z0-9 ]*PRIVATE KEY|PGP (?:PRIVATE|SECRET) KEY BLOCK)-----")
-_NOT_TEXT = re.compile(rb"[^\t\n\r\x20-\x7e]")
+_TEXT_CONTROL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]")
+_CONTINUATION_BYTES = bytes(range(0x80, 0xc0))
+
+
+def _reads_as_text(data):
+    """Whether bytes read as words do: ASCII, or UTF-8 as any language writes it, cut anywhere inside a character at
+    either end, with no control character but a tab or a line break."""
+    start = len(data) - len(data.lstrip(_CONTINUATION_BYTES))
+    if start > 3:
+        return False
+    try:
+        text = codecs.getincrementaldecoder("utf-8")().decode(data[start:], final=False)
+    except UnicodeDecodeError:
+        return False
+    return not _TEXT_CONTROL.search(text)
+
+
 # Inside a key, past its header: text past ASCII too, as UTF-8 writes it, since an armour header such as GnuPG's
 # "Comment:" may hold any letter; another stream's bytes still hold a control character within a line or two.
 _NOT_KEY_TEXT = re.compile(rb"[^\t\n\r\x20-\x7e\x80-\xff]")
@@ -685,12 +705,12 @@ def _frame(joined, starts, found):
             continue
         first = lo + m.start() // 3 * 4
         line = bisect.bisect_left(starts, first)
-        opens = decoded[m.start() - 1:m.start()] == b"\n" if m.start() else False
+        opens = decoded[m.start() - 1:m.start()] in (b"\n", b"\r") if m.start() else False
         # where the encoded text starts: a line of the block, as a key under a heading's word starts, or past another
         # stream's padding; but not where the wrapping of encoded text only happens to break, as a sentence that
         # quotes a header shows, its words and spaces decoding before the header on its line
-        before = decoded[decoded.rfind(b"\n", 0, m.start()) + 1:m.start()]
-        continues = bool(before) and not _NOT_TEXT.search(before) and (
+        before = decoded[max(decoded.rfind(b"\n", 0, m.start()), decoded.rfind(b"\r", 0, m.start())) + 1:m.start()]
+        continues = bool(before) and _reads_as_text(before) and (
             len(before) >= 8 and b" " in before or before[-1:] in (b" ", b"\t"))  # "Note: -----BEGIN ..."
         opens = opens or m.start() % 3 == 0 and not continues and (
             first == opened or line < len(starts) and starts[line] == first)
@@ -734,7 +754,7 @@ def _key_range(joined, starts, ends, found, floor):
     top = bisect.bisect_right(ends, first)
     while kind == b"END" and top > floor and up(starts[top - 1]) < down(starts[top]):
         above = _base64_decoded(joined, up(starts[top - 1]), down(starts[top]))
-        if above is None or _NOT_TEXT.search(above):
+        if above is None or not _reads_as_text(above):
             break
         top -= 1
     bottom, at, recent, ended = bisect.bisect_left(ends, found.end()), first, b"", False
@@ -815,14 +835,57 @@ def _unseen_view(text):
     return "".join(pieces), kept
 
 
+# JSON's escapes, a surrogate pair as one character.
+_JSON_ESCAPE = re.compile(r"\\(?:u([dD][89abAB][0-9a-fA-F]{2})\\u([dD][c-fC-F][0-9a-fA-F]{2})|u([0-9a-fA-F]{4})|([\"\\/bfnrt]))")
+_JSON_LETTER = {'"': '"', "\\": "\\", "/": "/", "b": "\b", "f": "\f", "n": "\n", "r": "\r", "t": "\t"}
+
+
+def _json_unescaped(text):
+    """(`text` with each of JSON's escapes read as the character it writes, and a function from a (start, end) in that
+    view to the (start, end) in `text` it was read from), or None when `text` holds no escape. An escaped backslash is
+    one backslash, so the view of JSON in JSON is JSON once."""
+    pieces, at, marks, last = [], [], [], 0  # at: where each escape's character stands in the view; marks: its escape
+    for m in _JSON_ESCAPE.finditer(text):
+        high, low, code, letter = m.groups()
+        pieces.append(text[last:m.start()])
+        at.append(sum(map(len, pieces)) if not at else at[-1] + 1 + m.start() - last)
+        marks.append((m.start(), m.end()))
+        pieces.append(chr(0x10000 + (int(high, 16) - 0xD800) * 0x400 + int(low, 16) - 0xDC00) if high
+                      else chr(int(code, 16)) if code else _JSON_LETTER[letter])
+        last = m.end()
+    if not marks:
+        return None
+    pieces.append(text[last:])
+
+    def source(i, first):  # where the view's character i comes from in `text`: its first character, or past its last
+        k = bisect.bisect_right(at, i) - 1
+        if k < 0:
+            return i + (not first)
+        if at[k] == i:
+            return marks[k][0] if first else marks[k][1]
+        return marks[k][1] + i - at[k] - 1 + (not first)
+
+    return "".join(pieces), lambda start, end: (source(start, True), source(end - 1, False))
+
+
 def _encoded_key_spans(text):
     """Where each private key in a file written as base64 lies in `text`, as ordered (start, end) spans: read as
-    written, and read without the characters a reader does not see (_unseen_view), so one inside a line parts
-    nothing."""
-    spans = _written_key_spans(text)
-    view, kept = _unseen_view(text)
-    if view is not text:
-        spans += [(kept[start], kept[end - 1] + 1) for start, end in _written_key_spans(view)]
+    written, with JSON's escapes read once and twice (_json_unescaped), as JSON and JSON in JSON write a key with any
+    escape (an indentation's tab, a line break as \\u000a, a slash as \\/), and each of these read without the
+    characters a reader does not see (_unseen_view), so one inside a line parts nothing."""
+    spans, view, source = [], text, None
+    for depth in range(3):
+        if depth:
+            read = "\\" in view and _json_unescaped(view)
+            if not read:
+                break
+            view, inner = read
+            source = inner if source is None else (lambda outer, inner: lambda a, b: outer(*inner(a, b)))(source, inner)
+        found = _written_key_spans(view)
+        unseen, kept = _unseen_view(view)
+        if unseen is not view:
+            found += [(kept[start], kept[end - 1] + 1) for start, end in _written_key_spans(unseen)]
+        spans += found if source is None else [source(start, end) for start, end in found]
     merged = []
     for start, end in sorted(spans):
         if merged and start <= merged[-1][1]:
