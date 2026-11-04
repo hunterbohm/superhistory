@@ -1525,6 +1525,43 @@ class Base64ReviewFifteenTest(unittest.TestCase):
                 for line in private[:-1]:
                     self.assertNotIn(line, masked)
 
+    def test_after_public_material_and_words_a_run_of_base64_stays_masked(self):
+        # A security review of 3581a21: public material ends the reading of a key's rest only where nothing past it,
+        # through all main's reading would hide, holds a run of base64 of both cases, as a key's fragment does.
+        import base64
+        import random
+        import textwrap
+        r = random.Random(1520)
+        key = Base64ReviewFourteenTest.key64()
+        fragment = base64.b64encode(made_up_private_key(r)).decode()[100:148]
+        for public in (self.certificate(r), "\n".join(textwrap.wrap(self.certificate(r), 64))):
+            for after in (f"see also\n{fragment}\nmore", f"deploy on port 8080\n{fragment[:20]}", f"notes {fragment[:24]} end"):
+                text = f"{key}\n{public}\n{after}"
+                with self.subTest(after=after[:12], lines=public.count("\n")):
+                    once = mask(text)
+                    self.assertNotIn(fragment[:16], once)
+                    self.assertEqual(mask(once), once)
+                    self.assertNotIn(fragment[:16], mask(f"[masked]\n{public}\n{after}"))
+
+    def test_a_key_in_its_own_stream_after_text_that_fills_whole_lines_is_masked_by_its_footer(self):
+        # A security review of 3581a21: text encoded alone that ends exactly at the wrapping's width, then a key encoded
+        # alone at that width, reads as one stream wrapped there; the key's header starts no key, and its footer does.
+        import base64
+        import random
+        import textwrap
+        der = made_up_private_key(random.Random(1521))
+        pem = ("-----BEGIN PRIVATE KEY-----\n" + "\n".join(textwrap.wrap(base64.b64encode(der).decode(), 64))
+               + "\n-----END PRIVATE KEY-----\n").encode()
+        for width in (64, 76):
+            text_bytes = ("notes" * 40)[:width // 4 * 3].encode()  # exactly one full line, no padding
+            heading = base64.b64encode(text_bytes).decode()
+            key = textwrap.wrap(base64.b64encode(pem).decode(), width)
+            masked = mask(heading + "\n" + "\n".join(key) + "\nnext steps")
+            with self.subTest(width=width):
+                for line in key[1:-1]:
+                    self.assertNotIn(line, masked)
+                self.assertTrue(masked.endswith("\nnext steps"))
+
     def test_a_bundle_or_a_list_of_revoked_certificates_in_either_version_is_kept(self):
         import base64
         import random
