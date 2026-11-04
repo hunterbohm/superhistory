@@ -2021,10 +2021,18 @@ _CODE_PAGE_WORDS = frozenset(("page", "frame", "driver", "browser", "element", "
 
 
 def _names_a_page(names):
-    """Whether a chain's names hold a page, a frame, a locator, a driver or the keyboard (_CODE_LOCATOR_NAMES), by
-    name or by a variable's last word."""
-    return any(name in _CODE_LOCATOR_NAMES or re.split(r"_|(?<=[a-z0-9])(?=[A-Z])", name.rstrip("0123456789"))[-1].lower()
-               in _CODE_PAGE_WORDS for name in names)
+    """Whether a chain's names hold a page, a frame, a locator, a driver or the keyboard (_CODE_LOCATOR_NAMES), or one
+    of the locator calls whose strings name a field (_CODE_FIELD_CALLS), by name or by a variable's last word."""
+    return any(name in _CODE_LOCATOR_NAMES or _CODE_FIELD_CALLS.fullmatch(name)
+               or re.split(r"_|(?<=[a-z0-9])(?=[A-Z])", name.rstrip("0123456789"))[-1].lower() in _CODE_PAGE_WORDS
+               for name in names)
+
+
+def _names_an_element(names):
+    """Whether a chain's names hold an element or a locator (_CODE_ELEMENT_NAMES, or a listed call other than a
+    frame's), whose fill or type takes the text first, not a selector."""
+    return bool(_CODE_ELEMENT_NAMES.intersection(names)) or any(
+        name != "frame" and _CODE_FIELD_CALLS.fullmatch(name) for name in names)
 
 
 def _string_open(text, at, stop):
@@ -2263,6 +2271,10 @@ def _typed_values(text, labels, typed):
 _REGEX_IN_BRACKETS = re.compile(r"(?<=[(,:=])\s*/((?:\\.|[^/\\\n])+)/[a-z]*(?=\s*(?:[,})\]]|$))")
 
 
+# Words a value follows, never a function's name: a bracket after one ("return (page.getByLabel(...))", "await (...)")
+# is a receiver in brackets, not a call.
+_CODE_KEYWORDS = frozenset(("return", "await", "yield", "typeof", "void", "delete", "throw", "case", "in", "of", "new",
+                            "not", "and", "or", "is", "if", "elif", "else", "while", "assert", "lambda", "with", "do"))
 # The calls whose strings name a field, as the field rule lists them: a locator's getBy*/get_by_*, locator, $, frame,
 # find_element and their kin (a frame locator, Selenium 3's find_element_by_*, C#'s FindElement, Puppeteer's $x, a wait
 # for a selector). Another call in the chain (filter, describe, nth, and, or) names none.
@@ -2278,7 +2290,7 @@ def _receiver_strings(text, tokens, k, comments=(), limit=200):
     A chain is joined by dots: it reads no further back than a name with no dot before it, or a bracket that follows
     no name or bracket, so another statement's strings are never this field's. An object's key ({"name": ...}) names
     an option, not the field."""
-    strings, names, inside, depth, stop, close, close_k = [], [], [], 0, max(-1, k - limit), None, None
+    strings, names, inside, quoted, depth, stop, close, close_k = [], [], [], [], 0, max(-1, k - limit), None, None
     in_comment = comments.inside if comments else (lambda at: False)
     k -= 1
     while k > stop:
@@ -2286,10 +2298,13 @@ def _receiver_strings(text, tokens, k, comments=(), limit=200):
         if depth:
             depth += kind in ")]}"
             depth -= kind in "([{"
-            if kind == "s" and not (k + 1 < len(tokens) and tokens[k + 1][0] == ":"):
-                inside.append(text[slice(*_code_text(text, tokens[k]))])
+            if kind == "s":
+                quoted.append(tokens[k][1:])  # where a string's quotes hold it: no regex is read in there
+                if not (k + 1 < len(tokens) and tokens[k + 1][0] == ":"):
+                    inside.append(text[slice(*_code_text(text, tokens[k]))])
             if not depth:
-                if k == 0 or tokens[k - 1][0] not in ("n", ")", "]"):
+                if k == 0 or tokens[k - 1][0] not in ("n", ")", "]") or tokens[k - 1][0] == "n" and text[
+                        tokens[k - 1][1]:tokens[k - 1][2]] in _CODE_KEYWORDS:
                     # a bracket that calls or indexes nothing starts the chain: a receiver in brackets,
                     # (await page.$("#password")), is a chain of its own, read as one, its calls' strings and names
                     held, held_names = _receiver_strings(text, tokens, close_k, comments, limit)
@@ -2300,9 +2315,10 @@ def _receiver_strings(text, tokens, k, comments=(), limit=200):
                         text, tokens[k - 1][1], tokens[k - 1][2]):
                     strings += inside  # a regex literal in the brackets ("getByLabel(/Password/i)") too
                     for regex in _REGEX_IN_BRACKETS.finditer(text, tokens[k][2], close):
-                        if not in_comment(regex.start(1)):  # a regex in a comment names no field
+                        if not in_comment(regex.start(1)) and not any(a <= regex.start(1) < b for a, b in quoted):
+                            # a regex in a comment or in a string's quotes ("Search (/password/)") names no field
                             strings.append(re.sub(r"\\.|[\^$.*+?()\[\]{}|]", " ", regex.group(1)).strip())
-                inside = []
+                inside, quoted = [], []
         elif kind in ")]":
             depth, close, close_k = 1, tokens[k][1], k
         elif kind == "n":
@@ -2435,7 +2451,7 @@ def _typed_code_edits(text):
         # then a value holding a string, by position or as value=; not fill(text, {options}) or send_keys(text, Keys.ENTER)
         second = positional[1] if len(positional) > 1 else []
         method = text[call.start() + 1:call.end() - 1].strip()
-        selector = (method in _CODE_SELECTOR_METHODS and not _CODE_ELEMENT_NAMES.intersection(names)
+        selector = (method in _CODE_SELECTOR_METHODS and not _names_an_element(names)
                     and bool(positional) and [t[0] for t in positional[0] if t[0] not in "()"] == ["s"]
                     and {t[0] for t in positional[0]} <= {"s", "(", ")"} and (
             bool(second) and (second[0][0] == "s" or second[0][0] == "(" and any(t[0] == "s" for t in second))
