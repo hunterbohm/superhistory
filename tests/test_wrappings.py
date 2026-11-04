@@ -1526,6 +1526,17 @@ class ReviewEighteenTest(unittest.TestCase):
                         self.assertNotIn(PASSWORD, json.dumps(mask_all(items)))
                         self.assertNotIn(PASSWORD, mask(json.dumps(items)))
 
+    def test_every_command_a_long_item_names_still_reads_its_flags(self):
+        # named between two other commands in the item, so neither its first nor its last name
+        for name, flag in (("mongosh", "-p"), ("keytool", "-storepass"), ("redis-cli", "-a"), ("sshpass", "-p")):
+            for before in (70, 3):
+                for others in (("curl", "twine"), ("aws", "mysql")):
+                    named = f"{others[0]} {'x' * 300} {name} {'y' * 300} {others[1]}"
+                    items = [named] + ["-v"] * before + [flag, PASSWORD]
+                    with self.subTest(name=name, before=before, others=others):
+                        self.assertNotIn(PASSWORD, json.dumps(mask_all(items)))
+                        self.assertNotIn(PASSWORD, mask(json.dumps(items)))
+
 
 class RevisionTest(unittest.TestCase):
     def test_stored_rows_are_masked_again(self):
