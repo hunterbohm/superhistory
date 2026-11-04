@@ -2612,7 +2612,9 @@ class ReviewFiftyTest(unittest.TestCase):
                    'page.get_by_label( f"New password:").fill("sunshine")',
                    'page.get_by_label(r"Re-enter password:").fill("sunshine")',
                    "page.get_by_label(R'Re-enter password:').fill('sunshine')",
-                   'page.get_by_label( r"Re-enter Password:").fill("sunshine")')
+                   'page.get_by_label( r"Re-enter Password:").fill("sunshine")',
+                   'page.get_by_label(r"Re enter password:").fill("sunshine")',
+                   'page.get_by_label( u"Re enter your password").fill("sunshine")')
 
     def test_stays_a_prefixed_label_on_another_field_after_a_space(self):
         self.stays('page.get_by_label( r"Search passwords:").fill("release notes")',
