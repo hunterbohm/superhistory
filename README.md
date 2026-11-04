@@ -247,7 +247,12 @@ Known limits:
 - A private key written as base64 (as a Kubernetes secret holds one) is masked from the line with its header's first
   byte through the line with its footer's. Cut off before its footer, it is masked while its base64 decodes to text,
   so a word on the next line that happens to decode to text goes with it; cut off before its header, the same holds
-  for the line above.
+  for the line above. Its line breaks are read as written or escaped once or twice, as JSON writes them; escaped three
+  times with an invisible character inside the key, a fragment of it can show. A field name whose base64 ends in "="
+  before a value is read as main reads it, which leaves that value readable. After a placeholder, a key's body on the
+  placeholder's own line followed by words ("[masked] MC4C... notes deploy") shows, and so does a fragment that is
+  itself a plain word inside a line of words after a key. In a row an older kb stored, an OpenSSH private key's
+  private section, re-encoded alone after a placeholder, reads as public material and shows.
 - A knowledge base that an older kb wrote, before each row recorded how it was masked, does not open: an older kb's
   masking can leave a secret that no pattern finds afterwards. kb says so and names `kb rebuild`, which reads your
   sources into a fresh one, each as far back as its oldest item in the old one. When a source no longer has some of
