@@ -2660,6 +2660,68 @@ class ReviewFiftyTest(unittest.TestCase):
                    'page.locator("#passwordType").fill("release notes")')
 
 
+class TypingBracketsTest(unittest.TestCase):
+    """The coordinator's structural rule after rounds 48 to 51 (a label's closing quote taken for a quoted password's
+    opening): the quoted-password reading skips quotes inside a typing call's own brackets, which the typing reader
+    reads, so a label's ":" and quote never mask a call's code, whatever prefix, word or space stands before them."""
+
+    WRAPS, masks, stays = UnionFieldTest.WRAPS, UnionFieldTest.masks, UnionFieldTest.stays
+    PREFIXES = ("", "r", "R", "u", "b", "f", "rb", "@", "$")
+
+    def test_a_secret_label_masks_only_the_value_and_keeps_the_call(self):
+        for prefix in self.PREFIXES:
+            for space in ("", " "):
+                for quote in "'\"":
+                    for label in ("Re enter password:", "Password:", "New password: ", "S password:",
+                                  "Re-type password:", "U're password:"):
+                        code = f"page.get_by_label({space}{prefix}{quote}{label}{quote}).fill({quote}sunshine{quote})"
+                        if quote == "'" and "'" in label:
+                            continue
+                        self.masks("sunshine", code)
+
+    def test_another_fields_label_keeps_all_its_code(self):
+        for prefix in self.PREFIXES:
+            for space in ("", " "):
+                for quote in "'\"":
+                    for label in ("Search passwords:", "Password hint:", "Token name:", "S passwords:"):
+                        self.stays(f"page.get_by_label({space}{prefix}{quote}{label}{quote})"
+                                   f".fill({quote}release notes{quote})")
+
+    def test_the_round_fifty_one_label(self):
+        self.masks("sunshine", "page.get_by_label(r'Re enter password:').fill('sunshine')",
+                   "page.getByLabel('Re enter password:').fill('sunshine')")
+
+    def test_a_quoted_password_outside_a_typing_call_is_still_masked(self):
+        for text in ("password: 'Xk9,mP2;qL7v'\npage.fill('#q', 'garden')",
+                     'cfg = {"password": "Xk9,mP2;qL7v"}; page.get_by_label("Search").fill("garden")',
+                     "page.fill('#q', 'garden'); db_password='Xk9,mP2;qL7v'",
+                     'DB_PASSWORD="Xk9,mP2;qL7v" npm run fill(x)'):
+            with self.subTest(text=text):
+                self.assertNotIn("mP2;qL7v", mask(text))
+                if '"' not in text:  # an escaped double quote is not read as a quoted password's, on main either
+                    self.assertNotIn("mP2;qL7v", mask(json.dumps(text)))
+
+
+class ReviewFiftyOneTest(unittest.TestCase):
+    """The fifty-first review's other findings: a line's continuation read by a pattern that backtracks on a run of
+    backslashes, and aws's option read only in the 96 characters before a setting, so spaces after a continued line
+    hid it and masked an ordinary setting."""
+
+    def test_a_backslash_run_before_a_setting_costs_time_in_proportion(self):
+        for n in (24, 400, 4000):
+            text = "aws configure set --profile " + "\\" * n + "x aws_session_token Zq7vRt2LmX9k"
+            started = time.process_time()
+            masked = mask(text)
+            self.assertLess(time.process_time() - started, 1.0, n)
+            self.assertTrue(masked.startswith("aws configure set --profile "), n)
+
+    def test_an_options_value_after_a_long_gap_is_not_the_setting(self):
+        for gap in (" " * 90, "\\\n" + " " * 90, " " * 400, "\\\n" + " " * 4000, "\t" * 200):
+            text = "aws configure set --profile" + (" " if gap[:1] == "\\" else "") + gap + "token max_attempts 10"
+            with self.subTest(gap=gap[:8], length=len(gap)):
+                self.assertEqual(mask(text), text)
+
+
 # Commands as an argument list, each flag's value its own item: (the list, the items masked).
 ARGV = (
     (["login", "--password", PASSWORD], {2}), (["--token", SUB], {1}), (["--api-key", SUB, "--verbose"], {1}),
