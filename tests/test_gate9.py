@@ -2145,6 +2145,521 @@ class ReviewFortyTest(unittest.TestCase):
                     self.assertEqual(mask(text), text)
 
 
+class ReviewFortyOneTest(unittest.TestCase):
+    """The forty-first review's findings, all in reading the field inside the coordinator's rule: a key typed after
+    the value in Selenium's send_keys, a regex inside a locator's options, and brackets around a call's own selector."""
+
+    TYPED = (
+        'driver.find_element(By.ID, "password").send_keys("sunshine", "\\n")',
+        'driver.find_element(By.ID, "password").send_keys("sunshine", Keys.ENTER, "x")',
+        'await page.getByRole("textbox", {name: /Password/i}).fill("sunshine");',
+        'await page.getByRole("textbox", { name: /^password$/i, exact: true }).fill("sunshine");',
+        'page.fill(("#password"), "sunshine")',
+        'page.fill(\n    ("#password"),\n    "sunshine",\n)',
+    )
+
+    def test_each_password_is_masked(self):
+        for code in self.TYPED:
+            for text in (code, json.dumps(code), json.dumps({"code": code}), json.dumps(json.dumps(code))):
+                with self.subTest(text=text[:70]):
+                    self.assertNotIn("sunshine", mask(text))
+
+    def test_an_element_typed_into_has_no_selector_and_a_page_keeps_one(self):
+        self.assertEqual(mask('page.keyboard.type("sunshine", "x")'), 'page.keyboard.type("sunshine", "x")')
+        self.assertEqual(mask('page.type("#search", "sunshine")'), 'page.type("#search", "sunshine")')
+        self.assertNotIn("sunshine", mask('page.frame(name="login").type("#password", "sunshine")'))
+
+
+class ReviewFortyTwoTest(unittest.TestCase):
+    """The forty-second review's findings, all in reading the field inside the coordinator's rule: a page a browser
+    returns, a locator in brackets before its call, and a regex inside a comment in a locator's brackets."""
+
+    TYPED = (
+        'browser.new_page().fill("#password", "sunshine")',
+        'await browser.newPage().then(p => p)\nawait (await browser.newPage()).type("#password", "sunshine")',
+        '(await page.$("#password")).type("sunshine");',
+        '(await page.waitForSelector("#password")).type("sunshine");',
+    )
+
+    def test_each_password_is_masked(self):
+        for code in self.TYPED:
+            for text in (code, json.dumps(code), json.dumps({"code": code}), json.dumps(json.dumps(code))):
+                with self.subTest(text=text[:70]):
+                    self.assertNotIn("sunshine", mask(text))
+
+    def test_a_regex_inside_a_comment_names_no_field(self):
+        for code in ('page.getByRole("textbox", {name: "Email", /* name: /Password/, */ exact: true}).fill("me@example.com")',
+                     'page.get_by_role("textbox", name="Email",  # name=re.compile("Password")\n).fill("me@example.com")'):
+            for text in (code, json.dumps(code), json.dumps({"code": code})):
+                with self.subTest(text=text[:70]):
+                    self.assertEqual(mask(text), text)
+
+
+class ReviewFortyThreeTest(unittest.TestCase):
+    """The forty-third review's findings: a container's selector read as the field's label, a comment mark inside a
+    JavaScript regex read as a comment, and the comments indexed again for each typing call."""
+
+    TYPED = (
+        'page.locator("#reset-form").getByLabel("New password").fill("sunshine")',
+        'page.locator("form.reset").get_by_label("Password").fill("sunshine")',
+        'const path = page.url().split(/#/)[0]; await page.getByLabel("Password").fill("sunshine");',
+        'const s = x.replace(/\\/\\//g, "/"); await page.getByLabel("Password").fill("sunshine");',
+        'page.frame(name="reset").fill("#password", "sunshine")',
+    )
+
+    def test_each_password_is_masked(self):
+        for code in self.TYPED:
+            for text in (code, json.dumps(code), json.dumps({"code": code}), json.dumps(json.dumps(code))):
+                with self.subTest(text=text[:70]):
+                    self.assertNotIn("sunshine", mask(text))
+
+    def test_a_containers_name_is_not_its_childs(self):
+        for code in ('page.get_by_test_id("password-reset").get_by_label("Email").fill("me@example.com")',):
+            for text in (code, json.dumps(code), json.dumps({"code": code})):
+                with self.subTest(text=text[:70]):
+                    self.assertEqual(mask(text), text)
+
+    def test_a_container_that_asks_for_a_secret_marks_its_child(self):
+        """Flipped by the union rule (round 45): a container whose own selector asks for a secret names its fields."""
+        code = 'page.locator("#password-form").getByLabel("Email").fill("me@example.com")'
+        for wrap in (lambda t: t, json.dumps, lambda t: json.dumps({"code": t})):
+            with self.subTest(text=wrap(code)[:70]):
+                self.assertEqual(mask(wrap(code)), wrap(code.replace("me@example.com", "[masked]")))
+
+    def test_many_commented_records_cost_time_in_proportion(self):
+        import time
+        took = {}
+        for n in (500, 8000):
+            text = "\n".join(json.dumps({"code": f'// Search entry {i}\npage.fill("#search", "garden");'}) for i in range(n))
+            started = time.process_time()
+            self.assertEqual(mask(text), text)
+            took[n] = time.process_time() - started
+        self.assertLess(took[8000], 24 * max(took[500], 0.05), took)  # sixteen times the text
+
+
+
+class ReviewFortyFourTest(unittest.TestCase):
+    """The forty-fourth review's cost finding, and two more of its kind: a regex literal left unclosed after a run of
+    backslashes (as node --check prints one), shell globs ("src/*.py") read as comments that never close, and a regex's
+    class left unclosed, each tried again from every start."""
+
+    @staticmethod
+    def _took(text):
+        import time
+        started = time.process_time()
+        out = mask(text)
+        return time.process_time() - started, out
+
+    @staticmethod
+    def _node_error(backslashes):
+        line = "const pattern = /" + "\\" * backslashes + '; page.fill("#search", "garden");'
+        return ("[stdin]:1\n" + line + "\n                ^\n\nSyntaxError: Invalid regular expression: missing /\n"
+                "    at wrapSafe (node:internal/modules/cjs/loader:1713:18)\n\nNode.js v22.23.4\n")
+
+    def test_an_unclosed_regex_after_backslashes_costs_little(self):
+        for wrap in (lambda t: t, json.dumps, lambda t: json.dumps({"stderr": t})):
+            took = {}
+            for n in (0, 30):
+                text = wrap(self._node_error(n))
+                took[n], out = self._took(text)
+                self.assertEqual(out, text)
+            self.assertLess(took[30], 24 * max(took[0], 0.05), took)
+
+    def test_globs_cost_time_in_proportion(self):
+        for wrap in (lambda t: t, json.dumps):
+            took = {}
+            for n in (500, 8000):
+                text = wrap("cp src/*.py dest/\n" * n + 'page.fill("#q", "garden")\n')
+                took[n], out = self._took(text)
+                self.assertEqual(out, text)
+            self.assertLess(took[8000], 24 * max(took[500], 0.05), took)  # sixteen times the text
+
+    def test_unclosed_regex_classes_cost_time_in_proportion(self):
+        for wrap in (lambda t: t, json.dumps):
+            took = {}
+            for n in (500, 8000):
+                text = wrap("x =/[" * n + '\npage.fill("#q", "garden")\n')
+                took[n], out = self._took(text)
+                self.assertEqual(out, text)
+            self.assertLess(took[8000], 24 * max(took[500], 0.05), took)
+
+    def test_a_regex_class_holding_a_slash_is_still_one_regex(self):
+        code = 'const name = path.match(/[^/#]+$/)[0]; await page.getByLabel("Password").fill("sunshine");'
+        for text in (code, json.dumps(code), json.dumps({"code": code}), json.dumps(json.dumps(code))):
+            with self.subTest(text=text[:70]):
+                self.assertNotIn("sunshine", mask(text))
+
+
+
+class UnionFieldTest(unittest.TestCase):
+    """The union rule for a code typing call's field (round 45): any one string of a locator call in its chain, or of
+    its own selector, that asks for a secret on its own names the field so, and no other string takes that back.
+    Strings of other calls in the chain (filter, describe) are not read."""
+
+    WRAPS = (lambda t: t, json.dumps, lambda t: json.dumps({"code": t}), lambda t: json.dumps(json.dumps(t)))
+
+    def masks(self, value, *codes):
+        for code in codes:
+            for wrap in self.WRAPS:
+                with self.subTest(text=wrap(code)[:90]):
+                    self.assertEqual(mask(wrap(code)), wrap(code.replace(value, "[masked]")))
+
+    def stays(self, *codes):
+        for code in codes:
+            for wrap in self.WRAPS:
+                with self.subTest(text=wrap(code)[:90]):
+                    self.assertEqual(mask(wrap(code)), wrap(code))
+
+    # round 44's findings
+    def test_a_strategy_takes_no_secret_back(self):
+        self.masks("sunshine", 'driver.find_element("id", "password").send_keys("sunshine")',
+                   'driver.find_element("name", "password").send_keys("sunshine")',
+                   'driver.find_element(by="id", value="password").send_keys("sunshine")')
+
+    def test_describe_names_no_field(self):
+        self.masks("sunshine", 'page.getByLabel("Password").describe("Sign in field").fill("sunshine")')
+
+    def test_stays_a_filter_that_names_a_secret(self):
+        self.stays('page.getByLabel("Email").filter({hasNotText: "Password"}).fill("me@example.com")',
+                   'page.get_by_label("Email").filter(has_not_text="Password").fill("me@example.com")')
+
+    # three shapes inside the rule no review had reported: a field's own locator under the one that names it
+    def test_a_child_locator_under_a_secret_field(self):
+        self.masks("sunshine", 'page.getByLabel("Password").locator("input").fill("sunshine")',
+                   'page.get_by_role("group", name="Password").get_by_role("textbox").fill("sunshine")',
+                   'page.locator("#password-field").locator("input").fill("sunshine")')
+
+    # masked by design
+    def test_by_design_a_container_that_asks_for_a_secret_marks_its_fields(self):
+        self.masks("me@example.com", 'page.locator("#password-form").getByLabel("Email").fill("me@example.com")')
+        self.masks("sam", 'page.locator("#credentials").getByLabel("Username").fill("sam")')
+
+    def test_by_design_an_options_value_in_a_locator_call(self):
+        self.masks("me@example.com", 'page.locator("input", {hasNotText: "Password"}).fill("me@example.com")')
+
+    def test_by_design_a_frame_named_for_the_secret(self):
+        self.masks("me@example.com", 'page.frame(name="password").fill("#email", "me@example.com")')
+
+    # must stay
+    def test_stays_describe_text_on_a_plain_field(self):
+        self.stays('page.getByLabel("Email").describe("password field").fill("me@example.com")')
+
+    def test_stays_a_container_named_with_another_word(self):
+        self.stays('page.locator(".password-section").getByLabel("Email").fill("me@example.com")',
+                   'page.get_by_test_id("password-reset").get_by_label("Email").fill("me@example.com")',
+                   'page.locator("#change-password").getByLabel("Email").fill("me@example.com")',
+                   'page.getByRole("dialog", {name: "Change password"}).getByLabel("Email").fill("me@example.com")')
+
+    def test_stays_a_strategy_beside_a_plain_field(self):
+        self.stays('driver.find_element("id", "username").send_keys("sam")',
+                   'driver.find_element("id", "password_hint").send_keys("first pet")')
+
+    def test_stays_a_chain_on_no_page(self):
+        self.stays('Buffer.from("password").fill("x")')
+
+    def test_stays_prose(self):
+        self.stays('To fill the password field, call page.getByLabel("Password").fill(value) with the value.',
+                   'The login form has a Password field and an Email field; fill("your text") types into the focus.')
+
+    def test_ordinary_texts_stay(self):
+        from tests import ordinary
+        changed = [t for t in ordinary.texts(4000) if mask(t) != t]
+        self.assertEqual(changed, [])
+
+
+
+class ReviewFortyFiveTest(unittest.TestCase):
+    """The forty-fifth review's findings: locator calls the union's list lacked (a frame locator, Selenium 3's
+    find_element_by_*), and a receiver in brackets that read the strings of every call inside it, filter's and
+    describe's too; with the other calls these libraries name a field by."""
+
+    WRAPS, masks, stays = UnionFieldTest.WRAPS, UnionFieldTest.masks, UnionFieldTest.stays
+
+    def test_each_locator_call_kind_names_its_field(self):
+        self.masks("sunshine",
+                   'page.frameLocator("#password").getByRole("textbox").fill("sunshine")',
+                   'page.frame_locator("#password").get_by_role("textbox").fill("sunshine")',
+                   'driver.find_element_by_id("password").send_keys("sunshine")',
+                   'driver.find_element_by_css_selector("input[name=password]").send_keys("sunshine")',
+                   'driver.find_elements_by_name("password")[0].send_keys("sunshine")',
+                   'driver.FindElement(By.Id("password")).SendKeys("sunshine");',
+                   '(await page.waitForSelector("#password")).type("sunshine")',
+                   'page.wait_for_selector("#password").fill("sunshine")',
+                   '(await page.$x("//input[@name=\'password\']"))[0].type("sunshine")')
+
+    def test_stays_a_frame_locator_named_with_another_word(self):
+        self.stays('page.frameLocator("#login").getByLabel("Email").fill("me@example.com")',
+                   'page.frame_locator("#password-reset").get_by_label("Email").fill("me@example.com")')
+
+    def test_a_receiver_in_brackets_reads_its_own_chain(self):
+        self.stays('(page.getByLabel("Email").filter({hasNotText: "Password"})).fill("me@example.com")',
+                   '(page.get_by_label("Email").filter(has_not_text="Password")).fill("me@example.com")',
+                   '(page.getByLabel("Email").describe("Password")).fill("me@example.com")')
+        self.masks("sunshine", '(await page.$("#password")).fill("sunshine")',
+                   '(page.getByLabel("Password").filter({hasText: "Sign in"})).fill("sunshine")')
+
+
+
+class ReviewFortySixTest(unittest.TestCase):
+    """The forty-sixth review's findings: a listed finder on a variable no page check knew, a receiver in brackets after
+    a keyword ("return (...)", "await (...)") read as a call to it, and a regex looked for inside a label's quotes."""
+
+    WRAPS, masks, stays = UnionFieldTest.WRAPS, UnionFieldTest.masks, UnionFieldTest.stays
+
+    def test_a_listed_finder_names_a_page_on_any_variable(self):
+        self.masks("sunshine",
+                   'd.find_element_by_id("password").send_keys("sunshine")',
+                   'd.find_elements_by_name("password")[0].send_keys("sunshine")',
+                   'd.FindElements(By.Id("password"))[0].SendKeys("sunshine");',
+                   '(await p.waitForSelector("#password")).type("sunshine")',
+                   'p.wait_for_selector("#password").fill("sunshine")',
+                   '(await p.$x("//input[@name=\'password\']"))[0].type("sunshine")')
+
+    def test_a_receiver_in_brackets_after_a_keyword(self):
+        self.masks("sunshine",
+                   'return (page.getByLabel("Password")).fill("sunshine");',
+                   '(await (page.$("#password"))).type("sunshine")',
+                   'yield (page.get_by_label("Password")).fill("sunshine")',
+                   'void (page.getByLabel("Password")).fill("sunshine");')
+
+    def test_stays_a_regex_inside_a_labels_quotes(self):
+        self.stays('page.getByLabel("Search (/password/)").fill("release notes")',
+                   "page.getByPlaceholder('Filter, e.g. (/token/i)').fill('release notes')")
+
+
+class ReviewFortySevenTest(unittest.TestCase):
+    """The forty-seventh review's findings and their kin: a dotted and(...) or or(...) read as the keyword, a selector=
+    keyword on a variable no page check knew, and finder calls the union's list lacked; and a locator call given as
+    the typing call's own field argument (user.type(screen.getByLabelText(...), text))."""
+
+    WRAPS, masks, stays = UnionFieldTest.WRAPS, UnionFieldTest.masks, UnionFieldTest.stays
+
+    def test_a_dotted_and_or_or_is_another_call_in_the_chain(self):
+        self.masks("sunshine",
+                   'page.getByLabel("Password").and(page.getByRole("textbox")).fill("sunshine")',
+                   'page.getByLabel("Password").or(page.getByLabel("Email")).fill("sunshine")',
+                   'page.getByLabel("Password").and (page.getByRole("textbox")).fill("sunshine")')
+
+    def test_stays_a_dotted_and_or_or_with_no_secret_field(self):
+        self.stays('page.getByLabel("Email").and(page.getByRole("textbox")).fill("me@example.com")',
+                   'page.getByLabel("Email").or(page.getByLabel("Username")).fill("me@example.com")')
+
+    def test_a_selector_keyword_on_any_variable(self):
+        self.masks("sunshine",
+                   'p.fill(value="sunshine", selector="#password")',
+                   'p.type(selector="#password", text="sunshine")',
+                   'tab.fill(selector="#password", value="sunshine")')
+
+    def test_stays_a_selector_keyword_for_another_field(self):
+        self.stays('p.fill(value="me@example.com", selector="#email")',
+                   'tab.type(selector="#search", text="release notes")')
+
+    def test_the_finder_calls_the_list_lacked(self):
+        self.masks("sunshine",
+                   '(await p.waitForXPath(`//*[@id="password"]`)).type("sunshine")',
+                   '(await page.waitFor("#password")).type("sunshine")',
+                   'browser.shadow$("#password").setValue("sunshine")',
+                   'browser.shadow$$("input[name=password]")[0].setValue("sunshine")',
+                   'browser.react$("Input", {props: {type: "password"}}).setValue("sunshine")',
+                   'browser.react$$("PasswordInput")[0].setValue("sunshine")',
+                   'browser.custom$("byTestId", "password").setValue("sunshine")',
+                   '$("#password").addValue("sunshine")',
+                   '(await screen.findByLabelText("Password")).type("sunshine")',
+                   'screen.queryByLabelText("Password").type("sunshine")',
+                   'screen.getAllByLabelText("Password")[0].type("sunshine")',
+                   '(await page.J("#password")).type("sunshine")',
+                   '(await page.JJ("input[name=password]"))[0].type("sunshine")',
+                   '(await page.xpath("//input[@name=\'password\']"))[0].type("sunshine")')
+
+    def test_cypress_finders(self):
+        self.masks("sunshine",
+                   'cy.get("#password").type("sunshine")',
+                   "cy.get('input[name=\"password\"]').clear().type('sunshine')",
+                   'cy.get("form").find("#password").type("sunshine", {log: false})',
+                   'cy.findByLabelText("Password").type("sunshine")',
+                   'cy.contains("label", "Password").parent().find("input").type("sunshine")')
+
+    def test_seleniums_explicit_wait(self):
+        self.masks("sunshine",
+                   'WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.ID, "password")))'
+                   '.send_keys("sunshine")',
+                   'wait.until(ExpectedConditions.visibilityOfElementLocated(By.id("password"))).sendKeys("sunshine");',
+                   'await driver.wait(until.elementLocated(By.css("#password")), 5000).sendKeys("sunshine");')
+
+    def test_a_locator_call_as_the_calls_own_field(self):
+        self.masks("sunshine",
+                   'await user.type(screen.getByLabelText("Password"), "sunshine")',
+                   'await userEvent.type(await screen.findByLabelText("Password"), "sunshine")',
+                   'ActionChains(driver).send_keys_to_element(driver.find_element(By.ID, "password"), "sunshine")'
+                   '.perform()')
+
+    def test_stays_the_kin_on_another_field(self):
+        self.stays('cy.get("#email").type("sam@example.com")',
+                   'cy.get("#password-reset").find("#email").type("sam@example.com")',
+                   'await user.type(screen.getByLabelText("Email"), "me@example.com")',
+                   'browser.shadow$("#search").setValue("release notes")',
+                   'WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.ID, "email")))'
+                   '.send_keys("me@example.com")',
+                   'settings.get("password_hint").type("first pet")')
+
+
+class ReviewFortyEightTest(unittest.TestCase):
+    """The forty-eighth review's findings: addValue missing from the typing names whose strings are values, never code,
+    and a label's closing quote after "Password:" read as a quoted password's opening quote, masking ").fill(" and
+    breaking the call the typing reader reads."""
+
+    WRAPS, masks, stays = UnionFieldTest.WRAPS, UnionFieldTest.masks, UnionFieldTest.stays
+
+    def test_what_add_value_types_is_a_value_not_code(self):
+        self.stays('browser.$("#editor").addValue(\'page.fill("#password", "release notes")\')',
+                   '$("#notes").add_value(\'driver.find_element(By.ID, "password").send_keys("release notes")\')')
+        self.masks("Abc.fill('q')Z9!", 'browser.$("#password").addValue("Abc.fill(\'q\')Z9!")')
+
+    def test_a_label_ending_in_a_colon_keeps_its_call(self):
+        self.masks("sunshine",
+                   'page.getByLabel("Password:").fill("sunshine")',
+                   'page.get_by_label("Password: ").fill("sunshine")',
+                   "page.getByLabel('New password:').fill('sunshine')")
+
+    def test_stays_a_label_ending_in_a_colon_on_another_field(self):
+        self.stays('page.getByLabel("Search passwords:").fill("release notes")',
+                   'page.getByPlaceholder("Password hint:").fill("first pet")',
+                   'print("Password:", "set in the vault")')
+
+    def test_a_quoted_password_after_its_names_own_closed_quote(self):
+        for text, value in (('DB_PASSWORD="Xk9,mP2;qL7v"', "Xk9,mP2;qL7v"),
+                            ('{"password":"Xk9,mP2;qL7v"}', "Xk9,mP2;qL7v"),
+                            ("password: 'Xk9,mP2;qL7v'", "Xk9,mP2;qL7v"),
+                            ("cmd 'db_password=\"Xk9,mP2;qL7v\"'", "Xk9,mP2;qL7v"),
+                            ('note "x" password: "Xk9,mP2;qL7v"', "Xk9,mP2;qL7v")):
+            with self.subTest(text=text):
+                self.assertEqual(mask(text), text.replace(value, "[masked]"))
+
+
+class ReviewFortyNineTest(unittest.TestCase):
+    """The forty-ninth review's findings: a string's prefix (r"Password:", C#'s @"Password:") hid the label's opening
+    quote, so its closing quote after "Password:" was read as a quoted password's opening, masking ").fill(" and
+    breaking the call the typing reader reads; a word's apostrophe ("B's") stays an apostrophe."""
+
+    WRAPS, masks, stays = UnionFieldTest.WRAPS, UnionFieldTest.masks, UnionFieldTest.stays
+
+    def test_a_prefixed_label_keeps_its_call(self):
+        self.masks("sunshine",
+                   'page.get_by_label(r"Password:").fill("sunshine")',
+                   "page.get_by_label(R'Password:').fill('sunshine')",
+                   'page.get_by_label(f"Password:").fill("sunshine")',
+                   'page.get_by_label(rf"Password:").fill("sunshine")',
+                   'page.get_by_label(u"Password: ").fill("sunshine")',
+                   'page.get_by_label(b"Password:").fill("sunshine")',
+                   "page.get_by_label(r'New password:').fill('sunshine')")
+
+    def test_stays_a_prefixed_label_on_another_field(self):
+        self.stays('page.get_by_label(r"Search passwords:").fill("release notes")',
+                   "page.get_by_placeholder(r'Password hint:').fill('first pet')",
+                   'print(r"Password:", "set in the vault")',
+                   'await page.GetByLabel(@"Search passwords:").FillAsync("release notes");',
+                   'await page.GetByLabel($"Search passwords:").FillAsync("release notes");')
+
+    def test_a_prefixed_label_in_code_kb_does_not_type_keeps_its_text(self):
+        from tests.test_mask_against_main import main
+        for code in ('await page.GetByLabel(@"Password:").FillAsync("sunshine");',
+                     'await page.GetByLabel($"Password:").FillAsync("sunshine");',
+                     'let label = Some(r#"Password:"#).unwrap_or("x");'):
+            for wrap in self.WRAPS:
+                with self.subTest(code=wrap(code)):
+                    self.assertEqual(mask(wrap(code)), main.mask(wrap(code)))
+
+    def test_an_apostrophe_after_a_letter_still_reads_the_password(self):
+        for text in ("B's password: 'Xk9,mP2;qL7v'", "(T's password: 'Xk9,mP2;qL7v')",
+                     "note for R's team: password='Xk9,mP2;qL7v'", "Plan B's db_password: 'Xk9,mP2;qL7v'"):
+            with self.subTest(text=text):
+                self.assertEqual(mask(text), text.replace("Xk9,mP2;qL7v", "[masked]"))
+
+
+class AwsOptionValueTest(unittest.TestCase):
+    """Found in #37's twelfth review: in aws configure set, a value of one of aws's options that take one ("--profile
+    token") was read as the secret setting's name, masking the setting after it and leaving its value readable."""
+
+    WRAPS, masks, stays = UnionFieldTest.WRAPS, UnionFieldTest.masks, UnionFieldTest.stays
+
+    def test_an_options_value_is_not_the_setting(self):
+        self.masks("Zq7vRt2LmX9k",
+                   "aws configure set --profile token aws_secret_access_key Zq7vRt2LmX9k",
+                   "aws configure set --region us-east-1 --profile secret aws_session_token Zq7vRt2LmX9k",
+                   "aws configure set --profile 'token' aws_secret_access_key Zq7vRt2LmX9k",
+                   "aws configure set '--profile' token aws_secret_access_key Zq7vRt2LmX9k",
+                   "aws configure set --output token --query password default.aws_session_token Zq7vRt2LmX9k",
+                   "aws configure set aws_secret_access_key Zq7vRt2LmX9k --profile token",
+                   "aws configure set --profile=token aws_secret_access_key Zq7vRt2LmX9k")
+
+    def test_stays_a_setting_after_an_options_value(self):
+        self.stays("aws configure set --profile token max_attempts 10",
+                   "aws configure set --profile token region us-west-2",
+                   "aws configure set --profile ci_token output json")
+
+
+class ReviewFiftyTest(unittest.TestCase):
+    """The fiftieth review's findings: a string's prefix after a space ("( r\"Password:\"") and a label starting with
+    "Re-" (r"Re-enter password:"), read as a word's ending, still hid the label's opening quote, and a line's
+    continuation between aws's option and its value ("--profile \\" then "token" on the next line) hid the option.
+    Found with them: "type" as a label's verb ("Type your password", "Re-type password") read as one about the secret."""
+
+    WRAPS, masks, stays = UnionFieldTest.WRAPS, UnionFieldTest.masks, UnionFieldTest.stays
+
+    def test_a_prefixed_label_after_a_space_or_starting_with_re_keeps_its_call(self):
+        self.masks("sunshine",
+                   'page.get_by_label( r"Password:").fill("sunshine")',
+                   'page.get_by_label( f"New password:").fill("sunshine")',
+                   'page.get_by_label(r"Re-enter password:").fill("sunshine")',
+                   "page.get_by_label(R'Re-enter password:').fill('sunshine')",
+                   'page.get_by_label( r"Re-enter Password:").fill("sunshine")',
+                   'page.get_by_label(r"Re enter password:").fill("sunshine")',
+                   'page.get_by_label( u"Re enter your password").fill("sunshine")')
+
+    def test_stays_a_prefixed_label_on_another_field_after_a_space(self):
+        self.stays('page.get_by_label( r"Search passwords:").fill("release notes")',
+                   "page.get_by_placeholder( r'Password hint:').fill('first pet')")
+
+    def test_a_word_ending_after_a_letter_is_still_an_apostrophe(self):
+        for text in ("Plan B's password: 'Xk9,mP2;qL7v'", "(T's password: 'Xk9,mP2;qL7v')",
+                     "note for R's team, password='Xk9,mP2;qL7v'", "U'd say the password: 'Xk9,mP2;qL7v'"):
+            with self.subTest(text=text):
+                self.assertEqual(mask(text), text.replace("Xk9,mP2;qL7v", "[masked]"))
+
+    def test_an_aws_options_value_on_a_continued_line(self):
+        for text in ("aws configure set --profile \\\n token aws_secret_access_key Zq7vRt2LmX9k",
+                     "aws configure set --region us-east-1 --profile \\\n  secret aws_session_token Zq7vRt2LmX9k"):
+            with self.subTest(text=text):
+                self.assertEqual(mask(text), text.replace("Zq7vRt2LmX9k", "[masked]"))
+        self.stays("aws configure set --profile \\\n token max_attempts 10",
+                   "aws configure set --profile \\\n    token region us-west-2")
+
+    def test_a_continued_line_the_shell_does_not_join_masks_at_most_the_value(self):
+        """bash joins no line after a backslash before CR LF, and a JSON string's escaped line break is read as the
+        line's end: the value there shows as main shows it (ON-MAIN), and nothing else is masked."""
+        for code in ("aws configure set --profile \\\n token aws_secret_access_key Zq7vRt2LmX9k",
+                     "aws configure set --profile \\\r\n    token aws_secret_access_key Zq7vRt2LmX9k"):
+            for wrap in self.WRAPS:
+                with self.subTest(text=wrap(code)[:90]):
+                    self.assertIn(mask(wrap(code)), (wrap(code), wrap(code.replace("Zq7vRt2LmX9k", "[masked]"))))
+
+    def test_type_as_the_labels_verb_asks_for_the_secret(self):
+        self.masks("sunshine",
+                   "page.get_by_label(R'Re-type password:').fill('sunshine')",
+                   'page.get_by_label("Type your password").fill("sunshine")',
+                   'page.get_by_label("Re type password").fill("sunshine")',
+                   'page.get_by_label("Please type your PIN").fill("sunshine")',
+                   'page.get_by_placeholder("Type password").fill("sunshine")',
+                   'page.locator("#typePassword").fill("sunshine")')
+
+    def test_stays_type_as_the_secrets_kind(self):
+        self.stays('page.get_by_label("Password type").fill("release notes")',
+                   'page.get_by_label("Type of password").fill("release notes")',
+                   'page.get_by_label("Type: password").fill("release notes")',
+                   'page.get_by_label("Token types").fill("release notes")',
+                   'page.locator("#passwordType").fill("release notes")')
+
+
 # Commands as an argument list, each flag's value its own item: (the list, the items masked).
 ARGV = (
     (["login", "--password", PASSWORD], {2}), (["--token", SUB], {1}), (["--api-key", SUB, "--verbose"], {1}),

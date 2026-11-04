@@ -434,6 +434,8 @@ _ANY_COMMAND = re.compile(r"(?i)curl|mysql|mariadb|sshpass|login|redis-cli|mongo
 # aws configure set's row, and aws's options that take a value (its global options): a setting's name right after one
 # is that option's value, as "token" is in "aws configure set --profile token ...", not the setting.
 _AWS_FLAG = next(row[1] for row, (command, _, _) in zip(_COMMANDS, COMMAND_FLAGS) if command.startswith("aws"))
+# A line's continuation as a word of its own: a backslash before the line break, raw or escaped once or more ("\\\\n").
+_CONTINUATION_WORD = re.compile(r"(?:\\+[rn]?)+")
 _AWS_VALUE_OPTIONS = frozenset(("--profile", "--region", "--output", "--endpoint-url", "--query", "--ca-bundle",
                                 "--color", "--cli-read-timeout", "--cli-connect-timeout", "--cli-binary-format"))
 # In a list of arguments, an item names one of COMMAND_FLAGS' commands where the name stands whole, as a program's
@@ -801,14 +803,17 @@ tsadigestalg tsapolicyid v validity verbose verify version
 
 def _flag_matches(text, flag, start, end):
     """flag.finditer(text, start, end), but for aws configure set's row not where the setting's name is the value of
-    one of aws's options that take one (_AWS_VALUE_OPTIONS), as written or in quotes, plain or escaped; the setting
-    may come right after it. Only the 48 characters before a name are read for the option."""
+    one of aws's options that take one (_AWS_VALUE_OPTIONS), as written or in quotes, plain or escaped, with a line's
+    continuation or none between them; the setting may come right after it. Only the 96 characters before a name are
+    read for the option."""
     at = start
     while True:
         m = flag.search(text, at, end)
         if m is None:
             return
-        words = text[max(start, m.start() - 48):m.start()].split() if flag is _AWS_FLAG else ()
+        words = text[max(start, m.start() - 96):m.start()].split() if flag is _AWS_FLAG else []
+        while words and _CONTINUATION_WORD.fullmatch(words[-1]):
+            words.pop()
         if words and words[-1].strip("'\"\\").lower() in _AWS_VALUE_OPTIONS:
             at = m.start() + 1
             continue
@@ -1446,6 +1451,52 @@ def _password_span(m):
     return _keyed_span(m) if PASSWORD_NAME.search(name) and not _ABOUT_A_PASSWORD.search(name) else None
 
 
+@functools.lru_cache(maxsize=8)
+def _quote_marks(text, quote):
+    """Where `text` holds `quote` with no backslash escaping it, in order, and where its lines begin, after a line break
+    raw or escaped as JSON holds one."""
+    marks = [m.end() - 1 for m in re.finditer(r"(?<!\\)(?:\\\\)*" + quote, text)]
+    return marks, [m.end() for m in re.finditer(r"\n|(?<!\\)\\n", text)]
+
+
+# A string's prefix before its opening quote: Python's r, b, u, f and t and their pairs (rb, fr), C and C++'s L, u8 and
+# R, C#'s @ and $, and Rust's r#. It counts where an opening quote would, after a bracket, a comma, "=", ":", a space or
+# the line's start, and not where a single quote stands before a word's ending ("B's", "T'd", "U're") and a space or a
+# mark, as an apostrophe does; a string's own word ("Re-enter"), or a double quote's ("Re enter"), is no ending.
+_STRING_PREFIX = re.compile(r"[rRbBuUfFtT]{1,2}|u8R?|LR?|\$@|@\$|[@$]|b?r#{1,3}")
+_WORD_ENDING = re.compile(r"(?i)(?:s|t|d|m|ll|re|ve)(?=[\s.,;!?]|\Z)")
+
+
+def _opens_a_string(text, at, line):
+    """Whether the quote at `at`, on the line starting at `line`, opens a string: at the line's start, or after a
+    bracket, a comma, "=", ":" or a space, or after a string's prefix (_STRING_PREFIX) there."""
+    if at == line or text[at - 1] in " \t([{,=:":
+        return True
+    if text[at] == "'" and _WORD_ENDING.match(text, at + 1):
+        return False
+    for start in range(at - 1, max(line, at - 5) - 1, -1):
+        if _STRING_PREFIX.fullmatch(text, start, at) and (start == line or text[start - 1] in " \t([{,=:"):
+            return True
+    return False
+
+
+def _quoted_password_span(m):
+    """_password_span, but not for a name inside a string that the quote after its ":" or "=" closes: in
+    getByLabel("Password:").fill(...) or get_by_label(r"Password:").fill(...) the name is a label's, and that quote
+    opens no value. The name is in such a string when the nearest quote of its kind before it on its line opens one
+    (_opens_a_string); one after a letter, a digit or other punctuation closes a string or is an apostrophe ("it's",
+    "users'"). A name whose own quote closes before the ":" ('"password": "..."') is read."""
+    separator, text = m.group(2), m.string
+    quote = separator[-1]
+    if not separator.startswith(quote):
+        marks, lines = _quote_marks(text, quote)
+        at, k = m.start(1), bisect.bisect_left(marks, m.start(1))
+        line = lines[bisect.bisect_right(lines, at) - 1] if lines and lines[0] <= at else 0
+        if k and marks[k - 1] >= line and _opens_a_string(text, marks[k - 1], line):
+            return None
+    return _password_span(m)
+
+
 def _line_password_span(m):
     """Where a password's line value is, when the line holds more past where _VALUE would end it."""
     return _password_span(m) if re.search(r"[,;<>)\]}].", m.group(3)) else None
@@ -1630,7 +1681,7 @@ def _replace(text, spans, replacement):
 # The readings that take a password's value whole where KEYED_SECRET would end it early, so they come before it.
 _WHOLE_VALUES = ((XML_SECRET, _xml_span), (LINE_PASSWORD, _line_password_span), (APP_PASSWORD, _app_password_span),
                  (APP_PASSWORD_LINE, _app_password_span),
-                 *((p, _password_span) for p in QUOTED_PASSWORDS))
+                 *((p, _quoted_password_span) for p in QUOTED_PASSWORDS))
 # Main's own readings of text, as gate 9 found them: its token shapes, links, commands and named values, each read as
 # main reads it, with the four values gate 9 reads as no secret (a tokenizer's, an ARN's, a date's, a file name's)
 # read so here too. _read hides all these hide, so no reading added since can show what main's own readings hide,
@@ -2567,17 +2618,38 @@ _LABEL_PART = re.compile(r"[A-Za-z0-9_-]+|[^A-Za-z0-9\s_-]+")
 _LABEL_PART_MARK = re.compile(r"[^A-Za-z0-9\s_-]+")
 
 
-def _names_a_secret(label):
-    """Whether one label names a secret and nothing else: a secret's word or run of words, and besides it only a form's
-    own words, joining words, numbers, and a credential's kind (read with a neighbour as well, as camel case splits
-    "GitHub") before the secret or after a mark or joining word. One pass, so a long label costs time in proportion to
-    its length."""
-    words = []  # each word, and "" where a mark stands
+def _label_words(label):
+    """A label's words, in lower case, and "" where a mark stands."""
+    words = []
     for part in _LABEL_PART.finditer(label):
         if _LABEL_PART_MARK.fullmatch(part.group(0)):
             words.append("")
         else:
             words += [word.lower() for word in _LABEL_WORD.findall(part.group(0))]
+    return words
+
+
+def _typing_verb(words):
+    """Where the label's "type" is its verb, a form's word ("Type your password", "Re-type password", "Please type
+    your PIN", "#typePassword"), not the secret's kind ("Password type", "Type of password", "Type: password"): after
+    only a form's words, with a word after it that is no joining word. -1 where it has none."""
+    k = 0
+    while k < len(words) and not words[k]:
+        k += 1
+    while k < len(words) and words[k] in _FORM_WORDS:
+        k += 1
+    if k + 1 < len(words) and words[k] == "type" and words[k + 1] and words[k + 1] not in _JOINING_WORDS:
+        return k
+    return -1
+
+
+def _names_a_secret(label):
+    """Whether one label names a secret and nothing else: a secret's word or run of words, and besides it only a form's
+    own words, joining words, numbers, and a credential's kind (read with a neighbour as well, as camel case splits
+    "GitHub") before the secret or after a mark or joining word. One pass, so a long label costs time in proportion to
+    its length."""
+    words = _label_words(label)  # each word, and "" where a mark stands
+    verb = _typing_verb(words)
     in_run = set()
     for k in range(len(words)):
         for run in _SECRET_RUNS:
@@ -2596,19 +2668,21 @@ def _names_a_secret(label):
         if (word in _SECRET_KINDS or k and words[k - 1] + word in _SECRET_KINDS
                 or k + 1 < len(words) and word + words[k + 1] in _SECRET_KINDS) and not after_secret:
             kind = True
-        elif word not in _FORM_WORDS and not word.isdigit():
+        elif word not in _FORM_WORDS and not word.isdigit() and k != verb:
             return False
     return secret or kind and "tokens" in words
 
 
 def _asks_for_a_secret(labels):
     """Whether a field's labels ask for a secret: one names a secret and nothing else (_names_a_secret), and none is
-    about one or finds them (_ABOUT_WORDS), read word by word after a selector's own attribute names are taken out
-    ("input[name=password]")."""
+    about one or finds them (_ABOUT_WORDS, but "type" as the label's verb, _typing_verb), read word by word after a
+    selector's own attribute names are taken out ("input[name=password]")."""
     asks = False
     for label in labels:
         label = _without_attribute_names(label)
-        if _ABOUT_WORDS.intersection(w.lower() for w in _LABEL_WORD.findall(label)):
+        words = _label_words(label)
+        verb = _typing_verb(words)
+        if any(word in _ABOUT_WORDS and k != verb for k, word in enumerate(words)):
             return False
         asks = asks or _names_a_secret(label)
     return asks
@@ -2663,12 +2737,13 @@ _TYPING_NAMES = _TYPING_TOOL.pattern.split(")?", 1)[1]  # the tool's own names, 
 # library's prefix ("browser_type"), not any method named fill or type, as an array's is.
 _CODE_TYPING_CALL = re.compile(rf"(?i)(?<![\w$])(?:[\w$]+\.)*(?:mcp__[\w-]+__(?:{_TYPING_TOOL.pattern[4:]})"
                                rf"|(?:browser|puppeteer|playwright)_{_TYPING_NAMES})\s*\(")
-_CODE_FILL_CALL = re.compile(r"\.\s*(?:fill|type|pressSequentially|press_sequentially|sendKeys|send_keys|setValue|set_value)"
+_CODE_FILL_CALL = re.compile(r"\.\s*(?:fill|type|pressSequentially|press_sequentially|sendKeys|send_keys|SendKeys|setValue"
+                             r"|set_value|addValue|add_value|send_keys_to_element|sendKeysToElement)"
                              r"\s*\(")
-_CODE_HINT = re.compile(r"(?i)(?:fill|type|press_?sequentially|send_?keys|set_?value|input_text)\w*\s*\(")
+_CODE_HINT = re.compile(r"(?i)(?:fill|type|press_?sequentially|send_?keys|set_?value|add_?value|input_text)\w*\s*\(")
 # A string that holds code, as JSON holds it: a typing call's "(" in it, and a quote of the code's own, plain or
 # escaped; "Autofill(42)!", a password, holds no quote.
-_CODE_IN_STRING = re.compile(r"(?i)(?:fill|type|press_?sequentially|send_?keys|set_?value|input_text)\w*\s*\(")
+_CODE_IN_STRING = re.compile(r"(?i)(?:fill|type|press_?sequentially|send_?keys|set_?value|add_?value|input_text)\w*\s*\(")
 def _holds_another_quote(text, inner, quote):
     """Whether what a string holds has a quote of the code's own: one other than its own quote, or its own escaped."""
     others = "".join(q for q in "\"'`" if q != quote)
@@ -2676,22 +2751,42 @@ def _holds_another_quote(text, inner, quote):
 _CODE_NAME = re.compile(r"[A-Za-z_$][\w$]*")
 _CODE_FIELD_KEYWORDS = frozenset(("selector", "locator", "label", "name", "placeholder"))
 # The names a chain that types into a page holds: a page or frame, a locator's method, Selenium's driver and finders,
-# WebdriverIO's "$", the keyboard. A chain with none (Buffer.from("password").fill("x")) types into no field.
+# WebdriverIO's "$", Cypress's cy, the keyboard. A chain with none (Buffer.from("password").fill("x")) types into no field.
 _CODE_LOCATOR_NAMES = frozenset((
-    "page", "frame", "mainFrame", "main_frame", "keyboard", "locator", "$", "$$", "driver", "browser", "element",
+    "page", "frame", "mainFrame", "main_frame", "keyboard", "locator", "$", "$$", "driver", "browser", "element", "cy",
     "getByLabel", "getByPlaceholder", "getByRole", "getByTestId", "getByText", "getByAltText", "getByTitle",
     "get_by_label", "get_by_placeholder", "get_by_role", "get_by_test_id", "get_by_text", "get_by_alt_text",
     "get_by_title", "find_element", "find_elements", "findElement", "findElements", "querySelector", "query_selector"))
 _CODE_VALUE_KEYWORDS = frozenset(("value", "text", "keys"))
+# What a call's own selector argument needs: a page's or a frame's fill or type (page.fill(selector, value)), not an
+# element's, a locator's or the keyboard's, which take the text first (send_keys("...", "\\n"), keyboard.type).
+_CODE_SELECTOR_METHODS = frozenset(("fill", "type"))
+_CODE_ELEMENT_NAMES = _CODE_LOCATOR_NAMES - {"page", "frame", "mainFrame", "main_frame", "browser", "driver"}
 # A variable for a page, a frame or a driver, by its name's last word ("loginPage", "login_page", "page2").
 _CODE_PAGE_WORDS = frozenset(("page", "frame", "driver", "browser", "element", "locator", "keyboard"))
 
 
 def _names_a_page(names):
-    """Whether a chain's names hold a page, a frame, a locator, a driver or the keyboard (_CODE_LOCATOR_NAMES), by
-    name or by a variable's last word."""
-    return any(name in _CODE_LOCATOR_NAMES or re.split(r"_|(?<=[a-z0-9])(?=[A-Z])", name.rstrip("0123456789"))[-1].lower()
-               in _CODE_PAGE_WORDS for name in names)
+    """Whether a chain's names hold a page, a frame, a locator, a driver or the keyboard (_CODE_LOCATOR_NAMES), or one
+    of the locator calls whose strings name a field (_CODE_FIELD_CALLS), by name or by a variable's last word."""
+    return any(name in _CODE_LOCATOR_NAMES or _CODE_FIELD_CALLS.fullmatch(name)
+               or re.split(r"_|(?<=[a-z0-9])(?=[A-Z])", name.rstrip("0123456789"))[-1].lower() in _CODE_PAGE_WORDS
+               for name in names)
+
+
+def _holds_a_field_call(text, argument):
+    """Whether an argument's tokens end a chain that holds one of the locator calls whose strings name a field, as
+    screen.getByLabelText("Password") or await screen.findByLabelText("Password") does."""
+    return bool(argument) and argument[-1][0] in ")]" and any(
+        a[0] == "n" and b[0] == "(" and _CODE_FIELD_CALLS.fullmatch(text, a[1], a[2])
+        for a, b in zip(argument, argument[1:]))
+
+
+def _names_an_element(names):
+    """Whether a chain's names hold an element or a locator (_CODE_ELEMENT_NAMES, or a listed call other than a
+    frame's), whose fill or type takes the text first, not a selector."""
+    return bool(_CODE_ELEMENT_NAMES.intersection(names)) or any(
+        name != "frame" and _CODE_FIELD_CALLS.fullmatch(name) for name in names)
 
 
 def _string_open(text, at, stop):
@@ -2739,12 +2834,20 @@ def _code_string_end(text, at, stop):
     return None
 
 
-_CODE_TOKEN = re.compile(r"""(?<![\w$\\])[rRbBuUfF]{1,2}\\*["'`]|(?<!\\)\\*["'`]|#|//|/\*[\s\S]*?\*/"""
+# A regex literal starts at a "/" after one of these marks and up to two spaces. In it a run of backslashes escapes the
+# one character after it, as code escaped any number of times writes "\/", and inside a class a "/" counts only where
+# no regex could start, so each try reads text no other try reads: an unclosed one costs time in proportion.
+_REGEX_START = r"(?:(?<=[(,=:\[!&|?{};])|(?<=[(,=:\[!&|?{};] )|(?<=[(,=:\[!&|?{};]  ))"
+_NO_REGEX_START = r"(?<![(,=:\[!&|?{};])(?<![(,=:\[!&|?{};] )(?<![(,=:\[!&|?{};]  )"
+_CODE_TOKEN = re.compile(r"""(?<![\w$\\])[rRbBuUfF]{1,2}\\*["'`]|(?<!\\)\\*["'`]"""
+                         r"""|""" + _REGEX_START + r"""/(?![/*])(?:\\+[^\\\n]"""
+                         r"""|\[(?:\\+[^\\\n]|""" + _NO_REGEX_START + r"""/|[^\]\\\n/])*\]|[^/\\\n\[])+/[a-z]*"""
+                         r"""|#|//|/\*"""
                          r"""|(?<!\\)\\+[nrt]|[{}\[\]():,=;.]|[A-Za-z_$][\w$]*""")
 # Python's prefix and the string it opens, after a line break or tab escaped as JSON holds code ("\\tr\\"...\\"").
 _PREFIXED_QUOTE = re.compile(r"""[rRbBuUfF]{1,2}\\*["'`]""")
 # A typing method's name, as a call that types names it: what it types is a value, never code it holds.
-_TYPING_NAME = re.compile(r"(?i)(?:fill|type|press_?sequentially|send_?keys|set_?value|input_text)\w*\Z")
+_TYPING_NAME = re.compile(r"(?i)(?:fill|type|press_?sequentially|send_?keys|set_?value|add_?value|input_text)\w*\Z")
 _ESCAPED_BREAK = re.compile(r"(?<!\\)(\\+)[nr]")
 _QUOTE_RUN = re.compile(r"""(?<!\\)(\\*)["'`]""")
 
@@ -2786,12 +2889,13 @@ def _code_tokens(text):
     first quote on each of its lines, so a comment ends where its code's line does (_comment_end)."""
     tokens, spans, breaks = [], [(0, len(text), None)], None
     depths = {}  # the text's own lines, by where each starts: how often the code on it is escaped
-    loose, stretches = [], []  # quotes that opened no string, and each stretch read, with its escaping
+    loose, stretches, comments = [], [], []  # quotes that opened no string, each stretch read, the comments
     while spans:
         i, stop, escaped = spans.pop()
         stretches.append((i, stop, escaped))
         first = len(tokens)
         opened, typing = [], 0  # the stretch's open brackets, each whether a typing call's, and how many of those
+        unclosed = False  # whether a "/*" found no "*/" after it in this stretch
         while True:
             m = _CODE_TOKEN.search(text, i, stop)
             if not m:
@@ -2809,8 +2913,18 @@ def _code_tokens(text):
                         depths[line] = (len(quote.group(1)) + 1).bit_length() - 1 if quote else 0
                     depth = depths[line]
                 i = _comment_end(text, m.end(), stop, depth)
+                comments.append((at, i))
                 continue
-            if c.startswith("/*"):
+            if c == "/*":  # a comment to the first "*/"; with none after it, none closes after a later "/*" either
+                end = -1 if unclosed else text.find("*/", at + 2, stop)
+                unclosed = end < 0
+                if unclosed:
+                    i = at + 1
+                    continue
+                comments.append((at, end + 2))
+                i = end + 2
+                continue
+            if c[0] == "/":  # a regex literal, as split(/#/) holds one: no comment starts inside it
                 i = m.end()
                 continue
             if c[0] == "\\" and c[-1] in "nrt":
@@ -2844,7 +2958,7 @@ def _code_tokens(text):
             tokens.append((kind, at, m.end()))
             i = m.end()
     tokens.sort(key=lambda t: t[1])
-    return tokens, sorted(loose), stretches
+    return tokens, sorted(loose), stretches, sorted(comments)
 
 
 def _code_text(text, token):
@@ -2907,32 +3021,70 @@ def _typed_values(text, labels, typed):
             if b > a and (secret or not labels and _password_shaped(INVISIBLE.sub("", text[a:b])))]
 
 
-_REGEX_LABEL = re.compile(r"\s*/((?:\\.|[^/\\\n])+)/[a-z]*\s*")
+# A regex literal where a value starts inside a locator's brackets: first, or after ",", ":" or "=".
+_REGEX_IN_BRACKETS = re.compile(r"(?<=[(,:=])\s*/((?:\\.|[^/\\\n])+)/[a-z]*(?=\s*(?:[,})\]]|$))")
 
 
-def _receiver_strings(text, tokens, k, limit=200):
-    """The strings in the chain of calls before tokens[k], read back over names, dots and whole brackets, as
-    'page.getByRole("textbox", {name: "Password"})' or 'driver.find_element(By.ID, "password")' gives a field's labels.
+# Words a value follows, never a function's name: a bracket after one ("return (page.getByLabel(...))", "await (...)")
+# is a receiver in brackets, not a call.
+_CODE_KEYWORDS = frozenset(("return", "await", "yield", "typeof", "void", "delete", "throw", "case", "in", "of", "new",
+                            "not", "and", "or", "is", "if", "elif", "else", "while", "assert", "lambda", "with", "do"))
+# The calls whose strings name a field, as the field rule lists them: a locator's getBy*/get_by_*, locator, $, frame,
+# find_element and their kin (Testing Library's findBy* and queryBy*, a frame locator, WebdriverIO's shadow$, react$ and
+# custom$, Selenium 3's find_element_by_*, C#'s FindElement, Puppeteer's $x and its waits for a selector or an XPath,
+# pyppeteer's J, JJ, Jx and xpath, Selenium's explicit wait and until; and Cypress's get, find and contains in a chain
+# from cy, _CYPRESS_FIELD_CALLS, as a secret store's get("password") is none). Another call in the chain (filter,
+# describe, nth, and, or) names none.
+_CODE_FIELD_CALLS = re.compile(r"(?:get|find|query)(?:All)?By\w+|get_by_\w+|locator|frameLocator|frame_locator"
+                               r"|(?:shadow|react|custom)?\$\$?|\$x|JJ?|Jx|xpath|frame"
+                               r"|find_elements?(?:_by_\w+)?|findElements?|FindElements?|querySelector(?:All)?"
+                               r"|query_selector(?:_all)?|waitFor(?:Selector|XPath)?|wait_for_selector|element"
+                               r"|wait|until")
+_CYPRESS_FIELD_CALLS = frozenset(("get", "find", "contains"))
+
+
+def _receiver_strings(text, tokens, k, comments=(), limit=200):
+    """The strings of the locator calls in the chain before tokens[k], read back over names, dots and whole brackets,
+    as 'page.getByRole("textbox", {name: "Password"})' or 'driver.find_element(By.ID, "password")' gives a field's
+    labels: each call _CODE_FIELD_CALLS names, a container's as much as the field's own, and a receiver in brackets;
+    in a chain from cy, Cypress's get, find and contains too.
     A chain is joined by dots: it reads no further back than a name with no dot before it, or a bracket that follows
     no name or bracket, so another statement's strings are never this field's. An object's key ({"name": ...}) names
     an option, not the field."""
-    strings, names, depth, stop, close = [], [], 0, max(-1, k - limit), None
+    strings, names, inside, quoted, depth, stop, close, close_k = [], [], [], [], 0, max(-1, k - limit), None, None
+    cypress = []  # Cypress's calls' strings, the chain's only if it starts at cy
+    in_comment = comments.inside if comments else (lambda at: False)
     k -= 1
     while k > stop:
         kind = tokens[k][0]
         if depth:
             depth += kind in ")]}"
             depth -= kind in "([{"
-            if kind == "s" and not (k + 1 < len(tokens) and tokens[k + 1][0] == ":"):
-                strings.append(text[slice(*_code_text(text, tokens[k]))])
-            if not depth:  # a regex literal in the brackets ("getByLabel(/Password/i)") names the field too
-                regex = _REGEX_LABEL.fullmatch(text, tokens[k][2], close)
-                if regex:
-                    strings.append(re.sub(r"\\.|[\^$.*+?()\[\]{}|]", " ", regex.group(1)).strip())
-                if k == 0 or tokens[k - 1][0] not in ("n", ")", "]"):
-                    break  # a bracket that calls or indexes nothing starts no chain
+            if kind == "s":
+                quoted.append(tokens[k][1:])  # where a string's quotes hold it: no regex is read in there
+                if not (k + 1 < len(tokens) and tokens[k + 1][0] == ":"):
+                    inside.append(text[slice(*_code_text(text, tokens[k]))])
+            if not depth:
+                if k == 0 or tokens[k - 1][0] not in ("n", ")", "]") or tokens[k - 1][0] == "n" and text[
+                        tokens[k - 1][1]:tokens[k - 1][2]] in _CODE_KEYWORDS and (k < 2 or tokens[k - 2][0] != "."):
+                    # a bracket that calls or indexes nothing starts the chain: a receiver in brackets,
+                    # (await page.$("#password")), is a chain of its own, read as one, its calls' strings and names;
+                    # a keyword's name after a dot is a method's (locator.and(...), locator.or(...)), a call
+                    held, held_names = _receiver_strings(text, tokens, close_k, comments, limit)
+                    strings += held
+                    names += held_names
+                    break
+                name = text[tokens[k - 1][1]:tokens[k - 1][2]] if kind == "(" and tokens[k - 1][0] == "n" else ""
+                if name and (_CODE_FIELD_CALLS.fullmatch(name) or name in _CYPRESS_FIELD_CALLS):
+                    held = strings if _CODE_FIELD_CALLS.fullmatch(name) else cypress
+                    held += inside  # a regex literal in the brackets ("getByLabel(/Password/i)") too
+                    for regex in _REGEX_IN_BRACKETS.finditer(text, tokens[k][2], close):
+                        if not in_comment(regex.start(1)) and not any(a <= regex.start(1) < b for a, b in quoted):
+                            # a regex in a comment or in a string's quotes ("Search (/password/)") names no field
+                            held.append(re.sub(r"\\.|[\^$.*+?()\[\]{}|]", " ", regex.group(1)).strip())
+                inside, quoted = [], []
         elif kind in ")]":
-            depth, close = 1, tokens[k][1]
+            depth, close, close_k = 1, tokens[k][1], k
         elif kind == "n":
             names.append(text[tokens[k][1]:tokens[k][2]])
             if k == 0 or tokens[k - 1][0] != ".":
@@ -2940,7 +3092,20 @@ def _receiver_strings(text, tokens, k, limit=200):
         elif kind != ".":
             break
         k -= 1
+    if names and names[-1] == "cy":
+        strings += cypress
     return strings, names
+
+
+class _Spans:
+    """Sorted, separate spans of the text, such as its comments, indexed once to say whether a position is in one."""
+
+    def __init__(self, spans):
+        self.spans, self.starts = spans, [a for a, _ in spans]
+
+    def inside(self, at):
+        j = bisect.bisect_right(self.starts, at) - 1
+        return j >= 0 and self.spans[j][0] <= at < self.spans[j][1]
 
 
 class _Stretches:
@@ -3022,7 +3187,8 @@ def _typed_code_edits(text):
     selector) ask for a secret. A value typed from a variable stays."""
     if not _CODE_HINT.search(text):
         return []
-    tokens, loose, stretches = _code_tokens(text)
+    tokens, loose, stretches, comments = _code_tokens(text)
+    comments = _Spans(comments)
     stretches = _Stretches(text, stretches)
     starts = [t[1] for t in tokens]
     edits = []
@@ -3044,26 +3210,38 @@ def _typed_code_edits(text):
         args = _split_arguments(text, arguments)
         if not any(t[0] == "s" for _, ts in args for t in ts):
             continue
-        labels, names = _receiver_strings(text, tokens, bisect.bisect_left(starts, call.start()))
+        labels, names = _receiver_strings(text, tokens, bisect.bisect_left(starts, call.start()), comments)
         own = [ts for kw, ts in args if kw in _CODE_FIELD_KEYWORDS]
         positional = [ts for kw, ts in args if kw is None]
         # the call's own selector, page.fill(selector, text) on any page or variable holding one: a lone string first,
         # then a value holding a string, by position or as value=; not fill(text, {options}) or send_keys(text, Keys.ENTER)
         second = positional[1] if len(positional) > 1 else []
-        selector = bool(positional) and [t[0] for t in positional[0]] == ["s"] and (
+        method = text[call.start() + 1:call.end() - 1].strip()
+        selector = (method in _CODE_SELECTOR_METHODS and not _names_an_element(names)
+                    and bool(positional) and [t[0] for t in positional[0] if t[0] not in "()"] == ["s"]
+                    and {t[0] for t in positional[0]} <= {"s", "(", ")"} and (
             bool(second) and (second[0][0] == "s" or second[0][0] == "(" and any(t[0] == "s" for t in second))
-            or any(kw in _CODE_VALUE_KEYWORDS and any(t[0] == "s" for t in ts) for kw, ts in args))
+            or any(kw in _CODE_VALUE_KEYWORDS and any(t[0] == "s" for t in ts) for kw, ts in args)))
         if selector:
             own.append(positional[0])
-        labels += [text[slice(*_code_text(text, t))] for ts in own for t in ts if t[0] == "s"]
+        # the call's own selector by its keyword, page.fill(selector="#password", value=...), on any variable
+        named = method in _CODE_SELECTOR_METHODS and any(
+            kw == "selector" and any(t[0] == "s" for t in ts) for kw, ts in args)
+        labels += [text[slice(*_code_text(text, t))] for ts in own for t in ts if t[0] == "s"]  # the call's own field
+        # the call's own field as a locator call, user.type(screen.getByLabelText("Password"), text) or Selenium's
+        # send_keys_to_element(driver.find_element(By.ID, "password"), text): its listed calls' strings, read as a chain
+        field = not selector and len(positional) > 1 and _holds_a_field_call(text, positional[0])
+        if field:
+            labels += _receiver_strings(text, tokens, bisect.bisect_left(starts, positional[0][-1][1]) + 1, comments)[0]
+            own.append(positional[0])
         # the value: a value= keyword's, or the first argument after the field that holds a string (send_keys may
         # take a key first, Keys.HOME)
         typed = [ts for kw, ts in args if kw in _CODE_VALUE_KEYWORDS] or [
-            ts for ts in positional[1 if selector else 0:] if any(t[0] == "s" for t in ts)][:1]
+            ts for ts in positional[1 if selector or field else 0:] if any(t[0] == "s" for t in ts)][:1]
         strings = [t for ts in typed for t in ts if t[0] == "s"]
         if typed and len(typed[0]) > 1 and typed[0][0][0] == "n" and typed[0][1][0] in "([.":
             continue  # a value the code computes: os.environ["PW"], decrypt("vault:pw"), secrets.pw
-        if not strings or not (selector or _names_a_page(names)):
+        if not strings or not (selector or named or field or _names_a_page(names)):
             continue  # a value from a variable, or a call on no page and no locator
         if not labels:  # only typing into the focused field (page.keyboard.type) is read, by the value's shape
             a, b = _code_text(text, strings[0])
@@ -3071,7 +3249,10 @@ def _typed_code_edits(text):
                     INVISIBLE.sub("", text[a:b])):
                 edits.append((a, b, "[masked]"))
             continue
-        if not _labels_ask_for_a_secret(tuple(labels)) or all(_built_at_run_time(text, t) for t in strings):
+        # any one string that asks for a secret on its own names the field so: no other string, a container's, a
+        # strategy's ("id") or an option's, takes it back
+        if not any(_labels_ask_for_a_secret((label,)) for label in labels) or all(
+                _built_at_run_time(text, t) for t in strings):
             continue
         # from the value's first string through the call's last string that is not its field, whatever lies
         # between: a comment, a prefix, an escape or a string read wrong cannot hold any of it back
