@@ -5,11 +5,13 @@ secrets only."""
 import ast
 import json
 import os
+import random
 import shlex
 import subprocess
 import tempfile
 import time
 import unittest
+from unittest import mock
 
 from kb import mask as masking, store
 from kb.mask import mask, mask_all
@@ -1219,9 +1221,72 @@ class ReviewFourteenTest(unittest.TestCase):
                 db.close()
 
 
+class ReviewSixteenTest(unittest.TestCase):
+    """The sixteenth review's finding: a container's field that holds a command's name, read whole and masked as a
+    secret ({b"password": b"keytool"}), took the name away before the command reading main has had since #29 could
+    read it, so the option after the container showed its password ("-storepass <password>"), which main masks. Every
+    character the mask hides with this branch's reading of wrappings switched off, it now hides with it on."""
+
+    SHAPES = (lambda name: str({b"password": name.encode()}), lambda name: str({"password": name}),
+              lambda name: json.dumps({"password": name}), lambda name: json.dumps({"token": name}),
+              lambda name: str({"password": [name, "x"]}),
+              lambda name: json.dumps(json.dumps({"password": name}))[1:-1])
+    OPTIONS = (("keytool", " -storepass "), ("jarsigner", " -keypass "), ("mongosh", " -p "), ("twine", " -p "),
+               ("aws configure set", " aws_secret_access_key "), ("az login", " -p "))
+    # For the generated texts: each command with its option, and how the option follows the container.
+    GENERATED = OPTIONS + (("curl", " -u admin:"), ("mysql", " -p"), ("sshpass", " -p "), ("redis-cli", " -a "),
+                           ("docker login", " -p "), ("mongodump", " -p "))
+    KEYS = ("password", "pw", "cmd", "tool", "secret", "name", "token")
+
+    @staticmethod
+    def hidden(text):
+        _, origin = masking.mask_with_origin(text)
+        return set(range(len(text))) - {c for c in origin if c >= 0}
+
+    def generated(self, rng):
+        name, option = rng.choice(self.GENERATED)
+        key = rng.choice(self.KEYS)
+        holder = rng.choice((lambda: str({key: name}), lambda: str({key.encode(): name.encode()}),
+                             lambda: json.dumps({key: name}), lambda: str([name]), lambda: str((key, name)),
+                             lambda: json.dumps(json.dumps({key: name}))[1:-1], lambda: str({key: [name, "x"]})))()
+        between = rng.choice(("", "", ":", "\n", " |")) if rng.random() < 0.3 else ""
+        return holder + between + option + PASSWORD
+
+    def test_a_command_named_in_a_secret_field_leaves_no_password_after_it(self):
+        for shape in self.SHAPES:
+            for name, option in self.OPTIONS:
+                text = shape(name) + option + PASSWORD
+                with self.subTest(text=text):
+                    self.assertNotIn(PASSWORD, mask(text))
+                    self.assertNotIn(PASSWORD, masking.mask_with_origin(text)[0])
+                    self.assertNotIn(PASSWORD, json.dumps(mask_all({"out": text})))
+
+    def test_what_the_mask_hides_with_the_reading_of_wrappings_off_it_hides_with_it_on(self):
+        rng = random.Random(16)
+        for _ in range(1000):
+            text = self.generated(rng)
+            with mock.patch.object(masking, "_wrapping_edits", lambda text: []):
+                off = self.hidden(text)
+            with self.subTest(text=text):
+                self.assertEqual(off - self.hidden(text), set())
+
+    def test_such_a_row_is_stored_masked(self):
+        text = "build log: " + str({b"password": b"keytool"}) + " -storepass " + PASSWORD + "\n"
+        with tempfile.TemporaryDirectory() as tmp:
+            db = store.connect(os.path.join(tmp, "kb.sqlite"))
+            try:
+                store.store_item(db, "codex", "c-r16", "2026-11-01T10:00:00Z", "build", text, {})
+                rows = db.execute("SELECT content FROM docs").fetchall()
+                self.assertTrue(rows)
+                for (content,) in rows:
+                    self.assertNotIn(PASSWORD, content)
+            finally:
+                db.close()
+
+
 class RevisionTest(unittest.TestCase):
     def test_stored_rows_are_masked_again(self):
-        self.assertEqual(masking.REVISION, 11)
+        self.assertEqual(masking.REVISION, 12)
 
 
 if __name__ == "__main__":
