@@ -1802,6 +1802,55 @@ class Base64ReviewSixteenTest(unittest.TestCase):
             with self.subTest(lead=lead[:9]):
                 self.assertLess(took[400], 6 * max(took[100], 0.05), took)  # four times the text
 
+    def test_a_certificate_glued_to_a_placeholder_past_public_material_after_a_key_is_kept_whole(self):
+        # The run glued to the placeholder is the certificate's first line. Masked alone, it left the lines after it
+        # to read as a key's fragment, which took the public material before them with it.
+        import random
+        from kb import mask as mask_module
+        r = random.Random(1605)
+        key = Base64ReviewFourteenTest.key64()
+        request = self.certificate(r, None, made_up_certificate(r, request=True))
+        for width in (None, 12, 64, 76):
+            certificate = self.certificate(r, width)
+            for lead in (f"{key}\n{request}\n", f"[masked]\n{request}\n", ""):
+                text = f"{lead}[masked]{certificate}\nnext steps"
+                kept = text.replace(key, "[masked]")
+                for depth, written in enumerate((text, json.dumps(text), json.dumps(json.dumps(text)))):
+                    with self.subTest(width=width, lead=len(lead), depth=depth):
+                        masked = mask(written)
+                        self.assertEqual([line for line in kept.split("\n") if line not in masked], [])
+                        self.assertNotIn(key[64:128], masked)
+                with self.subTest(width=width, lead=len(lead), older=True):
+                    with mask_module.stored_row("0123456789abcdef"):
+                        self.assertEqual(mask(text), kept)
+                with self.subTest(width=width, lead=len(lead)):
+                    self.assertEqual(mask(text), kept)
+                    self.assertEqual(mask(kept), kept)
+
+    def test_many_placeholders_each_before_a_certificate_with_nothing_between_cost_time_in_proportion(self):
+        # A certificate kept as public material left its stretch unread, so each placeholder read on to the end of
+        # the paragraph.
+        import random
+        import time
+        from kb import mask as mask_module
+        r = random.Random(1606)
+        for width in (12, 64):
+            certificate = self.certificate(r, width)
+            for lead, older in (("[masked]", False), ("[masked]\n", False), ("[masked]", True)):
+                took = {}
+                for n in (100, 400):
+                    text = (lead + certificate + "\n") * n
+                    started = time.process_time()
+                    if older:
+                        with mask_module.stored_row("0123456789abcdef"):
+                            mask(text)
+                    else:
+                        mask(text)
+                    took[n] = time.process_time() - started
+                with self.subTest(width=width, lead=lead, older=older):
+                    self.assertLess(took[400], 6 * max(took[100], 0.05), took)  # four times the text
+
+
 class HeadlessKeyTest(unittest.TestCase):
     """A key's body without its header, as an older kb's row-by-row remask leaves the chunk after the header's."""
     LINE = "MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7"
