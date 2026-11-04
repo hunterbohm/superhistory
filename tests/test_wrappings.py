@@ -869,6 +869,47 @@ class ReviewEightTest(unittest.TestCase):
                 self.assertEqual(mask(text), want)
 
 
+class ReviewNineTest(unittest.TestCase):
+    """The ninth review's findings: a plural possessive's apostrophe read as a Python string's quote, a list inside
+    brackets that do not parse, byte strings, a long digit string in a container, and a shell's -c context sought again
+    for every -c."""
+
+    WRAPS, COMMAND = ReviewEightTest.WRAPS, ReviewEightTest.COMMAND
+    masks_only_the_password = ReviewEightTest.masks_only_the_password
+
+    def test_a_plural_possessive_opens_no_string(self):
+        self.masks_only_the_password("Users' command: %r (exit status 1)" % self.COMMAND,
+                                     "The teams' runner printed %r, see the log" % self.COMMAND)
+
+    def test_a_list_inside_brackets_that_do_not_parse(self):
+        self.masks_only_the_password("Command (argv=%r) failed" % ["keytool", "-storepass", PASSWORD],
+                                     "run(%r, check=True) failed" % ["mongosh", "-u", "admin", "-p", PASSWORD])
+
+    def test_byte_string_items(self):
+        self.masks_only_the_password(
+            str(subprocess.CalledProcessError(1, [b"keytool", b"-storepass", PASSWORD.encode()])),
+            str(subprocess.CalledProcessError(1, [b"bash", b"-c", self.COMMAND.encode()])))
+
+    def test_a_digit_string_in_a_container(self):
+        self.masks_only_the_password(json.dumps({"argv": ["keytool", "-storepass", PASSWORD], "stdout": "9" * 1000}))
+
+    def test_stays_prose_with_possessives_and_quotes(self):
+        for text in ("The users' 'prod' profile and the teams' (shared) keys stay readable.",
+                     "Command (argv=['ls', '-la']) failed", str(subprocess.CalledProcessError(1, [b"ls", b"-la"]))):
+            for wrap in self.WRAPS:
+                with self.subTest(text=wrap(text)[:80]):
+                    self.assertEqual(mask(wrap(text)), wrap(text))
+
+    def test_many_shell_options_cost_time_in_proportion(self):
+        def items(n):
+            return ["git"] + [v for i in range(n) for v in ("-c", "url.https://example.com/repo%d.insteadOf=team%d:" % (i, i))] + [
+                "-c", "credential.helper=!aws codecommit credential-helper $@", "ls-remote", "https://example.com/repo"]
+        small, large = items(500), items(2000)
+        self.assertEqual(mask_all(small), small)
+        little, lots = took_call(lambda: mask_all(small)), took_call(lambda: mask_all(large))
+        self.assertLess(lots, 6 * little + 0.2, (little, lots))  # four times the list, about four times the CPU
+
+
 class RevisionTest(unittest.TestCase):
     def test_stored_rows_are_masked_again(self):
         self.assertEqual(masking.REVISION, 11)
