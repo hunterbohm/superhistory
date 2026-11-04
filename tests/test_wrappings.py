@@ -779,7 +779,7 @@ class ReviewSevenTest(unittest.TestCase):
 
     def test_the_parsers_are_guarded(self):
         deep = "[" * 5000 + "]" * 5000  # deeper than json/ast parse; the depth guard skips it before any parser
-        digits = '["keytool", "-storepass", "' + "9" * 80000 + '"]'  # str-to-int is quadratic on 3.9; skipped
+        digits = '["keytool", "-storepass", ' + "9" * 80000 + ']'  # a number: str-to-int is quadratic on 3.9; skipped
         for text in (deep, digits, "{" + "0" * 40000 + ": 1}", "[" + "9" * 40000 + "]"):
             with self.subTest(text=text[:12]):
                 start = time.process_time()
@@ -788,8 +788,10 @@ class ReviewSevenTest(unittest.TestCase):
                 self.assertNotIn(PASSWORD, out)
         # a command hidden behind a long digit run, and a large list, do not crash and do not leak (no tight bound,
         # as a text this large costs about the same on #29: it is the base mask cost, not a guard)
+        # nor do digits in a string, which no parser converts: the list is read, its long value at the base mask cost
         for text in ('{"cmd": "keytool -storepass ' + PASSWORD + '", ' + "0" * 70000 + "}",
-                     "[" + ", ".join('"x"' for _ in range(100000)) + "]"):
+                     "[" + ", ".join('"x"' for _ in range(100000)) + "]",
+                     '["keytool", "-storepass", "' + "9" * 80000 + '"]'):
             with self.subTest(text=text[:12]):
                 self.assertNotIn(PASSWORD, mask(text))
 
