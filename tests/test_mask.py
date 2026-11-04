@@ -1413,6 +1413,144 @@ class Base64ReviewFourteenTest(unittest.TestCase):
                 self.assertNotIn(key[:40], once)
 
 
+def made_up_crl(r, version):
+    """A list of revoked certificates (CertificateList) with made-up numbers: version 1 starts with how it is signed,
+    as openssl ca -gencrl writes one with no extensions; version 2 with its version and a CRL number."""
+    signed_with = _der(0x30, _der(0x06, bytes.fromhex("2a864886f70d01010b")), _der(0x05))
+    name = _der(0x30, _der(0x31, _der(0x30, _der(0x06, bytes.fromhex("550403")), _der(0x0c, b"walrus.example"))))
+    revoked = _der(0x30, _der(0x30, _der(0x02, bytes(r.randrange(1, 128) for _ in range(8))), _der(0x17, b"261101000000Z")))
+    fields = [signed_with, name, _der(0x17, b"261101000000Z"), _der(0x17, b"261102000000Z"), revoked]
+    if version == 2:
+        number = _der(0x30, _der(0x06, bytes.fromhex("551d14")), _der(0x04, _der(0x02, b"\x01")))
+        fields = [_der(0x02, b"\x01")] + fields + [_der(0xa0, _der(0x30, number))]
+    return _der(0x30, _der(0x30, *fields), signed_with, _der(0x03, b"\0" + bytes(r.randrange(256) for _ in range(256))))
+
+
+class Base64ReviewFifteenTest(unittest.TestCase):
+    """#34's fifteenth review: a short label before a quoted header ("例："), where a narrow wrapping only happened to
+    break before the header, read as a key's start and lost the header and the text after it; a key's placeholder,
+    then a whole certificate and a line of words with a number or an acronym in it ("port 8080", "HTTP"), lost the
+    certificate and the words, read as the rest of a key through that line; and a certificate bundle holding a list of
+    revoked certificates in version 1, which starts with how it is signed, was no public material and was lost."""
+
+    BODIES = ("これは説明です\n", "see the docs before importing.\n", "")
+    LABELS = ("例：", "注：", "Ex:", "例", "→", "key=", "Note:")
+
+    def test_a_label_before_a_header_where_the_wrapping_only_happens_to_break_is_kept(self):
+        import base64
+        import textwrap
+        for label in self.LABELS:
+            for width in (8, 12, 16, 60, 64, 76):
+                group = width // 4 * 3
+                for pad in sorted({0, -len(label.encode()) % group, -len(label.encode()) % 3 + group}):
+                    for body in self.BODIES:
+                        data = ("x" * pad + label + "-----BEGIN PRIVATE KEY-----\n" + body).encode()
+                        block = "\n".join(textwrap.wrap(base64.b64encode(data).decode(), width))
+                        for text in (block, json.dumps(block)):
+                            with self.subTest(label=label, width=width, pad=pad, body=body[:4], json=text is not block):
+                                self.assertEqual(mask(text), text)
+
+    def test_a_key_in_its_own_stream_under_a_heading_in_another_is_still_masked(self):
+        # Two streams, each wrapped at its own width: the heading's, glued to the key's as its bytes come out whole
+        # groups, ends shorter than the key's lines, so the key starts a stream there, with its footer or cut before it.
+        import base64
+        import random
+        import textwrap
+        der = made_up_private_key(random.Random(1515))
+        body = textwrap.wrap(base64.b64encode(der).decode(), 64)
+        for heading in ("例：", "KEY:", "secret"):
+            for footer in (True, False):
+                pem = "-----BEGIN PRIVATE KEY-----\n" + "\n".join(body) + "\n" + ("-----END PRIVATE KEY-----\n" if footer else "")
+                for width in (64, 76):
+                    key = textwrap.wrap(base64.b64encode(pem.encode()).decode(), width)
+                    text = base64.b64encode(heading.encode()).decode() + "\n" + "\n".join(key) + "\nnext steps"
+                    masked = mask(text)
+                    with self.subTest(heading=heading, footer=footer, width=width):
+                        for line in key[1:-1]:  # every line that holds only the key's bytes
+                            self.assertNotIn(line, masked)
+                        self.assertTrue(masked.endswith("\nnext steps"))
+
+    @staticmethod
+    def certificate(r):
+        import base64
+        return base64.b64encode(made_up_certificate(r)).decode()
+
+    def test_a_certificate_and_a_line_of_words_after_a_key_are_kept_and_mask_to_themselves(self):
+        import base64
+        import random
+        import textwrap
+        r = random.Random(1515)
+        key = Base64ReviewFourteenTest.key64()
+        publics = (self.certificate(r), base64.b64encode(Base64ReviewFourteenTest.bundle(r)).decode(),
+                   base64.b64encode(made_up_public_key(r)).decode())
+        for public in publics:
+            for after in (public, "\n".join(textwrap.wrap(public, 64)), "\n".join(textwrap.wrap(public, 76))):
+                for words in ("deploy on port 8080", "use HTTP for health checks", "build 20261104 shipped",
+                              "see RFC5280 and X509 notes", "next steps"):
+                    for k in (key, "\n".join(textwrap.wrap(key, 76))):
+                        with self.subTest(public=public[:6], lines=after.count("\n"), words=words, wrapped="\n" in k):
+                            once = mask(f"{k}\n{after}\n{words}")
+                            self.assertEqual(once, f"[masked]\n{after}\n{words}")
+                            self.assertEqual(mask(once), once)
+
+    def test_after_a_placeholder_a_certificate_then_a_private_keys_lines_stay_masked(self):
+        import base64
+        import random
+        import textwrap
+        r = random.Random(1516)
+        private = textwrap.wrap(base64.b64encode(made_up_private_key(r)).decode(), 64)
+        certificate = textwrap.wrap(self.certificate(r), 64)
+        for words in ("deploy on port 8080", "next steps"):
+            text = "[masked]\n" + "\n".join(certificate + private) + "\n" + words
+            masked = mask(text)
+            with self.subTest(words=words):
+                for line in private[:-1]:
+                    self.assertNotIn(line, masked)
+
+    def test_a_bundle_or_a_list_of_revoked_certificates_in_either_version_is_kept(self):
+        import base64
+        import random
+        import textwrap
+        r = random.Random(1517)
+        key = Base64ReviewFourteenTest.key64()
+        for version in (1, 2):
+            crl = made_up_crl(r, version)
+            signed = _der(0x30, _der(0x02, b"\x01"), _der(0x31),
+                          _der(0x30, _der(0x06, bytes.fromhex("2a864886f70d010701"))),
+                          _der(0xa0, made_up_certificate(r)), _der(0xa1, crl), _der(0x31))
+            bundle = _der(0x30, _der(0x06, bytes.fromhex("2a864886f70d010702")), _der(0xa0, signed))
+            for public in (base64.b64encode(bundle).decode(), base64.b64encode(crl).decode()):
+                for after in (public, "\n".join(textwrap.wrap(public, 64))):
+                    with self.subTest(version=version, bundle=len(public) > 800, lines=after.count("\n")):
+                        once = mask(f"{key}\n{after}\nnext steps")
+                        self.assertEqual(once, f"[masked]\n{after}\nnext steps")
+                        self.assertEqual(mask(once), once)
+                        self.assertEqual(mask(f"[masked]\n{after}\nnext steps"), f"[masked]\n{after}\nnext steps")
+
+    def test_such_rows_are_stored_whole(self):
+        import base64
+        import os
+        import random
+        import tempfile
+        from kb import store
+        r = random.Random(1518)
+        key = Base64ReviewFourteenTest.key64()
+        texts = (f"{key}\n{self.certificate(r)}\ndeploy on port 8080",
+                 f"{key}\n{base64.b64encode(made_up_crl(r, 1)).decode()}\nnext steps",
+                 base64.b64encode("例：-----BEGIN PRIVATE KEY-----\nこれは説明です\n".encode()).decode())
+        with tempfile.TemporaryDirectory() as tmp:
+            db = store.connect(os.path.join(tmp, "kb.sqlite"))
+            try:
+                for n, text in enumerate(texts):
+                    store.store_item(db, "notes", f"r15-{n}", "2026-11-04T10:00:00Z", "tls", text, {})
+                for n, text in enumerate(texts):
+                    kept = "".join(c for (c,) in db.execute(
+                        "SELECT content FROM docs WHERE source_id = ? ORDER BY id", (f"r15-{n}",)))
+                    self.assertEqual(kept, text.replace(key, "[masked]"))
+            finally:
+                db.close()
+
+
 class HeadlessKeyTest(unittest.TestCase):
     """A key's body without its header, as an older kb's row-by-row remask leaves the chunk after the header's."""
     LINE = "MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7"
