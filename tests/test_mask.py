@@ -1346,6 +1346,23 @@ class Base64ReviewFourteenTest(unittest.TestCase):
             with self.subTest(neither=name):
                 self.assertEqual(mask(f"[masked]\n{base64.b64encode(data).decode()}\nnext steps"), "[masked]\nnext steps")
 
+    def test_a_bundle_inside_a_bundle_is_no_bundle_at_any_depth(self):
+        # openssl writes no bundle inside a bundle; read as one, a bundle nested deep would recurse past Python's limit
+        import base64
+        import random
+
+        def holding(member):
+            signed = _der(0x30, _der(0x02, b"\x01"), _der(0x31),
+                          _der(0x30, _der(0x06, bytes.fromhex("2a864886f70d010701"))), _der(0xa0, member), _der(0x31))
+            return _der(0x30, _der(0x06, bytes.fromhex("2a864886f70d010702")), _der(0xa0, signed))
+        der = made_up_certificate(random.Random(18))
+        for depth in range(1, 1501):
+            der = holding(der)
+            if depth in (2, 3, 1500):
+                with self.subTest(depth=depth):
+                    text = f"[masked]\n{base64.b64encode(der).decode()}\nnext steps"
+                    self.assertEqual(mask(text), "[masked]\nnext steps")
+
     def test_such_a_row_is_stored_with_its_bundle(self):
         import base64
         import os
