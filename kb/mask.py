@@ -1254,8 +1254,10 @@ def _leaf_pairs(value, masked):
 # mask() again and so this reading again: (the string levels they decoded, the bracket depth they hold). Past
 # _READ_LEVELS levels, or _CONTAINER_DEPTH brackets, in all, a span is not parsed, and the fail-closed reading runs over
 # it, so strings that each hold a deeply nested list neither run Python's recursion out nor cost time past proportion.
+# A string is still decoded and its lines read down to _STRING_LEVELS, which costs a pass over each level's text.
 _READ_DEPTH = contextvars.ContextVar("kb_mask_read_depth", default=(0, 0))
 _READ_LEVELS = 8
+_STRING_LEVELS = 16
 
 
 def _container_edits(text, depth=0):
@@ -1271,14 +1273,15 @@ def _container_edits_at(text, depth, nest):
     level down, as a nested container or a command line, so the text's layers peel exactly as json.loads and ast do.
     A span whose parse fails or whose masks cannot be placed is not read here, so the fail-closed reading still runs
     over it. Read once per text (lru_cache), so no layer is masked twice."""
-    if depth > _READ_LEVELS:
+    if depth > _STRING_LEVELS:
         return (), ()  # deeper than any real nesting; a cap keeps a crafted chain bounded
     spans, masks = [], []
     # A span that does not parse, or whose masks will not place, is not read whole, but the spans inside it are, as a
     # list in a call that is no literal ("Command (argv=[...]) failed") is. What the parsers and these scans read in
     # all is held to a few times the text's length, so a deep nest of spans that never parse costs time in proportion.
     brackets = _Brackets(text)
-    todo, budget = list(_containers(text, brackets=brackets))[::-1], 8 * len(text) + (1 << 20)
+    todo = list(_containers(text, brackets=brackets))[::-1] if depth <= _READ_LEVELS else []
+    budget = 8 * len(text) + (1 << 20)
     while todo:
         start, end = todo.pop()
         if not _ANY_COMMAND.search(text, start, end) or budget < 0:
