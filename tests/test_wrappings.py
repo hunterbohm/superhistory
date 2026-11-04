@@ -995,7 +995,7 @@ class ReviewTenTest(unittest.TestCase):
     def took_uncached(text):
         """took(text), each run reading the text afresh: the container reading is cached per text."""
         def run():
-            masking._container_edits.cache_clear()
+            masking._container_edits_at.cache_clear()
             mask(text)
         return took_call(run)
 
@@ -1162,6 +1162,21 @@ class ReviewThirteenTest(unittest.TestCase):
                 self.assertEqual(db.execute("SELECT count(*) FROM docs").fetchone()[0], 1)
             finally:
                 db.close()
+
+    def test_a_command_line_escaped_past_the_parse_levels_still_masks(self):
+        # strings are decoded as deep as before the parse levels were counted; only parsing whole stops sooner
+        for times in range(8, 14):
+            text = f'keytool -alias "team cert" -storepass {PASSWORD}'
+            for _ in range(times):
+                text = json.dumps(text)
+            with self.subTest(times=times):
+                self.assertNotIn(PASSWORD, mask(text))
+
+    def test_lists_nested_past_the_parse_levels_cost_time_in_proportion(self):
+        for steps, depth in ((10, 40), (12, 40)):
+            text = self.nested(["keytool", "-storepass", PASSWORD], steps, depth)
+            with self.subTest(steps=steps, depth=depth):
+                self.assertLess(took(text), 3.0)
 
     def test_a_password_two_steps_down_still_masks(self):
         for steps, depth in ((2, 1), (2, 3), (3, 2)):
