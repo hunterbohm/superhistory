@@ -1701,6 +1701,107 @@ class Base64ReviewFifteenTest(unittest.TestCase):
                 db.close()
 
 
+
+class Base64ReviewSixteenTest(unittest.TestCase):
+    """#34's sixteenth review: a key whose header a block's wrapping refused (another stream fills the line above) was
+    read from its footer up while its lines decoded to text, so a control character in its armour comment left its
+    header and the lines below shown; a certificate after a key, then a word alone on its line ("notes") or another
+    certificate past a line of words, was lost with the key, the word read as more base64 or the certificate as a
+    key's fragment; and a placeholder before each of many certificates in one paragraph read the rest of the paragraph
+    each time, in time in the square of its length."""
+
+    @staticmethod
+    def pgp(r, comment):
+        import base64
+        import textwrap
+        body = "\n".join(textwrap.wrap(base64.b64encode(bytes(r.randrange(256) for _ in range(300))).decode(), 64))
+        return (f"-----BEGIN PGP PRIVATE KEY BLOCK-----\nComment: {comment}\n\n{body}\n=Zq7v\n"
+                "-----END PGP PRIVATE KEY BLOCK-----\n").encode()
+
+    def test_a_key_whose_header_the_wrapping_refused_is_masked_from_its_header_to_its_footer_whatever_its_bytes(self):
+        import base64
+        import random
+        import textwrap
+        r = random.Random(1601)
+        for comment in ("review\x01fixture", "build \x1b[0m notes", "tab\x7fdel", "plain words"):
+            pem = self.pgp(r, comment)
+            for width in (64, 76):
+                for lead in (b"x" * (width // 4 * 3), ("notes " * 40).encode()[:width // 4 * 6]):  # whole lines
+                    before = textwrap.wrap(base64.b64encode(lead).decode(), width)
+                    key = textwrap.wrap(base64.b64encode(pem).decode(), width)
+                    text = "\n".join(before + key) + "\nnext steps"
+                    for depth, written in enumerate((text, json.dumps(text), json.dumps(json.dumps(text)))):
+                        masked = mask(written)
+                        with self.subTest(comment=comment, width=width, lead=len(lead), depth=depth):
+                            self.assertEqual([line for line in key[:-1] if line in masked], [])
+                            self.assertEqual([line for line in before if line not in masked], [])  # the other stream
+                            self.assertIn("next steps", masked)
+
+    @staticmethod
+    def certificate(r, width=None, der=None):
+        import base64
+        import textwrap
+        text = base64.b64encode(der or made_up_certificate(r)).decode()
+        return "\n".join(textwrap.wrap(text, width)) if width else text
+
+    def test_a_certificate_then_a_word_alone_or_another_certificate_past_words_after_a_key_is_kept(self):
+        import random
+        r = random.Random(1602)
+        key = Base64ReviewFourteenTest.key64()
+        # a certificate (702 bytes: no padding), a request (610: "=="), a list of revoked ones (383: "=")
+        for kind, der in (("certificate", None), ("request", made_up_certificate(r, request=True)),
+                          ("list", made_up_crl(r, 1))):
+            for width in (None, 64):
+                first, second = self.certificate(r, width, der), self.certificate(r, width)
+                for after in ("notes", "next", "TODO", "Staging", f"next steps\n{second}", f"notes\n{second}",
+                              f"next steps\n{second}\nnotes", f"see\n{second}\nnext steps"):
+                    with self.subTest(kind=kind, width=width, after=after[:12]):
+                        once = mask(f"{key}\n{first}\n{after}")
+                        self.assertEqual(once, f"[masked]\n{first}\n{after}")
+                        self.assertEqual(mask(once), once)
+                        self.assertEqual(mask(f"[masked]\n{first}\n{after}"), f"[masked]\n{first}\n{after}")
+
+    def test_past_a_certificate_a_line_that_could_be_a_keys_stays_masked(self):
+        # where the word past the material could be a key's fragment (_token_like), it is read with the key, as before
+        import base64
+        import random
+        r = random.Random(1603)
+        key = Base64ReviewFourteenTest.key64()
+        fragment = base64.b64encode(made_up_private_key(r)).decode()[200:264]
+        for width in (None, 64):
+            first, second = self.certificate(r, width), self.certificate(r, width)
+            for after, hidden in (("Bcsv", "Bcsv"), ("x9Kq", "x9Kq"), (f"notes\n{fragment}", fragment[:16]),
+                                  (f"next steps\n{second}\n{fragment}", fragment[:16]),
+                                  (f"next steps\n{fragment}\n{second}", fragment[:16])):
+                with self.subTest(width=width, after=after[:12]):
+                    self.assertNotIn(hidden, mask(f"{key}\n{first}\n{after}"))
+                    self.assertNotIn(hidden, mask(f"[masked]\n{first}\n{after}"))
+
+    def test_many_placeholders_each_before_a_certificate_in_one_paragraph_cost_time_in_proportion(self):
+        import base64
+        import random
+        import textwrap
+        import time
+        from kb import mask as mask_module
+        r = random.Random(1604)
+        certificate = "\n".join(textwrap.wrap(base64.b64encode(made_up_certificate(r)).decode(), 12))
+        key = base64.b64encode(Base64ReviewThirteenTest.pem()).decode()
+        for lead, older in (("[masked]", True), ("[masked]\n", True), (key, False)):
+            took = {}
+            for n in (100, 400):
+                text = (lead + certificate + "\ndeploy on port 8080\n") * n
+                started = time.process_time()
+                if older:
+                    with mask_module.stored_row("0123456789abcdef"):
+                        out = mask(text)
+                else:
+                    out = mask(text)
+                took[n] = time.process_time() - started
+                with self.subTest(lead=lead[:9], n=n):
+                    self.assertNotIn(key[64:128], out)
+            with self.subTest(lead=lead[:9]):
+                self.assertLess(took[400], 6 * max(took[100], 0.05), took)  # four times the text
+
 class HeadlessKeyTest(unittest.TestCase):
     """A key's body without its header, as an older kb's row-by-row remask leaves the chunk after the header's."""
     LINE = "MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7"
