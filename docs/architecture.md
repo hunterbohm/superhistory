@@ -12,6 +12,7 @@ folder names, job labels and printed text come from it, so a rename is one edit.
 | `kb/config.py` | The TOML config, parsed once into typed settings. On Python 3.9 and 3.10 it reads TOML with the copy of `tomli` in `kb/_vendor/`. |
 | `kb/store.py` | The SQLite file: the `docs` table, its full-text index, watermarks and health. |
 | `kb/mask.py` | Secret masking and the 2FA filter. Every stored row passes through `mask()`. |
+| `kb/gitleaks.py` | Provider token rules taken from gitleaks, with its licence. `tools/vendor_gitleaks.py` writes it from a gitleaks release and says which rules it took and why it left the rest. |
 | `kb/search.py` | Keyword search with rank fusion, term coverage and recency. |
 | `kb/check.py` | The check: one model call writes a query, search finds candidates, a second call keeps the ones that fit. |
 | `kb/summarize.py` | Segment and atom rows for long items. |

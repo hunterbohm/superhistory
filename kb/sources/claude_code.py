@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from typing import Tuple
 
 from kb.ai.cli import WORKDIR_PREFIX
-from kb.mask import clip, is_auth_code, mask, mask_all
+from kb.mask import clip, is_auth_code, mask, mask_all, typed_secrets
 from kb.sources import Gone, Item, Progress, SourceType, home_key
 
 TOOL_CHARS = 300
@@ -32,9 +32,12 @@ def _clip(text, n):
     return clip(text.strip(), n)
 
 
-def _tool_input(inp):
+def _tool_input(inp, name=None):
     if not isinstance(inp, dict):
         return str(inp)
+    typed = typed_secrets(name, inp)
+    if typed != inp:  # a secret it typed, masked, with the field it typed into; else as before
+        return json.dumps(mask_all(typed), ensure_ascii=False)
     for key in ("command", "file_path", "path", "pattern", "url", "query", "description", "prompt"):
         if key in inp:
             return str(inp[key])
@@ -94,7 +97,8 @@ def render(path, mark):
                     else:
                         lines.append(f"ASSISTANT: {text}")
                 elif ptype == "tool_use":
-                    lines.append(f"TOOL {part.get('name')}: {_clip(_tool_input(part.get('input')), TOOL_CHARS)}")
+                    tool_input = _tool_input(part.get("input"), part.get("name"))
+                    lines.append(f"TOOL {part.get('name')}: {_clip(tool_input, TOOL_CHARS)}")
                 elif ptype == "tool_result":
                     if part.get("is_error"):
                         lines.append(f"ERROR: {_clip(_result_text(part), ERROR_CHARS)}")

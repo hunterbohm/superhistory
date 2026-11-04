@@ -187,8 +187,52 @@ Known limits:
 - A secret is read through characters you cannot see, such as a zero-width space or a NUL, but not through a vertical
   tab, a form feed or the separators from 0x1c, which part words as a line break does. A key split by one of those is
   not masked whole.
-- A token right after a terminal color code, and a private key written percent-encoded or as base64 (as a Kubernetes
-  secret holds one), are not masked.
+- A private key written as base64 (as a Kubernetes secret holds one) is not masked.
+- Provider tokens kb does not know by itself are masked by rules taken from gitleaks (kb/gitleaks.py, gitleaks v8.30.1,
+  MIT licence), where gitleaks finds one in text, as a word of its own. An Airtable token is masked alone too, where
+  gitleaks needs the provider's name near it; a Facebook token only with "facebook" in the text, as gitleaks reads it,
+  since alone its shape is also a pipe-separated record's (a timestamp and a trace id). So with "facebook" anywhere in
+  the text, such a record of 16 digits, "|" and 32 hex digits is masked too. An item's id is read more narrowly,
+  without these rules.
+  gitleaks reads Netlify's "nfp_" tokens only by the word "netlify" near a value and has no rule for Resend's "re_"
+  tokens, so kb does not mask them by themselves.
+- A .netrc line is read where it starts a line or a quoted string. One with no host after "machine" (or "default"),
+  whose login and password are both words of letters, reads as a sentence and is shown: "default login page password
+  requirements" stays, and so does "default login deploy password sunshine". With a host, or a digit or a symbol in
+  the password, it is masked.
+- A password an agent types into a web page through a browser tool is masked when a label of the field names a
+  password, passcode, secret, token, PIN or the like and nothing else but a form's own words, a kind of credential
+  and numbers ("Password", "API token (required)", "Your 4-digit PIN"). A label that says more keeps what is typed,
+  even for a password ("Type your password", "Password to view your account"), and an ordinary field labelled only
+  "Password" or "PIN" has what is typed masked. With no label, as Chrome DevTools names a field by its id alone, it
+  is masked only when it is shaped like a credential and not like a code identifier. Code that types into a page is
+  read the same way: a typing tool called with its input written as an object, as Codex's code mode calls one, and a
+  string typed into a field a locator found (Playwright's fill, type and press_sequentially in JavaScript or Python,
+  Selenium's send_keys, WebdriverIO's setValue, Puppeteer's page.type), whose locator's strings or regex name the
+  field, with comments and keyword arguments read past. With no label, only typing into the focused field
+  (keyboard.type) is read, by the value's shape. A value typed from a variable, or built at run time (joined,
+  templated), stays, and other ways of writing such code are not read.
+- kb reads a secret that one colour code or one invisible character splits, or glues to a word, and still hides all
+  that kb's earlier mask hid. Shapes built from more than that are not all read: a secret split by two kinds of
+  invisible character at once ("pass<soft hyphen>word=..." with a link inside the value), what an older kb left
+  glued to a placeholder ("[masked]<zero-width space>rest"), letters glued onto a key after a colour code
+  ("AKIA...<ESC>[0mSuffix"), or a secret's name a colour code splits ("DB_<ESC>[31mPASS<ESC>[0mWORD=..."). Where
+  kb's earlier mask hid such a secret, this one does too.
+- Where kb reads a value by its shape alone (after "pass" or "pwd" next to a user's name, in an XML element not named
+  for a password, under a secret's name in a two-item list, in a field with no label, or after a name a colour code
+  splits), a code identifier ("ConvertBF16ToF32", "OAuth2AuthorizationCode") is no credential. So a password made of
+  words and numbers ("Summer2024Garden") reads as an identifier there and stays, and an identifier with a digit run
+  into small letters ("Utf8to16Codec") reads as a password and is masked.
+- Masking costs time in proportion to the text, but a text in which kb's newer readings fire is masked a second time
+  beside kb's earlier mask, so a long run of built shapes is slow: 4,000 soft-hyphen-split passwords with a link
+  inside each (160 KB) take about 10 s, 30,000 command lines with a password each (900 KB) about 14 s, and 256 KB of
+  nothing but Playwright fill calls with a password each about 8 s.
+- Where a later pass cuts into a placeholder, a bracket can be left beside it ("[masked]]"), or two placeholders stand
+  side by side ("[masked][masked]"); no character of the secret is left.
+- A password with a comma, a semicolon or a bracket in it is masked whole in quotes, in an XML element or on a line of
+  its own, as a .env or YAML file writes one; inside a sentence it is masked up to that mark. One with a space, a
+  backtick, "<", ">" or a quote in it is masked up to that, but for Google's app passwords (four groups of four
+  letters).
 - In a note's path, the words after "Basic" or "Bearer" read as words, not a credential, so a note in "Basic
   Statistics/" keeps its path: the words, or the path they are in, end in a file's extension, and each part is a word
   with a vowel made of common English letter pairs. A header's value, a run with a digit, "+" or "=", hex letters
