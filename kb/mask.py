@@ -2645,7 +2645,7 @@ def _flag_values(items):
         start = i
         while start > 0 and i - start < 64 and isinstance(items[start - 1], str):
             start -= 1
-        lead = [_lead_item(items, j, cut) for j in range(start, i - 1)] + [items[i - 1]]  # the flag itself whole
+        lead = list(items[start:i])  # the 64 items before it whole, as main reads them
         if start > 0 and isinstance(items[start - 1], str):  # past the 64 items, a few around each command's name
             near = sorted({j for k in {k for pair in named.values() for k in pair if k < start}
                            for j in range(max(0, k - 2), min(k + 3, start))})
@@ -2674,17 +2674,19 @@ def _flag_values(items):
     return found
 
 
-# Past this many characters, an item in the line read before a flag (_flag_values) is read as its ends and where it
-# names a command: a payload beside a command's name ("--data" and 4 KB) is no flag's context, and read again before
-# every later flag it cost time in the square of the list.
+# Past this many characters, an item read beside where a command is named, past the 64 items before a flag
+# (_flag_values), is read as its ends and where it names a command: a payload beside a command's name ("--data" and
+# 4 KB) is no flag's context, and read again before every later flag it cost time in the square of the list. The 64
+# items before a flag are read whole, as main reads them, each for at most 64 flags.
 _LEAD_ITEM = 256
 
 
 def _lead_item(items, j, cut):
-    """items[j] as the line before a later flag reads it: whole up to _LEAD_ITEM characters; past that, its first and
-    last 64 and the 64 on each side of where it first and last names each command it names (_COMMAND_NAME), joined by
-    "...", which no command's name runs into, so every command it names is still read, and each later flag reads at
-    most a few thousand characters of it, as few commands have names. Cut once for the list (`cut`)."""
+    """items[j], beside where a command is named, as the line before a later flag past the 64 items before it reads it:
+    whole up to _LEAD_ITEM characters; past that, its first and last 64 and the 64 on each side of where it first and
+    last names each command it names (_COMMAND_NAME), joined by "...", which no command's name runs into, so every
+    command it names is still read, and each later flag reads at most a few thousand characters of it, as few commands
+    have names. Cut once for the list (`cut`)."""
     item = items[j]
     if len(item) <= _LEAD_ITEM:
         return item
