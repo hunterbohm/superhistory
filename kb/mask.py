@@ -3492,34 +3492,47 @@ def _flag_values(items):
 
 
 # Past this many characters, an item read beside where a command is named, past the 64 items before a flag
-# (_flag_values), is read as its ends and where it names a command: a payload beside a command's name ("--data" and
-# 4 KB) is no flag's context, and read again before every later flag it cost time in the square of the list. The 64
-# items before a flag are read whole, as main reads them, each for at most 64 flags.
+# (_flag_values), is read as what it changes for a later flag (_lead_item): a payload beside a command's name ("--data"
+# and 4 KB) is no flag's context, and read again before every later flag it cost time in the square of the list. The
+# 64 items before a flag are read whole, as main reads them, each for at most 64 flags.
 _LEAD_ITEM = 256
+# What ends the line of a command main's own rows read (_LINE), in an item as the line before a flag holds it, where a
+# line break is a space.
+_LINE_STOP = re.compile(r"[|;]|\\[nr]")
+# Each of COMMAND_FLAGS' commands but a .netrc line's, by a name of it and its flag with a value: put right after a long
+# item, it shows whether the command's line, read from where the item names it, runs on past the item (_lead_item).
+_LEAD_PROBES = (("curl", ("-u", "probe:Zq7vProbe9x")), ("mysql", ("-pZq7vProbe9x",)), ("sshpass", ("-p", "Zq7vProbe9x")),
+                ("docker login", ("-p", "Zq7vProbe9x")), ("redis-cli", ("-a", "Zq7vProbe9x")),
+                ("mongosh", ("-p", "Zq7vProbe9x")), ("keytool", ("-storepass", "Zq7vProbe9x")),
+                ("aws configure set", ("aws_secret_access_key", "Zq7vProbe9x")))
+
+
+def _read_after(quoted, probe):
+    """Whether `probe`, a flag and its value, reads otherwise right after `quoted` than it does alone, as the line
+    before a flag reads the flag's value (_flag_values)."""
+    tail = " ".join(map(shlex.quote, probe))
+    return not mask(f"{quoted} {tail}").endswith(" " + tail)
 
 
 def _lead_item(items, j, cut):
     """items[j], beside where a command is named, as the line before a later flag past the 64 items before it reads it:
-    whole up to _LEAD_ITEM characters; past that, its first and last 64 and the 64 on each side of where it first and
-    last names each command it names (_COMMAND_NAME), joined by "...", which no command's name runs into, so every
-    command it names is still read, and each later flag reads at most a few thousand characters of it, as few commands
-    have names. Cut once for the list (`cut`)."""
+    whole up to _LEAD_ITEM characters; past that, as what it changes for a later flag, read once for the list (`cut`):
+    a ";" where it holds what ends the line of a command main's own rows read across it (_LINE_STOP), then the name of
+    each command it names whose flag and a value, put right after it, read otherwise than after a word (_LEAD_PROBES):
+    that command's line, read from where the item names it, runs on past the item. So every command it names takes a
+    later flag as when the item is read whole, and none whose line ends inside it ("mongosh ...; exec nc %h %p")
+    does, and each later flag reads a few words of it."""
     item = items[j]
     if len(item) <= _LEAD_ITEM:
         return item
     if j not in cut:
-        spans = [(0, 64), (len(item) - 64, len(item))]
-        names = {}  # each command's name: where the item first and last names it
-        for m in _COMMAND_NAME.finditer(item):
-            names.setdefault(m.group(1).lower(), [m, m])[1] = m
-        spans += [(max(0, m.start() - 64), m.end() + 64) for pair in names.values() for m in pair]
-        merged = []
-        for start, end in sorted(spans):
-            if merged and start <= merged[-1][1]:
-                merged[-1] = (merged[-1][0], max(merged[-1][1], end))
-            else:
-                merged.append((start, end))
-        cut[j] = "...".join(item[start:end] for start, end in merged)
+        names = []
+        if _ANY_COMMAND.search(item):
+            quoted = re.sub(r"[\r\n]", " ", shlex.quote(item))  # as the line holds it (_flag_values)
+            for (name, probe), (line, _, _) in zip(_LEAD_PROBES, _COMMANDS):
+                if line.search(quoted) and _read_after(quoted, probe) and not _read_after("x", probe):
+                    names.append(name)
+        cut[j] = "".join(["...", ";" if _LINE_STOP.search(item) else ""] + [" " + name for name in names])
     return cut[j]
 
 
