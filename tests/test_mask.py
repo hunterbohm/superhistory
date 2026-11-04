@@ -1219,6 +1219,21 @@ class Base64ReviewThirteenTest(unittest.TestCase):
                         with self.subTest(data=data[11:20], width=width, form=name, times=times):
                             self.assertNoLineShown(lines, mask(text if times == 1 else json.dumps(text)))
 
+    def test_a_key_escaped_three_and_four_times_with_an_invisible_character_is_masked_whole(self):
+        # the views read JSON's escapes twice, and the readings as written take a line break and an invisible
+        # character at any depth, so a key escaped three and four times reads whole too
+        for width in (64, 76):
+            lines = self.lines(self.pem(), width)
+            block = "\n".join(lines)
+            for at in (width // 2, width + 3, 2 * width + 40, len(block) - 20):
+                for invisible in ("\u200b", "\U000e0020", "\u2060", "\ufeff"):
+                    for times in (3, 4):
+                        text = block[:at] + invisible + block[at:]
+                        for _ in range(times):
+                            text = json.dumps(text)
+                        with self.subTest(width=width, at=at, invisible=hex(ord(invisible)), times=times):
+                            self.assertNoLineShown(lines, mask(text))
+
     def test_ordinary_json_with_escapes_is_kept(self):
         for value in ("C:\\Users\\build\\notes\\README.txt", "line one\n\tindented two\r\nthree", "a/b/c and d\\/e",
                       "café\u2028naïve \u00e9t\u00e9",
