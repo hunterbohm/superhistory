@@ -790,8 +790,9 @@ def _written_key_spans(text):
 
 # A character a reader does not see, with the backslashes before an escaped one, as JSON in JSON escapes it twice. It
 # starts where no backslash stands before it, so a long run of them is tried once, from its start, not at each of its
-# backslashes in turn, which took time in the square of its length.
-_UNSEEN_ESCAPED = re.compile(rf"(?<!\\)\\*(?:{_CSI}|{_ESCAPED_INVISIBLE})|[\x00-\x08\x0e-\x1b\x7f-\x84\x86-\x9f{_FORMAT_CHARACTERS}]")
+# backslashes in turn, which took time in the square of its length. A colour code is tried whole first, as _CSI reads
+# its escape's own run of backslashes, so the code's "[0m" goes with its ESC.
+_UNSEEN_ESCAPED = re.compile(rf"{_CSI}|(?<!\\)\\*(?:{_CSI}|{_ESCAPED_INVISIBLE})|[\x00-\x08\x0e-\x1b\x7f-\x84\x86-\x9f{_FORMAT_CHARACTERS}]")
 
 
 def _unseen_view(text):
