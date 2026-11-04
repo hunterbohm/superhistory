@@ -2272,14 +2272,21 @@ _PROBE = "Qz8vRt2LmX9kWp4Ys7Nb3Hc"  # a made-up value shaped like a password, lo
 def _may_take_a_secret(flag):
     """Whether a list item `flag` may be a flag whose next item a reading takes for a secret: a one-letter flag, which
     only its command says ("-p"), a flag one of COMMAND_FLAGS' rows reads, or one the readings of text read by itself
-    ("--password", "--api-key"). The rest ("-J-Xmx512m", "--port") never mask the item after them, so a list of many
-    options costs no line reading for each."""
-    if re.fullmatch(r"-[A-Za-z]", flag):
-        return True
+    ("--password", "--api-key"). The rest ("-J-Xmx512m", "--port", "-v") never mask the item after them. A one-letter
+    flag is read by the same row and probe check, not taken for a password on sight, so a list of many plain one-letter
+    options costs no context mask for each; the answer is cached."""
     lines = (f" {flag} {_PROBE}", f" {flag} deploy:{_PROBE}")  # a value, and curl's "user:password"
     if any(row.search(line) for _, row, _ in _COMMANDS for line in lines):
         return True
     return _PROBE not in mask(f"{flag} {_PROBE}") or _PROBE not in mask(f"{flag}={_PROBE}")
+
+
+def _shell_before(items, i):
+    """Whether a shell names items[i-1] as its -c flag: a shell among the earlier items, with only options between it
+    and the flag ("bash --noprofile -c", "/bin/sh -eu -c")."""
+    return any(isinstance(items[j], str) and _SHELL.search(items[j])
+               and all(isinstance(items[k], str) and items[k].startswith("-") for k in range(j + 1, i - 1))
+               for j in range(i - 1))
 
 
 def _flag_values(items):
@@ -2302,11 +2309,8 @@ def _flag_values(items):
             continue
         is_flag = isinstance(flag, str) and flag.startswith("-") and len(flag) <= 64
         # A shell's -c script is a command line of its own, read as one. The shell may be any earlier item, with only
-        # options ("--noprofile", "-eu") between it and the -c flag.
-        shell_before = any(isinstance(items[j], str) and _SHELL.search(items[j])
-                           and all(isinstance(items[k], str) and items[k].startswith("-") for k in range(j + 1, i - 1))
-                           for j in range(i - 1))
-        if is_flag and _SHELL_SCRIPT_FLAG.match(flag) and shell_before:
+        # options ("--noprofile", "-eu") between it and the -c flag; this scan runs only for a -c flag, few per list.
+        if is_flag and _SHELL_SCRIPT_FLAG.match(flag) and _shell_before(items, i):
             read = mask(item)
             if read != item:
                 found[i] = read
