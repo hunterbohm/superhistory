@@ -1492,6 +1492,65 @@ class ReadWholeErrorTest(unittest.TestCase):
                         mask(self.EVERY_STEP)
 
 
+class ReviewEighteenTest(unittest.TestCase):
+    """The eighteenth review's finding: a list's reading put a long item beside where a command is named into the line
+    it reads before every later flag, so a curl upload ("--data" and its payload) followed by many authenticated
+    transfers ("--next", "-u", ...) cost time in the square of its length, as main does not."""
+
+    @staticmethod
+    def upload(n, filler):
+        return (["curl", "--data", "a" * (100 * n), "https://example.invalid/"] + ["-H", "X-Item: opt"] * filler
+                + ["--next", "-u", "deploy:" + PASSWORD, "https://example.invalid/"] * n)
+
+    @staticmethod
+    def json_in_text(items):
+        masking._container_edits_at.cache_clear()  # each call reads the text afresh, as a new item does
+        return mask(json.dumps(items))
+
+    def test_a_long_item_and_many_later_flags_cost_time_in_proportion(self):
+        # The payload past the 64 items before a flag, beside the command's name: read again before every later flag,
+        # it cost the square of the list. Among the 64 it is read whole, as main reads it, for at most 64 flags.
+        for filler in (40, 0):
+            small, large = self.upload(10, filler), self.upload(40, filler)
+            for form, call in (("mask_all", mask_all), ("JSON in text", self.json_in_text)):
+                with self.subTest(filler=filler, form=form):
+                    for items in (small, large):
+                        self.assertNotIn(PASSWORD, json.dumps(call(items)))
+                    if filler:
+                        little, lots = took_call(lambda: call(small)), took_call(lambda: call(large))
+                        self.assertLess(lots, 6 * little + 0.2, (little, lots))  # four times the list, about four times the CPU
+
+    def test_a_command_named_inside_a_long_item_still_reads_its_flags(self):
+        for name, flag in (("mongosh", "-p"), ("keytool", "-storepass")):
+            for before in (70, 3):  # past the 64 items before the flag, and among them
+                for named in ("x" * 300 + " " + name + " " + "y" * 300, name + " " + "y" * 600, "x" * 600 + " " + name):
+                    items = [named] + ["-v"] * before + [flag, PASSWORD]
+                    with self.subTest(name=name, before=before, at=named.index(name)):
+                        self.assertNotIn(PASSWORD, json.dumps(mask_all(items)))
+                        self.assertNotIn(PASSWORD, mask(json.dumps(items)))
+
+    def test_every_command_a_long_item_names_still_reads_its_flags(self):
+        # named between two other commands in the item, so neither its first nor its last name
+        for name, flag in (("mongosh", "-p"), ("keytool", "-storepass"), ("redis-cli", "-a"), ("sshpass", "-p")):
+            for before in (70, 3):
+                for others in (("curl", "twine"), ("aws", "mysql")):
+                    named = f"{others[0]} {'x' * 300} {name} {'y' * 300} {others[1]}"
+                    items = [named] + ["-v"] * before + [flag, PASSWORD]
+                    with self.subTest(name=name, before=before, others=others):
+                        self.assertNotIn(PASSWORD, json.dumps(mask_all(items)))
+                        self.assertNotIn(PASSWORD, mask(json.dumps(items)))
+
+
+    def test_the_64_items_before_a_flag_are_read_whole_as_main_reads_them(self):
+        # a long item there that names a command only as a folder ("/sshpass/"), which main's reading of the line
+        # still takes for the command whose flag follows
+        for name, flag in (("sshpass", "-p"), ("redis-cli", "-a")):
+            for before in (3, 20):
+                items = ["/opt/" + "a" * 150 + f"/{name}/" + "b" * 150] + ["-v"] * before + [flag, PASSWORD]
+                with self.subTest(name=name, before=before):
+                    self.assertNotIn(PASSWORD, json.dumps(mask_all(items)))
+                    self.assertNotIn(PASSWORD, mask(json.dumps(items)))
+
 class RevisionTest(unittest.TestCase):
     def test_stored_rows_are_masked_again(self):
         self.assertEqual(masking.REVISION, 31)
