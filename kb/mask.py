@@ -604,7 +604,7 @@ def _gitleaks_edits(text):
 # Which mask() a stored row was masked with. A row of another version, or of none, is masked again when read and by
 # the next ingest. The patterns change it by themselves; bump REVISION when the code that applies them changes what
 # it masks.
-REVISION = 29
+REVISION = 30
 VERSION = f"r{REVISION}-" + hashlib.sha256(repr((REVISION, [p.pattern for p in SECRET_PATTERNS + PREFIXED_SECRETS], KEYED_SECRET.pattern,
                                 ENV_KEY_SECRET.pattern, JSON_SECRET.pattern, FLAG_SECRET.pattern, AUTH_SECRET.pattern,
                                 COMMAND_FLAGS, PASSWORD_NAME.pattern, sorted(PLACEHOLDERS), REFERENCE.pattern,
@@ -669,6 +669,14 @@ def _reads_as_text(data):
     return not _TEXT_CONTROL.search(text)
 
 
+def _letters_past_ascii(data):
+    """How many letters past ASCII bytes that read as text (_reads_as_text) hold, as a sentence in a language written
+    without spaces between its words does (Japanese, Chinese, Thai)."""
+    start = len(data) - len(data.lstrip(_CONTINUATION_BYTES))
+    text = codecs.getincrementaldecoder("utf-8")().decode(data[start:], final=False)
+    return sum(1 for c in text if c > "\x7f" and c.isalpha())
+
+
 # Inside a key, past its header: text past ASCII too, as UTF-8 writes it, since an armour header such as GnuPG's
 # "Comment:" may hold any letter; another stream's bytes still hold a control character within a line or two.
 _NOT_KEY_TEXT = re.compile(rb"[^\t\n\r\x20-\x7e\x80-\xff]")
@@ -708,10 +716,12 @@ def _frame(joined, starts, found):
         opens = decoded[m.start() - 1:m.start()] in (b"\n", b"\r") if m.start() else False
         # where the encoded text starts: a line of the block, as a key under a heading's word starts, or past another
         # stream's padding; but not where the wrapping of encoded text only happens to break, as a sentence that
-        # quotes a header shows, its words and spaces decoding before the header on its line
+        # quotes a header shows, its words decoding before the header on its line: with a space between them, or in
+        # letters past ASCII, as a language written without spaces writes them ("説明-----BEGIN ...")
         before = decoded[max(decoded.rfind(b"\n", 0, m.start()), decoded.rfind(b"\r", 0, m.start())) + 1:m.start()]
         continues = bool(before) and _reads_as_text(before) and (
-            len(before) >= 8 and b" " in before or before[-1:] in (b" ", b"\t"))  # "Note: -----BEGIN ..."
+            len(before) >= 8 and (b" " in before or _letters_past_ascii(before) >= 2)
+            or before[-1:] in (b" ", b"\t"))  # "Note: -----BEGIN ..."
         opens = opens or m.start() % 3 == 0 and not continues and (
             first == opened or line < len(starts) and starts[line] == first)
         # or after the byte order mark a file saved on Windows starts with, where the encoded text starts: the mark
@@ -2078,11 +2088,46 @@ def _elements(der, start, end):
     return out
 
 
+_PKCS7_SIGNED_DATA = bytes.fromhex("2a864886f70d010702")
+_PKCS7_DATA = bytes.fromhex("2a864886f70d010701")
+
+
+def _certificate_bundle(data, start, end):
+    """Whether data[start:end], the content of PKCS#7 signed data, is a bundle of certificates as openssl crl2pkcs7
+    writes one: a version, no digest algorithm, content that names its type and holds none, certificates or lists of
+    revoked ones, each public material (_public_material), and no signer. Signed data that holds content, as a signed
+    message does, is no bundle."""
+    inner = _elements(data, start, end)
+    if not inner or len(inner) != 1 or inner[0][0] != 0x30:
+        return False
+    parts = _elements(data, inner[0][1], inner[0][2])
+    if not parts or [p[0] for p in parts[:3]] != [0x02, 0x31, 0x30] or parts[-1][0] != 0x31:
+        return False
+    if parts[1][1] != parts[1][2] or parts[-1][1] != parts[-1][2]:  # no digest algorithm, no signer
+        return False
+    content = _elements(data, parts[2][1], parts[2][2])
+    if not content or len(content) != 1 or content[0][0] != 0x06 or data[content[0][1]:content[0][2]] != _PKCS7_DATA:
+        return False
+    held = parts[3:-1]
+    if [p[0] for p in held] not in ([0xa0], [0xa1], [0xa0, 0xa1]):
+        return False
+    for _, at, stop in held:
+        if at == stop:
+            return False
+        while at < stop:
+            member = _element(data, at, stop)
+            if member is None or not _public_material(data[at:member[2]]):
+                return False
+            at = member[2]
+    return True
+
+
 def _public_material(data):
     """Whether bytes decoded from base64 are, whole, public material: an X.509 certificate or a certificate request
     (what is signed, how, and the signature, the first starting with a version or a serial number), a public key
-    (SubjectPublicKeyInfo: an algorithm and the key), or an OpenSSH public key (strings, each after its length, the
-    first naming a public key's type). No private key's DER has either shape, and one cut short has none."""
+    (SubjectPublicKeyInfo: an algorithm and the key), a PKCS#7 bundle of certificates (_certificate_bundle), or an
+    OpenSSH public key (strings, each after its length, the first naming a public key's type). No private key's DER
+    has any of these shapes, and one cut short has none."""
     at, strings = 0, []
     while at + 4 <= len(data) and len(strings) < 16:
         size = int.from_bytes(data[at:at + 4], "big")
@@ -2098,6 +2143,8 @@ def _public_material(data):
     tags = [p[0] for p in parts]
     if tags == [0x30, 0x30, 0x03]:
         return first[0] in (0xa0, 0x02) and first[1] == 0x06
+    if tags == [0x06, 0xa0]:
+        return data[parts[0][1]:parts[0][2]] == _PKCS7_SIGNED_DATA and _certificate_bundle(data, *parts[1][1:])
     return tags == [0x30, 0x03] and first[0] == 0x06
 
 
@@ -2744,10 +2791,11 @@ _NOVEL = contextvars.ContextVar("kb_mask_novel", default=None)
 
 def _masked(text, keys=None):
     """mask()'s passes, and each private key written as base64 (_encoded_key_spans, or `keys`) hidden over what they
-    leave: no reading reads that key's placeholder, so it hides the key alone, and everything the passes hide stays
-    hidden. The keys are hidden when the passes are still changing too, so the one placeholder the limit then puts
-    down, over what differs from `text`, covers each key. (the text, where each of its characters came from in `text`,
-    whether it still changed after MAX_PASSES)."""
+    leave, so everything the passes hide stays hidden. The keys are hidden when the passes are still changing too, so
+    the one placeholder the limit then puts down, over what differs from `text`, covers each key. Then the passes
+    read the text again, as the next mask() reads it, kb's store among them: an older kb's rest of a key can follow a
+    key's placeholder there, so masked text masks to itself. (the text, where each of its characters came from in
+    `text`, whether it still changed after MAX_PASSES)."""
     masked, origin, still = _passes_masked(text)
     keys = _encoded_key_spans(text) if keys is None else keys
     if not keys:
@@ -2756,7 +2804,10 @@ def _masked(text, keys=None):
     for start, end in keys:
         hidden[start:end] = b"\x01" * (end - start)
     masked, origin = _hide(masked, origin, hidden)
-    return masked, origin, still
+    if still:
+        return masked, origin, still
+    again, after, still = _passes_masked(masked)
+    return again, [origin[c] if c >= 0 else -1 for c in after], still
 
 
 def _passes_masked(text):
