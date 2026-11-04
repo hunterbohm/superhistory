@@ -2285,43 +2285,166 @@ _BASE64_ONLY_LINE = re.compile(r"[ \t\r\"'#>*,;|\]]*([A-Za-z0-9+/]+=*)?[ \t\r\"'
 _MIXED_RUN = re.compile(r"(?<![A-Za-z0-9+/])(?=[A-Za-z0-9+/]*[A-Z])(?=[A-Za-z0-9+/]*[a-z])[A-Za-z0-9+/]{16,}")
 
 
-def _public_first(text, start, end):
-    """Whether text[start:end], what main reads as a key's rest after a placeholder, starts with whole lines of base64
-    that decode to public material, one element or a run of them as a chain of certificates is (_public_material), and
-    holds no run of base64 of both cases past them through `end`, all main's reading of a key's rest hides (_MIXED_RUN):
-    then it is no key's rest, and the lines after the material, a port's number or an acronym among their words ("port
-    8080", "HTTP", "build 20261104"), are its own. A run of base64 lines that holds a private key's bytes too decodes
-    to no such run. Read once, in time in proportion."""
-    chunks, at, last = [], start, start
+def _base64_lines(text, start, end):
+    """The lines of base64 that text[start:end] starts with, each as a key's rest or public material is written
+    (_BASE64_ONLY_LINE), as (its base64, where it starts, where it ends), up to the first line that is none; a line with
+    no base64 (a blank, or a quote alone) is passed."""
+    lines, at = [], start
     for brk in itertools.chain(_LINE_BREAK.finditer(text, start, end), [None]):
         stop = brk.start() if brk else end
         line = _BASE64_ONLY_LINE.fullmatch(INVISIBLE.sub("", _KEY_ESCAPE.sub("", text[at:stop])))
         if line is None:
             break
         if line.group(1):
-            chunks.append(line.group(1))
-            last = stop
+            lines.append((line.group(1), at, stop))
         if brk is None:
             break
         at = brk.end()
-    # each stream decoded alone: one ends at base64's padding, as each element encoded alone does
-    streams, current = [], []
-    for chunk in chunks:
-        current.append(chunk)
+    return lines
+
+
+def _element_end(data, at):
+    """Where the DER element at data[at] ends, None while `data` is too short to say, or -1 when none starts there."""
+    if at + 2 > len(data):
+        return None
+    size = data[at + 1]
+    if not size & 0x80:
+        return at + 2 + size
+    width = size & 0x7f
+    if not 0 < width < 4:
+        return -1
+    if at + 2 + width > len(data):
+        return None
+    return at + 2 + width + int.from_bytes(data[at + 2:at + 2 + width], "big")
+
+
+def _public_prefix(lines):
+    """How many of `lines` (each a line's base64), from the first, are whole public material: the most after which one
+    element of it (_public_material), or the last of a run of them as a chain of certificates is, ends, each stream
+    decoded alone (one ends at base64's padding, as each element encoded alone does), where the line after is no base64
+    a key's could be (_token_like: a word alone, "notes") or there is none; 0 when none. Decoded as read, and read no
+    further than an element that is none."""
+    data, whole, pending, at, most = bytearray(), {}, "", 0, 0
+    for k, chunk in enumerate(lines):
+        pending += chunk
         if chunk.endswith("="):
-            streams.append("".join(current))
-            current = []
-    streams.append("".join(current))
-    parts = [_base64_decoded(stream, 0, None) if len(stream) % 4 == 0 else None for stream in streams if stream]
-    if not parts or not all(parts):
-        return False
-    data, at = b"".join(parts), 0
-    while at < len(data):
-        element = _element(data, at, len(data))
-        if element is None or not _public_material(data[at:element[2]]):
+            decoded = _base64_decoded(pending, 0, None) if len(pending) % 4 == 0 else None
+            if decoded is None:
+                break
+            data += decoded
+            pending = ""
+        else:
+            cut = len(pending) - len(pending) % 4
+            data += _base64_decoded(pending, 0, cut)
+            pending = pending[cut:]
+        if not pending:
+            whole[len(data)] = k + 1  # the data is whole groups through this line
+        while at < len(data):
+            if data[at] != 0x30:  # public material is a DER sequence
+                return most
+            stop = _element_end(data, at)
+            if stop is None or stop > len(data):
+                break
+            if stop < 0 or not _public_material(bytes(data[at:stop])):
+                return most
+            at = stop
+            n = whole.get(at)
+            if n and (n == len(lines) or not _token_like(lines[n])):
+                most = n
+    return most
+
+
+def _runs_past(text):
+    """For the rests of keys in `text`, past the public material each starts with (_public_first): whether
+    text[last:end] holds no run of base64 of both cases (_MIXED_RUN) outside lines that are public material of their
+    own, read without the characters a reader does not see, so a certificate after a line of words ("next steps") is
+    no key's fragment. Such lines are whole public material that a block of lines of base64 starts with
+    (_public_prefix), or a run of its lines between words alone ("notes"), all public material; a line that starts
+    with a placeholder starts a block past it. The text's lines are read once, from the first rest on, and each end is
+    read through once for every rest from which it holds none, as a later one past it holds none too: many rests
+    before the same end cost time in proportion."""
+    public = []  # (start, end) of each line of public material, in order
+    stops = []
+    clean = {}  # for each end, the earliest start found to hold no such run through it
+    state = {"lines": None, "block": [], "read": None}
+
+    def close(block):
+        n = _public_prefix([line for line, _, _ in block])
+        marked = block[:n]
+        k = n
+        while k < len(block):
+            if not _token_like(block[k][0]):
+                k += 1
+                continue
+            q = k
+            while q < len(block) and _token_like(block[q][0]):
+                q += 1
+            if _public_prefix([line for line, _, _ in block[k:q]]) == q - k:
+                marked += block[k:q]
+            k = q
+        for _, a, b in marked:
+            public.append((a, b))
+            stops.append(b)
+
+    def extend(to):
+        if state["lines"] is None:
+            return
+        block = state["block"]
+        while state["read"] < to or block:
+            brk = next(state["lines"], None)
+            at = state["read"]
+            stop = brk.start() if brk else len(text)
+            line = INVISIBLE.sub("", _KEY_ESCAPE.sub("", text[at:stop]))
+            placeholder = line.rfind("[masked]")
+            if placeholder >= 0:  # a rest past a placeholder starts a block of its own
+                if block:
+                    close(block)
+                block = []
+            found = _BASE64_ONLY_LINE.fullmatch(line, placeholder + len("[masked]") if placeholder >= 0 else 0)
+            if found is None:
+                if block:
+                    close(block)
+                block = []
+            elif found.group(1):
+                block.append((found.group(1), at, stop))
+            if brk is None:
+                if block:
+                    close(block)
+                block = []
+                state["read"] = len(text) + 1
+                break
+            state["read"] = brk.end()
+        state["block"] = block
+
+    def holds_none(last, end):
+        if end in clean and clean[end] <= last:
+            return True
+        if state["lines"] is None:
+            state["lines"], state["read"] = _LINE_BREAK.finditer(text, last), last
+        extend(end)
+        pieces, at, i = [], last, bisect.bisect_right(stops, last)
+        while i < len(public) and public[i][0] < end:  # each line of public material read as a space
+            pieces.append(text[at:max(at, public[i][0])])
+            at, i = max(at, public[i][1]), i + 1
+        pieces.append(text[at:end])
+        if _MIXED_RUN.search(INVISIBLE.sub("", _KEY_ESCAPE.sub("", " ".join(pieces)))):
             return False
-        at = element[2]
-    return not _MIXED_RUN.search(INVISIBLE.sub("", _KEY_ESCAPE.sub("", text[last:end])))
+        clean[end] = min(clean.get(end, last), last)
+        return True
+    return holds_none
+
+
+def _public_first(text, start, end, past):
+    """Whether text[start:end], what main reads as a key's rest after a placeholder, starts with whole lines of base64
+    that decode to public material, one element or a run of them as a chain of certificates is, ending where the line
+    after is none a key's could be (_public_prefix), and holds no run of base64 of both cases past them through `end`,
+    all main's reading of a key's rest hides, outside lines of public material of their own (`past`, _runs_past): then
+    it is no key's rest, and the lines after the material, a word alone ("notes"), or a port's number or an acronym
+    among words ("port 8080", "HTTP", "build 20261104"), are its own. A run of base64 lines that holds a private key's
+    bytes too decodes to no such run."""
+    lines = _base64_lines(text, start, end)
+    n = _public_prefix([line for line, _, _ in lines])
+    return bool(n) and past(lines[n - 1][2], end)
 
 
 def _public_rest(rest):
@@ -2335,7 +2458,7 @@ def _key_rest_edits(text, starts=_REST_START):
     """The rest of a key after an older kb's placeholder (`starts`, _REST) as an edit that removes it, unless its
     base64 decodes whole as public material. Each placeholder outside the core of the rest before it is read once, and
     each core runs once to its end, so a paragraph of many costs time in proportion."""
-    spans, core, covered, tail = [], 0, 0, None
+    spans, core, covered, tail, past = [], 0, 0, None, None
     older = _STORED_ROW.get()
     for at in _PLACEHOLDER.finditer(text):
         start = _ID_REST_START if starts is _REST_START and not older else starts
@@ -2347,7 +2470,8 @@ def _key_rest_edits(text, starts=_REST_START):
         if end <= covered:  # which ends inside one already masked, read before the public material past it, which
             core = reach  # reads on to `end`: many such in one tail took time in its square
             continue
-        if _public_first(text, at.end(), end):
+        past = past or _runs_past(text)
+        if _public_first(text, at.end(), end, past):
             continue  # public material, then no run of base64 through all main hides: no key's rest
         core = reach
         if not _public_rest(text[at.end():end]):
