@@ -1026,6 +1026,63 @@ class ReviewTenTest(unittest.TestCase):
                                      list(_scanned_containers(text, i, len(text) - i // 2)))
 
 
+class ReviewElevenTest(unittest.TestCase):
+    """The eleventh review's findings: past the 64 items read before a value, its command was read back from the last
+    item holding a command's name anywhere in it, so an option's value that holds one ("-alias", "mongo-ca") took the
+    place of the list's own program, and aws configure set's setting was read only within 64 items of "set"."""
+
+    WRAPS = ReviewEightTest.WRAPS
+    masks_only_the_password = ReviewEightTest.masks_only_the_password
+
+    LISTS = (["aws", "configure", "set"] + ["--profile", "ci"] * 31 + ["aws_secret_access_key", PASSWORD],
+             ["aws", "configure", "set"] + ["--profile", "ci"] * 200 + ["aws_secret_access_key", PASSWORD],
+             ["/usr/local/bin/aws", "configure", "set"] + ["--debug"] * 70 + ["default.aws_session_token", PASSWORD],
+             ["keytool", "-list", "-keystore", "/srv/team.jks", "-alias", "mongo-ca"] + ["-v"] * 63
+             + ["-storepass", PASSWORD],
+             ["keytool", "-list", "-keystore", "/srv/team.jks", "-alias", "keytool-ca"] + ["-v"] * 63
+             + ["-storepass", PASSWORD],
+             ["keytool", "-list", "-alias", "login"] + ["-v"] * 200 + ["-storepass", PASSWORD],
+             ["keytool", "-list", "-alias", "curl"] + ["-v"] * 70 + ["-storepass", PASSWORD],
+             ["env", "KEYTOOL_HOME=/opt/java", "LANG=C", "TZ=UTC", "keytool", "-list", "-alias", "keytool-ca"]
+             + ["-v"] * 63 + ["-storepass", PASSWORD],
+             ["mongosh", "-u", "admin", "--authenticationDatabase", "keytool-db"] + ["--quiet"] * 64 + ["-p", PASSWORD],
+             ["aws", "configure", "set", "--profile", "mongo-ci"] + ["--debug"] * 64
+             + ["aws_secret_access_key", PASSWORD])
+
+    def test_the_lists_own_command_reads_its_password_past_64_items(self):
+        for items in self.LISTS:
+            masked = ["[masked]" if item == PASSWORD else item for item in items]
+            with self.subTest(items=items[:8], size=len(items)):
+                self.assertEqual(mask_all(items), masked)
+            self.masks_only_the_password(str(subprocess.CalledProcessError(1, items)), json.dumps({"argv": items}),
+                                         "run: %r" % (items,))
+
+    def test_stays_a_long_list_with_no_secret(self):
+        for items in (["aws", "configure", "set"] + ["--profile", "ci"] * 40 + ["region", "us-west-2"],
+                      ["aws", "configure", "get"] + ["--profile", "ci"] * 40 + ["aws_secret_access_key", "region"],
+                      ["keytool", "-list", "-alias", "mongo-ca"] + ["-v"] * 70 + ["-keystore", "/srv/team.jks"],
+                      ["keytool", "-list", "-alias", "mongo-ca"] + ["-v"] * 63 + ["-p", "release-2026"],
+                      ["echo", "mongo-ca"] + ["--quiet"] * 70 + ["-p", "release-2026"]):
+            with self.subTest(items=items[:6], size=len(items)):
+                self.assertEqual(mask_all(items), items)
+                text = str(subprocess.CalledProcessError(1, items))
+                self.assertEqual(mask(text), text)
+
+    def test_many_command_names_cost_time_in_proportion(self):
+        names = ["curl", "mysql", "sshpass", "login", "redis-cli", "mongosh", "twine", "keytool", "jarsigner", "aws"]
+
+        def items(n):
+            found = ["keytool"]
+            for i in range(n):
+                found += ["-alias", names[i % len(names)] + "-%d" % i, names[i % len(names)], "-storepass", PASSWORD]
+            return found
+        small, large = items(25), items(100)
+        self.assertNotIn(PASSWORD, json.dumps(mask_all(small)))
+        little, lots = took_call(lambda: mask_all(small)), took_call(lambda: mask_all(large))
+        self.assertLess(lots, 6 * little + 0.2, (little, lots))  # four times the list, about four times the CPU
+        self.assertLess(lots, 15.0, lots)  # each value after a secret's flag reads its line twice: a constant per value
+
+
 class RevisionTest(unittest.TestCase):
     def test_stored_rows_are_masked_again(self):
         self.assertEqual(masking.REVISION, 11)
