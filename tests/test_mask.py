@@ -1582,6 +1582,66 @@ class Base64ReviewFifteenTest(unittest.TestCase):
                         self.assertEqual(mask(once), once)
                         self.assertEqual(mask(f"[masked]\n{after}\nnext steps"), f"[masked]\n{after}\nnext steps")
 
+    @staticmethod
+    def probed_labels():
+        """The labels probed before a quoted header (the coordinator's ruling on 5accfea): words with a mark or none,
+        marks in other scripts, and 400 made-up words."""
+        import random
+        r = random.Random(5)
+        words = ["Ex", "Note", "key", "ABC", "DCS", "see", "eg", "Tip", "NB", "warn", "INFO", "cfg", "x", "Q", "id",
+                 "pem", "KEY", "Doc"]
+        labels = [w + s for w in words for s in ("", ":", "=", "-", ">")] + ["例：", "注：", "例", "→", "※"]
+        letters = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
+        return labels + ["".join(r.choice(letters) for _ in range(r.randrange(1, 9))) + r.choice(["", ":", "="])
+                         for _ in range(400)]
+
+    @classmethod
+    def label_cases(cls, after):
+        """Each probed label, base64 wrapped at each width with the header where a wrapped line starts (a pad of x's
+        between them puts it there), and the label's own lines."""
+        import base64
+        import textwrap
+        for label in cls.probed_labels():
+            for width in (4, 8, 12, 16, 20, 60, 64, 76):
+                group = width // 4 * 3
+                for pad in range(group):
+                    lead = (label + "x" * pad).encode()
+                    if len(lead) % group:
+                        continue
+                    lines = textwrap.wrap(base64.b64encode(lead + b"-----BEGIN PRIVATE KEY-----\n" + after).decode(),
+                                          width)
+                    yield label, width, pad, lines[:len(lead) // group], lines
+
+    def test_a_label_whose_base64_is_one_word_reads_as_a_heading_and_a_key_after_it_stays_masked(self):
+        """The limit the coordinator granted: base64 of a label glued to a quoted header, where the label's own base64
+        is one word in one case as long as the block's lines ("ABC" is "QUJD" at width 4), is byte for byte a heading
+        over a key encoded alone, and reads as one. Under either reading a key there stays masked."""
+        import base64
+        import re
+        import textwrap
+        body = base64.b64encode(bytes(range(256)) * 2).decode()
+        key = "-----BEGIN PRIVATE KEY-----\n" + "\n".join(textwrap.wrap(body, 64)) + "\n-----END PRIVATE KEY-----\n"
+        after = key[len("-----BEGIN PRIVATE KEY-----\n"):].encode()
+        quoted = lost = 0
+        for label, width, pad, heading, lines in self.label_cases(after):
+            with self.subTest(label=label, width=width, pad=pad):
+                text = "\n".join(lines) + "\nnext steps"
+                if heading:  # the same string read as a heading over the key encoded alone
+                    alone = "\n".join(textwrap.wrap(base64.b64encode(key.encode()).decode(), width))
+                    self.assertEqual(text, "\n".join(heading) + "\n" + alone + "\nnext steps")
+                kept = [line for line in mask(text).split("\n") if line != "[masked]"]
+                self.assertTrue(set(kept) <= set(heading) | {"next steps"}, kept[:4])
+        for quote in ("これは説明です\n", "see the docs before importing.\n"):  # the probe's two quotes
+            for label, width, pad, heading, lines in self.label_cases(quote.encode()):
+                text = "\n".join(lines)
+                quoted += 1
+                if mask(text) != text:
+                    lost += 1
+                    with self.subTest(label=label, width=width, pad=pad):  # only where the label's lines are words
+                        self.assertEqual(width, 4)
+                        self.assertTrue(all(re.fullmatch(r"[a-z]+|[A-Z][a-z]*|[A-Z]+", line) for line in heading))
+        self.assertEqual((quoted, lost), (7920, 8))  # the limit's measure: 8 of 7,920, all at width 4
+
     def test_many_keys_each_before_a_certificate_and_words_in_one_paragraph_cost_time_in_proportion(self):
         import base64
         import random
