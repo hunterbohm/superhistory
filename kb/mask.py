@@ -1992,12 +1992,12 @@ _TYPING_NAMES = _TYPING_TOOL.pattern.split(")?", 1)[1]  # the tool's own names, 
 _CODE_TYPING_CALL = re.compile(rf"(?i)(?<![\w$])(?:[\w$]+\.)*(?:mcp__[\w-]+__(?:{_TYPING_TOOL.pattern[4:]})"
                                rf"|(?:browser|puppeteer|playwright)_{_TYPING_NAMES})\s*\(")
 _CODE_FILL_CALL = re.compile(r"\.\s*(?:fill|type|pressSequentially|press_sequentially|sendKeys|send_keys|SendKeys|setValue"
-                             r"|set_value)"
+                             r"|set_value|addValue|add_value|send_keys_to_element|sendKeysToElement)"
                              r"\s*\(")
-_CODE_HINT = re.compile(r"(?i)(?:fill|type|press_?sequentially|send_?keys|set_?value|input_text)\w*\s*\(")
+_CODE_HINT = re.compile(r"(?i)(?:fill|type|press_?sequentially|send_?keys|set_?value|add_?value|input_text)\w*\s*\(")
 # A string that holds code, as JSON holds it: a typing call's "(" in it, and a quote of the code's own, plain or
 # escaped; "Autofill(42)!", a password, holds no quote.
-_CODE_IN_STRING = re.compile(r"(?i)(?:fill|type|press_?sequentially|send_?keys|set_?value|input_text)\w*\s*\(")
+_CODE_IN_STRING = re.compile(r"(?i)(?:fill|type|press_?sequentially|send_?keys|set_?value|add_?value|input_text)\w*\s*\(")
 def _holds_another_quote(text, inner, quote):
     """Whether what a string holds has a quote of the code's own: one other than its own quote, or its own escaped."""
     others = "".join(q for q in "\"'`" if q != quote)
@@ -2005,9 +2005,9 @@ def _holds_another_quote(text, inner, quote):
 _CODE_NAME = re.compile(r"[A-Za-z_$][\w$]*")
 _CODE_FIELD_KEYWORDS = frozenset(("selector", "locator", "label", "name", "placeholder"))
 # The names a chain that types into a page holds: a page or frame, a locator's method, Selenium's driver and finders,
-# WebdriverIO's "$", the keyboard. A chain with none (Buffer.from("password").fill("x")) types into no field.
+# WebdriverIO's "$", Cypress's cy, the keyboard. A chain with none (Buffer.from("password").fill("x")) types into no field.
 _CODE_LOCATOR_NAMES = frozenset((
-    "page", "frame", "mainFrame", "main_frame", "keyboard", "locator", "$", "$$", "driver", "browser", "element",
+    "page", "frame", "mainFrame", "main_frame", "keyboard", "locator", "$", "$$", "driver", "browser", "element", "cy",
     "getByLabel", "getByPlaceholder", "getByRole", "getByTestId", "getByText", "getByAltText", "getByTitle",
     "get_by_label", "get_by_placeholder", "get_by_role", "get_by_test_id", "get_by_text", "get_by_alt_text",
     "get_by_title", "find_element", "find_elements", "findElement", "findElements", "querySelector", "query_selector"))
@@ -2026,6 +2026,14 @@ def _names_a_page(names):
     return any(name in _CODE_LOCATOR_NAMES or _CODE_FIELD_CALLS.fullmatch(name)
                or re.split(r"_|(?<=[a-z0-9])(?=[A-Z])", name.rstrip("0123456789"))[-1].lower() in _CODE_PAGE_WORDS
                for name in names)
+
+
+def _holds_a_field_call(text, argument):
+    """Whether an argument's tokens end a chain that holds one of the locator calls whose strings name a field, as
+    screen.getByLabelText("Password") or await screen.findByLabelText("Password") does."""
+    return bool(argument) and argument[-1][0] in ")]" and any(
+        a[0] == "n" and b[0] == "(" and _CODE_FIELD_CALLS.fullmatch(text, a[1], a[2])
+        for a, b in zip(argument, argument[1:]))
 
 
 def _names_an_element(names):
@@ -2276,21 +2284,29 @@ _REGEX_IN_BRACKETS = re.compile(r"(?<=[(,:=])\s*/((?:\\.|[^/\\\n])+)/[a-z]*(?=\s
 _CODE_KEYWORDS = frozenset(("return", "await", "yield", "typeof", "void", "delete", "throw", "case", "in", "of", "new",
                             "not", "and", "or", "is", "if", "elif", "else", "while", "assert", "lambda", "with", "do"))
 # The calls whose strings name a field, as the field rule lists them: a locator's getBy*/get_by_*, locator, $, frame,
-# find_element and their kin (a frame locator, Selenium 3's find_element_by_*, C#'s FindElement, Puppeteer's $x, a wait
-# for a selector). Another call in the chain (filter, describe, nth, and, or) names none.
-_CODE_FIELD_CALLS = re.compile(r"(?:getBy|get_by_)\w+|locator|frameLocator|frame_locator|\$\$?|\$x|frame"
+# find_element and their kin (Testing Library's findBy* and queryBy*, a frame locator, WebdriverIO's shadow$, react$ and
+# custom$, Selenium 3's find_element_by_*, C#'s FindElement, Puppeteer's $x and its waits for a selector or an XPath,
+# pyppeteer's J, JJ, Jx and xpath, Selenium's explicit wait and until; and Cypress's get, find and contains in a chain
+# from cy, _CYPRESS_FIELD_CALLS, as a secret store's get("password") is none). Another call in the chain (filter,
+# describe, nth, and, or) names none.
+_CODE_FIELD_CALLS = re.compile(r"(?:get|find|query)(?:All)?By\w+|get_by_\w+|locator|frameLocator|frame_locator"
+                               r"|(?:shadow|react|custom)?\$\$?|\$x|JJ?|Jx|xpath|frame"
                                r"|find_elements?(?:_by_\w+)?|findElements?|FindElements?|querySelector(?:All)?"
-                               r"|query_selector(?:_all)?|waitForSelector|wait_for_selector|element")
+                               r"|query_selector(?:_all)?|waitFor(?:Selector|XPath)?|wait_for_selector|element"
+                               r"|wait|until")
+_CYPRESS_FIELD_CALLS = frozenset(("get", "find", "contains"))
 
 
 def _receiver_strings(text, tokens, k, comments=(), limit=200):
     """The strings of the locator calls in the chain before tokens[k], read back over names, dots and whole brackets,
     as 'page.getByRole("textbox", {name: "Password"})' or 'driver.find_element(By.ID, "password")' gives a field's
-    labels: each call _CODE_FIELD_CALLS names, a container's as much as the field's own, and a receiver in brackets.
+    labels: each call _CODE_FIELD_CALLS names, a container's as much as the field's own, and a receiver in brackets;
+    in a chain from cy, Cypress's get, find and contains too.
     A chain is joined by dots: it reads no further back than a name with no dot before it, or a bracket that follows
     no name or bracket, so another statement's strings are never this field's. An object's key ({"name": ...}) names
     an option, not the field."""
     strings, names, inside, quoted, depth, stop, close, close_k = [], [], [], [], 0, max(-1, k - limit), None, None
+    cypress = []  # Cypress's calls' strings, the chain's only if it starts at cy
     in_comment = comments.inside if comments else (lambda at: False)
     k -= 1
     while k > stop:
@@ -2304,20 +2320,22 @@ def _receiver_strings(text, tokens, k, comments=(), limit=200):
                     inside.append(text[slice(*_code_text(text, tokens[k]))])
             if not depth:
                 if k == 0 or tokens[k - 1][0] not in ("n", ")", "]") or tokens[k - 1][0] == "n" and text[
-                        tokens[k - 1][1]:tokens[k - 1][2]] in _CODE_KEYWORDS:
+                        tokens[k - 1][1]:tokens[k - 1][2]] in _CODE_KEYWORDS and (k < 2 or tokens[k - 2][0] != "."):
                     # a bracket that calls or indexes nothing starts the chain: a receiver in brackets,
-                    # (await page.$("#password")), is a chain of its own, read as one, its calls' strings and names
+                    # (await page.$("#password")), is a chain of its own, read as one, its calls' strings and names;
+                    # a keyword's name after a dot is a method's (locator.and(...), locator.or(...)), a call
                     held, held_names = _receiver_strings(text, tokens, close_k, comments, limit)
                     strings += held
                     names += held_names
                     break
-                if kind == "(" and tokens[k - 1][0] == "n" and _CODE_FIELD_CALLS.fullmatch(
-                        text, tokens[k - 1][1], tokens[k - 1][2]):
-                    strings += inside  # a regex literal in the brackets ("getByLabel(/Password/i)") too
+                name = text[tokens[k - 1][1]:tokens[k - 1][2]] if kind == "(" and tokens[k - 1][0] == "n" else ""
+                if name and (_CODE_FIELD_CALLS.fullmatch(name) or name in _CYPRESS_FIELD_CALLS):
+                    held = strings if _CODE_FIELD_CALLS.fullmatch(name) else cypress
+                    held += inside  # a regex literal in the brackets ("getByLabel(/Password/i)") too
                     for regex in _REGEX_IN_BRACKETS.finditer(text, tokens[k][2], close):
                         if not in_comment(regex.start(1)) and not any(a <= regex.start(1) < b for a, b in quoted):
                             # a regex in a comment or in a string's quotes ("Search (/password/)") names no field
-                            strings.append(re.sub(r"\\.|[\^$.*+?()\[\]{}|]", " ", regex.group(1)).strip())
+                            held.append(re.sub(r"\\.|[\^$.*+?()\[\]{}|]", " ", regex.group(1)).strip())
                 inside, quoted = [], []
         elif kind in ")]":
             depth, close, close_k = 1, tokens[k][1], k
@@ -2328,6 +2346,8 @@ def _receiver_strings(text, tokens, k, comments=(), limit=200):
         elif kind != ".":
             break
         k -= 1
+    if names and names[-1] == "cy":
+        strings += cypress
     return strings, names
 
 
@@ -2458,15 +2478,24 @@ def _typed_code_edits(text):
             or any(kw in _CODE_VALUE_KEYWORDS and any(t[0] == "s" for t in ts) for kw, ts in args)))
         if selector:
             own.append(positional[0])
+        # the call's own selector by its keyword, page.fill(selector="#password", value=...), on any variable
+        named = method in _CODE_SELECTOR_METHODS and any(
+            kw == "selector" and any(t[0] == "s" for t in ts) for kw, ts in args)
         labels += [text[slice(*_code_text(text, t))] for ts in own for t in ts if t[0] == "s"]  # the call's own field
+        # the call's own field as a locator call, user.type(screen.getByLabelText("Password"), text) or Selenium's
+        # send_keys_to_element(driver.find_element(By.ID, "password"), text): its listed calls' strings, read as a chain
+        field = not selector and len(positional) > 1 and _holds_a_field_call(text, positional[0])
+        if field:
+            labels += _receiver_strings(text, tokens, bisect.bisect_left(starts, positional[0][-1][1]) + 1, comments)[0]
+            own.append(positional[0])
         # the value: a value= keyword's, or the first argument after the field that holds a string (send_keys may
         # take a key first, Keys.HOME)
         typed = [ts for kw, ts in args if kw in _CODE_VALUE_KEYWORDS] or [
-            ts for ts in positional[1 if selector else 0:] if any(t[0] == "s" for t in ts)][:1]
+            ts for ts in positional[1 if selector or field else 0:] if any(t[0] == "s" for t in ts)][:1]
         strings = [t for ts in typed for t in ts if t[0] == "s"]
         if typed and len(typed[0]) > 1 and typed[0][0][0] == "n" and typed[0][1][0] in "([.":
             continue  # a value the code computes: os.environ["PW"], decrypt("vault:pw"), secrets.pw
-        if not strings or not (selector or _names_a_page(names)):
+        if not strings or not (selector or named or field or _names_a_page(names)):
             continue  # a value from a variable, or a call on no page and no locator
         if not labels:  # only typing into the focused field (page.keyboard.type) is read, by the value's shape
             a, b = _code_text(text, strings[0])
