@@ -835,6 +835,40 @@ class ArgumentListCostTest(unittest.TestCase):
         self.assertLess(lots, 5.0, lots)
 
 
+class ReviewEightTest(unittest.TestCase):
+    """The eighth review's findings: a printed dict or command after a word's apostrophe, JSON-escaped, lost the text
+    after the password, and a list of arguments past the parser's old 200 KB cap kept its password."""
+
+    WRAPS = (lambda t: t, json.dumps, lambda t: json.dumps(json.dumps(t)))
+    COMMAND = "keytool -file <(cat /srv/c.pem) -storepass " + PASSWORD
+
+    def masks_only_the_password(self, *texts):
+        for text in texts:
+            for wrap in self.WRAPS:
+                with self.subTest(text=wrap(text)[:90]):
+                    self.assertEqual(mask(wrap(text)), wrap(text.replace(PASSWORD, "[masked]")))
+
+    def test_a_printed_dict_keeps_its_fields_escaped_once_and_twice(self):
+        self.masks_only_the_password("Couldn't run: " + repr({"cmd": self.COMMAND, "cwd": "/srv", "exit": 1}))
+
+    def test_a_printed_command_after_an_apostrophe_keeps_the_text_after_it(self):
+        self.masks_only_the_password("Couldn't run: %r (exit status 1)" % self.COMMAND,
+                                     "Couldn't run: %r, see the log" % self.COMMAND,
+                                     "It's the team's key: %r" % self.COMMAND)
+
+    def test_a_printed_bytes_value_bounds_its_command(self):
+        self.masks_only_the_password("print: %r done" % (self.COMMAND + "\n").encode())
+
+    def test_a_list_past_200_kb_is_read_whole(self):
+        items = ["keytool", "-list", "-storepass", PASSWORD] + ["-J-Dprop%d=" % i + "x" * 100 for i in range(2000)]
+        masked = ["[masked]" if item == PASSWORD else item for item in items]
+        for text, want in ((json.dumps(items), json.dumps(masked)),
+                           (str(subprocess.CalledProcessError(1, items)), str(subprocess.CalledProcessError(1, masked)))):
+            with self.subTest(text=text[:60], size=len(text)):
+                self.assertGreater(len(text), 200000)
+                self.assertEqual(mask(text), want)
+
+
 class RevisionTest(unittest.TestCase):
     def test_stored_rows_are_masked_again(self):
         self.assertEqual(masking.REVISION, 11)
