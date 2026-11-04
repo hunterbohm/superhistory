@@ -577,7 +577,7 @@ def _gitleaks_edits(text):
 # Which mask() a stored row was masked with. A row of another version, or of none, is masked again when read and by
 # the next ingest. The patterns change it by themselves; bump REVISION when the code that applies them changes what
 # it masks.
-REVISION = 11
+REVISION = 12
 VERSION = hashlib.sha256(repr((REVISION, [p.pattern for p in SECRET_PATTERNS + PREFIXED_SECRETS], KEYED_SECRET.pattern,
                                 ENV_KEY_SECRET.pattern, JSON_SECRET.pattern, FLAG_SECRET.pattern, AUTH_SECRET.pattern,
                                 COMMAND_FLAGS, PASSWORD_NAME.pattern, sorted(PLACEHOLDERS), REFERENCE.pattern,
@@ -1812,10 +1812,10 @@ def _run(text, rules, origin=None, named=None, fired=None):
         if pattern is not main and any(not main.fullmatch(text, m.start(), m.end()) for m in found):
             note(pattern)  # a link with no user name
         text, origin = _edit(text, origin, [(m.end(1), m.end(), "[masked]") for m in found])
-    if reading != "main":
+    if reading != "main" and _WRAPPINGS.get():
         edits = _wrapping_edits(text)
         if edits:
-            note(edits)
+            note(_WRAPPINGS)  # which _masked looks for: it then hides what the mask without this reading hides too
         text, origin = _edit(text, origin, edits)
     if _ANY_COMMAND.search(text):
         for n, command in enumerate(_COMMANDS[:_MAIN_COMMANDS] if reading == "main" else _COMMANDS):
@@ -2281,18 +2281,48 @@ MAX_PASSES = 8
 capped = 0
 # mask()'s note of whether a pass read otherwise than main's own could (_once's `novel`), for its passes alone.
 _NOVEL = contextvars.ContextVar("kb_mask_novel", default=None)
+# Whether a pass reads the wrappings (_wrapping_edits). Switched off, the mask reads as it did before them, as main
+# does, for _unwrapped_hidden.
+_WRAPPINGS = contextvars.ContextVar("kb_mask_wrappings", default=True)
+
+
+def _unwrapped_hidden(text):
+    """What the mask hides of `text` with the reading of wrappings switched off, a mark at each character none of its
+    result came from; where it still changes after MAX_PASSES, the region still changing is hidden whole, as
+    mask_with_origin hides it."""
+    token = _WRAPPINGS.set(False)
+    try:
+        _, origin = mask_with_origin(text)
+    finally:
+        _WRAPPINGS.reset(token)
+    hidden = bytearray(b"\x01") * len(text)
+    for c in origin:
+        if c >= 0:
+            hidden[c] = 0
+    return hidden
 
 
 def _masked(text):
     """mask()'s passes: (the text, where each of its characters came from in `text`, whether it still changed after
     MAX_PASSES). Where a pass read otherwise than main's own could (_once's `novel`), main's own mask is made too
     (_main_hidden), and every character it hides is hidden here: no reading added since can show what main hides, in
-    a later pass either, where a placeholder one put down ends a value main reads on through."""
+    a later pass either, where a placeholder one put down ends a value main reads on through. Where the reading of
+    wrappings masked anything, the mask without it is made too (_unwrapped_hidden), and all it hides is hidden here,
+    even where the passes still change: a field of a container read whole and masked as a secret can hold a
+    command's name, which the readings of commands after it read across the container ("{'password': 'keytool'}
+    -storepass ..."), as main's do."""
     novel = []
     masked, origin, still = _passes(text, lambda t, o: _once(t, _TEXT_RULES, o, novel))
-    if still or not novel:
+    if not novel:
+        return masked, origin, still
+    unwrapped = _unwrapped_hidden(text) if any(_WRAPPINGS in fired for fired in novel) else None
+    if still:
+        if unwrapped is not None:
+            masked, origin = _hide(masked, origin, unwrapped)
         return masked, origin, still
     hidden = _main_hidden(text)
+    if unwrapped is not None:
+        hidden = unwrapped if hidden is None else bytes(a | b for a, b in zip(hidden, unwrapped))
     if hidden is None or not any(c >= 0 and hidden[c] for c in origin):
         return masked, origin, False
     joined, came = _hide(masked, origin, hidden)
