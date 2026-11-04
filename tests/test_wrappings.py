@@ -1293,6 +1293,205 @@ class ReviewSixteenTest(unittest.TestCase):
                 db.close()
 
 
+class ReviewSeventeenTest(unittest.TestCase):
+    """The seventeenth review's findings: a span read whole held a number Python parses but this reading could not
+    use. A hexadecimal integer thousands of digits long, which the guard on runs of decimal digits does not see,
+    raised ValueError where mask_all printed it beside its field's name; an integer too large for a float added to an
+    imaginary number raised OverflowError inside ast.literal_eval, which the parser's fallback did not catch. Either
+    raised out of mask(), and the item was dropped; main keeps both texts as they are. Such a span is read as text."""
+
+    TEXTS = ('{"command":"keytool","value":0x' + "f" * 4000 + "}", '["keytool", ' + "9" * 400 + "+1j]")
+
+    @staticmethod
+    def forms(text):
+        return text, json.dumps(text), json.dumps(json.dumps(text))
+
+    def test_the_reviews_two_texts_stay_as_main_keeps_them(self):
+        for text in self.TEXTS:
+            for form in self.forms(text):
+                with self.subTest(form=form[:60]):
+                    self.assertEqual(mask(form), form)
+                    self.assertEqual(mask_all({"output": form}), {"output": form})
+
+    def test_such_rows_are_stored(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = store.connect(os.path.join(tmp, "kb.sqlite"))
+            try:
+                for n, text in enumerate(self.TEXTS):
+                    store.store_item(db, "codex", f"c-r17-{n}", "2026-11-04T10:00:00Z", "build", text, {})
+                # the store keeps long content in chunks, in order
+                stored = "".join(content for (content,) in db.execute("SELECT content FROM docs ORDER BY rowid"))
+                for text in self.TEXTS:
+                    self.assertIn(text, stored)
+            finally:
+                db.close()
+
+    def test_a_number_of_a_thousand_digits_in_any_base_is_no_container_read_whole(self):
+        # As a run of 1,000 decimal digits is not (_DIGIT_RUN), by the number's value, however it is written.
+        under, over = 10 ** 999 - 1, 10 ** 999
+        for write in (hex, oct, bin, lambda n: hex(n).replace("0x", "0X"), lambda n: "-" + hex(n)):
+            with self.subTest(written=write(255)):
+                self.assertIsNotNone(masking._parse_container(f'["keytool", {write(under)}]'))
+                self.assertIsNone(masking._parse_container(f'["keytool", {write(over)}]'))
+                self.assertIsNone(masking._parse_container(f'{{{write(over)}: "keytool"}}'))
+                self.assertIsNone(masking._parse_container(f'["keytool", ({write(over)}, 1)]'))
+        for text in ('["keytool", ' + "9" * 400 + "+1j]", '["keytool", -' + "9" * 310 + "-2j]",
+                     '["keytool", 0x' + "f" * 300 + "+0j]"):
+            with self.subTest(text=text[-12:]):
+                self.assertIsNone(masking._parse_container(text))
+
+    def test_numbers_of_every_kind_and_size_in_containers_mask_and_hide_what_main_hides(self):
+        from tests.test_mask_against_today import hidden, main
+        rng = random.Random(17)
+
+        def digits(n, alphabet):
+            return rng.choice(alphabet[1:]) + "".join(rng.choice(alphabet) for _ in range(n - 1))
+
+        def number():
+            n = rng.choice((1, 5, 300, 999, 1000, 1200, 3000, 4400))
+            return rng.choice((
+                lambda: "0x" + digits(n, "0123456789abcdef"), lambda: "0o" + digits(n, "01234567"),
+                lambda: "0b" + digits(n, "01"), lambda: digits(min(n, 999), "0123456789"),
+                lambda: digits(rng.choice((309, 310, 400, 999)), "0123456789") + "+1j",
+                lambda: "0x" + digits(rng.choice((256, 300, 1000)), "0123456789abcdef") + rng.choice(("+1j", "-2j")),
+                lambda: rng.choice(("1e999j", "-1e400j", "0x10+1e309j", "1e999", "-1e400", "1" * 400 + ".0")),
+                lambda: "0x" + "_".join(digits(4, "0123456789abcdef") for _ in range(max(1, n // 4))),
+                lambda: "-0x" + digits(n, "0123456789abcdef")))()
+
+        shapes = (lambda v: f'["keytool", {v}, "-alias", "x"]', lambda v: f'{{"command": "keytool", "value": {v}}}',
+                  lambda v: f'{{{v}: "keytool", "n": 1}}', lambda v: f'("mongosh", {v})',
+                  lambda v: f'{{"argv": ["keytool", [{v}, {{"k": {v}}}]]}}',
+                  lambda v: f'["keytool", "-storepass", "{PASSWORD}", {v}]',
+                  lambda v: f'["keytool", {v}, "-storepass", "{PASSWORD}"]')
+        for _ in range(200):
+            text = rng.choice(shapes)(number())
+            for _ in range(rng.choice((0, 0, 1, 2))):
+                text = json.dumps(text)
+            text = rng.choice(("{}", "print({})", "Traceback line: {} failed", "cmd = {}\nnext")).format(text)
+            with self.subTest(text=text[:80]):
+                masked = mask(text)
+                mask_all({"output": text})
+                self.assertLessEqual(hidden(main, text), hidden(masking, text))
+                if PASSWORD not in main.mask(text):
+                    self.assertNotIn(PASSWORD, masked)
+
+
+class Injected(Exception):
+    """An error no step of reading a span whole raises today."""
+
+
+class ReadWholeErrorTest(unittest.TestCase):
+    """The coordinator's structural change after the seventeenth review: reading a span whole (its parse, the walks
+    over what it parsed, mask_all with its printing of a value beside its field's name, placing each mask back) runs
+    inside one guard, so any error in it leaves the span read as a span that does not parse, as main reads it, and a
+    new kind of error is no crash that drops the item. Each step is made to raise here."""
+
+    TEXTS = ('run(["keytool", "-alias", "team cert", "-v"])',
+             '{"command": "keytool", "value": 5, "args": ["-alias", "x"]}',
+             json.dumps({"command": "keytool", "value": 5}), str({"command": "mongosh", "port": 27017}),
+             'run(["keytool", "-storepass", "' + PASSWORD + '", "-v"])',
+             json.dumps(["mongosh", "-u", "admin", "-p", PASSWORD]), str({"command": "keytool", "pin": 1234}),
+             str({b"password": b"keytool"}) + " -storepass " + PASSWORD,
+             json.dumps({"cmd": "keytool -storepass " + PASSWORD}),
+             "print(" + str(["mysql", "-u", "root", "-p" + PASSWORD]) + ")") + ReviewSeventeenTest.TEXTS
+    # A text each of whose spans that names a command reaches every step: the dict and the list in it each print a
+    # number beside its field's name ("value", "n") and place a mask back.
+    EVERY_STEP = json.dumps({"value": 5, "argv": ["keytool", "-storepass", PASSWORD, {"n": 1}]})
+
+    def setUp(self):
+        masking._container_edits_at.cache_clear()  # read each text afresh, so each injection runs
+        self.addCleanup(masking._container_edits_at.cache_clear)
+
+    @staticmethod
+    def output(text):
+        masking._container_edits_at.cache_clear()
+        return mask(text), mask_all({"output": text})
+
+    def off(self, text):
+        with mock.patch.object(masking, "_wrapping_edits", lambda t: []):
+            return self.output(text)
+
+    def injections(self, error=Injected):
+        """(the step, a patch that makes it raise `error`, its count of raises)"""
+        fired = []
+
+        def raising(*args, **kwargs):
+            fired.append(1)
+            raise error("injected")
+
+        class Unprintable(int):  # a number whose printing raises, as one past Python's digit limit does
+            def __format__(self, spec):
+                fired.append(1)
+                raise error("injected")
+
+        def numbers(value):
+            if isinstance(value, dict):
+                return {numbers(k): numbers(v) for k, v in value.items()}
+            if isinstance(value, (list, tuple)):
+                return type(value)(numbers(v) for v in value)
+            return Unprintable(value) if isinstance(value, int) and not isinstance(value, bool) else value
+
+        parse = masking._parse_container
+        real_mask_all = masking.mask_all
+
+        def mask_all_inside(value, key=None):  # mask_all as the reading of a span calls it, not as a caller does
+            if masking._READ_DEPTH.get()[0] > 0:
+                raising()
+            return real_mask_all(value, key)
+
+        yield "parse", mock.patch.object(masking, "_parse_container", raising), fired
+        for walk in ("_as_text", "_long_number", "_leaf_pairs"):
+            yield walk, mock.patch.object(masking, walk, raising), fired
+        yield "printing", mock.patch.object(
+            masking, "_parse_container", lambda source: None if parse(source) is None else numbers(parse(source))), fired
+        yield "mask_all", mock.patch.object(masking, "mask_all", mask_all_inside), fired
+        yield "placing", mock.patch.object(masking, "_masked_parts", raising), fired
+
+    def test_an_error_at_any_step_masks_as_with_the_reading_of_wrappings_off(self):
+        for step, patch, fired in self.injections():
+            reached = 0
+            for text in self.TEXTS + (self.EVERY_STEP, str(json.loads(self.EVERY_STEP))):
+                with self.subTest(step=step, text=text[:60]):
+                    on, off = self.output(text), self.off(text)
+                    before = len(fired)
+                    with patch:
+                        got = self.output(text)
+                    if len(fired) > before:  # the step was reached in this text, and raised
+                        reached += 1
+                        self.assertEqual(got, off)
+                    else:  # not reached here (no number printed, no mask to place): the reading as it is
+                        self.assertEqual(got, on)
+            with self.subTest(step=step, reached=True):
+                self.assertGreater(reached, 0)
+
+    def test_an_error_at_any_step_keeps_the_row(self):
+        for step, patch, fired in self.injections():
+            with self.subTest(step=step), tempfile.TemporaryDirectory() as tmp:
+                db = store.connect(os.path.join(tmp, "kb.sqlite"))
+                try:
+                    texts = self.TEXTS + (self.EVERY_STEP,)
+                    expected = []
+                    with patch:
+                        for n, text in enumerate(texts):
+                            expected.append(self.output(text)[0])
+                            masking._container_edits_at.cache_clear()
+                            store.store_item(db, "codex", f"c-err-{n}", "2026-11-04T10:00:00Z", "build", text, {})
+                    for n, text in enumerate(texts):
+                        stored = "".join(c for (c,) in db.execute(
+                            "SELECT content FROM docs WHERE source_id = ? ORDER BY id", (f"c-err-{n}",)))
+                        self.assertEqual(stored, expected[n])
+                finally:
+                    db.close()
+
+    def test_an_interrupt_or_an_exit_still_ends_the_run(self):
+        for error in (KeyboardInterrupt, SystemExit):
+            for step, patch, _ in self.injections(error):
+                with self.subTest(error=error.__name__, step=step):
+                    masking._container_edits_at.cache_clear()
+                    with patch, self.assertRaises(error):
+                        mask(self.EVERY_STEP)
+
+
 class RevisionTest(unittest.TestCase):
     def test_stored_rows_are_masked_again(self):
         self.assertEqual(masking.REVISION, 31)
