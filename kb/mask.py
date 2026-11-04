@@ -2221,16 +2221,18 @@ def _token_tail(text):
 # A line of base64 as a key's rest or public material is written, past what can stand around it (quotes, comment and
 # quote marks, a list's punctuation), read without the characters a reader does not see.
 _BASE64_ONLY_LINE = re.compile(r"[ \t\r\"'#>*,;|\]]*([A-Za-z0-9+/]+=*)?[ \t\r\"',;]*")
-_ANY_LINE_OF_BASE64 = re.compile(r"(?<![A-Za-z0-9+/=])(?=[A-Za-z0-9+/=]*[A-Z])(?=[A-Za-z0-9+/=]*[a-z])"
-                                 r"(?=[A-Za-z0-9+/=]*[0-9+/])[A-Za-z0-9+/=]{36,}")
+# A run of base64 of both cases, as a key's fragment is, past public material: the run today's main would hide that the
+# coordinator's exception for this branch lets no text show (16 characters, as tests/test_mask_against_today.py reads).
+_MIXED_RUN = re.compile(r"(?<![A-Za-z0-9+/])(?=[A-Za-z0-9+/]*[A-Z])(?=[A-Za-z0-9+/]*[a-z])[A-Za-z0-9+/]{16,}")
 
 
 def _public_first(text, start, end):
     """Whether text[start:end], what main reads as a key's rest after a placeholder, starts with whole lines of base64
     that decode to public material, one element or a run of them as a chain of certificates is (_public_material), and
-    holds no line of base64 past them: then it is no key's rest, and the lines after the material, a port's number or
-    an acronym among their words ("port 8080", "HTTP", "build 20261104"), are its own. A run of base64 lines that
-    holds a private key's bytes too decodes to no such run. Read once, in time in proportion."""
+    holds no run of base64 of both cases past them through `end`, all main's reading of a key's rest hides (_MIXED_RUN):
+    then it is no key's rest, and the lines after the material, a port's number or an acronym among their words ("port
+    8080", "HTTP", "build 20261104"), are its own. A run of base64 lines that holds a private key's bytes too decodes
+    to no such run. Read once, in time in proportion."""
     chunks, at, last = [], start, start
     for brk in itertools.chain(_LINE_BREAK.finditer(text, start, end), [None]):
         stop = brk.start() if brk else end
@@ -2260,7 +2262,7 @@ def _public_first(text, start, end):
         if element is None or not _public_material(data[at:element[2]]):
             return False
         at = element[2]
-    return not _ANY_LINE_OF_BASE64.search(INVISIBLE.sub("", text[last:end]))
+    return not _MIXED_RUN.search(INVISIBLE.sub("", _KEY_ESCAPE.sub("", text[last:end])))
 
 
 def _public_rest(rest):
@@ -2281,11 +2283,11 @@ def _key_rest_edits(text, starts=_REST_START):
         if at.start() < core or not start.match(text, at.end()):
             continue
         reach = _REST.match(text, at.end()).end()
-        if _public_first(text, at.end(), reach):
-            continue  # public material, then no line of base64: no key's rest, and the lines after it are its own
-        core = reach
         tail = tail or _token_tail(text)
-        end = tail(core)  # a placeholder past the core, in the tail, still reads its own rest
+        end = tail(reach)  # a placeholder past the core, in the tail, still reads its own rest
+        if _public_first(text, at.end(), end):
+            continue  # public material, then no run of base64 through all main hides: no key's rest
+        core = reach
         if end <= covered:  # which ends inside one already masked
             continue
         if not _public_rest(text[at.end():end]):
