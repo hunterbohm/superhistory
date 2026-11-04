@@ -577,7 +577,7 @@ def _gitleaks_edits(text):
 # Which mask() a stored row was masked with. A row of another version, or of none, is masked again when read and by
 # the next ingest. The patterns change it by themselves; bump REVISION when the code that applies them changes what
 # it masks.
-REVISION = 12
+REVISION = 13
 VERSION = hashlib.sha256(repr((REVISION, [p.pattern for p in SECRET_PATTERNS + PREFIXED_SECRETS], KEYED_SECRET.pattern,
                                 ENV_KEY_SECRET.pattern, JSON_SECRET.pattern, FLAG_SECRET.pattern, AUTH_SECRET.pattern,
                                 COMMAND_FLAGS, PASSWORD_NAME.pattern, sorted(PLACEHOLDERS), REFERENCE.pattern,
@@ -1055,8 +1055,11 @@ def _masked_parts(decoded, masked):
 
 
 # A run of digits long enough that str-to-int is slow on Python 3.9 (no digit limit there), or that no real value
-# holds: a span with one is left for the fallback, not parsed.
+# holds: a span with one is left for the fallback, not parsed. A number written in hexadecimal, octal or binary parses
+# in time in proportion, so its value is held to the same bound once parsed (_LONG_NUMBER): past it, printing it beside
+# its field's name, as mask_all does, raises ValueError past Python's digit limit.
 _DIGIT_RUN = re.compile(r"[0-9]{1000,}")
+_LONG_NUMBER = 10 ** 999
 # A span longer than 1 MiB, the bar's item size, or nested past _CONTAINER_DEPTH, is left for the fallback.
 _CONTAINER_MAX = 1 << 20
 _CONTAINER_DEPTH = 100
@@ -1179,17 +1182,34 @@ def _containers(text, i=0, n=None, brackets=None):
 
 def _parse_container(source):
     """`source`, a bracketed span, parsed as a list, dict or tuple by json.loads or, failing that, Python's
-    ast.literal_eval, or None where it does not parse to one of those. The size, depth and digit guards run before
-    this, and every parser error falls back to None: TypeError too, which ast.literal_eval raises for a key or a set
-    member that is a list or a dict ({[]: "keytool"})."""
+    ast.literal_eval, or None where it does not parse to one of those or holds a number of 1,000 digits or more in any
+    base (_long_number). The size, depth and digit guards run before this, and every parser error falls back to None:
+    TypeError too, which ast.literal_eval raises for a key or a set member that is a list or a dict ({[]: "keytool"}),
+    and OverflowError, which it raises adding an integer too large for a float to an imaginary number (9...9+1j)."""
     for parse in (json.loads, _literal_eval):
         try:
             value = parse(source)
-        except (ValueError, SyntaxError, TypeError, RecursionError, MemoryError):
+        except (ValueError, SyntaxError, TypeError, OverflowError, RecursionError, MemoryError):
             continue
         if isinstance(value, (list, dict, tuple)):
-            return value
+            return None if _long_number(value) else value
     return None
+
+
+def _long_number(value):
+    """Whether a parsed value holds, at any depth, in a key or a member, an integer of 1,000 digits or more
+    (_LONG_NUMBER). Walked with a stack: the depth guard holds the nesting, but a walk needs no recursion."""
+    todo = [value]
+    while todo:
+        item = todo.pop()
+        if isinstance(item, dict):
+            todo += item.keys()
+            todo += item.values()
+        elif isinstance(item, (list, tuple, set, frozenset)):
+            todo += item
+        elif isinstance(item, int) and not isinstance(item, bool) and abs(item) >= _LONG_NUMBER:
+            return True
+    return False
 
 
 def _literal_eval(source):
