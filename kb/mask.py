@@ -3,7 +3,6 @@ import bisect
 import contextvars
 import functools
 import hashlib
-import itertools
 import logging
 import math
 import os
@@ -938,44 +937,40 @@ def _opens_a_string(text, at, line):
 
 @functools.lru_cache(maxsize=64)
 def _typing_brackets(text):
-    """The brackets of each typing call in code (_CODE_FILL_CALL, _CODE_TYPING_CALL) as the typing reader reads them,
-    from its "(" through its closing bracket, or through the end of the code that holds it where none closes it: (the
-    spans' starts in order, and for each the furthest any span up to it reaches)."""
+    """Where each typing call's own brackets stand in code (_CODE_FILL_CALL, _CODE_TYPING_CALL), as the typing reader
+    reads them: the "(" after its name, and the bracket that closes it where one does, in order."""
     if not _CODE_HINT.search(text):
-        return (), ()
+        return ()
     tokens, _, stretches, _ = _code_tokens(text)
     stretches = _Stretches(text, stretches)
-    starts, spans = [t[1] for t in tokens], []
+    starts, found = [t[1] for t in tokens], []
     for pattern in (_CODE_FILL_CALL, _CODE_TYPING_CALL):
         for call in pattern.finditer(text):
             k = bisect.bisect_left(starts, call.end() - 1)
             if k < len(tokens) and tokens[k][0] == "(" and tokens[k][1] == call.end() - 1:
-                bound = stretches.holding(tokens[k][1])[1]
-                _, close = _call_span(tokens, k, bound)
-                spans.append((tokens[k][1], tokens[close][1] + 1 if close is not None else bound))
-    spans.sort()
-    return tuple(a for a, _ in spans), tuple(itertools.accumulate((b for _, b in spans), max))
+                _, close = _call_span(tokens, k, stretches.holding(tokens[k][1])[1])
+                found += [tokens[k][1]] + ([tokens[close][1]] if close is not None else [])
+    return tuple(sorted(found))
 
 
-def _in_typing_brackets(text, start, end):
-    """Whether text[start:end] reaches into a typing call's own brackets (_typing_brackets): some span starts before
-    `end` and reaches past `start`."""
-    starts, reach = _typing_brackets(text)
-    k = bisect.bisect_left(starts, end)
-    return k > 0 and reach[k - 1] > start
+def _crosses_typing_bracket(text, start, end):
+    """Whether text[start:end] holds one of a typing call's own brackets (_typing_brackets)."""
+    found = _typing_brackets(text)
+    k = bisect.bisect_left(found, start)
+    return k < len(found) and found[k] < end
 
 
 def _quoted_password_span(m):
-    """_password_span, but not where the match reaches into a typing call's own brackets, which the typing reader
-    reads (the coordinator's rule after rounds 48 to 51: a label's ":" and closing quote, in
-    page.get_by_label(r'Re enter password:').fill(...), opened no value there), and not for a name inside a string
-    that the quote after its ":" or "=" closes: in
+    """_password_span, but not where the value runs across a typing call's own bracket, which the typing reader reads
+    (the coordinator's rule after rounds 48 to 51: a label's ":" and closing quote, as in
+    page.get_by_label(r'Re enter password:').fill(...), open no value, since a password holds no call's bracket and
+    ").fill(" is code), and not for a name inside a string that the quote after its ":" or "=" closes: in
     getByLabel("Password:").fill(...) or get_by_label(r"Password:").fill(...) the name is a label's, and that quote
     opens no value. The name is in such a string when the nearest quote of its kind before it on its line opens one
     (_opens_a_string); one after a letter, a digit or other punctuation closes a string or is an apostrophe ("it's",
     "users'"). A name whose own quote closes before the ":" ('"password": "..."') is read."""
     separator, text = m.group(2), m.string
-    if _in_typing_brackets(text, m.start(), m.end() + 1):  # the value's closing quote included
+    if _crosses_typing_bracket(text, m.start(3), m.end(3)):
         return None
     quote = separator[-1]
     if not separator.startswith(quote):
