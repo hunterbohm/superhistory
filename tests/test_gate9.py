@@ -2646,6 +2646,7 @@ class ReviewFiftyTest(unittest.TestCase):
                    "page.get_by_label(R'Re-type password:').fill('sunshine')",
                    'page.get_by_label("Type your password").fill("sunshine")',
                    'page.get_by_label("Re type password").fill("sunshine")',
+                   'page.get_by_label("Please type your PIN").fill("sunshine")',
                    'page.get_by_placeholder("Type password").fill("sunshine")',
                    'page.locator("#typePassword").fill("sunshine")')
 
