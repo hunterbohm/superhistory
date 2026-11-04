@@ -1071,8 +1071,10 @@ class ReviewElevenTest(unittest.TestCase):
     def test_many_command_names_cost_time_in_proportion(self):
         names = ["curl", "mysql", "sshpass", "login", "redis-cli", "mongosh", "twine", "keytool", "jarsigner", "aws"]
 
+        # Each command is named twice before the 64 items ahead of the first value, so each value's line is as long as
+        # it gets from the start, and every command is named again after it.
         def items(n):
-            found = ["keytool"]
+            found = ["keytool"] + [x for name in names * 2 for x in ("-alias", name)] + ["-v"] * 64
             for i in range(n):
                 found += ["-alias", names[i % len(names)] + "-%d" % i, names[i % len(names)], "-storepass", PASSWORD]
             return found
@@ -1080,7 +1082,7 @@ class ReviewElevenTest(unittest.TestCase):
         self.assertNotIn(PASSWORD, json.dumps(mask_all(small)))
         little, lots = took_call(lambda: mask_all(small)), took_call(lambda: mask_all(large))
         self.assertLess(lots, 6 * little + 0.2, (little, lots))  # four times the list, about four times the CPU
-        self.assertLess(lots, 15.0, lots)  # each value after a secret's flag reads its line twice: a constant per value
+        self.assertLess(lots, 20.0, lots)  # each value after a secret's flag reads its line twice: a constant per value
 
 
 class RevisionTest(unittest.TestCase):
