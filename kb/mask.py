@@ -2064,7 +2064,8 @@ _KEY_BODY_START = r"(?:MI[E-P][A-Za-z0-9+/]|M[A-H][A-Za-z0-9+/][Cw]|b3Bl)"
 # re-wrapped holds. main's pattern stops at the first character that is not base64 or a space, so in escaped text, in
 # code with a string a line, behind comment or quote marks and where a chunk ended between a header and its line break,
 # it leaves exactly that. The line is base64 to its end, or to a quote, a backslash or a cut's "…", so a word that only
-# starts like one, followed by more words, stays. It runs through its footer, or to the end of its paragraph, but never
+# starts like one, followed by more words, stays; a line that decodes from its start to words starts none, as a line of
+# words does not (_encoded_words, in _key_rests). It runs through its footer, or to the end of its paragraph, but never
 # into a line of ordinary words (_WORDS_LINE) or a JSON object's next field (_NEXT_FIELD).
 # Each alternative takes a character no other does: quotes are _QUOTE's alone, as a run of them read two ways each
 # took time exponential in its length.
@@ -2242,6 +2243,27 @@ def _token_like(run):
         return True  # "0123/567", "20261103": base64's own marks, or a run of digits no word or small number holds
     return (sum(bool(re.search(kind, run)) for kind in ("[A-Z]", "[a-z]", "[0-9+/]")) >= 2
             and not re.fullmatch(r"[A-Z][a-z]*[aeiouy][a-z]*", run))
+
+
+_LINE_RUN = re.compile(r"[A-Za-z0-9+/]{36,}={0,2}")
+
+
+def _encoded_words(found):
+    """Whether the line of base64 a key's rest would start with (`found`, as _REST_START matched it) decodes, from its
+    start, to words: text a reader sees, with a space, and no run that could be part of a key's body (_token_like) or a
+    header's or footer's dashes. Such a line is another stream encoded alone, as words above a key encoded alone are
+    ("notes notes ..."), and no part of a key, whose lines decode to its PEM text."""
+    runs = _LINE_RUN.findall(INVISIBLE.sub("", _KEY_ESCAPE.sub("", found)))  # past an escaped line break's "n"
+    if not runs:
+        return False
+    run = runs[-1]
+    data = _base64_decoded(run, 0, None if run.endswith("=") else len(run) // 4 * 4)
+    try:
+        words = re.sub(r"[\t\r\n]", " ", data.decode("utf-8")) if data else ""
+    except UnicodeDecodeError:
+        return False
+    return (" " in words and words.isprintable() and "-----" not in words
+            and not any(_token_like(m.group()) for m in _RUN.finditer(words)))
 
 
 def _token_tail(text):
@@ -2482,6 +2504,8 @@ def _key_rests(text, starts=_REST_START):
         if at.start() < core:
             continue
         rest = start.match(text, at.end())
+        if rest and _encoded_words(rest.group()):
+            rest = None  # another stream's line of words, which starts no rest, as a line of words starts none
         if not rest and not _BASE64_CHARACTER.match(text, at.end()):
             continue
         reach = ends(at.end())
