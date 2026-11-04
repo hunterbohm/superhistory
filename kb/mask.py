@@ -604,7 +604,7 @@ def _gitleaks_edits(text):
 # Which mask() a stored row was masked with. A row of another version, or of none, is masked again when read and by
 # the next ingest. The patterns change it by themselves; bump REVISION when the code that applies them changes what
 # it masks.
-REVISION = 28
+REVISION = 29
 VERSION = f"r{REVISION}-" + hashlib.sha256(repr((REVISION, [p.pattern for p in SECRET_PATTERNS + PREFIXED_SECRETS], KEYED_SECRET.pattern,
                                 ENV_KEY_SECRET.pattern, JSON_SECRET.pattern, FLAG_SECRET.pattern, AUTH_SECRET.pattern,
                                 COMMAND_FLAGS, PASSWORD_NAME.pattern, sorted(PLACEHOLDERS), REFERENCE.pattern,
@@ -2745,16 +2745,18 @@ _NOVEL = contextvars.ContextVar("kb_mask_novel", default=None)
 def _masked(text, keys=None):
     """mask()'s passes, and each private key written as base64 (_encoded_key_spans, or `keys`) hidden over what they
     leave: no reading reads that key's placeholder, so it hides the key alone, and everything the passes hide stays
-    hidden. (the text, where each of its characters came from in `text`, whether it still changed after MAX_PASSES)."""
+    hidden. The keys are hidden when the passes are still changing too, so the one placeholder the limit then puts
+    down, over what differs from `text`, covers each key. (the text, where each of its characters came from in `text`,
+    whether it still changed after MAX_PASSES)."""
     masked, origin, still = _passes_masked(text)
     keys = _encoded_key_spans(text) if keys is None else keys
-    if still or not keys:
+    if not keys:
         return masked, origin, still
     hidden = bytearray(len(text))
     for start, end in keys:
         hidden[start:end] = b"\x01" * (end - start)
     masked, origin = _hide(masked, origin, hidden)
-    return masked, origin, False
+    return masked, origin, still
 
 
 def _passes_masked(text):
