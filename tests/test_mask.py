@@ -506,7 +506,14 @@ class OtherKeyFormatTest(unittest.TestCase):
             public = "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAwalrus"
             for after in (cert, "\n".join(textwrap.wrap(cert, 76)), public):
                 with self.subTest(wrapped="\n" in k, after=after[:12]):
-                    self.assertEqual(mask(f"{k}\n{after}\nnext steps"), f"[masked]\n{after}\nnext steps")
+                    # A public key cut short is no public material (_public_material): on its own line after the
+                    # key's placeholder it reads as the rest of a key, as the next mask reads it (kb's display masks
+                    # stored text again) and as main reads such a line after any placeholder. So this mask hides it
+                    # too, and masked text masks to itself. A certificate whole stays, and so does a JSON field.
+                    shown = "" if after is public else f"{after}\n"
+                    once = mask(f"{k}\n{after}\nnext steps")
+                    self.assertEqual(once, f"[masked]\n{shown}next steps")
+                    self.assertEqual(mask(once), once)
                     self.assertEqual(mask(json.dumps({"k": k, "c": after})), json.dumps({"k": "[masked]", "c": after}))
 
     def test_a_masked_base64_key_and_the_base64_after_it_mask_to_themselves(self):
