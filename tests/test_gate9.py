@@ -2598,6 +2598,40 @@ class AwsOptionValueTest(unittest.TestCase):
                    "aws configure set --profile ci_token output json")
 
 
+class ReviewFiftyTest(unittest.TestCase):
+    """The fiftieth review's findings: a string's prefix after a space ("( r\"Password:\"") and a label starting with
+    "Re-" (r"Re-enter password:"), read as a word's ending, still hid the label's opening quote, and a line's
+    continuation between aws's option and its value ("--profile \\" then "token" on the next line) hid the option."""
+
+    WRAPS, masks, stays = UnionFieldTest.WRAPS, UnionFieldTest.masks, UnionFieldTest.stays
+
+    def test_a_prefixed_label_after_a_space_or_starting_with_re_keeps_its_call(self):
+        self.masks("sunshine",
+                   'page.get_by_label( r"Password:").fill("sunshine")',
+                   'page.get_by_label( f"New password:").fill("sunshine")',
+                   'page.get_by_label(r"Re-enter password:").fill("sunshine")',
+                   "page.get_by_label(R'Re-type password:').fill('sunshine')",
+                   'page.get_by_label( r"Re-enter Password:").fill("sunshine")')
+
+    def test_stays_a_prefixed_label_on_another_field_after_a_space(self):
+        self.stays('page.get_by_label( r"Search passwords:").fill("release notes")',
+                   "page.get_by_placeholder( r'Password hint:').fill('first pet')")
+
+    def test_a_word_ending_after_a_letter_is_still_an_apostrophe(self):
+        for text in ("Plan B's password: 'Xk9,mP2;qL7v'", "(T's password: 'Xk9,mP2;qL7v')",
+                     "note for R's team, password='Xk9,mP2;qL7v'", "U'd say the password: 'Xk9,mP2;qL7v'"):
+            with self.subTest(text=text):
+                self.assertEqual(mask(text), text.replace("Xk9,mP2;qL7v", "[masked]"))
+
+    def test_an_aws_options_value_on_a_continued_line(self):
+        self.masks("Zq7vRt2LmX9k",
+                   "aws configure set --profile \\\n token aws_secret_access_key Zq7vRt2LmX9k",
+                   "aws configure set --profile \\\r\n    token aws_secret_access_key Zq7vRt2LmX9k",
+                   "aws configure set --region us-east-1 --profile \\\n  secret aws_session_token Zq7vRt2LmX9k")
+        self.stays("aws configure set --profile \\\n token max_attempts 10",
+                   "aws configure set --profile \\\n    token region us-west-2")
+
+
 # Commands as an argument list, each flag's value its own item: (the list, the items masked).
 ARGV = (
     (["login", "--password", PASSWORD], {2}), (["--token", SUB], {1}), (["--api-key", SUB, "--verbose"], {1}),
