@@ -853,10 +853,10 @@ _PLAIN_STOP = re.compile(r"\Z|[|;&)#]|" + _LINE_END)
 _SEGMENT_END = re.compile(_LINE_END)
 # A JSON string as written, or a Python one as repr and print(dict) write it in single quotes: from a quote no
 # backslash escapes to the next such quote of its kind on its line. Its body is group 1 or 2.
-# A quote between two of a word's letters is its apostrophe ("Couldn't", "it's"), never a Python string's opening
-# quote, as repr writes none there; a string's prefix (b'...', rb'...') still opens one.
+# A quote right after a word's letter or digit is its apostrophe ("Couldn't", "it's", "users'"), never a Python
+# string's opening quote, as repr writes none there; a string's prefix (b'...', rb'...') still opens one.
 _STRING_LITERAL = re.compile(r'''(?<!\\)(?:"((?:[^"\\\r\n]|\\.)*)"'''
-                             r'''|(?:(?<!\w(?='\w))|(?<=(?<!\w)[bBrRuUfF])|(?<=(?<!\w)[bBrRuUfF]{2}))'((?:[^'\\\r\n]|\\.)*)')''')
+                             r'''|(?:(?<!\w)|(?<=(?<!\w)[bBrRuUfF])|(?<=(?<!\w)[bBrRuUfF]{2}))'((?:[^'\\\r\n]|\\.)*)')''')
 # An escape in a string's body, as JSON or Python writes one.
 _ESCAPE = re.compile(r"\\(?:u([dD][89abAB][0-9a-fA-F]{2})\\u([dD][c-fC-F][0-9a-fA-F]{2})"
                      r"|u([0-9a-fA-F]{4})|U([0-9a-fA-F]{8})|x([0-9a-fA-F]{2})|(.))", re.S)
@@ -1056,9 +1056,10 @@ def _match_bracket(text, start):
     return None
 
 
-def _containers(text):
-    """The top-level balanced bracket spans text holds, in order, as (start, end), skipping brackets inside quotes."""
-    i, n = 0, len(text)
+def _containers(text, i=0, n=None):
+    """The top-level balanced bracket spans text[i:n] holds, in order, as (start, end), skipping brackets inside
+    quotes."""
+    n = len(text) if n is None else n
     while i < n:
         if text[i] in _CLOSERS:
             end = _match_bracket(text, i)
@@ -1089,6 +1090,29 @@ def _literal_eval(source):
         return ast.literal_eval(source)
 
 
+def _as_text(value):
+    """`value` with each byte string read as text, one character a byte (latin-1), as its repr's escapes decode: a list
+    of arguments may hold bytes ([b"keytool", b"-storepass", b"..."]), which mask_all reads only as text."""
+    if isinstance(value, bytes):
+        return value.decode("latin-1")
+    if isinstance(value, dict):
+        return {_as_text(k): _as_text(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return type(value)(_as_text(item) for item in value)
+    return value
+
+
+def _number_run(text, start, end, literals):
+    """Whether text[start:end] holds a run of digits _DIGIT_RUN finds outside its string literals: a number long enough
+    that str-to-int is slow on Python 3.9. Digits inside a string ("stdout": "999...") are text, which no parser
+    converts."""
+    inside = [(m.start(), m.end()) for m in literals]
+    for run in _DIGIT_RUN.finditer(text, start, end):
+        if _holding(inside, run.start()) is None:
+            return True
+    return False
+
+
 def _leaf_pairs(value, masked):
     """(a string of `value`, how `masked` masks it) for each string in `value`, in the order _STRING_LITERAL finds
     them in the source: a dict's keys and values in turn, a list's or tuple's items in turn, a string itself. `masked`
@@ -1115,15 +1139,22 @@ def _container_edits(text, depth=0):
     if depth > 16:
         return (), ()  # deeper than any real nesting; a cap keeps a crafted chain bounded
     spans, masks = [], []
-    for start, end in _containers(text):
-        if not _ANY_COMMAND.search(text, start, end) or _DIGIT_RUN.search(text, start, end):
+    # A span that does not parse, or whose masks will not place, is not read whole, but the spans inside it are, as a
+    # list in a call that is no literal ("Command (argv=[...]) failed") is. What the parsers and these scans read in
+    # all is held to a few times the text's length, so a deep nest of spans that never parse costs time in proportion.
+    todo, budget = list(_containers(text))[::-1], 8 * len(text) + (1 << 20)
+    while todo:
+        start, end = todo.pop()
+        if not _ANY_COMMAND.search(text, start, end) or budget < 0:
             continue
-        value = _parse_container(text[start:end])
-        if value is None:
-            continue
+        budget -= 2 * (end - start)
         literals = list(_STRING_LITERAL.finditer(text, start, end))
-        pairs = list(_leaf_pairs(value, mask_all(value)))
-        if len(literals) != len(pairs):
+        value = None if _number_run(text, start, end, literals) else _parse_container(text[start:end])
+        if value is not None:
+            value = _as_text(value)
+            pairs = list(_leaf_pairs(value, mask_all(value)))
+        if value is None or len(literals) != len(pairs):
+            todo += list(_containers(text, start + 1, end - 1))[::-1]
             continue
         placed, found = True, []
         for literal, (orig, masked) in zip(literals, pairs):
@@ -1139,6 +1170,9 @@ def _container_edits(text, depth=0):
         if placed:
             spans.append((start, end))
             masks += found
+        else:
+            todo += list(_containers(text, start + 1, end - 1))[::-1]
+    spans.sort()
     for literal in _STRING_LITERAL.finditer(text):
         if _holding(spans, literal.start()) is not None:  # inside a parsed container, read there
             continue
@@ -2287,12 +2321,15 @@ def _may_take_a_secret(flag):
     return _PROBE not in mask(f"{flag} {_PROBE}") or _PROBE not in mask(f"{flag}={_PROBE}")
 
 
-def _shell_before(items, i):
-    """Whether a shell names items[i-1] as its -c flag: a shell among the earlier items, with only options between it
-    and the flag ("bash --noprofile -c", "/bin/sh -eu -c")."""
-    return any(isinstance(items[j], str) and _SHELL.search(items[j])
-               and all(isinstance(items[k], str) and items[k].startswith("-") for k in range(j + 1, i - 1))
-               for j in range(i - 1))
+def _shells_open(items):
+    """For each index m, whether a shell is among items[:m + 1] with only options after it up to m ("bash --noprofile",
+    "/bin/sh -eu"), in one pass: a -c flag at m + 1 is that shell's own ("bash --noprofile -c ...")."""
+    found, open_ = [], False
+    for item in items:
+        is_text = isinstance(item, str)
+        open_ = bool(is_text and _SHELL.search(item)) or open_ and is_text and item.startswith("-")
+        found.append(open_)
+    return found
 
 
 def _flag_values(items):
@@ -2307,6 +2344,7 @@ def _flag_values(items):
     holds a space ("-storepass ...") holds a flag and its value in one, but after a flag, whose value it may be
     ("--comment", "-p release-2026"): read unquoted after that line, it keeps its flag."""
     found, named = {}, None  # named: the last item that names a command, before the one read
+    shells = _shells_open(items)
     for i in range(1, len(items)):
         flag, item = items[i - 1], items[i]
         if isinstance(flag, str) and _ANY_COMMAND.search(flag):
@@ -2316,7 +2354,7 @@ def _flag_values(items):
         is_flag = isinstance(flag, str) and flag.startswith("-") and len(flag) <= 64
         # A shell's -c script is a command line of its own, read as one. The shell may be any earlier item, with only
         # options ("--noprofile", "-eu") between it and the -c flag; this scan runs only for a -c flag, few per list.
-        if is_flag and _SHELL_SCRIPT_FLAG.match(flag) and _shell_before(items, i):
+        if is_flag and _SHELL_SCRIPT_FLAG.match(flag) and i >= 2 and shells[i - 2]:
             read = mask(item)
             if read != item:
                 found[i] = read
