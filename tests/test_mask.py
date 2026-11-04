@@ -1582,6 +1582,41 @@ class Base64ReviewFifteenTest(unittest.TestCase):
                         self.assertEqual(mask(once), once)
                         self.assertEqual(mask(f"[masked]\n{after}\nnext steps"), f"[masked]\n{after}\nnext steps")
 
+    def test_many_keys_each_before_a_certificate_and_words_in_one_paragraph_cost_time_in_proportion(self):
+        import base64
+        import random
+        import textwrap
+        import time
+        from kb import mask as mask_module
+        r = random.Random(1516)
+        keys = [base64.b64encode(made_up_private_key(r)).decode() for _ in range(200)]
+        certificates = [self.certificate(r) for _ in range(200)]
+        for width in (None, 64, 12):
+            def wrapped(text):
+                return "\n".join(textwrap.wrap(text, width)) if width else text
+
+            for older in (False, True):
+                took = {}
+                for n in (50, 200):
+                    if older:  # an older kb's row: its keys already placeholders
+                        text = "".join(f"[masked]\n{wrapped(c)}\ndeploy on port 8080\n" for c in certificates[:n])
+                    else:
+                        text = "".join("-----BEGIN PRIVATE KEY-----\n" + "\n".join(textwrap.wrap(k, 64))
+                                       + f"\n-----END PRIVATE KEY-----\n{wrapped(c)}\ndeploy on port 8080\n"
+                                       for k, c in zip(keys[:n], certificates[:n]))
+                    started = time.process_time()
+                    if older:
+                        with mask_module.stored_row("0123456789abcdef"):
+                            out = mask(text)
+                    else:
+                        out = mask(text)
+                    took[n] = time.process_time() - started
+                    with self.subTest(width=width, older=older, n=n):
+                        self.assertFalse([k for k in keys[:n] if k[64:128] in out])
+                with self.subTest(width=width, older=older):
+                    # four times the text
+                    self.assertLess(took[200], 6 * max(took[50], 0.05), took)
+
     def test_such_rows_are_stored_whole(self):
         import base64
         import os
