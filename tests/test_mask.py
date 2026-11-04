@@ -1912,6 +1912,43 @@ class Base64ReviewSixteenTest(unittest.TestCase):
                             if before:
                                 self.assertIn(words, masked)
 
+    def test_past_lines_that_decode_to_words_a_keys_rest_takes_no_tail_main_does_not(self):
+        # Found by a comparison over random texts: a placeholder, a line of another stream that decodes to words, a
+        # key encoded alone or a key's lines with no footer, "next steps", then a public key wrapped 16 wide. Main
+        # starts no rest past the line of words, so it keeps the public key; in an older kb's row, the rest read past
+        # that line took main's tail of tokens with it, and the public key went.
+        import base64
+        import random
+        import textwrap
+        from kb import mask as mask_module
+        r = random.Random(1611)
+        body = base64.b64encode(made_up_private_key(r)).decode()
+        pem = ("-----BEGIN PRIVATE KEY-----\n" + "\n".join(textwrap.wrap(body, 64)) + "\n-----END PRIVATE KEY-----\n")
+        public = textwrap.wrap(base64.b64encode(made_up_public_key(r)).decode(), 16)
+        for width in (64, 76):
+            words = base64.b64encode((b"notes " * 40)[:width // 4 * 3]).decode()
+            encoded = textwrap.wrap(base64.b64encode(pem.encode()).decode(), width)
+            cut = textwrap.wrap(body[40:], width)  # from inside the body: no footer, and no key's body start
+            for key, fresh in ((encoded, True), (cut, False)):
+                for gap in ("\n", "\n\n"):
+                    text = "[masked]" + gap + "\n".join([words] + key + ["next steps"] + public)
+                    for older in (False, True):
+                        for depth, written in enumerate((text, json.dumps(text), json.dumps(json.dumps(text)))):
+                            with self.subTest(width=width, key=key[0][:8], gap=len(gap), older=older, depth=depth):
+                                if older:
+                                    with mask_module.stored_row("0123456789abcdef"):
+                                        masked = mask(written)
+                                        again = mask(masked)
+                                else:
+                                    masked = mask(written)
+                                    again = mask(masked)
+                                self.assertEqual([line for line in public if line not in masked], [])
+                                self.assertIn(words, masked)
+                                self.assertIn("next steps", masked)
+                                if older or fresh:
+                                    self.assertEqual([line for line in key[:-1] if line in masked], [])
+                                self.assertEqual(again, masked)
+
 
 class Base64KeyPieceLimitTest(unittest.TestCase):
     """The README's limit: a piece of a key's base64 with neither its header nor its footer shows, as on main, unless
