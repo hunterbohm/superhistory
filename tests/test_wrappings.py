@@ -918,6 +918,115 @@ class ReviewNineTest(unittest.TestCase):
         self.assertLess(lots, 2.0, lots)
 
 
+def _scanned_span(text, start):
+    """The bracket scan as it ran before round 10, kept as the reference: where the balanced span opened at
+    text[start] ends, or None."""
+    stack, i, n = [], start, min(len(text), start + masking._CONTAINER_MAX)
+    while i < n:
+        c = text[i]
+        if c in "\"'":
+            i += 1
+            while i < n and text[i] != c:
+                i += 2 if text[i] == "\\" else 1
+            i += 1
+            continue
+        if c in "[{(":
+            stack.append({"[": "]", "{": "}", "(": ")"}[c])
+            if len(stack) > masking._CONTAINER_DEPTH:
+                return None
+            i += 1
+            continue
+        if c in "]})":
+            if not stack or stack.pop() != c:
+                return None
+            i += 1
+            if not stack:
+                return i
+            continue
+        i += 1
+    return None
+
+
+def _scanned_containers(text, i=0, n=None):
+    n = len(text) if n is None else n
+    while i < n:
+        if text[i] in "[{(":
+            end = _scanned_span(text, i)
+            if end is not None:
+                yield i, end
+                i = end
+                continue
+        i += 1
+
+
+class ReviewTenTest(unittest.TestCase):
+    """The tenth review's findings: aws configure set's options between "set" and the setting pushed "aws" out of the
+    six items read back, and finding the bracket spans scanned again from every bracket, quadratic where each scan
+    starts inside an earlier one's quotes."""
+
+    WRAPS = ReviewEightTest.WRAPS
+    masks_only_the_password = ReviewEightTest.masks_only_the_password
+
+    AWS = (["aws", "configure", "set", "--profile", "team", "--region", "us-east-1", "aws_secret_access_key", PASSWORD],
+           ["aws", "--profile", "team", "--region", "us-east-1", "configure", "set", "aws_secret_access_key", PASSWORD],
+           ["/usr/local/bin/aws", "configure", "set", "--profile", "ci", "--debug", "aws_session_token", PASSWORD],
+           ["aws.exe", "configure", "set", "--profile", "team", "--output", "json", "--region", "eu-west-1",
+            "--no-cli-pager", "profile.team.aws_secret_access_key", PASSWORD])
+
+    def test_aws_options_between_set_and_the_setting(self):
+        for items in self.AWS:
+            masked = ["[masked]" if item == PASSWORD else item for item in items]
+            with self.subTest(items=items):
+                self.assertEqual(mask_all(items), masked)
+            self.masks_only_the_password(str(subprocess.CalledProcessError(1, items)), json.dumps({"argv": items}),
+                                         "run: %r" % (items,))
+
+    def test_stays_aws_lists_with_no_secret_setting(self):
+        for items in (["aws", "configure", "set", "--profile", "team", "--region", "us-east-1", "region", "us-west-2"],
+                      ["aws", "configure", "get", "--profile", "team", "aws_secret_access_key"],
+                      ["aws", "s3", "cp", "--profile", "team", "notes.txt", "s3://bucket/token_notes"]):
+            with self.subTest(items=items):
+                self.assertEqual(mask_all(items), items)
+                text = str(subprocess.CalledProcessError(1, items))
+                self.assertEqual(mask(text), text)
+
+    @staticmethod
+    def took_uncached(text):
+        """took(text), each run reading the text afresh: the container reading is cached per text."""
+        def run():
+            masking._container_edits.cache_clear()
+            mask(text)
+        return took_call(run)
+
+    def test_finding_the_spans_costs_time_in_proportion(self):
+        shapes = {"escaped lists in a JSON string": lambda n: json.dumps('note ["one"] ' * n + "keytool -list"),
+                  "the same escaped twice": lambda n: json.dumps(json.dumps('note ["one"] ' * n + "keytool -list")),
+                  "an unclosed quote after each bracket": lambda n: 'x ["a ' * n + "keytool -list",
+                  "brackets inside an apostrophe's quote": lambda n: "it's [a] " * n + "keytool -list",
+                  "nested openers that never close": lambda n: '([{"' * n + "keytool -list"}
+        for name, shape in shapes.items():
+            small, large = shape(500), shape(2000)
+            with self.subTest(shape=name):
+                self.assertEqual(mask(small), small)
+                little, lots = self.took_uncached(small), self.took_uncached(large)
+                self.assertLess(lots, 6 * little + 0.1, (little, lots))  # four times the text, about four times the CPU
+                self.assertLess(lots, 1.0, lots)
+
+    def test_the_spans_found_are_the_scans(self):
+        import random
+        r = random.Random(10)
+        alphabet = '[]{}()""\'\\ ab'
+        for case in range(3000):
+            text = "".join(r.choice(alphabet) for _ in range(r.randint(0, 60)))
+            if case % 3 == 0:
+                text = "[" * r.randint(95, 105) + text + "]" * r.randint(95, 105)
+            with self.subTest(text=text):
+                self.assertEqual(list(masking._containers(text)), list(_scanned_containers(text)))
+                for i in range(0, len(text), 7):
+                    self.assertEqual(list(masking._containers(text, i, len(text) - i // 2)),
+                                     list(_scanned_containers(text, i, len(text) - i // 2)))
+
+
 class RevisionTest(unittest.TestCase):
     def test_stored_rows_are_masked_again(self):
         self.assertEqual(masking.REVISION, 11)
