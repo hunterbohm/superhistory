@@ -1645,6 +1645,67 @@ class ReviewTwentyOneTest(unittest.TestCase):
                 for form in (over, json.dumps(over)):
                     self.assertEqual(mask(form), form)
 
+    @staticmethod
+    def timed(*texts):
+        took = []
+        for text in texts:
+            started = time.process_time()
+            masked = mask(text)
+            took.append(time.process_time() - started)
+            assert masked == text, text[:60]
+        return took
+
+    def test_float_and_tuple_keys_that_hash_as_colliding_ints_do_cost_no_more(self):
+        # 2 ** (61 j) is 1 more than a multiple of the modulus, and 2 ** (-61 j) its inverse: each hashes to 1, as
+        # 1 + k * modulus does; tuples of such keys hash alike too
+        m = sys.hash_info.modulus
+        floats = [repr(2.0 ** (61 * j)) for j in range(1, 17)] + [repr(2.0 ** (-61 * j)) for j in range(1, 17)]
+        colliding = [str(1 + k * m) for k in range(8192 - len(floats))] + floats
+        ordinary = [str(1 + k * m + k) for k in range(8192 - len(floats))] + [repr(0.5 + j) for j in range(len(floats))]
+        for n, shape in enumerate((lambda keys: "{" + ", ".join(f"{k}: 1" for k in keys) + ', "cmd": "keytool"}',
+                                   lambda keys: '[{"cmd": "keytool"}, {' + ", ".join(f"({k}, {k}): 1" for k in keys)
+                                   + "}]", lambda keys: '[{"cmd": "keytool"}, {' + ", ".join(f"({k},): 1" for k in
+                                                                                        floats * 3) + "}]")):
+            with self.subTest(shape=n):
+                self.assertIsNone(masking._parse_container(shape(colliding)))
+                if n < 2:
+                    took = self.timed(shape(colliding), shape(ordinary))
+                    self.assertLess(took[0], 1.5 * took[1] + 0.1, took)
+
+    def test_keys_alike_in_their_low_56_bits_are_read_whole_in_linear_time(self):
+        # i << 56: the same low 56 bits, different high bits, so 8,192 hashes, none shared
+        near, ordinary = [str(i << 56) for i in range(8192)], [str((i << 56) + i) for i in range(8192)]
+        for n, (text, control) in enumerate(zip(self.shapes(near)[:2], self.shapes(ordinary)[:2])):
+            with self.subTest(shape=n):
+                self.assertIsNotNone(masking._parse_container(text))
+                took = self.timed(text, control)
+                self.assertLess(took[0], 1.5 * took[1] + 0.1, took)
+
+    def test_the_check_costs_time_in_proportion(self):
+        for n, keys in enumerate((lambda size: self.keys(size, True), lambda size: [str(i << 56) for i in range(size)])):
+            for shape in range(3):
+                with self.subTest(keys=n, shape=shape):
+                    took = {}
+                    for size in (2048, 8192):
+                        text = self.shapes(keys(size))[shape]
+                        started = time.process_time()
+                        masking._parse_container(text)
+                        took[size] = time.process_time() - started
+                    self.assertLess(took[8192], 6 * max(took[2048], 0.01), took)
+
+    def test_a_refused_literal_holding_a_password_hides_what_main_hides(self):
+        from tests.test_mask_against_today import hidden, main
+        keys = self.keys(100, True)
+        pairs, members = ", ".join(f"{k}: 1" for k in keys), ", ".join(keys)
+        for text in ('{"command": "keytool -storepass %s", %s}' % (PASSWORD, pairs),
+                     '["keytool", "-storepass", "%s", {%s}]' % (PASSWORD, pairs),
+                     '{"args": ["keytool", "-alias", "team cert", "-storepass", "%s"], %s}' % (PASSWORD, pairs),
+                     '["mongosh", "-p", "%s", {%s}]' % (PASSWORD, members)):
+            self.assertIsNone(masking._parse_container(text))
+            for form in (text, json.dumps(text), json.dumps(json.dumps(text))):
+                with self.subTest(form=form[:50]):
+                    self.assertLessEqual(hidden(main, form), hidden(masking, form))
+
     def test_a_literal_with_ordinary_number_keys_is_still_read_whole(self):
         for text in ('{"command": ["keytool", "-storepass", "%s"], 1: "x"}' % PASSWORD,
                      '["keytool", "-alias", "team cert", "-storepass", "%s", {1: 2}]' % PASSWORD,
