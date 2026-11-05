@@ -1777,6 +1777,57 @@ class ReviewTwentyOneNameTest(unittest.TestCase):
         self.assertLess(took[65536], 6 * max(took[16384], 0.01), took)
 
 
+class ReviewTwentyTwoTest(unittest.TestCase):
+    """The twenty-second review's finding: a row of COMMAND_FLAGS reads a command of its own inside a substitution of
+    a line it read after that line ("mongosh $(echo az.exe login -p ...) -p ..."), so the inner password's edit came
+    after the outer one's, and the edits, made in the order given, copied the outer password back into the text:
+    "-p [masked][masked]) -p <password>". Main reads az.exe as no command there and masks the outer password; with
+    "az login", and with mongosh, keytool, jarsigner or aws configure set inside the same row's line, main garbles the
+    text so too and shows the outer password (on the ON-MAIN list until this fix)."""
+
+    INNER, OUTER = "In9rVz2tHx8q", "Out7mKq4nTs6x"
+    NESTED = (("mongosh", "az.exe login", "-p"), ("mongosh", "az.cmd login", "-p"), ("mongosh", "AZ.EXE login", "-p"),
+              ("az login", "az.exe login", "-p"), ("mongosh", "az login", "-p"), ("az login", "mongosh", "-p"),
+              ("mongosh", "mongosh", "-p"), ("twine upload", "twine", "-p"),
+              ("keytool", "keytool", "-storepass"), ("keytool -list", "keytool", "-keypass"),
+              ("keytool", "jarsigner", "-storepass"), ("jarsigner", "keytool", "-keypass"),
+              ("aws configure set", "aws configure set", "aws_secret_access_key"))
+
+    @staticmethod
+    def forms(text):
+        return text, json.dumps(text), json.dumps(json.dumps(text))
+
+    def test_a_password_inside_and_one_after_a_substitution_naming_the_rows_command_are_each_masked_once(self):
+        for outer, inner, flag in self.NESTED:
+            for sub in ("$(echo {})", "$({})", '"$({})"', "`{}`"):
+                inside = sub.format(f"{inner} {flag} {self.INNER}")
+                text = f"{outer} {inside} {flag} {self.OUTER}"
+                for depth, form in enumerate(self.forms(text)):
+                    with self.subTest(outer=outer, inner=inner, sub=sub, depth=depth):
+                        masked = mask(form)
+                        # each password once, and nothing else changed (inside backticks the inner value runs on
+                        # through the closing one, as it reads at d3e4ff5 in JSON)
+                        self.assertIn(masked, (form.replace(self.INNER, "[masked]").replace(self.OUTER, "[masked]"),
+                                               form.replace(self.INNER + "`", "[masked]")
+                                               .replace(self.OUTER, "[masked]")))
+
+    def test_two_substitutions_and_text_after_the_outer_password(self):
+        second = "Sc5wQe8rTy3u"
+        text = (f"mongosh $(echo az.exe login -p {self.INNER}) $(mongosh -p {second}) -p {self.OUTER} "
+                "--quiet && echo done")
+        for depth, form in enumerate(self.forms(text)):
+            with self.subTest(depth=depth):
+                self.assertEqual(mask(form), form.replace(self.INNER, "[masked]").replace(second, "[masked]")
+                                 .replace(self.OUTER, "[masked]"))
+
+    def test_a_rows_edits_come_in_order_and_those_that_overlap_as_one(self):
+        # _edit and _moves read one row's edits in order, and a value inside another is masked with it
+        mark = "[masked]"
+        self.assertEqual(masking._in_order([(30, 40, mark), (2, 5, mark), (12, 20, mark), (14, 18, mark),
+                                            (19, 25, mark), (25, 28, mark)]),
+                         [(2, 5, mark), (12, 25, mark), (25, 28, mark), (30, 40, mark)])
+
+
 class RevisionTest(unittest.TestCase):
     def test_stored_rows_are_masked_again(self):
         self.assertEqual(masking.REVISION, 13)
