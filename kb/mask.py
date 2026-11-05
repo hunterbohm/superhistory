@@ -1,5 +1,6 @@
 import base64
 import bisect
+import calendar
 import contextvars
 import functools
 import hashlib
@@ -536,7 +537,7 @@ def _gitleaks_edits(text):
 # Which mask() a stored row was masked with. A row of another version, or of none, is masked again when read and by
 # the next ingest. The patterns change it by themselves; bump REVISION when the code that applies them changes what
 # it masks.
-REVISION = 10
+REVISION = 11
 VERSION = hashlib.sha256(repr((REVISION, [p.pattern for p in SECRET_PATTERNS + PREFIXED_SECRETS], KEYED_SECRET.pattern,
                                 ENV_KEY_SECRET.pattern, JSON_SECRET.pattern, FLAG_SECRET.pattern, AUTH_SECRET.pattern,
                                 COMMAND_FLAGS, PASSWORD_NAME.pattern, sorted(PLACEHOLDERS), REFERENCE.pattern,
@@ -553,13 +554,29 @@ def _looks_secret(name, sep, value):
         word = value.rstrip(".!?")
         return len(value) >= 4 and (not _prose(sep) or bool(re.search(r"[^A-Za-z]", word)))
     mixed = re.search(r"\d", value) and re.search(r"[A-Za-z]", value)
-    if _DATE_OR_TIME.fullmatch(value):
+    if _date_or_time(value):
         return False  # a key's expiry or a session's start, as "session_key: 2026-11-01T10:00:00Z" names
     return (len(value) >= 16 and not value.isdigit()) or bool(len(value) >= 8 and mixed)
 
 
-# A value that is a number, a date or a time, which no key or token is.
-_DATE_OR_TIME = re.compile(r"[\d:.+TZ-]+")
+# An ISO 8601 date, with a time and an offset after it or none, each field in its range but the day, which
+# _date_or_time holds to its month, in ASCII digits. Any other run of digits and ":.+TZ-" may be a key:
+# "1234-5678-9012-3456".
+_DATE_OR_TIME = re.compile(r"(\d{4})-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])"
+                           r"(?:T(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d(?:\.\d{1,9})?)?(?:Z|[+-](?:[01]\d|2[0-3]):[0-5]\d)?)?",
+                           re.ASCII)
+_MONTH_DAYS = (31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31)
+
+
+def _date_or_time(value):
+    """Whether `value` is a real date, or a date and a time, which no key or token is."""
+    m = _DATE_OR_TIME.fullmatch(value)
+    if not m:
+        return False
+    year, month, day = int(m.group(1)), int(m.group(2)), int(m.group(3))
+    return day <= _MONTH_DAYS[month - 1] + (month == 2 and calendar.isleap(year))
+
+
 _SEP_CHARACTER = re.compile(r"[:=\uff1a\uff1d]|%(?:25)?3[ADad]|u003[AaDd]")
 
 
@@ -1587,15 +1604,18 @@ def _passes(text, step):
 
 
 def _main_hidden(text):
-    """What main's own mask hides of `text`, a mark at each character none of its result came from; None where it
-    still changes after MAX_PASSES."""
-    _, origin, still = _passes(text, _main_once)
-    if still:
-        return None
+    """What main's own mask hides of `text`, a mark at each character none of its result came from. Where it still
+    changes after MAX_PASSES, its mask() masks whole all between what the text and the last pass share at both ends,
+    and all that is marked too."""
+    masked, origin, still = _passes(text, _main_once)
     hidden = bytearray(b"\x01") * len(text)
     for c in origin:
         if c >= 0:
             hidden[c] = 0
+    if still:
+        head = len(os.path.commonprefix([text, masked]))
+        tail = len(os.path.commonprefix([text[head:][::-1], masked[head:][::-1]]))
+        hidden[head:len(text) - tail] = b"\x01" * (len(text) - tail - head)
     return hidden
 
 
@@ -1718,7 +1738,7 @@ def _masked(text):
     if still or not novel:
         return masked, origin, still
     hidden = _main_hidden(text)
-    if hidden is None or not any(c >= 0 and hidden[c] for c in origin):
+    if not any(c >= 0 and hidden[c] for c in origin):
         return masked, origin, False
     joined, came = _hide(masked, origin, hidden)
     masked, after, still = _passes(joined, lambda t, o: _once(t, _TEXT_RULES, o))
