@@ -261,8 +261,9 @@ Known limits:
   with a line right after it of base64 alone, 40 characters or more, starting as a key's body does ("MIIE..."); in a
   row an older kb stored, 36 characters or more with a capital, a small letter and a digit, "+" or "/" are enough, and
   lines there that decode to words are passed over first. Past them, where main's rest from the placeholder runs on,
-  with its tail, a line of base64 alone starts it at any length, as a stream's short last line is, past a word alone,
-  a placeholder alone or a line of words on its line, which stay, and it runs on as main's does. Only that first line counts: a piece of 34 characters after "[masked] ", or
+  with its tail, it starts at the next line that is no word alone, placeholder alone, line of words or line with no
+  letter or digit but a placeholder's ("---", "  [masked]"), which stay, whatever that line holds (base64 alone at any
+  length, as a stream's short last line is, or any other line main's rest takes), and it runs on as main's does. Only that first line counts: a piece of 34 characters after "[masked] ", or
   of lines 16 wide after another key's footer, shows, even with a longer line further down. A rest that starts right
   at its placeholder runs on past lines of words to the last line of its paragraph holding a token, as main's does;
   one that starts past lines that decode to words, where main reads none, ends where its lines of base64 end, so a
