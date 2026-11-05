@@ -180,7 +180,7 @@ def no_secret_values(text):
             name, value = m.group(1), m.group(3)
             if (head._ARN_HEAD.search(text, max(0, m.start(1) - 128), m.start(1))
                     or m.start(1) and text[m.start(1) - 1] == "/" and head._FILE_NAME.fullmatch(value)
-                    or head._DATE_OR_TIME.fullmatch(value) or re.search(r"(?i)tokeni[sz]", name)):
+                    or head._date_or_time(value) or re.search(r"(?i)tokeni[sz]", name)):
                 out.update(range(m.start(3), m.end(3)))
     return out
 

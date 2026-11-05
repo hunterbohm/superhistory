@@ -1920,7 +1920,7 @@ class NestedLineCostTest(unittest.TestCase):
 
 class RevisionTest(unittest.TestCase):
     def test_stored_rows_are_masked_again(self):
-        self.assertEqual(masking.REVISION, 14)
+        self.assertEqual(masking.REVISION, 15)
 
 
 if __name__ == "__main__":
