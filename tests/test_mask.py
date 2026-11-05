@@ -1952,9 +1952,12 @@ class Base64ReviewSixteenTest(unittest.TestCase):
 
 class Base64KeyPieceLimitTest(unittest.TestCase):
     """The README's limit: a piece of a key's base64 with neither its header nor its footer shows, as on main, unless
-    it comes right after a placeholder and is glued to it, or the first line there is base64 alone, 40 characters or
-    more, starting as a key's body does ("MII..."); in a row an older kb stored, 36 characters or more with a capital,
-    a small letter and a digit, "+" or "/" are enough. A longer line further down does not count."""
+    a key's rest after a placeholder takes it. A rest starts with base64 glued to the placeholder, or with a line right
+    after it of base64 alone, 40 characters or more, starting as a key's body does ("MII..."); in a row an older kb
+    stored, 36 characters or more with a capital, a small letter and a digit, "+" or "/" are enough, and lines there
+    that decode to words are passed over first. A longer line further down does not count. A rest that starts right at
+    its placeholder runs on past lines of words, as main's does; one that starts past lines that decode to words does
+    not."""
 
     @staticmethod
     def masks(text, older):
@@ -1964,7 +1967,7 @@ class Base64KeyPieceLimitTest(unittest.TestCase):
                 return mask(text)
         return mask(text)
 
-    def check(self, text, lines, fresh, older):
+    def check(self, text, lines, fresh, older, kept="next steps"):
         for is_older, outcome in ((False, fresh), (True, older)):
             for depth, written in enumerate((text, json.dumps(text), json.dumps(json.dumps(text)))):
                 with self.subTest(text=text[:40], older=is_older, depth=depth):
@@ -1973,7 +1976,7 @@ class Base64KeyPieceLimitTest(unittest.TestCase):
                         self.assertEqual([line for line in lines if line not in masked], [])
                     else:
                         self.assertEqual([line[:16] for line in lines if line[:16] in masked], [])
-                    self.assertIn("next steps", masked)
+                    self.assertIn(kept, masked)
 
     def test_a_piece_after_a_placeholder_shows_until_its_first_line_starts_a_rest(self):
         # 34 characters after "[masked] ", as the comparison met one; at 36, read as an older kb's rest; at 40, which
@@ -2006,6 +2009,24 @@ class Base64KeyPieceLimitTest(unittest.TestCase):
                 with self.subTest(text=lines[0], depth=depth, key=True):
                     self.assertEqual([line for line in key[:-1] if line in mask(written)], [])
 
+
+    def test_a_piece_further_down_goes_with_a_rest_that_starts_at_its_placeholder_alone(self):
+        # Past a line of words, a piece further down the paragraph goes with a rest that starts right at its
+        # placeholder, as main's reading takes it, and shows after one that starts past lines that decode to words,
+        # where main reads none (which in fresh text starts no rest at all).
+        import base64
+        import random
+        import textwrap
+        r = random.Random(1612)
+        body = base64.b64encode(made_up_private_key(r)).decode()
+        first, later = textwrap.wrap(body[:192], 64), textwrap.wrap(body[400:592], 64)
+        for width in (64, 76):
+            words = base64.b64encode((b"notes " * 40)[:width // 4 * 3]).decode()
+            at = "\n".join(["[masked]"] + first + ["next steps"] + later) + "\nmore notes"
+            past = "\n".join(["[masked]", words] + first + ["next steps"] + later) + "\nmore notes"
+            self.check(at, first + later, "masked", "masked", kept="more notes")
+            self.check(past, later, "shows", "shows", kept="more notes")
+            self.check(past, first, "shows", "masked", kept=words)
 
 class HeadlessKeyTest(unittest.TestCase):
     """A key's body without its header, as an older kb's row-by-row remask leaves the chunk after the header's."""
