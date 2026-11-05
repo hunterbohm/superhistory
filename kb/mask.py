@@ -1602,15 +1602,18 @@ def _passes(text, step):
 
 
 def _main_hidden(text):
-    """What main's own mask hides of `text`, a mark at each character none of its result came from; None where it
-    still changes after MAX_PASSES."""
-    _, origin, still = _passes(text, _main_once)
-    if still:
-        return None
+    """What main's own mask hides of `text`, a mark at each character none of its result came from. Where it still
+    changes after MAX_PASSES, its mask() masks whole all between what the text and the last pass share at both ends,
+    and all that is marked too."""
+    masked, origin, still = _passes(text, _main_once)
     hidden = bytearray(b"\x01") * len(text)
     for c in origin:
         if c >= 0:
             hidden[c] = 0
+    if still:
+        head = len(os.path.commonprefix([text, masked]))
+        tail = len(os.path.commonprefix([text[head:][::-1], masked[head:][::-1]]))
+        hidden[head:len(text) - tail] = b"\x01" * (len(text) - tail - head)
     return hidden
 
 
@@ -1733,7 +1736,7 @@ def _masked(text):
     if still or not novel:
         return masked, origin, still
     hidden = _main_hidden(text)
-    if hidden is None or not any(c >= 0 and hidden[c] for c in origin):
+    if not any(c >= 0 and hidden[c] for c in origin):
         return masked, origin, False
     joined, came = _hide(masked, origin, hidden)
     masked, after, still = _passes(joined, lambda t, o: _once(t, _TEXT_RULES, o))
