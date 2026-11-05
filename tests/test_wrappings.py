@@ -1828,9 +1828,62 @@ class ReviewTwentyTwoTest(unittest.TestCase):
                          [(2, 5, mark), (12, 25, mark), (25, 28, mark), (30, 40, mark)])
 
 
+class ReviewTwentyThreeTest(unittest.TestCase):
+    """The twenty-third review's findings. A command named a way main does not spell it ("az.exe login") read its
+    line, and a command quoted in an argument there was no command of its own, so its password showed where main,
+    reading no command at "az.exe", masks it ('az.exe login failed with command "mongosh $(echo "") -p ..."'). A
+    command's line ended at a process substitution, so the password after it ("az.exe login <(twine ...) -p ...")
+    showed once the rows' edits came in order. And a password read inside backticks is masked with the closing one, as
+    main masks it, so the rows after it read their lines on past it: a keytool password after the substitution
+    ("keytool $(mongosh `az.cmd login -p ...` -p ...) -storepass ...") was left to the next pass, whose fail-closed
+    rule masked it to the line's end with what followed it ("; echo done")."""
+
+    INNER, OUTER, LAST, MORE = "In9rVz2tHx8q", "Out07mKq4nTs6x", "Out17mKq4nTs6x", "Last7vQe8rTy3u"
+
+    @staticmethod
+    def forms(text):
+        return text, json.dumps(text), json.dumps(json.dumps(text))
+
+    def assertMasked(self, text, *secrets):
+        # each password masked, and nothing else changed but a backtick right after the inner password, masked with
+        # it as main masks a value inside backticks
+        for depth, form in enumerate(self.forms(text)):
+            expected = [form, form.replace(self.INNER + "`", self.INNER)]
+            for secret in secrets:
+                expected = [each.replace(secret, "[masked]") for each in expected]
+            with self.subTest(text=text, depth=depth):
+                self.assertIn(mask(form), expected)
+                self.assertIn(masking.mask_with_origin(form)[0], expected)
+                listed = mask_all([form, "notes"])
+                self.assertIn(listed[0], expected)
+                self.assertEqual(listed[1], "notes")
+                self.assertIn(mask_all({"out": form})["out"], expected)
+
+    def test_a_command_quoted_in_the_line_of_a_name_main_does_not_spell_is_read_as_main_reads_it(self):
+        for outer in ("az.exe login", "az.cmd login", "AZ.EXE login", "aws.exe configure set"):
+            for inner, flag in (("mongosh", "-p"), ("twine upload", "-p"), ("keytool -list", "-storepass")):
+                for sub in ('$(echo "")', "$(echo '')", '`echo ""`'):
+                    self.assertMasked(f'{outer} failed with command "{inner} {sub} {flag} {self.OUTER}"', self.OUTER)
+
+    def test_a_password_after_a_process_substitution_is_its_lines(self):
+        for outer in ("az.exe login", "az.cmd login", "az login", "mongosh"):
+            for opened in ("<(", ">("):
+                text = (f'keytool "$({outer} {opened}twine "`keytool -storepass {self.INNER}`" -p {self.OUTER}) '
+                        f'-p {self.LAST})" -storepass Out27mKq4nTs6x; mongosh -p {self.MORE}')
+                self.assertMasked(text, self.INNER, self.OUTER, self.LAST, "Out27mKq4nTs6x", self.MORE)
+
+    def test_a_password_after_a_substitution_holding_backticks_is_masked_and_what_follows_the_line_stays(self):
+        for inner, flag in (("az.cmd login", "-p"), ("az.exe login", "-p"), ("az login", "-p"), ("twine", "-p"),
+                            ("keytool", "-storepass")):
+            for outer in ("mongosh", "az.exe login"):
+                text = (f"keytool $({outer} `{inner} {flag} {self.INNER}` -p {self.OUTER}) -storepass {self.LAST}; "
+                        "echo done")
+                self.assertMasked(text, self.INNER, self.OUTER, self.LAST)
+
+
 class RevisionTest(unittest.TestCase):
     def test_stored_rows_are_masked_again(self):
-        self.assertEqual(masking.REVISION, 13)
+        self.assertEqual(masking.REVISION, 14)
 
 
 if __name__ == "__main__":
