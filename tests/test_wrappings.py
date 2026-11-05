@@ -1580,6 +1580,33 @@ class ReviewNineteenTest(unittest.TestCase):
                         self.assertEqual("2222" in mask(json.dumps(far)), "2222" in mask(json.dumps(near)))
 
 
+class ReviewTwentyTest(unittest.TestCase):
+    """The twentieth review's finding: past the 64 items before a flag, a long item that names sshpass or docker login,
+    then a ";", a pipe or an escaped line break, then mongosh, was read as if sshpass's line ran on past it, as the
+    probe of sshpass's "-p" after the item was mongosh's to mask; so a later "-p --quiet" lost "--quiet", which main
+    keeps. Where no line stop follows the name in the item, the later password is masked as before."""
+
+    @staticmethod
+    def items(script, value):
+        return ["mongosh", "--eval", f'print("{script}")'] + ["--quiet"] * 70 + ["-p", value]
+
+    def test_a_command_whose_line_ends_inside_a_long_item_takes_no_later_flag(self):
+        for name in ("sshpass", "docker login"):
+            for stop in (";", "|", "\\n"):
+                a = self.items(f"{name}{stop} mongosh {'x' * 300}", "--quiet")
+                with self.subTest(name=name, stop=stop):
+                    self.assertEqual(mask_all(a)[-2:], ["-p", "--quiet"])
+                    self.assertTrue(mask(json.dumps(a)).endswith('"-p", "--quiet"]'))
+
+    def test_a_command_whose_line_runs_on_past_a_long_item_still_takes_a_later_password(self):
+        for name in ("sshpass", "docker login"):
+            for before in ("", "mongosh; "):
+                a = self.items(f"{before}{name} {'x' * 300}", PASSWORD)
+                with self.subTest(name=name, before=before):
+                    self.assertEqual(mask_all(a)[-2:], ["-p", "[masked]"])
+                    self.assertTrue(mask(json.dumps(a)).endswith('"-p", "[masked]"]'))
+
+
 class RevisionTest(unittest.TestCase):
     def test_stored_rows_are_masked_again(self):
         self.assertEqual(masking.REVISION, 13)
