@@ -657,28 +657,35 @@ def _command_line(text, start, stop=None, known=None):
     where quotes still open hold to the line's end, as a script over several lines in quotes holds its own flags. A
     line whose first double quote outside single quotes comes escaped ('\\"'), as JSON holds a command, is read
     unescaped: its escaped quotes are the shell's quotes, an escaped backslash escapes the shell character after it,
-    and a bare '"' ends the JSON string. `known` maps where each substitution read before starts to where it ends, or,
-    as a 1-tuple, to where a reading ended with it still open, which it holds to; the reading adds to it and passes over
-    each, so a command inside one costs no second reading of what it holds, even where the substitutions no longer
-    close."""
+    and a bare '"' ends the JSON string. `known` maps where each substitution read before starts, with whether the
+    line's quotes were found escaped there (None: not yet), to whether it closed, where (or where a reading ended with
+    it still open, which it holds to), and whether they were found escaped after it. The reading adds to it and passes
+    over each it comes to in the same state, so a command inside one reads as it reads alone, and costs no second
+    reading of what it holds, even where the substitutions no longer close."""
     i, n = start, len(text) if stop is None else stop
     known = {} if known is None else known
-    stack, opened, escaped = [], [], None  # the shell's open contexts, where each opened, whether quotes come escaped
+    # The shell's open contexts, where and in which state each opened, and the state: whether quotes come escaped
+    stack, opened, escaped = [], [], None
     inside, subs, held = [], [], 0  # held: how many of the open contexts are substitutions
 
     def enter(kind, at, after):  # where the reading goes on once `kind` opens at `at`: after it, or past all it holds
-        nonlocal held
-        end = known.get(at) if kind in ("$(", "`") else None
-        if isinstance(end, tuple):  # still open where a reading before ended: it holds to `n` if that is no further
-            end = n if n <= end[0] else None
-        if end is not None and end <= n:
+        nonlocal held, escaped
+        read = known.get((at, escaped)) if kind in ("$(", "`") else None
+        end = None
+        if read is not None:
+            closed, to, then = read
+            if closed and to <= n:  # it closes by `n`, and the reading goes on as the one before went on past it
+                end, escaped = to, then
+            elif not closed and n <= to:  # still open where a reading before ended: it holds to `n`
+                end = n
+        if end is not None:
             if not held:
                 subs.append((at, end))
             if not stack:
                 inside.append((at, end))
             return end
         stack.append(kind)
-        opened.append(at)
+        opened.append((at, escaped))
         held += kind in ("$(", "`")
         return after
 
@@ -689,13 +696,14 @@ def _command_line(text, start, stop=None, known=None):
 
     def close(at, closed=True):
         nonlocal held
-        kind, began = stack.pop(), opened.pop()
+        kind, (began, state) = stack.pop(), opened.pop()
         if kind in ("$(", "`"):
             held -= 1
+            read = known.get((began, state))
             if closed:
-                known[began] = at
-            elif not isinstance(known.get(began), int):
-                known[began] = (max(at, known.get(began, (at,))[0]),)
+                known[began, state] = (True, at, escaped)
+            elif not (read and read[0]):
+                known[began, state] = (False, max(at, read[1] if read else at), None)
             if not held:
                 subs.append((began, at))
         if not stack:
