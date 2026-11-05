@@ -486,19 +486,23 @@ def _base64_of(word):
 
 _KEY_WORDS = (b"PRIVATE KEY", b"SECRET KEY")
 _ENCODED_KEY = re.compile("|".join(re.escape(code) for word in _KEY_WORDS for code in _base64_of(word)))
-# A line break: any that Python's splitlines reads (a lone carriage return too, as an old Mac file ends its lines), or
-# a line feed or carriage return escaped once or more, as JSON in JSON writes one. JSON's other escapes are read by
-# _json_unescaped's views.
-_BREAK = r"(?:\r?\n|[\r\x0b\x0c\x1c-\x1e\x85\u2028\u2029]|(?:\\+r)?\\+n|\\+r)"
-_WRAP = rf"[ \t\r]*{_BREAK}[ \t]*"
+# A line break: any that Python's splitlines reads (a lone carriage return too, as an old Mac file ends its lines),
+# escaped once or more as JSON writes it, and JSON in JSON: a line feed or carriage return as \n, \r or \u000a, a form
+# feed as \f, and the others as \u000b, \u0085 or \u2028, so a stream's lines read as one block at every depth.
+# JSON's other escapes are read by _json_unescaped's views.
+_BREAK = (r"(?:\r?\n|[\r\x0b\x0c\x1c-\x1e\x85\u2028\u2029]|(?:\\+r)?\\+n|\\+r|(?:\\+u000[dD])?\\+u000[aA]"
+          r"|\\+(?:f|u000[bcdBCD]|u001[c-eC-E]|u0085|u202[89]))")
+# Spaces and tabs before and after it, tabs escaped as JSON writes them too ("\\n\\t" indenting a line).
+_SPACING = r"(?:[ \t]|\\+t)"
+_WRAP = rf"(?:\r|{_SPACING})*{_BREAK}{_SPACING}*"
 # A run of base64, with each line after it that it wraps onto: a line that is base64 from its indentation to its end,
 # however short. A run shorter than 16 starts one only when lines follow it. A run can start just after a backslash,
 # so the letter of an escape such as \n can lead it. Which of the lines hold a key is _key_range's to say.
-_WRAPPED_LINE = rf"{_WRAP}(?:[A-Za-z0-9+/]+={{0,2}}|={{1,2}})(?=[ \t\r]*(?:{_BREAK}|\\*[\"'<]|\Z))"
+_WRAPPED_LINE = rf"{_WRAP}(?:[A-Za-z0-9+/]+={{0,2}}|={{1,2}})(?=(?:\r|{_SPACING})*(?:{_BREAK}|\\*[\"'<]|\Z))"
 _WRAPPED_BASE64 = re.compile(rf"(?<![A-Za-z0-9+/])(?:[A-Za-z0-9+/]{{16,}}={{0,2}}(?:{_WRAPPED_LINE})*"
                              rf"|[A-Za-z0-9+/]+={{0,2}}(?:{_WRAPPED_LINE})+)")
 _UNWRAP = re.compile(_WRAP)
-_ESCAPE_LETTER = re.compile(r"(?<=\\)(?:[nrt]|u[0-9A-Fa-f]{4})")
+_ESCAPE_LETTER = re.compile(r"(?<=\\)(?:[bfnrt]|u[0-9A-Fa-f]{4})")
 # Docker's config holds a registry login in an "auth" field, base64 of "user:password".
 _AUTH_FIELD = re.compile(rf"(?i)((?:(?<![A-Za-z0-9_.-])|{_AFTER_ESCAPE})auth{_QUOTE}?{_GAP}[:=]{_GAP}{_QUOTE}?)"
                          r"([A-Za-z0-9+/]{4,}={0,2})")
@@ -605,7 +609,7 @@ def _gitleaks_edits(text):
 # Which mask() a stored row was masked with. A row of another version, or of none, is masked again when read and by
 # the next ingest. The patterns change it by themselves; bump REVISION when the code that applies them changes what
 # it masks.
-REVISION = 32
+REVISION = 33
 VERSION = f"r{REVISION}-" + hashlib.sha256(repr((REVISION, [p.pattern for p in SECRET_PATTERNS + PREFIXED_SECRETS], KEYED_SECRET.pattern,
                                 ENV_KEY_SECRET.pattern, JSON_SECRET.pattern, FLAG_SECRET.pattern, AUTH_SECRET.pattern,
                                 COMMAND_FLAGS, PASSWORD_NAME.pattern, sorted(PLACEHOLDERS), REFERENCE.pattern,
@@ -848,35 +852,42 @@ def _key_range(joined, starts, ends, found, floor, held=None):
     return max(top, floor), bottom
 
 
+def _stream_end(widths, padded, k):
+    """The last line of the stream that starts at line `k` of a base64 block (`widths`, each line's width; `padded`,
+    whether it holds "="). A stream's lines are as wide as its widest so far but its last, which holds its "=" or is
+    shorter, so a line of either ends it (a blank line, or one that is not base64, ends the block). But a shorter line
+    as wide as the next, with no "=", starts a narrower stream, as a key file wrapped narrower below a stream does, and
+    a line wider than two or more of one width starts a wider one: there the stream ended on the line before."""
+    width, run = 0, 0  # the stream's width, and how many of its lines are read
+    for j in range(k, len(widths)):
+        w = widths[j]
+        if width and (w > width and run >= 2 or w < width and not padded[j] and widths[j + 1:j + 2] == [w]):
+            return j - 1
+        if padded[j] or w < width:
+            return j
+        width, run = max(width, w), run + 1
+    return len(widths) - 1
+
+
 def _key_spans(text, lines):
     """The spans to mask in a base64 block: for each key's header or footer word outside the spans before it, its key's
     lines. The block is joined once, and each key's lines are read once."""
     joined = "".join(text[a:b] for a, b in lines)
     ends = list(itertools.accumulate(b - a for a, b in lines))
     starts = [0] + ends[:-1]
-    # A stream's lines are as wide as its widest so far but its last, which holds its "=" or is shorter, so a line of
-    # either ends it (a blank line, or one that is not base64, ends the block). But a shorter line as wide as the next,
-    # with no "=", starts a narrower stream, as a key file wrapped narrower below a stream does, and a line wider than
-    # two or more of one width starts a wider one: there the stream above ended on the line before. ended[k]: streams
-    # ended above line k.
     widths = [b - a for a, b in lines]
     padded = ["=" in joined[starts[k]:ends[k]] for k in range(len(lines))]
-    after = [False] * len(lines)  # after[k]: a stream ends with line k
-    width, run = 0, 0  # the open stream's width, and how many of its lines are read
-    for k, w in enumerate(widths):
-        if width and (w > width and run >= 2 or w < width and not padded[k] and widths[k + 1:k + 2] == [w]):
-            after[k - 1], width, run = True, 0, 0
-        if padded[k] or w < width:
-            after[k], width, run = True, 0, 0
-        else:
-            width, run = max(width, w), run + 1
-    ended = [0] + list(itertools.accumulate(after))
-    spans, floor, held = [], 0, None
+    stream_end, k = [], 0  # stream_end[k]: the last line of the stream that holds line k (_stream_end)
+    while k < len(lines):
+        last = _stream_end(widths, padded, k)
+        stream_end += [last] * (last + 1 - k)
+        k = last + 1
+    spans, floor, held, held_end = [], 0, None, None
     for found in _ENCODED_KEY.finditer(joined):
         line = bisect.bisect_right(ends, found.start())
         if line < floor:
             continue
-        if held is not None and ended[line] > ended[held]:
+        if held is not None and line > held_end:
             held = None  # a header quoted in a stream that ended above starts no key in a later one
         key = _key_range(joined, starts, ends, found, floor, held)
         if key:
@@ -889,16 +900,31 @@ def _key_spans(text, lines):
         frame = held is None and _frame(joined, starts, found, refused=True)
         if frame and frame[0] == b"BEGIN":
             held = bisect.bisect_right(ends, frame[1])  # the line holding its first byte
+            # Where such a header starts its line, after a byte order mark or none, and the line above is not as wide,
+            # the block's wrapping does not break there (_wrapping_break): a key file wrapped below another stream,
+            # in a line as wide as none above and then its short last line, starts its own stream there, though the
+            # widths alone read that line as the last of the stream above.
+            lead = _base64_decoded(joined, starts[held], frame[1]) if frame[1] - starts[held] in (0, 4) else None
+            own = held and lead in (b"", _BYTE_ORDER_MARK) and not _wrapping_break(starts, held, len(joined))
+            held_end = _stream_end(widths, padded, held) if own else stream_end[held]
     return spans
 
 
 def _written_key_spans(text):
-    """Each private key in a file written as base64 in `text`, whole with the lines it wraps onto, as a (start, end)."""
-    spans = []
+    """Each private key in a file written as base64 in `text`, whole with the lines it wraps onto, as a (start, end). A
+    run on the line after a block's last, which has text after it on its line ("... next steps", or an escape that is
+    no line break), is that block's last line, as a stream's last line with words after it is: a header there, quoting
+    one in a sentence that the lines above decode to, reads as it does in the stream above."""
+    spans, block = [], []
     for m in _WRAPPED_BASE64.finditer(text):
         escape = _ESCAPE_LETTER.match(text, m.start())
-        spans += _key_spans(text, _wrapped_lines(text, escape.end() if escape else m.start(), m.end()))
-    return spans
+        lines = _wrapped_lines(text, escape.end() if escape else m.start(), m.end())
+        if block and _UNWRAP.fullmatch(text, block[-1][1], lines[0][0]):
+            block += lines
+            continue
+        spans += _key_spans(text, block) if block else []
+        block = lines
+    return spans + (_key_spans(text, block) if block else [])
 
 
 # A character a reader does not see, with the backslashes before an escaped one, as JSON in JSON escapes it twice. It
@@ -2128,14 +2154,24 @@ _WORD_ALONE = re.compile(r"(?:\r?\n|(?<!\\)\\+(?:r\\+)?n)(?:[A-Z]?[a-z]+|[A-Z]+)
 _PLACEHOLDER_ALONE = re.compile(r"(?:\r?\n|(?<!\\)\\+(?:r\\+)?n)\[masked\][ \t\r]*(?=\n|[\\\"'<…]|\Z)")
 
 
+# A line with no letter or digit but a placeholder's, and escapes of no line break: a rule ("---"), a list's or a
+# quote's marks before a placeholder ("  [masked]", "> [masked]"), a brace or a fence alone.
+_MARKS_LINE = re.compile(r"(?:\[masked\]|[^A-Za-z0-9\\\r\n]|\\+(?:[^A-Za-z0-9\\\r\n]|t))*")
+
+
 def _skipped_line(text, at):
-    """Where the line after the line break at `at` ends, if it is a word alone (_WORD_ALONE), a placeholder alone or a
-    line of words (_WORDS_LINE), which a rest past lines of words passes over; None otherwise."""
+    """Where the line after the line break at `at` ends, if it is a word alone (_WORD_ALONE), a placeholder alone, a
+    line of words (_WORDS_LINE) or a line of marks (_MARKS_LINE), which a rest past lines of words passes over; None
+    otherwise."""
     alone = _WORD_ALONE.match(text, at) or _PLACEHOLDER_ALONE.match(text, at)
     if alone:
         return alone.end()
     words = _WORDS_LINE_AT.match(text, at)
-    return _KEY_LINE_END.search(text, words.end()).start() if words else None
+    if words:
+        return _KEY_LINE_END.search(text, words.end()).start()
+    brk = _LINE_BREAK.match(text, at)
+    end = brk and _KEY_LINE_END.search(text, brk.end()).start()
+    return end if brk and _MARKS_LINE.fullmatch(text, brk.end(), end) else None
 # A line break, plain or escaped, before a line of words, as "next steps", "tls.crt: none" or "- deploy it" are: past
 # a list's or a quote's marks, a word (a letter, then small letters, as "tls.crt" or "don't" are), then a space and
 # the next word's letter. A line of base64 is no word, even with words after it on its line, as a snippet joins it
@@ -2597,7 +2633,9 @@ def _key_rests(text, starts=_REST_START):
                 line = begin
                 while main_reach > line and (skip := _skipped_line(text, line)) is not None:
                     line = skip
-                rest = main_reach > line and _REST_PAST_WORDS.match(text, line) or None
+                # past them, any other line main's rest takes starts one: base64 alone on its line, or a line that
+                # holds any other run of base64's characters, with whatever its line holds, as main's rest does
+                rest = main_reach > line and (_REST_PAST_WORDS.match(text, line) or _LINE_BREAK.match(text, line)) or None
                 begin, as_main = (line, True) if rest else (begin, False)
         if not rest and not _BASE64_CHARACTER.match(text, at.end()):
             continue
