@@ -2028,6 +2028,64 @@ class Base64KeyPieceLimitTest(unittest.TestCase):
             self.check(past, later, "shows", "shows", kept="more notes")
             self.check(past, first, "shows", "masked", kept=words)
 
+class Base64RestScanToNextPlaceholderTest(unittest.TestCase):
+    """Each placeholder's reading of the lines of base64 after it, as public material or a key's rest, stops at the
+    next placeholder: a line that holds one is no line of base64, so no line past it is read. Many placeholders in one
+    line cost time in proportion to it, and a key's rest that runs on past the next placeholder still goes whole."""
+
+    def test_many_placeholders_glued_to_base64_in_one_line_cost_time_in_proportion(self):
+        import time
+        from kb import mask as mask_module
+        for unit in ("[masked]A", "[masked]Ab+/9 "):
+            for older in (False, True):
+                with self.subTest(unit=unit, older=older):
+                    took = {}
+                    for size in (16, 32, 64):  # KB; each placeholder read the whole rest of the line, in its square
+                        text = unit * (size * 1024 // len(unit))
+                        started = time.process_time()
+                        if older:
+                            with mask_module.stored_row("0123456789abcdef"):
+                                mask(text)
+                        else:
+                            mask(text)
+                        took[size] = time.process_time() - started
+                        if size > 16:  # twice the text, about twice the time: three times at most, or eight at 64
+                            self.assertLess(took[size], (3 if size == 32 else 8) * max(took[16], 0.02), took)
+
+    def test_a_keys_rest_that_runs_on_past_the_next_placeholder_is_masked_whole(self):
+        # The first placeholder's reading of lines stops at the line holding the next one; the rest main reads runs on
+        # past it to the paragraph's end all the same, and the next placeholder reads its own: the key goes whole, in
+        # fresh text and in an older kb's row, raw and as JSON, and so does public material before the next one
+        import base64
+        import random
+        import textwrap
+        from kb import mask as mask_module
+        r = random.Random(1612)
+        lines = textwrap.wrap(base64.b64encode(made_up_private_key(r)).decode(), 64)[:10]
+        public = textwrap.wrap(base64.b64encode(made_up_public_key(r)).decode(), 64)
+        bodies = []
+        for at in (1, 4, 8):
+            bodies += ["\n".join(lines[:at] + ["[masked]" + lines[at]] + lines[at + 1:]),  # glued to a line of the key
+                       "\n".join(lines[:at] + ["[masked]"] + lines[at:]),  # on a line of its own
+                       "\n".join(lines[:at] + [lines[at][:30] + " [masked] " + lines[at][30:]] + lines[at + 1:])]
+        bodies.append("\n".join(public + ["[masked]"] + lines))
+        # in JSON inside JSON the rest takes one of the two escaped breaks after it, as the branch's did before this
+        # change; main's takes the rest of the text
+        expected = ("notes [masked]\n\nnext steps", ) * 2 + ("notes [masked]\nnext steps", )
+        for n, body in enumerate(bodies):
+            text = f"notes [masked]\n{body}\n\nnext steps"
+            for older in (False, True):
+                for depth, written in enumerate((text, json.dumps(text), json.dumps(json.dumps(text)))):
+                    with self.subTest(n=n, older=older, depth=depth):
+                        if older:
+                            with mask_module.stored_row("0123456789abcdef"):
+                                masked = mask(written)
+                        else:
+                            masked = mask(written)
+                        self.assertEqual(masked, (expected[0], json.dumps(expected[1]),
+                                                  json.dumps(json.dumps(expected[2])))[depth])
+
+
 class HeadlessKeyTest(unittest.TestCase):
     """A key's body without its header, as an older kb's row-by-row remask leaves the chunk after the header's."""
     LINE = "MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7"
