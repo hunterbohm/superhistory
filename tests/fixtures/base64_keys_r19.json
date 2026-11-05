@@ -1,0 +1,13 @@
+{
+ "about": [
+  "Throwaway keys made for these tests and used for nothing else, each as base64 of the file the tool wrote.",
+  "openssl_ed25519, openssl_p256: OpenSSL 3.0.13, openssl genpkey -algorithm ed25519 (or EC with",
+  "-pkeyopt ec_paramgen_curve:P-256). gnupg_control_comment: GnuPG 2.4.4, a key made with --quick-generate-key",
+  "'Fixture Key <fixture@example.invalid>' ed25519 in an empty home and no passphrase, exported with",
+  "--armor --comment \"$(printf 'fixture\\001value')\" --export-secret-keys: its armour comment holds a",
+  "control byte, as GnuPG writes it."
+ ],
+ "openssl_ed25519": "LS0tLS1CRUdJTiBQUklWQVRFIEtFWS0tLS0tCk1DNENBUUF3QlFZREsyVndCQ0lFSUJtUnpGNm1STGJwZ05Ma1JIaE1SYjJSaWZvNlJCWkJIaU42cWZ5R0s3Z04KLS0tLS1FTkQgUFJJVkFURSBLRVktLS0tLQo=",
+ "openssl_p256": "LS0tLS1CRUdJTiBQUklWQVRFIEtFWS0tLS0tCk1JR0hBZ0VBTUJNR0J5cUdTTTQ5QWdFR0NDcUdTTTQ5QXdFSEJHMHdhd0lCQVFRZ1VtN0JndHBiSGxpS2Q3VjIKVnp1Y3J1eXFIejJ2Q3hlYTZBUElPUEpCK3VhaFJBTkNBQVF1Qi9mRnFWeTJPcWt2TXNwbHdHRTNZdHpyb2xoQgpkdVRhdTFaZURGN0lXL0x4eFBJeDNZbWl3YVZYQ0tpU0ZmS2Y2N0J1blpCV2xOU29MQWJNc05qQwotLS0tLUVORCBQUklWQVRFIEtFWS0tLS0tCg==",
+ "gnupg_control_comment": "LS0tLS1CRUdJTiBQR1AgUFJJVkFURSBLRVkgQkxPQ0stLS0tLQpDb21tZW50OiBmaXh0dXJlAXZhbHVlCgpsRmdFYXUwT1hoWUpLd1lCQkFIYVJ3OEJBUWRBR010bk9UejBMMzRyb1pRakdKMVdZak1DVkswaWVmNDFvN3VuCmhMMUFOVU1BQVA5VlRDdUZ1QVB6S1BpcFF2UmZsOGgwYkF5V3dCd0pFYmJ2L2FhQy9zMmFOeEdadENWR2FYaDAKZFhKbElFdGxlU0E4Wm1sNGRIVnlaVUJsZUdGdGNHeGxMbWx1ZG1Gc2FXUStpSk1FRXhZS0FEc1dJUVFsOEdDRQpBNy9wdWRUUnV0eVNqc1BjcHZ2R3F3VUNhdTBPWGdJYkF3VUxDUWdIQWdJaUFnWVZDZ2tJQ3dJRUZnSURBUUllCkJ3SVhnQUFLQ1JDU2pzUGNwdnZHcTY5ZEFQOStpVUlIT3N6R1VJNUhrYkZ2REltdTBudVBQTkFrVVJnWjZZdHMKU1NLSlB3RCtPS0dseERqdmJNSFhMalJoVFVMcUtOM1hPWjZWWDlGY1QyeWRORHk2K2drPQo9Z2VsagotLS0tLUVORCBQR1AgUFJJVkFURSBLRVkgQkxPQ0stLS0tLQo="
+}

@@ -2404,6 +2404,146 @@ class Base64ReviewNineteenTest(unittest.TestCase):
                             self.assertIn("next paragraph", masked)
 
 
+class Base64ReviewNineteenFindingsTest(unittest.TestCase):
+    """#34's nineteenth review's findings, with keys as OpenSSL and GnuPG write them (fixtures/base64_keys_r19.json): a
+    key wrapped below a wider stream of words, on a line as wide as none above or below it and then its short last line,
+    whose header line was read as that stream's last line; a password past a line with no base64 but a placeholder's,
+    such as "---" or an indented placeholder; a stream quoting a header whose last line has text after it, or a line
+    break escaped as \\u000b; and a key between JSON's escaped form feeds."""
+
+    @staticmethod
+    def fixture(name):
+        import base64
+        import os
+        with open(os.path.join(os.path.dirname(__file__), "fixtures", "base64_keys_r19.json"), encoding="utf-8") as f:
+            return base64.b64decode(json.load(f)[name])
+
+    @staticmethod
+    def written(text, depth):
+        for _ in range(depth):
+            text = json.dumps(text)
+        return text
+
+    def test_a_key_in_two_lines_below_a_wider_stream_is_masked_and_the_stream_stays(self):
+        import base64
+        import textwrap
+        from kb import mask as masking
+        for name in ("openssl_ed25519", "openssl_p256"):
+            for lead in (b"", b"\xef\xbb\xbf"):
+                for crlf in (False, True):
+                    pem = self.fixture(name)
+                    data = lead + (pem.replace(b"\n", b"\r\n") if crlf else pem)
+                    encoded = base64.b64encode(data).decode()
+                    for width in range(len(encoded) // 2 + 4, len(encoded), 8):
+                        lines = textwrap.wrap(encoded, width)
+                        document = base64.b64encode(b"notes " * (width // 8 + 6)).decode()
+                        for brk in ("\n", "\r\n"):
+                            text = brk.join([document] + lines)
+                            for older in (False, True):
+                                for depth in range(3):
+                                    written = self.written(text, depth)
+                                    with self.subTest(name=name, lead=lead, crlf=crlf, width=width, brk=brk,
+                                                      older=older, depth=depth):
+                                        if older:
+                                            with masking.stored_row(None):
+                                                masked = mask(written)
+                                        else:
+                                            masked = mask(written)
+                                        self.assertIn(document, masked)
+                                        for line in lines:
+                                            self.assertNotIn(line, masked)
+
+    def test_a_gnupg_key_with_a_control_byte_in_its_comment_below_a_wider_stream_is_masked(self):
+        import base64
+        import textwrap
+        encoded = base64.b64encode(self.fixture("gnupg_control_comment")).decode()
+        for width in (512, 400, 336, 256, 76, 64, 56):
+            lines = textwrap.wrap(encoded, width)
+            for words in (64, 100, 192):
+                document = base64.b64encode(b"notes " * words).decode()
+                for depth in range(3):
+                    written = self.written("\n".join([document] + lines), depth)
+                    with self.subTest(width=width, words=words, depth=depth):
+                        masked = mask(written)
+                        self.assertIn(document, masked)
+                        for line in lines:
+                            self.assertNotIn(line, masked)
+
+    def test_a_password_past_a_line_with_no_base64_but_a_placeholders_goes_where_main_takes_it(self):
+        import base64
+        from kb import mask as masking
+        from tests.test_mask_against_today import main as today
+        password = base64.b64encode(b"pw=Fixture9value").decode()
+        marks = ("  [masked]", "\t[masked]", "---", "    ---", "***", "```", "- [masked]", "> [masked]", "{", "}", "#",
+                 "[masked] [masked]")
+        others = ("x = 1", "token: [masked]", "--- notes", "  " + base64.b64encode(b"pw=Other9secretv").decode() + " # old")
+        for between in marks + others:
+            for words in (b"notes " * 8, b"notes " * 16):
+                text = "intro notes\n[masked]" + base64.b64encode(words).decode() + "\n" + between + "\n" + password
+                for older in (False, True):
+                    for depth in range(3):
+                        written = self.written(text, depth)
+                        with self.subTest(between=between, words=len(words), older=older, depth=depth):
+                            if older:
+                                with masking.stored_row(None):
+                                    masked = mask(written)
+                            else:
+                                masked = mask(written)
+                            if password not in today.mask(written):
+                                self.assertNotIn(password, masked)
+                            self.assertIn("intro notes", masked)
+                            if between in marks:
+                                kept = between
+                                for _ in range(depth):
+                                    kept = json.dumps(kept)[1:-1]
+                                self.assertIn(kept, masked)
+
+    def test_a_stream_quoting_a_header_stays_with_text_after_its_last_line(self):
+        import base64
+        import textwrap
+        lines = textwrap.wrap(base64.b64encode(b"notes " * 8 + b"-----BEGIN PRIVATE KEY-----\nsee the runbook\n")
+                              .decode(), 64)
+        for tail in ("\vnext steps", " next steps", "\fnext steps", " next steps", ", next steps", "…"):
+            for depth in range(3):
+                text = self.written("\n".join(lines) + tail, depth)
+                with self.subTest(tail=tail, depth=depth):
+                    self.assertEqual(mask(text), text)
+        # and its lines indented with tabs, which JSON escapes ("\n\t"), and its lines' breaks escaped as JSON may
+        # write them, \u000a, or \u000d\u000a
+        for indent in ("\t", "\t\t", " \t"):
+            for tail in ("", " next steps", "\nnext steps"):
+                for depth in (1, 2):
+                    text = self.written(("\n" + indent).join(lines) + tail, depth)
+                    with self.subTest(indent=indent, tail=tail, depth=depth):
+                        self.assertEqual(mask(text), text)
+        for brk in ("\\u000a", "\\u000d\\u000a", "\\u000b", "\\f"):
+            for tail in ("", brk + "next steps", " next steps"):
+                text = '"' + brk.join(lines) + tail + '"'
+                for depth in (0, 1):
+                    written = json.dumps(text) if depth else text
+                    with self.subTest(brk=brk, tail=tail, depth=depth):
+                        self.assertEqual(mask(written), written)
+
+    def test_a_key_between_escaped_form_feeds_is_masked_and_its_json_stays_json(self):
+        import base64
+        key = (b"-----BEGIN PRIVATE KEY-----\n" + base64.b64encode(bytes.fromhex("302e020100300506032b657004220420")
+               + bytes(range(32))) + b"\n-----END PRIVATE KEY-----\n")
+        for key_data in (key, self.fixture("openssl_ed25519"), self.fixture("openssl_p256")):
+            encoded = base64.b64encode(key_data).decode()
+            for before in ("\f", "\n"):  # a backspace before it is a character no reader sees: "Plan" goes with it
+                for after in ("\f", "\b", "\n"):
+                    for depth in (1, 2):
+                        written = self.written("Plan" + before + encoded + after + "next steps", depth)
+                        with self.subTest(key=key_data[-30:-26], before=before, after=after, depth=depth):
+                            masked = mask(written)
+                            read = masked
+                            for _ in range(depth):
+                                read = json.loads(read)
+                            self.assertNotIn(encoded[:40], masked)
+                            self.assertTrue(read.startswith("Plan"), read)
+                            self.assertTrue(read.endswith("next steps"), read)
+
+
 class HeadlessKeyTest(unittest.TestCase):
     """A key's body without its header, as an older kb's row-by-row remask leaves the chunk after the header's."""
     LINE = "MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7"

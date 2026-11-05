@@ -147,7 +147,7 @@ class StoredRowTest(unittest.TestCase):
             self.assertNotIn(value, content)
         self.assertIn("expires_at: 2026-11-01T10:00:00Z", content)
         self.assertEqual(version, store.VERSION)
-        self.assertEqual(masking.REVISION, 32)
+        self.assertEqual(masking.REVISION, 33)
 
 
 if __name__ == "__main__":
