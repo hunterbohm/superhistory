@@ -1183,7 +1183,8 @@ def _containers(text, i=0, n=None, brackets=None):
 def _parse_container(source):
     """`source`, a bracketed span, parsed as a list, dict or tuple by json.loads or, failing that, Python's
     ast.literal_eval, or None where it does not parse to one of those or holds a number of 1,000 digits or more in any
-    base (_long_number). The size, depth and digit guards run before this, and every parser error falls back to None:
+    base (_long_number), or more than 64 keys of one dict or members of one set that share one hash (_literal_eval).
+    The size, depth and digit guards run before this, and every parser error falls back to None:
     TypeError too, which ast.literal_eval raises for a key or a set member that is a list or a dict ({[]: "keytool"}),
     and OverflowError, which it raises adding an integer too large for a float to an imaginary number (9...9+1j)."""
     for parse in (json.loads, _literal_eval):
@@ -1212,10 +1213,43 @@ def _long_number(value):
     return False
 
 
+# Keys of one dict, or members of one set, that may share one hash in a literal read whole (_literal_eval).
+_SHARED_HASH = 64
+
+
 def _literal_eval(source):
+    """`source`, a bracketed span, as ast.literal_eval reads it, parsed once; refused (ValueError) where more than
+    _SHARED_HASH keys of one dict or members of one set share one hash, as multiples of sys.hash_info.modulus or
+    tuples of them do: Python builds such a dict or set, and each reading of it, in time in the square of their
+    number. A string's hash is drawn afresh in each process, so no text can choose one."""
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
-        return ast.literal_eval(source)
+        tree = ast.parse(source, mode="eval")
+        for node in ast.walk(tree):
+            items = node.keys if isinstance(node, ast.Dict) else node.elts if isinstance(node, ast.Set) else ()
+            if len(items) > _SHARED_HASH:
+                shared = {}
+                for item in items:
+                    if item is None or not _hashable(item):
+                        raise TypeError("a key or a member no literal can hash")  # as ast.literal_eval raises
+                    key = hash(ast.literal_eval(item))  # of a number, a string, bytes or a tuple of them
+                    shared[key] = shared.get(key, 0) + 1
+                    if shared[key] > _SHARED_HASH:
+                        raise ValueError("more keys sharing one hash than a literal read whole may hold")
+        return ast.literal_eval(tree)
+
+
+def _hashable(node):
+    """Whether a literal's node can be a dict's key or a set's member: no list, dict or set, at any depth of the tuples
+    it is in, so the check reads no part of the literal more than once."""
+    todo = [node]
+    while todo:
+        node = todo.pop()
+        if isinstance(node, ast.Tuple):
+            todo += node.elts
+        elif isinstance(node, (ast.List, ast.Dict, ast.Set, ast.Call)):
+            return False
+    return True
 
 
 def _as_text(value):
