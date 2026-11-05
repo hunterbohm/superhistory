@@ -1893,6 +1893,31 @@ class ReviewTwentyThreeTest(unittest.TestCase):
                 self.assertMasked(text, self.INNER, self.OUTER, self.LAST)
 
 
+class NestedLineCostTest(unittest.TestCase):
+    """One long line of commands, each a substitution holding another: once a pass masks a password with the backtick
+    after it, the substitutions no longer close and each holds the rest of the line. Reading every command in them to
+    that end, and every flag up to it, cost the square of the line's length; each doubling of the line now costs about
+    double, as main's reading of it does."""
+    UNITS = {"backticks": "keytool $(mongosh `az.cmd login -p In9rVz2tHx8q` -p Out7mKq4nTs6x) -storepass Out17mKq4nTs6x ; ",
+             "process substitution": 'keytool "$(az.exe login <(twine "`keytool -storepass In9rVz2tHx8q`" -p Out7mKq4nTs6x) '
+                                     '-p Out17mKq4nTs6x)" -storepass Out27mKq4nTs6x ; '}
+
+    def test_each_doubling_costs_about_double(self):
+        for name, unit in self.UNITS.items():
+            for form in ("plain", "json"):
+                took = []
+                for size in (8, 16, 32, 64):
+                    text = unit * (size * 1024 // len(unit))
+                    text = json.dumps(text) if form == "json" else text
+                    started = time.process_time()
+                    masked = mask(text)
+                    took.append(time.process_time() - started)
+                    for password in ("In9rVz2tHx8q", "Out7mKq4nTs6x", "Out17mKq4nTs6x", "Out27mKq4nTs6x"):
+                        self.assertNotIn(password, masked)
+                with self.subTest(shape=name, form=form, took=[round(t, 2) for t in took]):
+                    self.assertLess(took[3], 16 * took[0])
+                    self.assertLess(took[3], 3 * took[2])
+
 class RevisionTest(unittest.TestCase):
     def test_stored_rows_are_masked_again(self):
         self.assertEqual(masking.REVISION, 14)
