@@ -2318,9 +2318,14 @@ _MIXED_RUN = re.compile(r"(?<![A-Za-z0-9+/])(?=[A-Za-z0-9+/]*[A-Z])(?=[A-Za-z0-9
 def _base64_lines(text, start, end):
     """The lines of base64 that text[start:end] starts with, each as a key's rest or public material is written
     (_BASE64_ONLY_LINE), as (its base64, where it starts, where it ends), up to the first line that is none; a line with
-    no base64 (a blank, or a quote alone) is passed."""
+    no base64 (a blank, or a quote alone) is passed. A line that holds a placeholder is none, as cleaning leaves its
+    "masked]" (a colour code can end in its "[", no more), so the lines are read only up to the next placeholder: each
+    placeholder in a long line read the rest of it, which took time in its square."""
     lines, at = [], start
-    for brk in itertools.chain(_LINE_BREAK.finditer(text, start, end), [None]):
+    held = _PLACEHOLDER.search(text, start, end)
+    for brk in itertools.chain(_LINE_BREAK.finditer(text, start, held.start() if held else end), [None]):
+        if brk is None and held:
+            break  # the line that holds the next placeholder
         stop = brk.start() if brk else end
         line = _BASE64_ONLY_LINE.fullmatch(INVISIBLE.sub("", _KEY_ESCAPE.sub("", text[at:stop])))
         if line is None:
