@@ -2794,5 +2794,30 @@ class ArgumentListTest(unittest.TestCase):
                         self.assertNotIn(items[i], text)
                     self.assertIn(items[0], text)
 
+
+class MainStillChangingTest(unittest.TestCase):
+    """Where main's own mask still changes at its last pass, its mask() masks the part still changing whole, and all
+    that hides is hidden here too: a text main's mask does not settle fails closed."""
+    # Each link takes main's own mask two passes more; this branch's own reading settles in two.
+    LINK = "sec\u200bretapi_key:\\napik\u200bey: ./sec\u200bret=|"
+    SPLIT = "pass\u00adword=Ab3D|redis://:X7y8@Z9q0Secret end"
+
+    def chain(self, links):
+        return "passwd=tok\u200ben= &ecret=password=\n[masked]c\u200b\napik\u200bey:=" + self.LINK * links + "secret=secret:-"
+
+    def test_a_split_password_beside_a_text_main_does_not_settle_is_masked(self):
+        import kb.mask as m
+        for links in (1, 3, 4, 6):
+            for text in (self.SPLIT + "\n" + self.chain(links), self.chain(links) + "\n\n" + self.SPLIT):
+                with self.subTest(links=links, text=text):
+                    masked = mask(text)
+                    for part in ("Ab3D", "X7y8", "Z9q0Secret"):
+                        self.assertNotIn(part, masked)
+                    self.assertEqual(m._passes(text, m._main_once)[2], links >= 3)
+                    hidden = m._main_hidden(text)
+                    _, origin = m.mask_with_origin(text)
+                    self.assertFalse([i for i in range(len(text)) if hidden[i] and i in set(origin)], masked)
+                    self.assertEqual(mask(text), m.mask_with_origin(text)[0])
+
 if __name__ == "__main__":
     unittest.main()
