@@ -2086,6 +2086,75 @@ class Base64RestScanToNextPlaceholderTest(unittest.TestCase):
                                                   json.dumps(json.dumps(expected[2])))[depth])
 
 
+class Base64ReviewSeventeenTest(unittest.TestCase):
+    """#34's seventeenth review: a header quoted inside one encoded stream ("notes ... -----BEGIN PRIVATE KEY-----" in
+    a document) was held for a later stream's footer, so that key ran from the document and took the public key
+    between; and after a placeholder glued to an encoded stream whose first line decodes to words, the stream's last
+    line, base64 of a password with no line break after it, started no rest and showed, which main masks."""
+
+    @staticmethod
+    def encoded(data, width=64):
+        import base64
+        import textwrap
+        return "\n".join(textwrap.wrap(base64.b64encode(data).decode(), width))
+
+    @staticmethod
+    def pem(r):
+        import base64
+        der = bytes.fromhex("302e020100300506032b657004220420") + bytes(r.randrange(256) for _ in range(32))
+        return b"-----BEGIN PRIVATE KEY-----\n" + base64.b64encode(der) + b"\n-----END PRIVATE KEY-----\n"
+
+    @staticmethod
+    def whole_lines(data, width):
+        """`data` with spaces before its last line break, so its base64 fills whole lines: no "=", no short line."""
+        size = width // 4 * 3
+        return data[:-1] + b" " * (-len(data) % size) + data[-1:]
+
+    def test_a_header_quoted_in_one_stream_starts_no_key_for_a_later_streams_footer(self):
+        import random
+        r = random.Random(1701)
+        public = bytes.fromhex("302a300506032b6570032100") + bytes(r.randrange(256) for _ in range(32))
+        for width in (64, 76):
+            for quoted in (b"Read the documentation before importing.\n", b"see the runbook\n" * 3):
+                document = b"notes " * 8 + b"-----BEGIN PRIVATE KEY-----\n" + quoted
+                for full, between in ((False, True), (True, True), (True, False)):
+                    # the document's stream ends with "=" or a short line, or (full) fills its last line, which only
+                    # the public key's stream after it, ending with "=", or nothing, follows
+                    lines = self.encoded(self.whole_lines(document, width) if full else document, width)
+                    kept = [lines] + ([self.encoded(public, width), self.encoded(b"notes " * 8, width)] if between else [])
+                    private = self.encoded(self.pem(r), width)
+                    text = "\n".join(kept + [private])
+                    for depth, written in enumerate((text, json.dumps(text), json.dumps(json.dumps(text)))):
+                        masked = mask(written)
+                        with self.subTest(width=width, quoted=quoted[:8], full=full, between=between, depth=depth):
+                            self.assertEqual([line for part in kept for line in part.splitlines()
+                                              if line not in masked], [])
+                            self.assertEqual([line for line in private.splitlines()
+                                              if len(line) >= 16 and line in masked], [])
+
+    def test_base64_past_lines_of_words_glued_to_a_placeholder_goes_where_main_takes_it(self):
+        # main masks the lines after the placeholder as a key's rest, plain and JSON-escaped once; JSON-escaped twice
+        # it shows them, and so may this branch
+        from kb import mask as masking
+        from tests.test_mask_against_today import main as today
+        password = b"password=walrussecret9"
+        shown = self.encoded(password)
+        for words in (b"notes " * 8, b"notes " * 16):
+            for brk in ("\n", "\r\n"):
+                for end in ("", brk, " ", " " + brk, brk + "next steps"):
+                    text = "[masked]" + self.encoded(words + password).replace("\n", brk) + end
+                    for older in (False, True):
+                        for depth, written in enumerate((text, json.dumps(text), json.dumps(json.dumps(text)))):
+                            with self.subTest(words=len(words), brk=brk, end=end, older=older, depth=depth):
+                                if older:
+                                    with masking.stored_row(None):
+                                        masked = mask(written)
+                                else:
+                                    masked = mask(written)
+                                if depth < 2 or shown not in today.mask(written):
+                                    self.assertNotIn(shown, masked)
+
+
 class HeadlessKeyTest(unittest.TestCase):
     """A key's body without its header, as an older kb's row-by-row remask leaves the chunk after the header's."""
     LINE = "MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7"
