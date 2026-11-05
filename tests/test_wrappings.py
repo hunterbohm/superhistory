@@ -1754,6 +1754,17 @@ class ReviewTwentyOneNameTest(unittest.TestCase):
                     with self.subTest(command=command, after=after, depth=depth):
                         self.assertEqual(mask(form), mask(base[depth])[:len(mask(base[depth])) - closing] + tail)
 
+    def test_a_command_whose_name_runs_on_past_a_masked_value_still_reads_its_flag(self):
+        # the masked value is only the name's first word ("az", "aws"), and the rest of the name follows it: the
+        # command is still named in the text as it was, so its row reads its flag there
+        for text in ('curl -u "deploy:az" login -p {}', "curl -u deploy:az.exe login -p {}",
+                     "curl -u deploy:aws configure set aws_secret_access_key {}"):
+            for depth, form in enumerate(self.forms(text.format(self.SECRET))):
+                with self.subTest(text=text, depth=depth):
+                    masked = mask(form)
+                    self.assertNotIn(self.SECRET, masked)
+                    self.assertTrue(masked.startswith(form[:form.index(" -")]), masked)
+
     def test_many_such_commands_cost_time_in_proportion(self):
         unit = f'az.exe login -p "keytool" -storepass {self.SECRET}; '
         took = {}
