@@ -870,39 +870,54 @@ def _command_password_edits(text, line_pattern, flag, always, unseen=False):
     return edits
 
 
-def _named_inside_edits(before, text, steps, rows):
-    """The passwords `rows`, this PR's, find in `before`, the text as it was before any row of COMMAND_FLAGS masked a
-    value, that the rows read in turn left in `text`: where a command is named inside a value an earlier row masked
-    ('az.exe login -p "keytool" -storepass ...'), its own row then found no name to read its flags after. `steps`, each
-    row's edits in turn, carry a place in `before` to `text`. Only characters no step masked are masked, so the text
-    loses nothing the rows in turn hid; one edit for each run, those of two rows that meet made one."""
-    spans = sorted((start, end) for line, flag, always in rows
-                   for start, end, _ in _command_password_edits(before, line, flag, always, True))
-    moves = []
-    for edits in steps:
-        shift, shifts = 0, []
-        for start, end, insert in edits:
-            shift += len(insert) - (end - start)
-            shifts.append(shift)
-        moves.append(([start for start, _, _ in edits], [end for _, end, _ in edits], shifts))
+def _moves(edits):
+    """Where one row's ordered edits (start, end, insert) begin and end, and how far each, with those before it, moves
+    the text after it: what _carried reads."""
+    shift, shifts = 0, []
+    for start, end, insert in edits:
+        shift += len(insert) - (end - start)
+        shifts.append(shift)
+    return [start for start, _, _ in edits], [end for _, end, _ in edits], shifts
 
-    def carried(at):
-        for starts, ends, shifts in moves:
-            i = bisect.bisect_right(starts, at) - 1
-            if i >= 0 and at < ends[i]:
-                return None  # masked at that step
-            at += shifts[i] if i >= 0 else 0
-        return at
+
+def _carried(moves, at):
+    """Where the character at `at` is once the rows' edits (`moves`, each _moves of one row's, in turn) are made, or
+    None where one of them masked it."""
+    for starts, ends, shifts in moves:
+        i = bisect.bisect_right(starts, at) - 1
+        if i >= 0 and at < ends[i]:
+            return None
+        at += shifts[i] if i >= 0 else 0
+    return at
+
+
+def _named_inside_edits(before, rows, moves):
+    """The rows of COMMAND_FLAGS read in turn (`rows`, with `moves`, each row's edits as _moves gives them) each read
+    the text the rows before them left, so a command named where a row before its own masked a value ('az.exe login -p
+    "keytool" -storepass ...', "mysql -paws configure set ...") had no name left to read its flags after. Each row from
+    keytool's on (those _MAIN_COMMANDS counts out) whose command `before`, the text as it was before any row masked,
+    names over a character a row before it masked reads `before` again, and each password it finds there is masked in
+    the text the rows left, over the characters no row masked, so the text loses nothing the rows in turn hid: one edit
+    for each run, those of two rows that meet made one. Returns the edits, and the first row that read again."""
+    spans, first = [], None
+    for k in range(_MAIN_COMMANDS, len(rows)):
+        line, flag, always = rows[k]
+        if not any(starts for starts, _, _ in moves[:k]):
+            continue  # no row before it masked anything
+        if any(_carried(moves[:k], at) is None for m in line.finditer(before)
+               for at in range(m.start(), max(m.end(), m.start() + 1))):
+            spans += [(start, end) for start, end, _ in _command_password_edits(before, line, flag, always, True)]
+            first = first or rows[k]
     out = []
-    for start, end in spans:
-        kept = [at for at in map(carried, range(start, end)) if at is not None]
+    for start, end in sorted(spans):
+        kept = [at for at in (_carried(moves, at) for at in range(start, end)) if at is not None]
         if not kept:
             continue
         if out and kept[0] <= out[-1][1]:
             out[-1] = (out[-1][0], max(out[-1][1], kept[-1] + 1))
         else:
             out.append((kept[0], kept[-1] + 1))
-    return [(start, end, "[masked]") for start, end in out]
+    return [(start, end, "[masked]") for start, end in out], first
 
 
 def _flag_value_counts(m, always, unseen):
@@ -1921,20 +1936,17 @@ def _run(text, rules, origin=None, named=None, fired=None):
         text, origin = _edit(text, origin, edits)
     if _ANY_COMMAND.search(text):
         rows = _COMMANDS[:_MAIN_COMMANDS] if reading == "main" else _COMMANDS
-        before, steps, again = text, [], set()
+        before, moves = text, []
         for n, command in enumerate(rows):
             edits = _command_password_edits(text, *command, n >= _MAIN_COMMANDS)
             if edits and n >= _MAIN_COMMANDS:
                 note(command)
-            if reading != "main":
-                steps.append(edits)
-                again.update(k for k in range(max(n + 1, _MAIN_COMMANDS), len(rows))
-                             if any(rows[k][0].search(text, start, end) for start, end, _ in edits))
+            moves.append(_moves(edits))
             text, origin = _edit(text, origin, edits)
-        if again:  # a later row's command named inside a value masked ('az.exe login -p "keytool" -storepass ...')
-            edits = _named_inside_edits(before, text, steps, [rows[k] for k in sorted(again)])
+        if reading != "main":  # a command named where a row before its own masked ('az.exe login -p "keytool" ...')
+            edits, row = _named_inside_edits(before, rows, moves)
             if edits:
-                note(rows[min(again)])
+                note(row)
             text, origin = _edit(text, origin, edits)
     if reading == "named" and _SUBSCRIPTION_KEY.search(text):
         note(_SUBSCRIPTION_KEY)  # a name main's own do not read, which moves where their searches go on
