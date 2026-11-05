@@ -560,9 +560,11 @@ def _looks_secret(name, sep, value):
 
 
 # An ISO 8601 date, with a time and an offset after it or none, each field in its range but the day, which
-# _date_or_time holds to its month. Any other run of digits and ":.+TZ-" may be a key: "1234-5678-9012-3456".
+# _date_or_time holds to its month, in ASCII digits. Any other run of digits and ":.+TZ-" may be a key:
+# "1234-5678-9012-3456".
 _DATE_OR_TIME = re.compile(r"(\d{4})-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])"
-                           r"(?:T(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d(?:\.\d{1,9})?)?(?:Z|[+-](?:[01]\d|2[0-3]):[0-5]\d)?)?")
+                           r"(?:T(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d(?:\.\d{1,9})?)?(?:Z|[+-](?:[01]\d|2[0-3]):[0-5]\d)?)?",
+                           re.ASCII)
 _MONTH_DAYS = (31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31)
 
 
