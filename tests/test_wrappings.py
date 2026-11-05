@@ -8,6 +8,7 @@ import os
 import random
 import shlex
 import subprocess
+import sys
 import tempfile
 import time
 import unittest
@@ -1605,6 +1606,53 @@ class ReviewTwentyTest(unittest.TestCase):
                 with self.subTest(name=name, before=before):
                     self.assertEqual(mask_all(a)[-2:], ["-p", "[masked]"])
                     self.assertTrue(mask(json.dumps(a)).endswith('"-p", "[masked]"]'))
+
+
+class ReviewTwentyOneTest(unittest.TestCase):
+    """The twenty-first review's second finding: a Python literal whose dict keys all share one hash (multiples of
+    sys.hash_info.modulus, which all hash to 0, or tuples of them) took time in the square of their number, as Python
+    builds such a dict, where main reads the text alone. A literal with more than 64 keys of one dict, or members of
+    one set, sharing one hash is no container read whole: it is read as text, as main reads it."""
+
+    @staticmethod
+    def shapes(keys):
+        return ('{"command":"keytool",' + ",".join(k + ':"batch"' for k in keys) + "}",
+                '[{"cmd": "keytool"}, {' + ", ".join(f"({k},): 1" for k in keys) + "}]",
+                '["keytool", {' + ", ".join(keys) + "}]")  # a set
+
+    @staticmethod
+    def keys(n, colliding):
+        return [str(i * sys.hash_info.modulus + (0 if colliding else i)) for i in range(n)]
+
+    def test_keys_that_share_one_hash_cost_no_more_than_keys_that_do_not(self):
+        for n, (colliding, ordinary) in enumerate(zip(self.shapes(self.keys(8192, True)),
+                                                      self.shapes(self.keys(8192, False)))):
+            if n == 2:
+                continue  # a set's members cost no more here; its rule is pinned below
+            with self.subTest(shape=n):
+                took = []
+                for text in (colliding, ordinary):
+                    started = time.process_time()
+                    self.assertEqual(mask(text), text)
+                    took.append(time.process_time() - started)
+                self.assertLess(took[0], 1.5 * took[1] + 0.1, took)
+
+    def test_more_than_64_keys_or_members_sharing_one_hash_are_no_container(self):
+        for n, (over, under) in enumerate(zip(self.shapes(self.keys(65, True)), self.shapes(self.keys(64, True)))):
+            with self.subTest(shape=n):
+                self.assertIsNone(masking._parse_container(over))
+                self.assertIsNotNone(masking._parse_container(under))
+                for form in (over, json.dumps(over)):
+                    self.assertEqual(mask(form), form)
+
+    def test_a_literal_with_ordinary_number_keys_is_still_read_whole(self):
+        for text in ('{"command": ["keytool", "-storepass", "%s"], 1: "x"}' % PASSWORD,
+                     '["keytool", "-alias", "team cert", "-storepass", "%s", {1: 2}]' % PASSWORD,
+                     '["keytool", "-alias", "team cert", "-storepass", "%s", {%s}]'
+                     % (PASSWORD, ", ".join(f"{k}: 1" for k in self.keys(64, True)))):
+            for form in (text, json.dumps(text)):
+                with self.subTest(form=form[:50]):
+                    self.assertNotIn(PASSWORD, mask(form))
 
 
 class RevisionTest(unittest.TestCase):
