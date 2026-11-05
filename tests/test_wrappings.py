@@ -6,6 +6,7 @@ import ast
 import json
 import os
 import random
+import re
 import shlex
 import subprocess
 import sys
@@ -1917,6 +1918,69 @@ class NestedLineCostTest(unittest.TestCase):
                 with self.subTest(shape=name, form=form, took=[round(t, 2) for t in took]):
                     self.assertLess(took[3], 16 * took[0])
                     self.assertLess(took[3], 3 * took[2])
+
+
+class SubstitutionReadBeforeTest(unittest.TestCase):
+    """A command inside a substitution of a line read before is read as it reads alone. The reading before passes on
+    where each substitution it read ends, or that it was still open where the reading ended; a reading that comes to
+    one with the line's quotes found escaped where the one before had not found them (or the other way) reads it to
+    another end, as an escaped backslash, an escaped quote or a bare one then means something else. Passed on as it
+    was, it showed a password the reading alone masks: in the first two texts, one main 68506d9 hides too."""
+    TEXTS = (
+        ('echo mongosh "$(mongosh -p Zq0Vt7Lm2Xc $(mongosh \\"$(keytool x x)\\" \\"$(az login \') '
+         '`mongosh $(date) -p Zq1Vt7Lm2Xc\\\\n`")" "$(az login -p Zq2Vt7Lm2Xc \\\\\\)#)" $(echo '
+         'a\\\\)'),
+        'mongo" -p Wk0Vt7Lm2Xc$(mongo\\"$(az login"az login -p Zq2Vt7Lm2Xc',  # Wk0... is quoted: no flag's
+        '"twine \\\\\\"$(az login`\\\\n\\\\` -p Zq0Vt7Lm2Xc"',
+        '"twine\\"$(az login$((\\\\n\\\\)) -p Zq2Vt7Lm2Xc"',
+        ('"echo twine upload \\\\\\"$(az.exe login `mongosh \\\\nx\\\\` -p Zq0Vt7Lm2Xc)\\\\\\" ; '
+         'done"'),
+        ('"\'x\' mongosh \\\\\\"$(az login -p Zq0Vt7Lm2Xc `echo ax\\\\` -p Zq1Vt7Lm2Xc\\\\n)\\\\\\" '
+         '-p Zq2Vt7Lm2Xc -p Zq3Vt7Lm2Xc\\\\n"'),
+        ('"\'x\' twine upload -p Zq0Vt7Lm2Xc -p Zq1Vt7Lm2Xc \\"$(az login $(aws configure set <(az '
+         'login \\\\n --quietx\\\\)) -p Zq2Vt7Lm2Xc)\\" ; done"'),
+        ('"echo mongosh \\\\\\"$(twine upload `az.exe login -p Zq0Vt7Lm2Xc \\"$(keytool -storepass '
+         'Zq1Vt7Lm2Xc)\\"` \\\\n $(echo a\\\\\\\\n#)\\\\\\" -p Zq2Vt7Lm2Xc"'),
+        ('"\\\\\\"x\\\\\\" az login `twine upload \\\\\\"$(az.exe login $(az.exe login -p '
+         'Zq0Vt7Lm2Xc -p Zq1Vt7Lm2Xc \\\\` \\"$(twine upload \\\\) $((1)) |)\\" \\"$(az.exe login '
+         '-p Zq2Vt7Lm2Xc -v \\\\n)\\")\\\\\\"` -p Zq3Vt7Lm2Xc ; done"'),
+        ('\\"x\\" az.exe login $(keytool ; "$(az.exe login $(twine upload -p Zq0Vt7Lm2Xc\\") -p '
+         'Zq1Vt7Lm2Xc)" # -v ; done'),
+        ('"echo az.exe login \\"$(mongosh $(twine upload x\\\\\') \' -p Zq0Vt7Lm2Xc\\\\n)\\" `twine '
+         'upload -p Zq1Vt7Lm2Xc \\"$(echo a `az.exe login \' -p Zq2Vt7Lm2Xc`\\\\n`\\\\n"'),
+        ('"\'x\' twine upload --quiet \\"$(az login -p Zq0Vt7Lm2Xc -p Zq1Vt7Lm2Xc $(mongosh \\\\\' '
+         '\\\\\\\\) -p Zq2Vt7Lm2Xc))\\" ; done"'),
+        ('"echo az.exe login \\\\n \\\\\\"$(twine upload $(date\\\\`) -p Zq0Vt7Lm2Xc -p '
+         'Zq1Vt7Lm2Xc)\\\\\\"\\\\n"'),
+        ('" az login \\"$( twine upload   -p Zq0Vt7Lm2Xc9   |   -p Wk1Vt7Lm2Xc9   mongosh --quiet   '
+         '-p Zq2Vt7Lm2Xc9  $( mongosh echo\\\\`  -p Zq3Vt7Lm2Xc9  \\"\\\\( mongosh $(<( mongosh '
+         '--quiet   -p Zq4Vt7Lm2Xc9  $(\\\\)  -p Zq5Vt7Lm2Xc9  "'),  # no command before Wk1...
+        ('" mongosh --quiet  ;   -p Wk0Vt7Lm2Xc9  echo twine upload \\\\n twine upload    -p '
+         'Zq1Vt7Lm2Xc9  \\\\\\"$(-v mongosh $(\\\\n mongosh --quiet \\\\n\\\\)  -p Zq2Vt7Lm2Xc9  '
+         '\\\\\\""'),  # no command before Wk0...
+    )
+
+    def alone(self):
+        read = masking._command_line
+        return mock.patch.object(masking, "_command_line",
+                                 lambda text, start, stop=None, known=None: read(text, start, stop))
+
+    def test_each_row_reads_a_line_as_it_reads_alone(self):
+        for text in self.TEXTS:
+            for row in masking._COMMANDS[masking._MAIN_COMMANDS:]:
+                found = masking._read_password_edits(text, *row, True)
+                with self.alone():
+                    alone = masking._read_password_edits(text, *row, True)
+                with self.subTest(text=text, row=row[0].pattern[:30]):
+                    self.assertEqual(found, alone)
+
+    def test_every_password_is_masked(self):
+        for text in self.TEXTS:
+            masked = mask(text)
+            for password in re.findall(r"Zq[0-9]Vt7Lm2Xc", text):
+                with self.subTest(text=text, password=password):
+                    self.assertNotIn(password, masked)
+
 
 class RevisionTest(unittest.TestCase):
     def test_stored_rows_are_masked_again(self):
