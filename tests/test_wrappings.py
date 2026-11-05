@@ -864,7 +864,19 @@ class ReviewEightTest(unittest.TestCase):
                                      "It's the team's key: %r" % self.COMMAND)
 
     def test_a_printed_bytes_value_bounds_its_command(self):
-        self.masks_only_the_password("print: %r done" % (self.COMMAND + "\n").encode())
+        # A process substitution is read as "$(" is, so the line masks as the same line with a plain argument does:
+        # as written only the password, and JSON-escaped once or twice the password with the bytes value's escaped
+        # line break after it, as main masks the plain line (round 15's rule, as the coordinator ruled on round 23).
+        # The password never shows, and what follows the bytes value stays.
+        text = "print: %r done" % (self.COMMAND + "\n").encode()
+        plain = text.replace("<(cat /srv/c.pem)", "/srv/c.pem")
+        self.assertEqual(mask(text), text.replace(PASSWORD, "[masked]"))
+        for wrap in self.WRAPS:
+            with self.subTest(text=wrap(text)[:90]):
+                masked = mask(wrap(text))
+                self.assertEqual(masked, mask(wrap(plain)).replace("/srv/c.pem", "<(cat /srv/c.pem)"))
+                self.assertNotIn(PASSWORD, masked)
+                self.assertIn("' done", masked)
 
     def test_a_list_past_200_kb_is_read_whole(self):
         items = ["keytool", "-list", "-storepass", PASSWORD] + ["-J-Dprop%d=" % i + "x" * 100 for i in range(2000)]

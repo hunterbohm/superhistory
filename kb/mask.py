@@ -425,11 +425,24 @@ _LINE = r"(?:[^\n|;\\]|\\(?![nr]))*"
 # Where the name of one of this PR's commands ends: past a ".exe", and not before a path's next part, as
 # "/opt/keytool/bin/keytool" names a folder first ("/", a backslash, or one escaped as "\\\\"), though a backslash
 # that escapes a line break, a tab or a quote ends the name.
-_PROGRAM_END = _WINDOWS_FILE + r"(?![A-Za-z0-9_.-])(?!/|\\(?![nrt\"']))"
-_COMMANDS = [(re.compile(rf"(?i)(?:(?<![A-Za-z0-9_.-])|{_AFTER_ESCAPE})(?:{command})"
-                         + (rf"(?![A-Za-z0-9_.-]){_LINE}" if n < _MAIN_COMMANDS else _PROGRAM_END)),
+_NAME_END = r"(?![A-Za-z0-9_.-])(?!/|\\(?![nrt\"']))"  # and main's, after its own ".exe"
+_PROGRAM_END = _WINDOWS_FILE + _NAME_END
+
+
+def _command_name(command, end):
+    return re.compile(rf"(?i)(?:(?<![A-Za-z0-9_.-])|{_AFTER_ESCAPE})(?:{command})" + end)
+
+
+_COMMANDS = [(_command_name(command, rf"(?![A-Za-z0-9_.-]){_LINE}" if n < _MAIN_COMMANDS else _PROGRAM_END),
               re.compile(rf"({flag})((?:{_CLOSE}[^ \t\n\r'\"])+)"), always)
              for n, (command, flag, always) in enumerate(COMMAND_FLAGS)]
+# Each of this PR's rows whose command this PR spells more ways than main ("az.exe login", "az.cmd login",
+# "keytool.cmd"), as main spells it: "az" and "aws" alone, and ".exe" alone after a program's name. A row reads the
+# text with main's spelling too, where the text names its command a way main does not (_command_password_edits).
+_MAIN_SPELLING = {line: narrower for n, ((command, _, _), (line, _, _)) in enumerate(zip(COMMAND_FLAGS, _COMMANDS))
+                  if n >= _MAIN_COMMANDS
+                  for narrower in [_command_name(command.replace(_WINDOWS_FILE, ""), r"(?:\.exe)?" + _NAME_END)]
+                  if narrower.pattern != line.pattern}
 _ANY_COMMAND = re.compile(r"(?i)curl|mysql|mariadb|sshpass|login|redis-cli|mongo|twine|keytool|jarsigner|aws")
 # aws configure set's row, and aws's options that take a value (its global options): a setting's name right after one
 # is that option's value, as "token" is in "aws configure set --profile token ...", not the setting.
@@ -577,7 +590,7 @@ def _gitleaks_edits(text):
 # Which mask() a stored row was masked with. A row of another version, or of none, is masked again when read and by
 # the next ingest. The patterns change it by themselves; bump REVISION when the code that applies them changes what
 # it masks.
-REVISION = 13
+REVISION = 14
 VERSION = hashlib.sha256(repr((REVISION, [p.pattern for p in SECRET_PATTERNS + PREFIXED_SECRETS], KEYED_SECRET.pattern,
                                 ENV_KEY_SECRET.pattern, JSON_SECRET.pattern, FLAG_SECRET.pattern, AUTH_SECRET.pattern,
                                 COMMAND_FLAGS, PASSWORD_NAME.pattern, sorted(PLACEHOLDERS), REFERENCE.pattern,
@@ -619,7 +632,8 @@ def _command_line(text, start, stop=None, known=None):
     """(where a command's line from `start` ends, by `stop` if given, the stretches of it inside quotes or a substitution at its top level,
     in order, the command substitutions in it that no other holds, in order), as the shell reads it. The shell's contexts are kept on a stack:
     single quotes, which hold everything to the next one; double quotes, which hold a substitution or a backtick; and
-    "$(", "(" and backticks, which hold quotes and brackets of their own, so arithmetic's "$((...))" closes as it opens.
+    "$(", "(" and backticks, which hold quotes and brackets of their own, so arithmetic's "$((...))" closes as it opens;
+    a process substitution, "<(" or ">(", is a substitution as "$(" is, so the flags after it are the command's own.
     At the top level the line ends at what ends a command or starts another (a pipe, ";", "&" but in a redirection
     such as "2>&1", a bracket), at a comment (a "#" that starts a word), and at a JSON string's end (a '"' that opens no
     quote, before ",", ":", "}" or "]"); anywhere at a line break, plain, or escaped but inside quotes of plain text,
@@ -712,6 +726,8 @@ def _command_line(text, start, stop=None, known=None):
             continue
         if c in "'\"`" or substitution:
             i = enter("$(" if substitution else c, here, i + substitution)
+        elif c == "(" and here > start and text[here - 1] in "<>":
+            i = enter("$(", here - 1, i)
         elif c in "|;()":
             return ended(here)
         elif c == "&" and not (here > start and text[here - 1] in "<>" or text[i:i + 1] == ">"):
@@ -830,6 +846,19 @@ def _flag_matches(text, flag, start, end):
 
 
 def _command_password_edits(text, line_pattern, flag, always, unseen=False):
+    """Each password one row of COMMAND_FLAGS finds, as edits that mask it, in order (_read_password_edits). Where the
+    text names the row's command a way main does not spell it (_MAIN_SPELLING: "az.exe login"), the row reads it with
+    main's spelling too, and masks what either reading finds: read as a command, a name main does not read can hold
+    another command main reads as one in an argument of its line ('az.exe login failed with "mongosh $(echo "") -p
+    ..."'), which then shows nothing main hides."""
+    edits = _read_password_edits(text, line_pattern, flag, always, unseen)
+    narrower = _MAIN_SPELLING.get(line_pattern)
+    if narrower is not None and any(not narrower.match(text, m.start()) for m in line_pattern.finditer(text)):
+        edits = _in_order(edits + _read_password_edits(text, narrower, flag, always, unseen))
+    return edits
+
+
+def _read_password_edits(text, line_pattern, flag, always, unseen=False):
     """Each password one row of COMMAND_FLAGS finds, as an edit that masks it. A command's line is read once from its
     first word, and a command in a substitution once from its own, so a line that names the command again and again
     costs time in proportion to its length. With `unseen`, as the rows main's own lack are read, the line is read as
@@ -904,28 +933,28 @@ def _carried(moves, at):
     return at
 
 
-def _named_inside_edits(before, rows, moves):
+def _before_edits(before, rows, moves):
     """The rows of COMMAND_FLAGS read in turn (`rows`, with `moves`, each row's edits as _moves gives them) each read
-    the text the rows before them left, so a command named where a row before its own masked a value ('az.exe login -p
-    "keytool" -storepass ...', "mysql -paws configure set ...") had no name left to read its flags after. Each row from
-    keytool's on (those _MAIN_COMMANDS counts out) whose command `before`, the text as it was before any row masked,
-    names over a character a row before it masked reads `before` again, and each password it finds there is masked in
-    the text the rows left, over the characters no row masked, so the text loses nothing the rows in turn hid: one edit
-    for each run, those of two rows that meet made one. Returns the edits, and the first row that read again."""
+    the text the rows before them left, where a value a row before masked can change the line: a command named there
+    has no name left to read its flags after ('az.exe login -p "keytool" -storepass ...', "mysql -paws configure set
+    ..."), and a value read inside backticks is masked with the closing one, so the line runs on past it and a later
+    flag is inside it ("keytool $(mongosh `az.cmd login -p ...` -p ...) -storepass ..."). Each of this PR's rows (from
+    _MAIN_COMMANDS on) after a row that masked anything reads `before`, the text as it was before any row masked,
+    again, and each password it finds there is masked in the text the rows left, over the characters no row masked, so
+    the text loses nothing a row reading it alone hides: one edit for each run, those of two rows that meet made one.
+    Returns the edits, and the first row whose reading of `before` masked more."""
     spans, first = [], None
     for k in range(_MAIN_COMMANDS, len(rows)):
         line, flag, always = rows[k]
         if not any(starts for starts, _, _ in moves[:k]):
             continue  # no row before it masked anything
-        if any(_carried(moves[:k], at) is None for m in line.finditer(before)
-               for at in range(m.start(), max(m.end(), m.start() + 1))):
-            spans += [(start, end) for start, end, _ in _command_password_edits(before, line, flag, always, True)]
-            first = first or rows[k]
+        spans += [(start, end, k) for start, end, _ in _command_password_edits(before, line, flag, always, True)]
     out = []
-    for start, end in sorted(spans):
+    for start, end, k in sorted(spans):
         kept = [at for at in (_carried(moves, at) for at in range(start, end)) if at is not None]
         if not kept:
             continue
+        first = first or rows[k]
         if out and kept[0] <= out[-1][1]:
             out[-1] = (out[-1][0], max(out[-1][1], kept[-1] + 1))
         else:
@@ -1956,8 +1985,8 @@ def _run(text, rules, origin=None, named=None, fired=None):
                 note(command)
             moves.append(_moves(edits))
             text, origin = _edit(text, origin, edits)
-        if reading != "main":  # a command named where a row before its own masked ('az.exe login -p "keytool" ...')
-            edits, row = _named_inside_edits(before, rows, moves)
+        if reading != "main":  # where a row before masked, each row reads the text as it was before too
+            edits, row = _before_edits(before, rows, moves)
             if edits:
                 note(row)
             text, origin = _edit(text, origin, edits)
