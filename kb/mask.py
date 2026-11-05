@@ -867,7 +867,20 @@ def _command_password_edits(text, line_pattern, flag, always, unseen=False):
                 continue
             if _flag_value_counts(m, always, unseen):
                 edits.append((m.start(2), m.end(2), "[masked]"))
-    return edits
+    return _in_order(edits)
+
+
+def _in_order(edits):
+    """One row's edits in order, as _edit and _moves read them, those that overlap made one: a row reads a command of
+    its own inside a substitution of a line it read after that line ("mongosh $(echo az login -p ...) -p ..."), so its
+    edit comes after the line's."""
+    out = []
+    for start, end, insert in sorted(edits):
+        if out and start < out[-1][1]:
+            out[-1] = (out[-1][0], max(out[-1][1], end), out[-1][2])
+        else:
+            out.append((start, end, insert))
+    return out
 
 
 def _moves(edits):
