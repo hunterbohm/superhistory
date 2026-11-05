@@ -734,11 +734,16 @@ def _frame(joined, starts, found, refused=False):
         opens = opens or m.start() % 3 == 0 and (refused or not continues and not wrapped) and (
             first == opened or line < len(starts) and starts[line] == first)
         # or after the byte order mark a file saved on Windows starts with, where the encoded text starts: the mark
-        # is a group of its own, the one before the header's
+        # is a group of its own, the one before the header's. With text decoded before it on its line, as from another
+        # stream above or a heading, it starts a key alone after what no text reads in, or a heading's words, and
+        # otherwise, as a header after text does, only with its footer after it (`refused`)
         mark = first - 4
         mark_line = bisect.bisect_left(starts, mark)
-        opens = opens or before == _BYTE_ORDER_MARK and m.start() % 3 == 0 and (
-            mark == opened or mark_line < len(starts) and starts[mark_line] == mark)
+        lead = before[:-len(_BYTE_ORDER_MARK)] if before.endswith(_BYTE_ORDER_MARK) else None
+        opens = opens or lead is not None and m.start() % 3 == 0 and (
+            mark == opened or mark_line < len(starts) and starts[mark_line] == mark) and (
+            not lead or refused or not _reads_as_text(lead)
+            or _headings(joined, starts, mark - (len(lead) + 2) // 3 * 4, mark_line))
         closes = decoded[m.end():m.end() + 1] in (b"\r", b"\n") or m.end() == len(decoded) and closed
         return (m.group(1), first) if opens and closes else None
     return None
@@ -833,14 +838,22 @@ def _key_spans(text, lines):
     ends = list(itertools.accumulate(b - a for a, b in lines))
     starts = [0] + ends[:-1]
     # A stream's lines are as wide as its widest so far but its last, which holds its "=" or is shorter, so a line of
-    # either ends it (a blank line, or one that is not base64, ends the block). ended[k]: streams ended above line k.
-    ended, count, width = [0], 0, 0
-    for k in range(len(lines)):
-        if "=" in joined[starts[k]:ends[k]] or ends[k] - starts[k] < width:
-            count, width = count + 1, 0
+    # either ends it (a blank line, or one that is not base64, ends the block). But a shorter line as wide as the next,
+    # with no "=", starts a narrower stream, as a key file wrapped narrower below a stream does, and a line wider than
+    # two or more of one width starts a wider one: there the stream above ended on the line before. ended[k]: streams
+    # ended above line k.
+    widths = [b - a for a, b in lines]
+    padded = ["=" in joined[starts[k]:ends[k]] for k in range(len(lines))]
+    after = [False] * len(lines)  # after[k]: a stream ends with line k
+    width, run = 0, 0  # the open stream's width, and how many of its lines are read
+    for k, w in enumerate(widths):
+        if width and (w > width and run >= 2 or w < width and not padded[k] and widths[k + 1:k + 2] == [w]):
+            after[k - 1], width, run = True, 0, 0
+        if padded[k] or w < width:
+            after[k], width, run = True, 0, 0
         else:
-            width = max(width, ends[k] - starts[k])
-        ended.append(count)
+            width, run = max(width, w), run + 1
+    ended = [0] + list(itertools.accumulate(after))
     spans, floor, held = [], 0, None
     for found in _ENCODED_KEY.finditer(joined):
         line = bisect.bisect_right(ends, found.start())
