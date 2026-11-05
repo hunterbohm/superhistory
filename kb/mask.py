@@ -2108,6 +2108,17 @@ _ID_REST_START = re.compile(rf"[A-Za-z0-9+/=]+[ \t\r]*(?=\n|\\(?:r\\)?n)|(?:{_BE
 # to the next or an escape, a quote or the end. A word alone on its line ("Thanks", "README") is no such line.
 _REST_PAST_WORDS = re.compile(r"(?:\r?\n|(?<!\\)\\+(?:r\\+)?n)[A-Za-z0-9+/=]+[ \t\r]*(?=\n|[\\\"'<…]|\Z)")
 _WORD_ALONE = re.compile(r"(?:\r?\n|(?<!\\)\\+(?:r\\+)?n)(?:[A-Z]?[a-z]+|[A-Z]+)[ \t\r]*(?=\n|[\\\"'<…]|\Z)")
+_PLACEHOLDER_ALONE = re.compile(r"(?:\r?\n|(?<!\\)\\+(?:r\\+)?n)\[masked\][ \t\r]*(?=\n|[\\\"'<…]|\Z)")
+
+
+def _skipped_line(text, at):
+    """Where the line after the line break at `at` ends, if it is a word alone (_WORD_ALONE), a placeholder alone or a
+    line of words (_WORDS_LINE), which a rest past lines of words passes over; None otherwise."""
+    alone = _WORD_ALONE.match(text, at) or _PLACEHOLDER_ALONE.match(text, at)
+    if alone:
+        return alone.end()
+    words = _WORDS_LINE_AT.match(text, at)
+    return _KEY_LINE_END.search(text, words.end()).start() if words else None
 # A line break, plain or escaped, before a line of words, as "next steps", "tls.crt: none" or "- deploy it" are: past
 # a list's or a quote's marks, a word (a letter, then small letters, as "tls.crt" or "don't" are), then a space and
 # the next word's letter. A line of base64 is no word, even with words after it on its line, as a snippet joins it
@@ -2559,12 +2570,16 @@ def _key_rests(text, starts=_REST_START):
             begin = _line_past(text, rest)
             rest = start.match(text, begin) if begin < len(text) else None
             if rest is None and begin < len(text):
-                # or, where main's rest from the placeholder takes it, as base64 alone on its line, as a stream's short
-                # last line is, past any word alone on its line
-                main_reach = main_reach or (_ID_REST_START.match(text, at.end()) and ends(at.end())) or -1
+                # or, where main's rest from the placeholder takes it, with its tail, as base64 alone on its line, as a
+                # stream's short last line is, past any word alone on its line, placeholder alone on its line or line
+                # of words, which main's rest takes too
+                if main_reach is None:
+                    main_reach = (_ID_REST_START.match(text, at.end()) and ends(at.end())) or -1
+                    tail = tail or _token_tail(text)
+                    main_reach = tail(main_reach) if main_reach >= 0 else -1
                 line = begin
-                while main_reach > line and (word := _WORD_ALONE.match(text, line)):
-                    line = word.end()
+                while main_reach > line and (skip := _skipped_line(text, line)) is not None:
+                    line = skip
                 rest = main_reach > line and _REST_PAST_WORDS.match(text, line) or None
                 begin, as_main = (line, True) if rest else (begin, False)
         if not rest and not _BASE64_CHARACTER.match(text, at.end()):

@@ -260,13 +260,18 @@ Known limits:
   after a placeholder, as one where a key was masked, takes it. A rest starts with base64 glued to the placeholder, or
   with a line right after it of base64 alone, 40 characters or more, starting as a key's body does ("MIIE..."); in a
   row an older kb stored, 36 characters or more with a capital, a small letter and a digit, "+" or "/" are enough, and
-  lines there that decode to words are passed over first. Past them, where main's rest from the placeholder runs on, a
-  line of base64 alone starts it at any length, as a stream's short last line is, and it runs on as main's does; a
-  word alone on its line ("Thanks") stays. Only that first line counts: a piece of 34 characters after "[masked] ", or
+  lines there that decode to words are passed over first. Past them, where main's rest from the placeholder runs on,
+  with its tail, a line of base64 alone starts it at any length, as a stream's short last line is, past a word alone,
+  a placeholder alone or a line of words on its line, which stay, and it runs on as main's does. Only that first line counts: a piece of 34 characters after "[masked] ", or
   of lines 16 wide after another key's footer, shows, even with a longer line further down. A rest that starts right
   at its placeholder runs on past lines of words to the last line of its paragraph holding a token, as main's does;
   one that starts past lines that decode to words, where main reads none, ends where its lines of base64 end, so a
   piece further down shows.
+- After a placeholder where a key was masked, public material (a certificate, a public key) and lines of words in the
+  same paragraph are masked with it where a line of base64 past them reads as a possible fragment of a key, base64 of
+  words included ("bm90ZXMg..."); in JSON inside JSON, a blank line does not end that paragraph. Main keeps them only
+  as it leaves a key written as base64 readable; after a key in plain text it masks them too. This masks more, and
+  shows nothing.
 - A PGP private key block written as base64 in one stream after words, its header inside a line of the base64, with
   a control character in the armour's headers above its body ("Comment: a\x01b"), is masked from its footer up to
   the line holding that character. That line and those above it show, with whatever of the header, the armour's
