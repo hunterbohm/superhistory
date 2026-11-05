@@ -640,8 +640,10 @@ def _command_line(text, start, stop=None, known=None):
     where quotes still open hold to the line's end, as a script over several lines in quotes holds its own flags. A
     line whose first double quote outside single quotes comes escaped ('\\"'), as JSON holds a command, is read
     unescaped: its escaped quotes are the shell's quotes, an escaped backslash escapes the shell character after it,
-    and a bare '"' ends the JSON string. `known` maps where each substitution read before starts to where it ends, which
-    the reading adds to and passes over, so a command inside one costs no second reading of what it holds."""
+    and a bare '"' ends the JSON string. `known` maps where each substitution read before starts to where it ends, or,
+    as a 1-tuple, to where a reading ended with it still open, which it holds to; the reading adds to it and passes over
+    each, so a command inside one costs no second reading of what it holds, even where the substitutions no longer
+    close."""
     i, n = start, len(text) if stop is None else stop
     known = {} if known is None else known
     stack, opened, escaped = [], [], None  # the shell's open contexts, where each opened, whether quotes come escaped
@@ -650,6 +652,8 @@ def _command_line(text, start, stop=None, known=None):
     def enter(kind, at, after):  # where the reading goes on once `kind` opens at `at`: after it, or past all it holds
         nonlocal held
         end = known.get(at) if kind in ("$(", "`") else None
+        if isinstance(end, tuple):  # still open where a reading before ended: it holds to `n` if that is no further
+            end = n if n <= end[0] else None
         if end is not None and end <= n:
             if not held:
                 subs.append((at, end))
@@ -673,6 +677,8 @@ def _command_line(text, start, stop=None, known=None):
             held -= 1
             if closed:
                 known[began] = at
+            elif not isinstance(known.get(began), int):
+                known[began] = (max(at, known.get(began, (at,))[0]),)
             if not held:
                 subs.append((began, at))
         if not stack:
@@ -883,7 +889,11 @@ def _read_password_edits(text, line_pattern, flag, always, unseen=False):
             end = line.end()
         reading.append((end, subs))
         starts = [a for a, _ in inside]
+        # Every flag from the start of a stretch that holds to the line's end is inside it: none is read past there.
+        last = inside[-1][0] if inside and inside[-1][1] >= end else end
         for m in _flag_matches(text, flag, line.start(), end):
+            if m.start() >= last:
+                break
             k = bisect.bisect_right(starts, m.start()) - 1
             if k >= 0 and m.start() < inside[k][1]:
                 continue  # a flag inside a quoted argument or a substitution is another program's
