@@ -1716,6 +1716,56 @@ class ReviewTwentyOneTest(unittest.TestCase):
                     self.assertNotIn(PASSWORD, mask(form))
 
 
+class ReviewTwentyOneNameTest(unittest.TestCase):
+    """The twenty-first review's first finding: a password that is itself another command's name ('az.exe login -p
+    "keytool"') was masked before that command's row read its own password flag after it, so "-storepass" kept its
+    value; main reads az.exe as no command and masks that value. Main loses it too after az, mongosh, twine, sshpass
+    and docker login. A command named inside a value masked reads its own flags in the text as it was before."""
+
+    SECRET = "Wb4nTq8sLx2k"
+    COMMANDS = ("az login", "az.exe login", "az.cmd login", "mongosh", "twine upload", "sshpass", "docker login")
+    FLAGS = tuple(f"-{a}{b}" for a in ("", "src", "dest", "new") for b in ("storepass", "keypass"))
+
+    @staticmethod
+    def forms(text):
+        return text, json.dumps(text), json.dumps(json.dumps(text))
+
+    def test_a_password_flag_after_a_value_that_names_its_command_is_masked(self):
+        for command in self.COMMANDS:
+            for name in ("keytool", "jarsigner"):
+                for flag in self.FLAGS:
+                    for depth, form in enumerate(self.forms(f'{command} -p "{name}" {flag} {self.SECRET}')):
+                        with self.subTest(command=command, name=name, flag=flag, depth=depth):
+                            self.assertNotIn(self.SECRET, mask(form))
+
+    def test_mains_own_form_from_the_on_main_list(self):
+        for form in self.forms('sshpass -p "keytool" -storepass Qz7vRound21x'):
+            self.assertNotIn("Qz7vRound21x", mask(form))
+
+    def test_what_follows_such_a_value_and_is_no_password_stays(self):
+        # the text masks as the value alone does, with what follows it as it was: no option, word, variable or next
+        # option after a value that names keytool is masked
+        for command in self.COMMANDS:
+            base = self.forms(f'{command} -p "keytool"')
+            for after in (" -alias team -v", " --quiet notes", " -storepass $STOREPASS", " -keypass -v"):
+                for depth, form in enumerate(self.forms(f'{command} -p "keytool"{after}')):
+                    closing = (0, 1, 3)[depth]  # the quotes that end the JSON strings
+                    tail = form[len(base[depth]) - closing:]
+                    with self.subTest(command=command, after=after, depth=depth):
+                        self.assertEqual(mask(form), mask(base[depth])[:len(mask(base[depth])) - closing] + tail)
+
+    def test_many_such_commands_cost_time_in_proportion(self):
+        unit = f'az.exe login -p "keytool" -storepass {self.SECRET}; '
+        took = {}
+        for size in (16384, 65536):
+            text = unit * (size // len(unit))
+            started = time.process_time()
+            masked = mask(text)
+            took[size] = time.process_time() - started
+            self.assertNotIn(self.SECRET, masked)
+        self.assertLess(took[65536], 6 * max(took[16384], 0.01), took)
+
+
 class RevisionTest(unittest.TestCase):
     def test_stored_rows_are_masked_again(self):
         self.assertEqual(masking.REVISION, 13)
