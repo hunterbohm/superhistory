@@ -2333,6 +2333,77 @@ class Base64ReviewEighteenFindingsTest(unittest.TestCase):
                         self.check(brk.join(parts), block, kept, (width, name, before[:12], brk))
 
 
+class Base64ReviewNineteenTest(unittest.TestCase):
+    """#34's checks for its nineteenth review. Texts the comparison against 321c89f met: after a placeholder glued to an
+    encoded stream of words, a placeholder alone on its line or a line of words, then another stream of words whose
+    last line is base64 of a password: the rest past the lines of words stopped at that line, so the password's line
+    showed, which main's rest from the placeholder, with its tail, masks. And the limit the coordinator granted: past
+    an encoded key's placeholder, public material and lines of words in the same paragraph are masked where a line of
+    base64 past them, base64 of words included, reads as a possible fragment of a key."""
+
+    encoded = staticmethod(Base64ReviewSeventeenTest.encoded)
+
+    def test_a_password_line_past_a_placeholder_or_a_line_of_words_goes_where_main_takes_it(self):
+        # main masks it plain and JSON-escaped once; JSON-escaped twice main reads no rest there, and may show it
+        from kb import mask as masking
+        from tests.test_mask_against_today import main as today
+        for words in (b"notes " * 8, b"notes " * 16):
+            for password in (b"password=walrussecret9", b"pw=Tq9sVz7Yp2mRx"):
+                stream = self.encoded(words + password)
+                shown = stream.splitlines()[-1]
+                for between in ("[masked]", "deploy on port 8080", "[masked]\ndeploy on port 8080",
+                                "deploy on port 8080\n[masked]"):
+                    for brk in ("\n", "\r\n"):
+                        for end in ("", brk + "next steps", brk + brk + "next paragraph"):
+                            body = "\n".join(["[masked]" + self.encoded(words), between, stream]).replace("\n", brk)
+                            text = "intro notes" + brk + body + end
+                            for older in (False, True):
+                                for depth, written in enumerate((text, json.dumps(text), json.dumps(json.dumps(text)))):
+                                    with self.subTest(words=len(words), password=password[:3], between=between,
+                                                      brk=brk, end=end, older=older, depth=depth):
+                                        if older:
+                                            with masking.stored_row(None):
+                                                masked = mask(written)
+                                        else:
+                                            masked = mask(written)
+                                        if depth < 2 or shown not in today.mask(written):
+                                            self.assertNotIn(shown, masked)
+                                        self.assertIn("intro notes", masked)
+                                        if "paragraph" in end:
+                                            self.assertIn("next paragraph", masked)
+
+    def test_public_material_past_an_encoded_keys_placeholder_goes_with_a_line_of_base64_past_it(self):
+        # the limit: public material and lines of words after the key, in its paragraph, are masked with a line of
+        # base64 past them, base64 of words too, which reads as a possible fragment; alone, after a word alone or
+        # before a blank line they stay
+        import base64
+        import random
+        from kb import mask as masking
+        r = random.Random(19)
+        pem = (b"-----BEGIN PRIVATE KEY-----\n" + self.encoded(made_up_private_key(r)).encode()
+               + b"\n-----END PRIVATE KEY-----\n")
+        key = base64.b64encode(pem).decode()
+        public = self.encoded(made_up_public_key(r))
+        notes = self.encoded(b"notes " * 8)
+        for after, kept in (([], True), (["notes"], True), (["", notes], True), ([notes], False),
+                            (["deploy on port 8080", notes], False), ([notes, "", "next paragraph"], False)):
+            for older in (False, True):
+                for depth in (0, 1):
+                    text = "\n".join(["intro notes", key, public] + after)
+                    written = json.dumps(text) if depth else text
+                    with self.subTest(after=[line[:12] for line in after], older=older, depth=depth):
+                        if older:
+                            with masking.stored_row(None):
+                                masked = mask(written)
+                        else:
+                            masked = mask(written)
+                        self.assertNotIn(key[:40], masked)
+                        self.assertIn("intro notes", masked)
+                        self.assertEqual(all(line in masked for line in public.splitlines()), kept)
+                        if "next paragraph" in after:
+                            self.assertIn("next paragraph", masked)
+
+
 class HeadlessKeyTest(unittest.TestCase):
     """A key's body without its header, as an older kb's row-by-row remask leaves the chunk after the header's."""
     LINE = "MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7"
