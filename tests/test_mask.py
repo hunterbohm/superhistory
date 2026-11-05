@@ -2244,6 +2244,95 @@ class Base64ReviewEighteenTest(unittest.TestCase):
                             self.assertEqual([line for line in kept if line not in masked], [])
 
 
+class Base64ReviewEighteenFindingsTest(unittest.TestCase):
+    """#34's eighteenth review: a key file encoded alone, wrapped narrower than the stream above it, had its first,
+    shorter line read as that stream's last, so the header held for its footer (its armour comment holds a control
+    character, where the footer's reading upward stops) was dropped, and its lines down to that character showed; and
+    a key file that starts with a byte order mark, encoded below another stream or a heading, opened only where all the
+    text decoded before its header was the mark, so its footer read up over a document above it, or its first line
+    showed under a heading."""
+
+    masks = staticmethod(Base64ReviewEighteenTest.masks)
+    written = staticmethod(Base64ReviewEighteenTest.written)
+    as_json = staticmethod(Base64ReviewEighteenTest.as_json)
+    encoded = staticmethod(Base64ReviewSeventeenTest.encoded)
+    MARK = b"\xef\xbb\xbf"
+
+    @classmethod
+    def keys(cls):
+        import base64
+        import random
+        import textwrap
+        r = random.Random(1802)
+        body = "\n".join(textwrap.wrap(base64.b64encode(bytes(r.randrange(256) for _ in range(300))).decode(), 64))
+        pgp = (b"-----BEGIN PGP PRIVATE KEY BLOCK-----\nComment: team\x01key\n\n" + body.encode()
+               + b"\n=Ab3d\n-----END PGP PRIVATE KEY BLOCK-----\n")
+        der = bytes.fromhex("302e020100300506032b657004220420") + bytes(r.randrange(256) for _ in range(32))
+        pem = b"-----BEGIN PRIVATE KEY-----\n" + base64.b64encode(der) + b"\n-----END PRIVATE KEY-----\n"
+        return {"pgp": pgp, "pem": pem}
+
+    def check(self, text, block, kept, label):
+        """No line of the key's `block` shows, and each text in `kept` stays, at JSON depths 0 to 2, fresh and as an
+        older row."""
+        for older in (False, True):
+            for depth in range(3):
+                with self.subTest(label, older=older, depth=depth):
+                    masked = self.masks(self.as_json(text, depth), older)
+                    self.assertEqual([part for part in kept if self.written(part, depth) not in masked], [])
+                    # what is left once the kept text is taken out, as a document above may quote the key's header
+                    for part in kept:
+                        masked = masked.replace(self.written(part, depth), "", 1)
+                    self.assertEqual([line for line in block.splitlines()
+                                      if len(line) >= 12 and self.written(line, depth) in masked], [])
+
+    def test_a_key_file_encoded_alone_below_a_stream_of_another_width_shows_no_line(self):
+        for above_width, width in ((64, 32), (76, 64), (32, 64), (64, 76), (64, 64), (76, 76)):
+            for lead in (b"notes " * 8, b"notes " * 9, b"notes " * 16):
+                for name, key in self.keys().items():
+                    for brk in ("\n", "\r\n"):
+                        above, block = self.encoded(lead, above_width), self.encoded(key, width)
+                        text = brk.join([above.replace("\n", brk), block.replace("\n", brk), "next steps"])
+                        self.check(text, block, [above.replace("\n", brk) + brk, brk + "next steps"],
+                                   (above_width, width, len(lead), name, brk))
+
+    def test_a_stream_above_that_ends_on_a_line_as_wide_as_the_key_below_with_a_header_held_in_it(self):
+        # the stream above, a document that quotes a header, ends on a short line exactly as wide as the key's lines
+        header = b"-----BEGIN PRIVATE KEY-----\n"
+        for above_width, width, size, at in ((64, 32, 120, 48), (76, 64, 162, 48), (76, 64, 105, 60)):
+            # `size` bytes whose base64 ends on a line `width` wide; the quoted header from byte `at`: on a line above
+            # the last, or (105, 60) on the last, short line itself
+            filler = b"notes " * (at // 6) + b"note"[:at % 6]
+            tail = b"see the runbook"
+            document = filler + header + tail + b" " * (size - len(filler) - len(header) - len(tail) - 1) + b"\n"
+            above = self.encoded(document, above_width)
+            assert len(above.splitlines()[-1]) == width, (above_width, width, size)
+            for name, key in self.keys().items():
+                block = self.encoded(key, width)
+                text = "\n".join([above, block, "next steps"])
+                self.check(text, block, [above + "\n", "\nnext steps"], (above_width, width, size, at, name))
+        # the document's text runs to its end, with no line break, and the key file below starts with a byte order mark
+        for above_width, width, at, end in ((76, 64, 48, b"walrus ledger"), (76, 64, 60, b"x"),
+                                            (76, 32, 24, b"walrus ledger"), (76, 32, 36, b"x")):
+            above = self.encoded(b"notes " * (at // 6) + header + b" see the runbook" + end, above_width)
+            assert len(above.splitlines()[-1]) == width, (above_width, width, at)
+            for name, key in self.keys().items():
+                block = self.encoded(self.MARK + key, width)
+                text = "\n".join([above, block, "next steps"])
+                self.check(text, block, [above + "\n", "\nnext steps"], (above_width, width, at, end, name))
+
+    def test_a_key_file_with_a_byte_order_mark_at_the_start_after_another_stream_and_under_a_heading(self):
+        for width in (64, 76):
+            for name, key in self.keys().items():
+                block = self.encoded(self.MARK + key, width)
+                for before in ("", self.encoded(b"notes " * 8, width), self.encoded(b"notes " * 9, width),
+                               self.encoded(b"notes " * 8 + b"x", width), self.encoded(b"notes " * 8, 32),
+                               "Plan", "RENT", "Walrus\nKEYS"):
+                    for brk in ("\n", "\r\n"):
+                        parts = ([before.replace("\n", brk)] if before else []) + [block.replace("\n", brk), "next steps"]
+                        kept = ([before.replace("\n", brk) + brk] if before else []) + [brk + "next steps"]
+                        self.check(brk.join(parts), block, kept, (width, name, before[:12], brk))
+
+
 class HeadlessKeyTest(unittest.TestCase):
     """A key's body without its header, as an older kb's row-by-row remask leaves the chunk after the header's."""
     LINE = "MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7"
