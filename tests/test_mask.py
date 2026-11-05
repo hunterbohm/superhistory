@@ -1955,9 +1955,9 @@ class Base64KeyPieceLimitTest(unittest.TestCase):
     a key's rest after a placeholder takes it. A rest starts with base64 glued to the placeholder, or with a line right
     after it of base64 alone, 40 characters or more, starting as a key's body does ("MII..."); in a row an older kb
     stored, 36 characters or more with a capital, a small letter and a digit, "+" or "/" are enough, and lines there
-    that decode to words are passed over first. A longer line further down does not count. A rest that starts right at
-    its placeholder runs on past lines of words, as main's does; one that starts past lines that decode to words does
-    not."""
+    that decode to words are passed over first, past which, where main's rest runs on, a line of base64 alone starts
+    it at any length. A longer line further down does not count. A rest that starts right at its placeholder runs on past lines of words, as
+    main's does; one that starts past lines that decode to words does not."""
 
     @staticmethod
     def masks(text, older):

@@ -832,10 +832,22 @@ def _key_spans(text, lines):
     joined = "".join(text[a:b] for a, b in lines)
     ends = list(itertools.accumulate(b - a for a, b in lines))
     starts = [0] + ends[:-1]
+    # A stream's lines are as wide as its widest so far but its last, which holds its "=" or is shorter, so a line of
+    # either ends it (a blank line, or one that is not base64, ends the block). ended[k]: streams ended above line k.
+    ended, count, width = [0], 0, 0
+    for k in range(len(lines)):
+        if "=" in joined[starts[k]:ends[k]] or ends[k] - starts[k] < width:
+            count, width = count + 1, 0
+        else:
+            width = max(width, ends[k] - starts[k])
+        ended.append(count)
     spans, floor, held = [], 0, None
     for found in _ENCODED_KEY.finditer(joined):
-        if bisect.bisect_right(ends, found.start()) < floor:
+        line = bisect.bisect_right(ends, found.start())
+        if line < floor:
             continue
+        if held is not None and ended[line] > ended[held]:
+            held = None  # a header quoted in a stream that ended above starts no key in a later one
         key = _key_range(joined, starts, ends, found, floor, held)
         if key:
             spans.append((lines[key[0]][0], lines[key[1]][1]))
@@ -2078,6 +2090,11 @@ _REST_START = re.compile(rf"[A-Za-z0-9+/=]+[ \t\r]*(?=\n|\\(?:r\\)?n)|(?:{_BEFOR
 # An item id is read more narrowly (secret_in_id): there a key's rest starts with a key's body start alone, as on main.
 _ID_REST_START = re.compile(rf"[A-Za-z0-9+/=]+[ \t\r]*(?=\n|\\(?:r\\)?n)|(?:{_BEFORE_BODY}){{0,64}}"
                             + _LINE_OF_BASE64.format(_KEY_BODY_START))
+# Past lines of words where main's rest from the placeholder runs on, a line of base64 alone on its line starts a key's
+# rest at any length, as a stream's last line, shorter than the rest, can: after its line break, plain or escaped, up
+# to the next or an escape, a quote or the end. A word alone on its line ("Thanks", "README") is no such line.
+_REST_PAST_WORDS = re.compile(r"(?:\r?\n|(?<!\\)\\+(?:r\\+)?n)[A-Za-z0-9+/=]+[ \t\r]*(?=\n|[\\\"'<…]|\Z)")
+_WORD_ALONE = re.compile(r"(?:\r?\n|(?<!\\)\\+(?:r\\+)?n)(?:[A-Z]?[a-z]+|[A-Z]+)[ \t\r]*(?=\n|[\\\"'<…]|\Z)")
 # A line break, plain or escaped, before a line of words, as "next steps", "tls.crt: none" or "- deploy it" are: past
 # a list's or a quote's marks, a word (a letter, then small letters, as "tls.crt" or "don't" are), then a space and
 # the next word's letter. A line of base64 is no word, even with words after it on its line, as a snippet joins it
@@ -2511,27 +2528,39 @@ def _key_rests(text, starts=_REST_START):
     to a placeholder that starts no rest, as before a line break escaped twice, is read so too, but only to stay: such
     a run's own reading (_glued_run_edits) masks it otherwise, as main's does. Lines that decode to words right after a
     placeholder (_encoded_words) stay, and the rest starts past them where their next line starts one; main reads no
-    rest there, so such a rest takes none of the tail of tokens main's rest takes. Each placeholder outside the core
-    of the rest before it is read once, and each core runs once to its end, so a paragraph of many costs time in
-    proportion."""
+    rest there, so such a rest takes none of the tail of tokens main's rest takes. Where main's rest from the
+    placeholder runs on past them, base64 alone on a line of its own at any length starts one too (_REST_PAST_WORDS),
+    as a stream's short last line is, past any word alone on its line, and runs on as main's does. Each placeholder
+    outside the core of the rest before it is read once, and each core runs once to its end, so a paragraph of many
+    costs time in proportion."""
     core, covered, tail, past, ends = 0, 0, None, None, _rest_ends(text)
     start = _ID_REST_START if starts is _REST_START and not _STORED_ROW.get() else starts
     for at in _PLACEHOLDER.finditer(text):
         if at.start() < core:
             continue
         begin = at.end()
-        rest = start.match(text, begin)
+        rest, main_reach, as_main = start.match(text, begin), None, False
         while rest and _encoded_words(rest.group()):
             # another stream's line of words holds no key's rest, as a line of words does not: the rest, if any,
-            # starts past it, its next line read as one right after the placeholder is
+            # starts past it, with its next line read as one right after the placeholder is
             begin = _line_past(text, rest)
             rest = start.match(text, begin) if begin < len(text) else None
+            if rest is None and begin < len(text):
+                # or, where main's rest from the placeholder takes it, as base64 alone on its line, as a stream's short
+                # last line is, past any word alone on its line
+                main_reach = main_reach or (_ID_REST_START.match(text, at.end()) and ends(at.end())) or -1
+                line = begin
+                while main_reach > line and (word := _WORD_ALONE.match(text, line)):
+                    line = word.end()
+                rest = main_reach > line and _REST_PAST_WORDS.match(text, line) or None
+                begin, as_main = (line, True) if rest else (begin, False)
         if not rest and not _BASE64_CHARACTER.match(text, at.end()):
             continue
         reach = ends(begin)
         tail = tail or _token_tail(text)
-        # a placeholder past the core, in the tail, still reads its own rest; past lines of words, main reads none
-        end = tail(reach) if begin == at.end() else reach
+        # a placeholder past the core, in the tail, still reads its own rest; past lines of words, main reads none,
+        # but for a rest started where main's runs on, which runs on as main's does
+        end = tail(reach) if begin == at.end() or as_main else reach
         if end <= covered:  # which ends inside one already masked, read before the public material past it, which
             core = reach if rest else core  # reads on to `end`: many such in one tail took time in its square
             continue
