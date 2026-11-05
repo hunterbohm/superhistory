@@ -4,8 +4,10 @@ date. Made-up secrets only."""
 import importlib.util
 import json
 import os
+import re
 import tempfile
 import unittest
+from unittest import mock
 
 from kb import mask as masking
 from kb import store
@@ -28,12 +30,18 @@ SHORT_NUMBERS = ("1699999999", "1699999999.123", "1699999999123")
 
 
 def forms(name, sep, value):
-    """The named value as a line of text, inside lines, as a JSON field, and escaped in JSON once and twice."""
+    """The named value as a line of text, inside lines, as a JSON field, and escaped in JSON once and twice, with any
+    character past ASCII written as it is and as "\\u" escapes."""
     plain = f"{name}{sep}{value}"
     field = json.dumps({name: value})
-    return {"plain": plain, "lines": f"config\n{plain}\nend", "after words": f"export {plain} && make deploy",
-            "json": field, "json once": json.dumps(plain)[1:-1], "json twice": json.dumps(json.dumps(plain))[1:-1],
-            "json field once": json.dumps({"text": field}), "json field twice": json.dumps({"t": json.dumps({"text": field})})}
+    out = {"plain": plain, "lines": f"config\n{plain}\nend", "after words": f"export {plain} && make deploy",
+           "json": field, "json once": json.dumps(plain)[1:-1], "json twice": json.dumps(json.dumps(plain))[1:-1],
+           "json field once": json.dumps({"text": field}), "json field twice": json.dumps({"t": json.dumps({"text": field})})}
+    if not value.isascii():
+        raw = json.dumps({name: value}, ensure_ascii=False)
+        out.update({"json as written": raw, "json once as written": json.dumps(plain, ensure_ascii=False)[1:-1],
+                    "json field once as written": json.dumps({"text": raw}, ensure_ascii=False)})
+    return out
 
 
 def before_29():
@@ -92,6 +100,27 @@ class NumberShapedSecretTest(unittest.TestCase):
         older = before_29()
         for value in EPOCHS + SHORT_NUMBERS:
             for name, sep in (("API_TOKEN", "="), ("auth_token", ": "), ("access_key", ": ")):
+                for form, text in forms(name, sep, value).items():
+                    with self.subTest(value=value, name=name, form=form):
+                        self.assertEqual(mask(text), older.mask(text))
+
+    def test_a_date_in_other_digits_is_judged_as_before_29(self):
+        # Python's \d takes any script's digits; an ISO 8601 date's are ASCII.
+        values = ("\uff12\uff10\uff12\uff16-11-01T10:00:00Z", "2\u0660\u0662\u0666-11-01T10:00:00Z",
+                  "2026-11-01T1\uff10:00:00Z", "2026-11-01T10:0\u0660:00.12\u0663Z", "2026-11-01T10:00:00+0\uff15:30",
+                  "\uff12\uff10\uff12\uff16-\uff11\uff11-\uff10\uff11")
+        for value in values[:5]:
+            self.assertHidden("api_key", "=", value)
+        # Main 68506d9 read each as a date, as any run of \d and ":.+TZ-" was one, and showed it.
+        with mock.patch.object(masking, "_date_or_time", lambda value: bool(re.fullmatch(r"[\d:.+TZ-]+", value))):
+            for value in values:
+                for form, text in forms("api_key", "=", value).items():
+                    if form in ("plain", "lines", "after words") or form.endswith("as written"):
+                        with self.subTest(value=value, form=form, read="as main"):
+                            self.assertEqual(mask(text), text)
+        older = before_29()
+        for value in values:
+            for name, sep in (("api_key", "="), ("auth_token", ": ")):
                 for form, text in forms(name, sep, value).items():
                     with self.subTest(value=value, name=name, form=form):
                         self.assertEqual(mask(text), older.mask(text))
