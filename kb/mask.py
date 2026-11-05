@@ -645,7 +645,7 @@ def _docker_login_edits(text):
     return [(m.end(1), m.end(), "[masked]") for m in _AUTH_FIELD.finditer(text) if _basic_credential(m.group(2))]
 
 
-def _command_line(text, start, stop=None, known=None):
+def _command_line(text, start, stop=None, known=None, keyed=True):
     """(where a command's line from `start` ends, by `stop` if given, the stretches of it inside quotes or a substitution at its top level,
     in order, the command substitutions in it that no other holds, in order), as the shell reads it. The shell's contexts are kept on a stack:
     single quotes, which hold everything to the next one; double quotes, which hold a substitution or a backtick; and
@@ -658,10 +658,11 @@ def _command_line(text, start, stop=None, known=None):
     line whose first double quote outside single quotes comes escaped ('\\"'), as JSON holds a command, is read
     unescaped: its escaped quotes are the shell's quotes, an escaped backslash escapes the shell character after it,
     and a bare '"' ends the JSON string. `known` maps where each substitution read before starts, with whether the
-    line's quotes were found escaped there (None: not yet), to whether it closed, where (or where a reading ended with
-    it still open, which it holds to), and whether they were found escaped after it. The reading adds to it and passes
-    over each it comes to in the same state, so a command inside one reads as it reads alone, and costs no second
-    reading of what it holds, even where the substitutions no longer close."""
+    line's quotes were found escaped there (None: not yet) where `keyed`, to whether it closed, where (or where a
+    reading ended with it still open, which it holds to), and whether they were found escaped after it. The reading
+    adds to it and passes over each, so a command inside one costs no second reading of what it holds, even where the
+    substitutions no longer close: where `keyed`, only each it comes to in the same state, and on in the state after
+    it, so a command inside one reads as it reads alone; else each, as the reading that read it found it."""
     i, n = start, len(text) if stop is None else stop
     known = {} if known is None else known
     # The shell's open contexts, where and in which state each opened, and the state: whether quotes come escaped
@@ -670,12 +671,14 @@ def _command_line(text, start, stop=None, known=None):
 
     def enter(kind, at, after):  # where the reading goes on once `kind` opens at `at`: after it, or past all it holds
         nonlocal held, escaped
-        read = known.get((at, escaped)) if kind in ("$(", "`") else None
+        read = known.get((at, escaped) if keyed else at) if kind in ("$(", "`") else None
         end = None
         if read is not None:
             closed, to, then = read
-            if closed and to <= n:  # it closes by `n`, and the reading goes on as the one before went on past it
-                end, escaped = to, then
+            if closed and to <= n:  # it closes by `n`
+                end = to
+                if keyed:  # and the reading goes on as the one before went on past it
+                    escaped = then
             elif not closed and n <= to:  # still open where a reading before ended: it holds to `n`
                 end = n
         if end is not None:
@@ -699,11 +702,12 @@ def _command_line(text, start, stop=None, known=None):
         kind, (began, state) = stack.pop(), opened.pop()
         if kind in ("$(", "`"):
             held -= 1
-            read = known.get((began, state))
+            key = (began, state) if keyed else began
+            read = known.get(key)
             if closed:
-                known[began, state] = (True, at, escaped)
+                known[key] = (True, at, escaped)
             elif not (read and read[0]):
-                known[began, state] = (False, max(at, read[1] if read else at), None)
+                known[key] = (False, max(at, read[1] if read else at), None)
             if not held:
                 subs.append((began, at))
         if not stack:
@@ -890,12 +894,23 @@ def _command_password_edits(text, line_pattern, flag, always, unseen=False):
 
 
 def _read_password_edits(text, line_pattern, flag, always, unseen=False):
+    """Each password one row of COMMAND_FLAGS finds, as an edit that masks it (_read_lines). With `unseen`, the text
+    is read twice, and what either reading finds is masked: once with each substitution read passed on only to a
+    reading that comes to it in the same state, so each command reads as it reads alone, and once with it passed on to
+    any, as the reading before found it, where the quotes and backslashes in it mean what they meant there."""
+    if not unseen:
+        return _read_lines(text, line_pattern, flag, always, unseen, True)
+    return _in_order(_read_lines(text, line_pattern, flag, always, unseen, True)
+                     + _read_lines(text, line_pattern, flag, always, unseen, False))
+
+
+def _read_lines(text, line_pattern, flag, always, unseen, keyed):
     """Each password one row of COMMAND_FLAGS finds, as an edit that masks it. A command's line is read once from its
     first word, and a command in a substitution once from its own, so a line that names the command again and again
     costs time in proportion to its length. With `unseen`, as the rows main's own lack are read, the line is read as
     the shell reads it (_command_line), past a quote that closes the command's quoted name, and a value is judged
     without the characters a reader does not see, so a coloured "$STOREPASS" is a variable and a coloured "--quiet"
-    the next option."""
+    the next option, and the substitutions read are passed on as _command_line passes them with `keyed`."""
     edits, reading, known = [], [], {}  # reading: the lines read that hold the text so far, innermost last
     read_to = 0  # where the lines read before the text so far end
     for line in line_pattern.finditer(text):
@@ -909,7 +924,7 @@ def _read_password_edits(text, line_pattern, flag, always, unseen=False):
             end = _plain_line_end(text, line.end())
         elif unseen:  # a command inside the substitution of a line read is read as a line of its own, to its end
             begin = _past_closing_quote(text, max(read_to, held[0] if held else 0), line.start(), line.end())
-            end, inside, subs = _command_line(text, begin, held and held[1], known)
+            end, inside, subs = _command_line(text, begin, held and held[1], known, keyed)
         else:
             end = line.end()
         reading.append((end, subs))
