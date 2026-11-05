@@ -3564,9 +3564,11 @@ def _lead_item(items, j, cut):
     whole up to _LEAD_ITEM characters; past that, as what it changes for a later flag, read once for the list (`cut`):
     a ";" where it holds what ends the line of a command main's own rows read across it (_LINE_STOP), then the name of
     each command it names whose flag and a value, put right after it, read otherwise than after a word (_LEAD_PROBES):
-    that command's line, read from where the item names it, runs on past the item. So every command it names takes a
-    later flag as when the item is read whole, and none whose line ends inside it ("mongosh ...; exec nc %h %p")
-    does, and each later flag reads a few words of it."""
+    that command's line, read from where the item names it, runs on past the item. For one of main's own rows, its
+    line (_LINE) runs from a place the item names it to the item's end too, as another command's line after a line
+    stop can read the probe ("sshpass; mongosh ..."). So every command it names takes a later flag as when the item is
+    read whole, and none whose line ends inside it ("mongosh ...; exec nc %h %p") does, and each later flag reads a
+    few words of it."""
     item = items[j]
     if len(item) <= _LEAD_ITEM:
         return item
@@ -3574,7 +3576,9 @@ def _lead_item(items, j, cut):
         names = []
         if _ANY_COMMAND.search(item):
             quoted = re.sub(r"[\r\n]", " ", shlex.quote(item))  # as the line holds it (_flag_values)
-            for (name, probe), (line, _, _) in zip(_LEAD_PROBES, _COMMANDS):
+            for n, ((name, probe), (line, _, _)) in enumerate(zip(_LEAD_PROBES, _COMMANDS)):
+                if n < _MAIN_COMMANDS and not any(m.end() == len(quoted) for m in line.finditer(quoted)):
+                    continue  # its line ends inside the item, wherever another command's line runs on
                 if line.search(quoted) and _read_after(quoted, probe) and not _read_after("x", probe):
                     names.append(name)
         cut[j] = "".join(["...", ";" if _LINE_STOP.search(item) else ""] + [" " + name for name in names])
