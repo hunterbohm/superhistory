@@ -2155,6 +2155,95 @@ class Base64ReviewSeventeenTest(unittest.TestCase):
                                     self.assertNotIn(shown, masked)
 
 
+class Base64ReviewEighteenTest(unittest.TestCase):
+    """#34's checks for its eighteenth review. Texts the comparison against d4e3c63 met: a document's stream that
+    quotes a header, a public key's stream, then key pieces that d4e3c63 hid only as its key ran from the document's
+    header over all of them; the pieces have neither a header nor a footer of their own, or are a PGP key encoded in
+    one stream after "例：" (the README's limits), and show as they do with the document gone, as on main. And a text
+    where a key's rest past lines of words, started where main's runs on, took in the next placeholder without the
+    tail main's takes. Past lines of words, a word alone on its line stays, and a rest starts only where main's rest
+    from the placeholder runs on."""
+
+    @staticmethod
+    def masks(text, older):
+        from kb import mask as masking
+        if older:
+            with masking.stored_row("0123456789abcdef"):
+                return mask(text)
+        return mask(text)
+
+    @staticmethod
+    def written(text, depth):
+        """`text` as a JSON string holding it, escaped `depth` times, writes it."""
+        for _ in range(depth):
+            text = json.dumps(text)[1:-1]
+        return text
+
+    @staticmethod
+    def as_json(text, depth):
+        for _ in range(depth):
+            text = json.dumps(text)
+        return text
+
+    def test_texts_the_comparison_met_keep_the_document_and_show_no_more_of_the_pieces(self):
+        import os
+        with open(os.path.join(os.path.dirname(__file__), "fixtures", "base64_overrun_r18.json"), encoding="utf-8") as f:
+            cases = json.load(f)
+        for n, case in enumerate(cases):
+            depth = {1: 1, 2: 2}.get(case["form"], 0)
+            others = "\n".join(text for kind, text, _ in case["parts"] if kind != "private")
+            windows = set()
+            for kind, text, own in case["parts"]:
+                for line in (own or text).replace("[masked]", " ").split("\n") if kind == "private" else ():
+                    line = line.strip()
+                    windows |= {line[i:i + 16] for i in range(0, max(len(line) - 15, 0), 8)} - {""}
+            windows = {w for w in windows if w not in others}
+            kept = [line for kind, text, _ in case["parts"] if kind == "keep" for line in text.split("\n") if len(line) >= 12]
+            for older in (False, True):
+                with self.subTest(case=n, older=older):
+                    masked = self.masks(case["text"], older)
+                    self.assertEqual([line for line in kept if self.written(line, depth) not in masked], [])
+                    shown = [w for w in windows if self.written(w, depth) in masked]
+                    self.assertLessEqual(len(shown), case["shown_at_most"], shown[:3])
+
+    def test_a_word_alone_on_its_line_after_a_stream_of_words_glued_to_a_placeholder_stays(self):
+        # plain words are base64 characters; main's rest takes the word, d4e3c63 kept it, and so does this branch
+        encoded = Base64ReviewSeventeenTest.encoded
+        password = encoded(b"pw=Tq9sVz7Yp2mRx")
+        for word in ("Thanks", "ok", "README"):
+            for words in (b"notes " * 8, b"notes " * 16):
+                for brk in ("\n", "\r\n"):
+                    for end in ("", " ", brk + "next steps", brk + password):
+                        text = "[masked]" + encoded(words).replace("\n", brk) + brk + word + end
+                        for older in (False, True):
+                            for depth in range(3):
+                                with self.subTest(word=word, words=len(words), brk=brk, end=end[-6:], older=older,
+                                                  depth=depth):
+                                    masked = self.masks(self.as_json(text, depth), older)
+                                    self.assertIn(self.written(brk + word, depth), masked)
+                                    if end.endswith(password) and depth < 2:  # main's rest takes it
+                                        self.assertNotIn(password, masked)
+
+    def test_past_lines_of_words_a_rest_starts_only_where_mains_rest_from_the_placeholder_runs_on(self):
+        # an older row's placeholder on a line of its own, where main reads no rest: a short line past the lines of
+        # words starts none, so a document's stream and a public key's below it stay
+        import random
+        r = random.Random(1801)
+        encoded = Base64ReviewSeventeenTest.encoded
+        public = encoded(bytes.fromhex("302a300506032b6570032100") + bytes(r.randrange(256) for _ in range(32)))
+        document = encoded(b"notes " * 8 + b"-----BEGIN PRIVATE KEY-----\nsee the runbook\n")
+        for words in (b"notes " * 8, b"notes " * 16):
+            for brk in ("\n", "\r\n"):
+                text = brk.join(["[masked]", encoded(words), encoded(b"pw=Tq9sVz7Yp2mRx"), document, public,
+                                 "next steps"])
+                kept = (document + "\n" + public).split("\n")
+                for older in (False, True):
+                    for depth in range(3):
+                        with self.subTest(words=len(words), brk=brk, older=older, depth=depth):
+                            masked = self.masks(self.as_json(text, depth), older)
+                            self.assertEqual([line for line in kept if line not in masked], [])
+
+
 class HeadlessKeyTest(unittest.TestCase):
     """A key's body without its header, as an older kb's row-by-row remask leaves the chunk after the header's."""
     LINE = "MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7"
