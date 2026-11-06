@@ -2006,6 +2006,109 @@ class SubstitutionReadBeforeTest(unittest.TestCase):
                     self.assertNotIn(password, masked)
 
 
+class TodaysRowsTest(unittest.TestCase):
+    """Passwords today's main hides with the rows #29 brought it (az login, mongosh, twine, keytool, jarsigner, aws
+    configure set, netrc), on lines that chain those commands through backticks, substitutions, process substitutions
+    and unclosed quotes. This branch's check against main read the text with main's five rows from before #29 alone,
+    so where this branch reads such a line its own way, a password main's reading of that row hides could show: one
+    line per shape the generated lines found, each password listed hidden by main 33c82f6 and by the frozen main
+    68506d9 as written and escaped once (escaped twice, main shows some of them itself)."""
+    LINES = (
+        ('twine -p WJ7u5NWHMHzG1 kzZGEBG2rQSp3 `mongosh -p GieHTjGQZh6V42` -p 3C6tWa69rsL843',
+         ('WJ7u5NWHMHzG1', 'kzZGEBG2rQSp3', 'GieHTjGQZh6V42')),
+        ('twine -p dist/* ; AQG8yo7Z8WHh4` twine `mongosh -p GieHTjGQZh6V42` -p 3C6tWa69rsL843',
+         ('AQG8yo7Z8WHh4', 'GieHTjGQZh6V42')),
+        ('az login `twine -p jPyZfcgJagg25` -p orjohJtENYZ36 -pqc9dsjMQtFSh10 $(curl -u '
+         'deploy:ZXcW6eCvbCom14',
+         ('orjohJtENYZ36', 'qc9dsjMQtFSh10', 'ZXcW6eCvbCom14')),
+        ("jarsigner <(AZ.EXE RWK8SyrDcC6f0) '$(keytool $(echo $(echo '') $HOME) -storepass KpHLFc7dMhYM2 "
+         "--quiet)'",
+         ('KpHLFc7dMhYM2',)),
+        ('keytool -storepass gWGVf5hCX9jX10 r8NRK8rxhsXh11 twine `mongosh $(echo "") -p GieHTjGQZh6V42` -p '
+         '3C6tWa69rsL843',
+         ('gWGVf5hCX9jX10', 'r8NRK8rxhsXh11', 'GieHTjGQZh6V42')),
+        ('"`az login -p yjiUGPdvFvQd8 erGVVQw6hzhB11 jarsigner `keytool -keypass CWw7hdq3ATXz27` -storepass '
+         'MqcHM9JbaVDZ28',
+         ('yjiUGPdvFvQd8', 'erGVVQw6hzhB11', 'CWw7hdq3ATXz27')),
+        ('mongosh -p fLUxBef8GtC513 -pdtGYQaUZWY7M14 "keytool `keytool -storepass WwdHELb8kThN17` -keypass '
+         '-pztVMbYMCEi6220"',
+         ('fLUxBef8GtC513', 'dtGYQaUZWY7M14', 'WwdHELb8kThN17')),
+        ('sshpass -p 5DvPebxkhTBV7 ; -pu4qdvRYuJvNX8 "keytool `keytool -storepass WwdHELb8kThN17` -keypass '
+         '-pztVMbYMCEi6220"',
+         ('5DvPebxkhTBV7', 'u4qdvRYuJvNX8', 'WwdHELb8kThN17')),
+        ('jarsigner -storepass zFAQxcBuQnRU4 deploy:BQknbrdxQeDh7 `keytool -keypass CWw7hdq3ATXz27` '
+         '-storepass MqcHM9JbaVDZ28',
+         ('zFAQxcBuQnRU4', 'BQknbrdxQeDh7', 'CWw7hdq3ATXz27')),
+        ('mongosh -p fLUxBef8GtC513 -p4dWHgBvBd53R15) "keytool `keytool -storepass WwdHELb8kThN17` -keypass '
+         '-pztVMbYMCEi6220"',
+         ('fLUxBef8GtC513', '4dWHgBvBd53R15', 'WwdHELb8kThN17')),
+        ('"`az login -p yjiUGPdvFvQd8 deploy:dBQCc85QPJme12 jarsigner `keytool -keypass CWw7hdq3ATXz27` '
+         '-storepass MqcHM9JbaVDZ28',
+         ('yjiUGPdvFvQd8', 'dBQCc85QPJme12', 'CWw7hdq3ATXz27')),
+        ('"keytool `keytool -storepass WwdHELb8kThN17` -keypass 2RmfD2DWMh5k19 -pztVMbYMCEi6220" "$(keytool '
+         '-storepass zgyGLGf8H5F522',
+         ('2RmfD2DWMh5k19', 'ztVMbYMCEi6220', 'zgyGLGf8H5F522')),
+        ('""))\' "jarsigner \'two words\' >(aws.exe uY2Ki6oFHJ5M62) -J-Dx=1" -storepass --host keytool '
+         '$(echo "") -keypass mE3uaPuKpBE468',
+         ('mE3uaPuKpBE468',)),
+        ('""))\' "jarsigner \'two words\' >(aws.exe uY2Ki6oFHJ5M62) -J-Dx=1" -storepass --host keytool '
+         '$(echo "") -keypass o6q8Kno4jsa869',
+         ('o6q8Kno4jsa869',)),
+        ("az login `twine -p jPyZfcgJagg25` -p D4ivwrpuSEWF8 -pkGAZyN8FacQs9 '$(aws configure set "
+         "aws_secret_access_key Sx5Qxpv4pxEA18)'",
+         ('D4ivwrpuSEWF8', 'kGAZyN8FacQs9', 'Sx5Qxpv4pxEA18')),
+        ('BNRXNy8qvKUx14`" "`keytool <(mongosh.cmd iD5Xo8vj6ogw29) -J-Dx=1`" jarsigner "`redis-cli -v`" '
+         '-storepass A4jp5ZDAvBdi38 "mongosh.cmd',
+         ('A4jp5ZDAvBdi38',)),
+        ('sshpass -p dL8Rsw5wr8wo5 "`mongosh "$(mysql UNDDieEZok5h6 -v)" -p 9jvkuobKWNpp8`" ; "`mongosh -p '
+         'y8RQRSimXJXH9`" "az -p xXkPeh2cAo3440',
+         ('dL8Rsw5wr8wo5', 'UNDDieEZok5h6', '9jvkuobKWNpp8', 'y8RQRSimXJXH9')),
+        ('\'$(jarsigner "$(AZ.EXE -storepass sdgQqSYhucaC15 "keytool kw3bsBL24LAE20" "az >(sshpass $HOME) '
+         '$HOME" $(echo \'\') jarsigner -storepass BW46SG2ysWKt34',
+         ('BW46SG2ysWKt34',)),
+        ('mongosh -p fLUxBef8GtC513 "keytool `keytool -storepass WwdHELb8kThN17` UFqLUSXWjLec18 -keypass '
+         '-pztVMbYMCEi6220" "$(keytool -storepass zgyGLGf8H5F522',
+         ('fLUxBef8GtC513', 'WwdHELb8kThN17', 'UFqLUSXWjLec18', 'ztVMbYMCEi6220', 'zgyGLGf8H5F522')),
+        ('"jarsigner -storepass dist/*" ZVSHio9GjCr711 "az.exe u9pkxpN9XStU12" $(echo "keytool -keypass '
+         'dist/*") "`mysql `keytool.cmd -storepass sfv3G8cUHTkr31',
+         ('ZVSHio9GjCr711', 'u9pkxpN9XStU12')),
+        ('\'$(jarsigner "$(AZ.EXE -storepass FQmQqUriWLkU16`)") "keytool kw3bsBL24LAE20" "az >(sshpass '
+         '$HOME) $(echo $HOME) $HOME" keytool -storepass DALKTSiVDb6S37',
+         ('DALKTSiVDb6S37',)),
+        ('jarsigner $(aws.exe dist/*) -storepass QATEEXCMsdSx10 -pTNFompXuex3h13 <(mongosh.cmd "`keytool '
+         '`jarsigner -storepass n7mhrQHWPBT526` -keypass 6uSZS6T8rEJb27',
+         ('QATEEXCMsdSx10', 'TNFompXuex3h13', 'n7mhrQHWPBT526')),
+        ('"aws configure set aws_secret_access_key P2e2iHWrCPLT2" -p3yiYEdDpQSjz5 "`aws configure set '
+         'aws_secret_access_key 2ntEk5CSAcqg8`" "aws aws_secret_access_key Y8AEovbr6Kfg12"',
+         ('P2e2iHWrCPLT2', '3yiYEdDpQSjz5', '2ntEk5CSAcqg8')),
+        ('jarsigner -storepass "`mongosh NMjULJbgiwJS10 $(echo keytool $(echo "$(aws.exe --quiet)") '
+         '`jarsigner -storepass vFzJMR8VREQG14 -keypass `keytool.cmd -storepass R6hLjCTNahpM40',
+         ('NMjULJbgiwJS10', 'vFzJMR8VREQG14')),
+        ('"az login "`az.exe "")`" team" "$(mysql -p a5zrLuyF8Ld89)" ; \'$(mongosh $(echo -p2F3sbTtvwCWQ16) '
+         '-p gPZa2yUazuZp17 done)\' "mysql -p deploy:5CaK3LbG2gZQ19" az login -p JVGSJBYnuNEt22',
+         ('gPZa2yUazuZp17', 'JVGSJBYnuNEt22')),
+        ('"az login "`az.exe "")`" team" "$(mysql -p a5zrLuyF8Ld89)" ; \'$(mongosh $(echo -p2F3sbTtvwCWQ16) '
+         '-p gPZa2yUazuZp17 done)\' "mysql -p deploy:5CaK3LbG2gZQ19" az login -p XwQvXrgQHKn623',
+         ('gPZa2yUazuZp17', 'XwQvXrgQHKn623')),
+        ('"az login "`az.exe "")`" team" "$(mysql -p a5zrLuyF8Ld89)" ; \'$(mongosh $(echo -p2F3sbTtvwCWQ16) '
+         '-p `echo` done)\' "mysql $(echo \'\') -p deploy:5CaK3LbG2gZQ19" az login -p HYsrRubXH4CC20',
+         ('HYsrRubXH4CC20',)),
+        ('redis-cli -a ZHUV3S2DcsGe10 "twine -p75Groopgz6Z211 $(echo \'\')" `AZ.EXE "`mongosh $(echo "") -p '
+         'HofgFPwykcYs16`" \'\'))` twine -p dist/* `echo` -p QkSgcCmWcRzP25 "mysql -p B33TLNEU53Wd33',
+         ('ZHUV3S2DcsGe10', '75Groopgz6Z211', 'HofgFPwykcYs16', 'QkSgcCmWcRzP25')),
+    )
+
+    def test_every_password_todays_main_hides_is_masked(self):
+        from tests.test_mask_against_today import main as today
+        for text, passwords in self.LINES:
+            for depth, form in enumerate((text, json.dumps(text), json.dumps(json.dumps(text)))):
+                hidden = [password for password in passwords if depth < 2 or password not in today.mask(form)]
+                outputs = (mask(form), masking.mask_with_origin(form)[0], mask_all([form, "notes"])[0],
+                           mask_all({"out": form})["out"])
+                with self.subTest(text=text, depth=depth):
+                    self.assertEqual([password for password in hidden if any(password in out for out in outputs)], [])
+
+
 class RevisionTest(unittest.TestCase):
     def test_stored_rows_are_masked_again(self):
         self.assertEqual(masking.REVISION, 16)
