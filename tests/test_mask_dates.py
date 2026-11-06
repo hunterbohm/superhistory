@@ -127,19 +127,28 @@ class NumberShapedSecretTest(unittest.TestCase):
 
 
 # After "Authorization:" with no scheme word, a credential made only of digits and ":.+TZ-", with a T or a Z in it:
-# main 2ec4d8c read each as a number, a date or a time, as it reads any such run in a lone token, and showed it. The
-# last five are shaped as a date and a time, with a field out of its range.
+# main 2ec4d8c read each as a number, a date or a time, as it reads any such run in a lone token, and showed it. From
+# "20261301T100000Z" on, each is shaped as a date and a time, a time or a range of two, with a field out of its range or
+# more joined to it.
 AUTHORIZATION_SHAPES = ("20261101T100000Z1234", "2026-11-01T10:00:00Z1234", "1234-5678T9012Z3456", "T1234567890Z12345",
                         "2026-13-01T10:00:00Z", "2026-11-01T10:00:00.1234567890Z", "20261301T100000Z",
-                        "20261101T250000Z", "2026-366T10:00:00Z", "2026-11-01T24:00:01Z", "2026-11-01T10:00:00+2400")
+                        "20261101T250000Z", "2026-366T10:00:00Z", "2026-11-01T24:00:01Z", "2026-11-01T10:00:00+2400",
+                        "10:00:61.123456Z", "25:00:00.123456Z", "24:00:00.123456Z", "10:00:00.123456Z1234",
+                        "20261101T100000Z-1234", "10:00:00Z-11:00:61Z", "2026-11-01T10:00Z-1234-5678")
 AUTHORIZATION_DATES = ("2026-11-01T10:00:00Z", "2026-11-01T23:59:59.123Z", "2026-11-01T10:00:00.123456789+05:30",
                        "2024-02-29T10:00:00Z", "2026-11-01T10:00", "2026-11-01")
 # A date and a time as logs and clocks write them besides ISO 8601's extended form: its basic form (AWS's X-Amz-Date),
-# an offset without its colon or of hours alone (strftime's %z), a leap second, the day's end and an ordinal date.
+# an offset without its colon or of hours alone (strftime's %z), a leap second, the day's end and an ordinal date; the
+# two forms mixed, as file names take one, a fraction of the last field given, a year past 9999 as JavaScript writes
+# it; a time of day alone, in either form; and a range of two, joined by "-" or "--".
 TIMESTAMPS = ("20261101T100000Z", "20261101T100000.123Z", "20261101T100000+0530", "20261101T100000-08",
               "2026-11-01T10:00:00+0000", "2026-11-01T10:00:00.000+0000", "2026-11-01T10:00:00+00",
               "2016-12-31T23:59:60Z", "2026-11-01T24:00:00Z", "2026-305T10:00:00Z", "2024-366T10:00:00.5Z",
-              "2026305T100000Z")
+              "2026305T100000Z", "2026-11-01T100000Z", "20261101T10:00:00.5Z", "2026-11-01T10:30.5Z",
+              "+002026-11-01T10:00:00Z", "10:00:00.123456Z", "T10:00:00.123456+05:30", "T100000.123456789Z",
+              "100000.123456789Z", "23:59:60.123456Z", "24:00:00.000000Z", "10:00:00Z-11:00:00Z",
+              "2026-11-01T10:00Z--2026-11-01T11:00Z", "2026-11-01T10:00:00Z-2026-11-02T10:00:00Z",
+              "2026-11-01T10:00:00Z-11:00:00Z")
 # Numbers agents' logs hold, none with a letter, so none is shaped like a credential, here or on main.
 EVERYDAY = ("192.168.10.254", "192.168.10.254:8080", "10.0.19045.3803", "1.2.3+20261101", "2.0.0-rc.1",
             "+44-20-7946-0958", "+1-555-0100", "00:01:23.456", "1793527200", "1793527200123", "1793527200.123456",
