@@ -286,6 +286,14 @@ class RefusalTest(BackupCase):
         self.assertEqual(self.file.read_bytes(), first)
         self.assertEqual([p.name for p in self.file.parent.iterdir()], [self.file.name])
 
+    def test_a_partial_file_that_is_already_there_is_not_deleted(self):
+        other = self.file.with_name(f".{self.file.name}.partial-{os.getpid()}")
+        other.write_bytes(b"not ours")
+        with self.assertRaises(backup.BackupError):
+            self.make()
+        self.assertEqual(other.read_bytes(), b"not ours")
+        self.assertFalse(self.file.exists())
+
     def test_force_cannot_aim_a_backup_at_the_live_files(self):
         link = self.tmp / "link"
         os.symlink(self.paths.config_file, link)

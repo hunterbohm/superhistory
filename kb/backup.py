@@ -297,6 +297,7 @@ def make(paths, dest, passphrase, overwrite=False, iterations=None):
             raise BackupError(f"{name} is larger than {SMALL:,} bytes, which a config never is")
     os.makedirs(paths.data_dir, exist_ok=True)
     partial = dest.with_name(f".{dest.name}.partial-{os.getpid()}")
+    made = False
     work = tempfile.mkdtemp(dir=paths.data_dir, prefix=".backup-")  # private to the user, removed below
     try:
         copy = os.path.join(work, STORE)
@@ -306,6 +307,7 @@ def make(paths, dest, passphrase, overwrite=False, iterations=None):
             fd = os.open(partial, os.O_RDWR | os.O_CREAT | os.O_EXCL, 0o600)
         except OSError as exc:
             raise BackupError(f"could not write {dest.parent}: {exc.strerror or exc}") from None
+        made = True
         with os.fdopen(fd, "r+b", buffering=0) as out:
             _seal(command, out, copy, manifest, config, install, passphrase, iterations)
             os.fsync(out.fileno())
@@ -318,8 +320,9 @@ def make(paths, dest, passphrase, overwrite=False, iterations=None):
         raise BackupError(f"could not write the backup: {exc.strerror or exc}") from None
     finally:
         shutil.rmtree(work, ignore_errors=True)
-        with contextlib.suppress(FileNotFoundError):
-            os.remove(partial)
+        if made:  # a file of that name that this run did not make is not this run's to remove
+            with contextlib.suppress(FileNotFoundError):
+                os.remove(partial)
 
 
 def _seal(command, out, copy, manifest, config, install, passphrase, iterations):
