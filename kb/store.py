@@ -127,6 +127,48 @@ def connect(path, readonly=False):
     return db
 
 
+def _stamp(path):
+    """What changes when a writer touches the store at `path`, or None while it does not exist."""
+    try:
+        st = os.stat(path)
+    except FileNotFoundError:
+        return None
+    return st.st_ino, st.st_size, st.st_mtime_ns, os.path.exists(path + "-wal"), os.path.exists(path + "-shm")
+
+
+def read_only(path, run):
+    """What `run(db)` returns, for a connection that cannot write the store and leaves no file beside it. A read-only
+    connection to a WAL store still makes the -wal and -shm files and leaves them, and fails outright where the
+    folder or the file is not writable. With neither file there, no writer is open and the main file holds every row,
+    so `run` reads it as immutable, with no lock. A writer that starts meanwhile changes the stamp, and `run` then
+    reads again the ordinary way, which takes the WAL into account. `run` must return its result, not print it."""
+    path = os.path.realpath(path)
+    before = _stamp(path)
+    if before and not (before[3] or before[4]):
+        result = error = None
+        try:
+            with contextlib.closing(_open_read_only(path, immutable=True)) as db:
+                result = run(db)
+        except Exception as exc:
+            error = exc
+        if _stamp(path) == before:
+            if error:
+                raise error
+            return result
+    with contextlib.closing(_open_read_only(path, immutable=False)) as db:
+        return run(db)
+
+
+def _open_read_only(path, immutable):
+    uri = pathlib.Path(path).as_uri() + "?mode=ro" + ("&immutable=1" if immutable else "")
+    db = sqlite3.connect(uri, uri=True)
+    db.execute(f"PRAGMA busy_timeout={BUSY_MS}")
+    if has_unversioned(db):
+        db.close()
+        raise NeedsRebuild(REBUILD.format(path=path))
+    return db
+
+
 # Who made a mark moved from a store an older kb wrote: this computer, before it had an install id. As the lowest
 # name it ranks below any mark this install makes since, a clear too, and above a synced one, as an unsynced mark does.
 MOVED_MARK_BY = ""
