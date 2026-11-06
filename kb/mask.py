@@ -646,7 +646,7 @@ def _gitleaks_edits(text):
 # Which mask() a stored row was masked with. A row of another version, or of none, is masked again when read and by
 # the next ingest. The patterns change it by themselves; bump REVISION when the code that applies them changes what
 # it masks.
-REVISION = 37
+REVISION = 38
 VERSION = f"r{REVISION}-" + hashlib.sha256(repr((REVISION, [p.pattern for p in SECRET_PATTERNS + PREFIXED_SECRETS], KEYED_SECRET.pattern,
                                 ENV_KEY_SECRET.pattern, JSON_SECRET.pattern, FLAG_SECRET.pattern, AUTH_SECRET.pattern,
                                 COMMAND_FLAGS, PASSWORD_NAME.pattern, sorted(PLACEHOLDERS), REFERENCE.pattern,
@@ -765,6 +765,9 @@ def _wrapped_lines(text, start, end):
 _KEY_WORD_AT = {code: (k, -(-8 * k // 6)) for word in _KEY_WORDS for k, code in enumerate(_base64_of(word))}
 _KEY_FRAME = re.compile(rb"-----(BEGIN|END) (?:[A-Z0-9 ]*PRIVATE KEY|PGP (?:PRIVATE|SECRET) KEY BLOCK)-----")
 _KEY_FOOTER = re.compile(rb"-----END (?:[A-Z0-9 ]*PRIVATE KEY|PGP (?:PRIVATE|SECRET) KEY BLOCK)-----")
+# A footer ends a key only as a line of its own, as _frame reads one: written into an armour header ("Comment:
+# -----END PGP PRIVATE KEY BLOCK-----") it is that header's text, and the key runs on to its real footer.
+_KEY_FOOTER_LINE = re.compile(rb"(?<![^\n\r])" + _KEY_FOOTER.pattern)
 _TEXT_CONTROL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]")
 _CONTINUATION_BYTES = bytes(range(0x80, 0xc0))
 
@@ -927,7 +930,8 @@ def _key_range(joined, starts, ends, found, floor, held=None):
             break
         if not ended:
             other = None if footer_ahead else _NOT_KEY_TEXT.search(below)
-            footer = _KEY_FOOTER.search(recent + (below[:other.start()] if other else below))
+            # past the first byte of the kept bytes, whose own line break went with the bytes before them
+            footer = _KEY_FOOTER_LINE.search(recent + (below[:other.start()] if other else below), 1 if recent else 0)
             if footer:  # the key ends with the group holding its footer's last byte
                 after = footer.end() - len(recent)
                 at += (after + 2) // 3 * 4
@@ -3105,8 +3109,9 @@ def _rest_ends(text):
 # that starts the line of words after it is the body's short last line, however much it looks like a word ("ei harbor
 # deploy", "Ynu walrus moved"), and is masked with it; the words after it stay. Where the body's last line is shorter
 # than the one above it, or ends with "=", the body can end there, and the line of words stays whole. A line alone
-# can be a whole key, or a key cut after it: its next line's first word goes with it, which is the cost.
-_CUT_LINE = re.compile(r"[ \t\"'#>*-]*([A-Za-z0-9+/]+)[ \t\r]*")
+# can be a whole key, or a key cut after it: its next line's first word goes with it, which is the cost. A body line
+# glued to a placeholder ("[masked]MIIC...") is read so too.
+_CUT_LINE = re.compile(r"[ \t\"'#>*-]*(?:\[masked\])?([A-Za-z0-9+/]+)[ \t\r]*")
 _CUT_ABOVE = re.compile(r"(?<![A-Za-z0-9+/=])([A-Za-z0-9+/]+)[ \t\r]*\Z")
 _CUT_END = re.compile(r"(?:\r?\n|(?<!\\)\\+(?:r\\+)?n)[ \t\"'#>*-]*([A-Za-z0-9+/]+)")
 
