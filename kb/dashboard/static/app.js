@@ -116,8 +116,10 @@ const routes = [
   [/^\/item\/(\d+)$/, m => itemPage(+m[1]), null],
 ];
 let token = 0;
+let positioned = false; // set when a page has scrolled itself to a passage, so a click through to it is not reset to the top
 async function render() {
   const my = ++token;
+  positioned = false;
   const path = location.pathname.replace(/\/+$/, "") || "/";
   const hit = routes.map(([re, fn, tab]) => [re.exec(path), fn, tab]).find(r => r[0]);
   document.querySelectorAll("#tabs a").forEach(a => { if (a.dataset.tab === (hit && hit[2])) a.setAttribute("aria-current", "page"); else a.removeAttribute("aria-current"); });
@@ -127,7 +129,7 @@ async function render() {
     if (my !== token) return;
     app.innerHTML = html.html;
     document.title = (html.title ? html.title + " · " : "") + "Superhistory";
-    if (html.after) html.after();
+    if (html.after) positioned = html.after() === true;
   } catch (err) {
     if (my !== token) return;
     const missing = err.status === 404;
@@ -136,7 +138,7 @@ async function render() {
     document.title = (missing ? "Not found" : "Problem") + " · Superhistory";
   }
 }
-function go(url) { history.pushState(null, "", url); render().then(() => { const h = location.hash && document.getElementById(decodeURIComponent(location.hash.slice(1))); if (h) h.scrollIntoView(); else scrollTo(0, 0); }); }
+function go(url) { history.pushState(null, "", url); render().then(() => { const h = location.hash && document.getElementById(decodeURIComponent(location.hash.slice(1))); if (h) h.scrollIntoView(); else if (!positioned) scrollTo(0, 0); }); }
 document.addEventListener("click", e => {
   const a = e.target.closest("a[href]");
   if (!a || e.defaultPrevented || e.button || e.metaKey || e.ctrlKey || e.shiftKey || a.target) return;
@@ -438,8 +440,9 @@ async function itemPage(id) {
     if (d.session && d.anchor != null) {
       const marks = [...document.querySelectorAll("[data-at]")].filter(e => +e.dataset.at <= d.anchor);
       const target = marks[marks.length - 1];
-      if (target) { target.classList.add("here"); if (target.tagName === "DETAILS") target.open = true; target.scrollIntoView({ block: "center" }); }
-    } else if (d.anchor) { const a = $("#anchor"); if (a) a.scrollIntoView({ block: "center" }); }
+      if (target) { target.classList.add("here"); if (target.tagName === "DETAILS") target.open = true; target.scrollIntoView({ block: "center" }); return true; }
+    } else if (d.anchor) { const a = $("#anchor"); if (a) { a.scrollIntoView({ block: "center" }); return true; } }
+    return false;
   };
   return { html, title: d.title, after };
 }

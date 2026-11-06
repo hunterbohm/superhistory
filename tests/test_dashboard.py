@@ -252,6 +252,17 @@ class GroupingTest(Served):
         self.assertNotIn(secret, json.dumps(page))
         self.assertNotIn(secret, json.dumps(self.api("overview")))
 
+    def test_an_item_of_an_older_version_whose_source_name_holds_a_secret_is_left_out_of_every_listing(self):
+        secret = "ghp_abcdefghijklmnopqrstuvwxyz0123456789ABCD"
+        self.add("notes", "n", "2026-09-01T10:00:00Z", "plain", "hello", {"path": "/n"})
+        self.add("notes", "m", "2026-09-02T10:00:00Z", "other", "hi", {"path": "/m"})
+        self.db.execute("UPDATE docs SET source = ?, masked = 'older' WHERE source_id = 'here:n'", (secret,))
+        self.serve()
+        for path in ("overview", "projects", "people", "source?name=notes", "search?q=hello", "item?id=1"):
+            status, body, _ = self.get("/api/" + path)
+            self.assertNotIn(secret.encode(), body, path)
+        self.assertEqual([i["title"] for i in self.api("source?name=notes")["items"]], ["other"])
+
     def test_a_summary_of_an_older_version_is_masked_though_its_item_is_current(self):
         secret = "ghp_abcdefghijklmnopqrstuvwxyz0123456789ABCD"
         self.add("notes", "n", "2026-09-01T10:00:00Z", "plain", "hello", {"path": "/n"})
@@ -280,6 +291,18 @@ class TranscriptTest(Served):
         self.assertFalse(turns[2]["failed"])
         self.assertTrue(turns[3]["failed"])
         self.assertNotIn("output", turns[4])
+
+    def test_calls_made_together_never_get_a_result_that_belongs_to_another(self):
+        text = ("Claude Code session in /w/x\n\nUSER: go\n\nTOOL A: one\n\nTOOL B: two\n\nRESULT: for a\n\n"
+                "ERROR: for b\n\nASSISTANT: done\n\nTOOL C: three\n\nRESULT: for c")
+        _, turns = views.parse_turns(text)
+        self.assertEqual([(t["role"], t.get("name")) for t in turns],
+                         [("user", None), ("tool", "A"), ("tool", "B"), ("result", None), ("error", None),
+                          ("assistant", None), ("tool", "C")])
+        self.assertNotIn("output", turns[1])
+        self.assertNotIn("output", turns[2])
+        self.assertEqual((turns[3]["text"], turns[4]["text"]), ("for a", "for b"))
+        self.assertEqual((turns[6]["output"], turns[6]["failed"]), ("for c", False), "a call alone is still paired")
 
     def test_the_item_page_gives_turns_for_a_session_and_text_for_a_note(self):
         self.add("claude_code", "s", "2026-09-01T10:00:00Z", "build", SESSION, {"cwd": "/w/orders"})

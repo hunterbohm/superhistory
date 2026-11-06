@@ -256,14 +256,19 @@ def parse_turns(text):
         label = m.group(1)
         raw.append({"role": "tool" if label.startswith("TOOL") else label.lower(),
                     "name": label[5:] if label.startswith("TOOL") else None, "text": body, "at": m.start()})
-    turns = []
+    # The text carries no id tying a result to its call, so a result is folded into a call only when it follows that call
+    # directly and the call stands alone. Calls made together (TOOL A, TOOL B, RESULT, RESULT) cannot be paired by
+    # guessing, so their results are shown as results of their own, in order, never under the wrong call.
+    turns, before, lone = [], None, False
     for turn in raw:
-        if turn["role"] in ("result", "error") and turns and turns[-1]["role"] == "tool" and "output" not in turns[-1]:
+        if turn["role"] in ("result", "error") and before == "tool" and lone and "output" not in turns[-1]:
             turns[-1]["output"], turns[-1]["failed"] = turn["text"], turn["role"] == "error"
         elif turn["role"] == "tool":
             turns.append({"role": "tool", "name": turn["name"], "input": turn["text"], "at": turn["at"]})
+            lone = before != "tool"
         else:
             turns.append(turn)
+        before = turn["role"]
     return head, turns
 
 
@@ -303,11 +308,13 @@ def item(db, catalog, rid, page=None, query=""):
     elif kind == "raw":
         anchor = sum(len(r[4]) for r in rows[:ids.index(rid)]) if rid in ids else None
     if query:
-        # With no place of its own the query's first word marks one; a chunk's place moves to the word within the chunk.
+        # With no place of its own the query marks one, the whole phrase if the text holds it, else its earliest word; a chunk's
+        # place moves to that spot within the chunk.
         low = text.lower()
         span = len(rows[ids.index(rid)][4]) if kind == "raw" and rid in ids else len(text)
         start = anchor or 0
-        found = [low.find(t, start, start + span) for t in re.findall(r"\w{3,}", query.lower())]
+        phrase = low.find(" ".join(query.lower().split()), start, start + span)
+        found = [phrase] if phrase >= 0 else [low.find(t, start, start + span) for t in re.findall(r"\w{3,}", query.lower())]
         found = [f for f in found if f >= 0]
         if found and (anchor is None or kind == "raw"):
             anchor = min(found)

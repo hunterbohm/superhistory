@@ -21,7 +21,7 @@ from email.utils import getaddresses
 from typing import Dict, List, NamedTuple, Optional, Tuple
 
 from kb import store
-from kb.mask import mask, mask_all, secret_in_id
+from kb.mask import mask, mask_all
 
 HEADER_CHARS = 20000
 HOME = re.compile(r"^(?:~|/(?:Users|home)/[^/]+|[A-Za-z]:[\\/]+Users[\\/]+[^\\/]+|/root)[\\/]*$")
@@ -147,7 +147,7 @@ def build(db):
             "SELECT id, source, source_id, ts, title, metadata FROM docs WHERE kind = 'doc' "
             "OR (kind = 'raw' AND json_extract(metadata, '$.chunk') = 0) ORDER BY ts DESC, id"):
         if (source, source_id) in stale:
-            if secret_in_id(source_id):
+            if store.secret_id(source, source_id, store.item_names(db, source, source_id)):
                 continue
             title = mask(title)
             meta = mask_all(json.loads(meta))
@@ -160,7 +160,7 @@ def build(db):
             "json_extract(metadata, '$.account') IS NOT NULL AND "
             "(kind = 'doc' OR (kind = 'raw' AND json_extract(metadata, '$.chunk') = 0))", (HEADER_CHARS,)):
         if (source, source_id) in stale:
-            if secret_in_id(source_id):
+            if store.secret_id(source, source_id, store.item_names(db, source, source_id)):
                 continue
             text = mask(text)
         mail_text[rid] = text

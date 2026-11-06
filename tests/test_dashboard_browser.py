@@ -125,6 +125,22 @@ class BrowserTest(unittest.TestCase):
         page.close()
         self.assertEqual(fingerprint(self.paths.db), before)
 
+    def test_a_search_hit_opens_the_item_at_the_matching_passage_not_at_the_top(self):
+        page = self.browser.new_page(viewport={"width": 1280, "height": 700})
+        page.goto(self.srv.url)
+        page.wait_for_selector("#headline")
+        page.fill("#q", "did not click through the dev server")
+        page.press("#q", "Enter")
+        page.click("a.hit:has-text('trailing slashes consistent')")
+        page.wait_for_selector(".turn.here, details.here")
+        for _ in range(40):
+            if page.evaluate("window.scrollY") > 0:
+                break
+            page.wait_for_timeout(50)
+        self.assertGreater(page.evaluate("window.scrollY"), 0, "the click went back to the top of the page")
+        self.assertTrue(page.locator(".here").first.is_visible())
+        page.close()
+
     def test_the_address_is_good_for_one_visit_and_a_tab_without_the_key_shows_no_data(self):
         first = self.browser.new_page()
         first.goto(self.srv.url)
