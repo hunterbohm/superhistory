@@ -498,8 +498,6 @@ class SyncClient:
         except (Refused, KeyError, TypeError):
             self.relay.delete_slot(pk.slot_id)
             raise Refused("the join was not made with this pairing code") from None
-        self._refresh()
-        self._refuse_join_on_clash(pk, entry)
         if not confirm(entry["label"], keys.fingerprint_words(entry["device_id"], entry["age_recipient"], entry["ssh_key"])):
             self.relay.delete_slot(pk.slot_id)
             raise SyncError("Not added.")
@@ -579,7 +577,8 @@ class SyncClient:
 
     def _refuse_join_on_clash(self, pk, entry):
         """If the joiner reads an online account an active member already reads, seal a refusal into the welcome position,
-        as a welcome is sealed, and raise. Neither computer's roster changes."""
+        as a welcome is sealed, and raise. Neither computer's roster changes. Only called once the person confirmed the
+        joiner's words, so a stranger who holds the pairing code learns nothing about the group."""
         held = self.roster.holders(entry["accounts"])
         if not held:
             return

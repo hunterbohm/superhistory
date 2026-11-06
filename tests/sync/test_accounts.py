@@ -66,7 +66,7 @@ class AccountsTest(unittest.TestCase):
         with self.assertRaises(SyncError) as at_b:
             b.client.finish_join(sleep=lambda s: None)
 
-        self.assertEqual(asked, [], "the words are never asked for a computer that would be refused")
+        self.assertEqual(asked, ["desk"], "the words are asked first, as for any joiner")
         said_a, said_b = str(at_a.exception), str(at_b.exception)
         self.assertIn('"desk"', said_a)
         self.assertIn('"laptop"', said_a)
@@ -99,6 +99,21 @@ class AccountsTest(unittest.TestCase):
         self.assertEqual(config_mod.parse(GMAIL + "[sync]\n").account_keys()["gmail"],
                          config_mod.parse(GMAIL_SPELLED_OTHERWISE + "[sync]\n").account_keys()["work_mail"])
         self.refused_at_join(GMAIL, GMAIL_SPELLED_OTHERWISE, "work_mail")
+
+    def test_a_joiner_whose_words_are_refused_gets_no_refusal_even_when_its_accounts_clash(self):
+        a = self.start("laptop", GMAIL)
+        b = self.world.computer("stranger")
+        b.reads(GMAIL)
+        pairing = a.client.add_device()
+        b.client.join(pairing.code)
+        slot = next(iter(self.fake.slots))
+        since = len(self.fake.log)
+
+        with self.assertRaisesRegex(SyncError, "Not added"):
+            a.client.approve(pairing, lambda label, words: False, sleep=lambda s: None)
+        self.assertEqual([e for e in self.fake.log[since:] if e[1].endswith("/welcome")], [], "no welcome was written")
+        self.assertNotIn(slot, self.fake.slots, "the slot is deleted")
+        self.assertEqual(self.fake.group(EMAIL).roster_version, 1)
 
     def test_a_computer_that_reads_a_different_account_joins(self):
         a = self.start("laptop", GMAIL)
