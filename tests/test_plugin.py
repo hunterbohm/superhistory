@@ -354,6 +354,69 @@ class IsolationTest(PluginCase):
         self.assertEqual(self.titles("zebrafish"), [])
         self.assertIsNone(store.get_watermark(self.db, "bad", "m1"))
 
+    def test_a_group_writable_file_or_folder_does_not_run(self):
+        marker = os.path.join(self.root, "ran")
+        self.write("grp", script(f"open({marker!r}, 'w').close()\nprint({final('1')!r})\n"), mode=0o775)
+        self.assertEqual(self.ingest(grp=("grp", "")), 1)
+        self.assertIn("can be written by anyone", self.failure_of("grp"))
+        os.chmod(os.path.join(self.dir, "grp"), 0o755)
+        os.chmod(self.dir, 0o770)
+        self.addCleanup(os.chmod, self.dir, 0o700)
+        self.assertEqual(self.ingest(grp=("grp", "")), 1)
+        self.assertIn("can be written by anyone", self.failure_of("grp"))
+        self.assertFalse(os.path.exists(marker))
+
+    def test_an_item_the_store_cannot_take_fails_the_source_and_nothing_is_kept(self):
+        many = [item(f"n{i}", f"Note {i}", "carrot") for i in range(450)]
+        bad = item("zz", "Bad", "x", meta={"profile": []})
+        self.write("odd", printing(*many, bad, final("1")))
+        self.assertEqual(self.ingest(odd=("odd", "")), 1)
+        self.assertEqual(self.db.execute("SELECT count(*) FROM docs").fetchone()[0], 0)
+        self.assertIsNone(store.get_watermark(self.db, "odd", "m1"))
+        self.assertIn("odd@m1", self.failing())
+        self.write("odd", printing(*many, final("1")))
+        self.assertEqual(self.ingest(odd=("odd", "")), 0)
+        self.assertEqual(self.db.execute("SELECT count(DISTINCT source_id) FROM docs").fetchone()[0], 450)
+
+    def test_an_id_that_looks_like_a_secret_fails_the_source_instead_of_being_lost(self):
+        self.write("keyed", printing(item(SECRET, "Named by a token", "carrot"), final("1")))
+        self.assertEqual(self.ingest(keyed=("keyed", "")), 1)
+        self.assertIsNone(store.get_watermark(self.db, "keyed", "m1"))
+        self.assertNotIn(SECRET, self.failing()["keyed@m1"])
+        self.assertEqual(self.titles("carrot"), [])
+
+    def test_a_private_key_printed_over_several_lines_is_masked_in_the_log(self):
+        body = ["MIIEpAIBAAKCAQEA1234567890abcdefghijklmnopqrstuvwxyzABCDEFGHIJKL",
+                "QRSTuvwxyz0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQR",
+                "abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZab"]
+        pem = "-----BEGIN RSA PRIVATE KEY-----\n" + "\n".join(body) + "\n-----END RSA PRIVATE KEY-----\n"
+        self.write("pem", script(f"""
+            sys.stderr.write({pem!r})
+            sys.stderr.write("done\\n")
+            sys.exit(2)
+            """))
+        records = []
+        handler = logging.Handler()
+        handler.emit = lambda record: records.append(record.getMessage())
+        log = logging.getLogger("kb.plugin")
+        log.addHandler(handler)
+        log.setLevel(logging.INFO)
+        self.addCleanup(log.removeHandler, handler)
+        self.assertEqual(self.ingest(pem=("pem", "")), 1)
+        text = "\n".join(records) + self.failing()["pem@m1"]
+        for line in body:
+            self.assertNotIn(line[10:40], text)
+        self.assertIn("done", text)
+
+    def test_a_completed_line_over_the_limit_is_refused_even_when_it_arrives_with_its_newline(self):
+        self.write("fat", script("""
+            sys.stdout.write("x" * 3000 + "\\n")
+            sys.stdout.flush()
+            """))
+        with mock.patch.object(plugin, "MAX_LINE_BYTES", 1000):
+            self.assertEqual(self.ingest(fat=("fat", "")), 1)
+        self.assertIn("line longer than", self.failing()["fat@m1"])
+
     def test_no_final_line_fails_the_source(self):
         self.write("short", printing(item("a")))
         self.assertEqual(self.ingest(short=("short", "")), 1)
@@ -420,7 +483,7 @@ class IsolationTest(PluginCase):
         self.assertNotIn(SECRET, text)
         self.assertIn("plugin chatty: step 0 with", text)
         self.assertLessEqual(sum(1 for r in records if "step " in r), plugin.STDERR_LINES)
-        self.assertIn("more lines of standard error were not logged", text)
+        self.assertIn("the rest of its standard error was not logged", text)
 
     def test_a_plug_in_that_ignores_its_input_still_runs(self):
         self.write("deaf", f"#!{sys.executable}\nimport sys\nprint({item('a')!r})\nprint({final('1')!r})\n")

@@ -112,8 +112,8 @@ def executable(plugins_dir, name):
     for what, where, st in (("the plug-ins folder", folder, folder_stat), ("the plug-in", path, stat)):
         if st.st_uid != os.geteuid():
             raise PluginError(f"{what} {where} belongs to another user, so {COMMAND} will not run it")
-        if st.st_mode & 0o002:
-            raise PluginError(f"{what} {where} can be written by anyone; run `chmod o-w {where}`")
+        if st.st_mode & 0o022:
+            raise PluginError(f"{what} {where} can be written by anyone but you; run `chmod go-w {where}`")
     return path
 
 
@@ -144,42 +144,32 @@ def _stop(proc):
 
 
 class _Stderr:
-    """Writes the plug-in's standard error to the log, masked, a line at a time and within a limit, and keeps the
-    last lines for the health line."""
+    """Keeps the plug-in's standard error, up to a limit, and writes it to the log masked as one text, so a secret
+    that spans lines, such as a private key, is masked with its surrounding block and not a line at a time."""
 
     def __init__(self, name):
-        self.name, self.partial, self.lines, self.bytes, self.dropped, self.tail = name, b"", 0, 0, 0, []
-        self.finished = False
+        self.name, self.data, self.cut, self.finished = name, b"", False, False
 
-    def feed(self, data, final=False):
-        self.partial += data
-        *whole, self.partial = self.partial.split(b"\n")
-        if final and self.partial:
-            whole.append(self.partial)
-            self.partial = b""
-        if len(self.partial) > MAX_LINE_BYTES:
-            whole.append(self.partial)
-            self.partial = b""
-        for raw in whole:
-            line = mask(raw.decode("utf-8", errors="replace").rstrip("\r"))
-            self.tail = (self.tail + [line])[-5:]
-            self.lines += 1
-            self.bytes += len(raw)
-            if self.lines <= STDERR_LINES and self.bytes <= STDERR_BYTES:
-                LOG.info("plugin %s: %s", self.name, line[:2000])
-            else:
-                self.dropped += 1
+    def feed(self, data):
+        room = STDERR_BYTES - len(self.data)
+        self.data += data[:max(room, 0)]
+        self.cut = self.cut or len(data) > room
+
+    def text(self):
+        return mask(self.data.decode("utf-8", errors="replace").replace("\r\n", "\n"))
 
     def finish(self):
         if self.finished:
             return
         self.finished = True
-        self.feed(b"", final=True)
-        if self.dropped:
-            LOG.info("plugin %s: %d more lines of standard error were not logged", self.name, self.dropped)
+        shown = self.text().splitlines()
+        for line in shown[:STDERR_LINES]:
+            LOG.info("plugin %s: %s", self.name, line[:2000])
+        if len(shown) > STDERR_LINES or self.cut:
+            LOG.info("plugin %s: the rest of its standard error was not logged", self.name)
 
     def last(self):
-        text = " / ".join(line for line in self.tail if line.strip())
+        text = " / ".join(line for line in self.text().splitlines()[-5:] if line.strip())
         return f": {text[-ERROR_TAIL:]}" if text else ""
 
 
@@ -238,12 +228,19 @@ def lines(argv, body, options, cwd, name):
                                       f"{err.last()}")
                 buf += data
                 *whole, buf = buf.split(b"\n")
-                yield from whole
+                for line in whole:
+                    if len(line) > MAX_LINE_BYTES:
+                        raise PluginError(f"{name} printed a line longer than {MAX_LINE_BYTES // 1_000_000} MB and "
+                                          f"was stopped{err.last()}")
+                    yield line
                 if len(buf) > MAX_LINE_BYTES:
                     raise PluginError(f"{name} printed a line longer than {MAX_LINE_BYTES // 1_000_000} MB and was "
                                       f"stopped{err.last()}")
             if gone_at is None and proc.poll() is not None:
                 gone_at = time.monotonic() + GRACE_SECONDS
+        if len(buf) > MAX_LINE_BYTES:
+            raise PluginError(f"{name} printed a line longer than {MAX_LINE_BYTES // 1_000_000} MB and was stopped"
+                              f"{err.last()}")
         if buf:
             yield buf
         try:
@@ -377,4 +374,4 @@ def extract(run):
     yield Progress(final)
 
 
-TYPE = SourceType(Options, extract, summarize=True, others_wrote=True)
+TYPE = SourceType(Options, extract, summarize=True, others_wrote=True, all_or_nothing=True)

@@ -104,13 +104,18 @@ def run_unit(db, source, host, reader, log, prefix):
                 raise TypeError(f"not an event: a {type(event).__name__}")
             if not isinstance(event, Progress) and secret_in_id(event.source_id,
                                                                  id_names(getattr(event, "meta", None))):
+                if source.type.all_or_nothing:
+                    raise ValueError("an item's id looks like it holds a secret; give it an id that does not")
                 log.warning("%s@%s: skipped %s, whose name looks like it holds a secret; rename it to index it",
                             source.name, host, mask(event.source_id))
             changed += apply(db, source.name, prefix, event, host)
         except Exception as exc:
+            if source.type.all_or_nothing:
+                raise RuntimeError(f"the store refused an item ({type(exc).__name__}: {mask(str(exc))[:100]}), so "
+                                   "nothing of this run was kept and its watermark stays") from None
             log.warning("%s@%s: skipped %s: %s", source.name, host, getattr(event, "source_id", "?"), exc)
         seen += 1
-        if seen % COMMIT_EVERY == 0:
+        if seen % COMMIT_EVERY == 0 and not source.type.all_or_nothing:
             db.commit()
     if mark is not None:
         store.set_watermark(db, source.name, host, json.dumps(mark))

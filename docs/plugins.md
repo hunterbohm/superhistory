@@ -31,7 +31,7 @@ A secret is `env:NAME`, `file:PATH` or `cmd:COMMAND`, as for Gmail's password. S
 program starts and puts it in the request. Keep a secret out of `settings`, which is plain text in the config.
 
 The program runs only if the file is in the folder and a source names it. Nothing is downloaded or installed from
-anywhere. It must belong to you and not be writable by others, in a folder that others cannot write, or
+anywhere. It must belong to you and not be writable by your group or others, in a folder that is not writable by them either, or
 Superhistory fails the source and says so. A source runs on this computer only, never over SSH.
 
 ## What it receives
@@ -100,12 +100,13 @@ That keeps one rule for the watermark: it moves only past items that were stored
   lines and names the first, without quoting it;
 - it runs longer than `timeout_seconds` (the program and everything it started are stopped), prints more than
   `max_output_mb`, or prints one line longer than 8 MB;
-- its watermark looks like a secret, or it does not start (missing, not executable, writable by others).
+- the store refuses an item (for example an `id` that looks like a secret, or a `meta` value it cannot hold): the whole run is rolled back, so no item is lost behind a moved watermark;
+- its watermark looks like a secret, or it does not start (missing, not executable, writable by its group or others).
 
 A failure is recorded for that source only, shown by `superhistory stats` as FAILING with its reason, and makes the
 ingest exit 1. The other sources still run. The next ingest starts from the old watermark again.
 
-Its standard error goes to the ingest log, masked, as `plugin NAME: ...`: up to 200 lines and 64,000 bytes a run. The
+Its standard error goes to the ingest log when the run ends, masked as one text (so a key printed over several lines is masked whole), as `plugin NAME: ...`: up to 200 lines and 64,000 bytes a run. The
 last few lines also go into the failure message. Print progress and reasons there, never on standard output.
 
 ## Masking
