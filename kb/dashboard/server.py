@@ -3,12 +3,13 @@
 It binds a loopback address only, answers only GET and HEAD, opens the store read-only, and loads nothing from
 outside: every font, script and style is served from this folder, and a content-security policy keeps it that way.
 
-Loopback is open to every account on the computer, so the data is behind a key made for each run. The address the
-command prints holds it as `?access=KEY`, good for one visit: that visit's page carries the key in a meta tag, the
-page's script keeps it in sessionStorage and removes it from the address, and every request for data then sends it in
-the X-Superhistory-Key header. The key is in no cookie, so a program listening on another port of this computer, which
-a cookie would reach, never receives it; a second `?access=KEY` is refused, so a key copied from a process list or a
-browser's history after the first visit is worthless. The page and its static files hold no data and need no key.
+Loopback is open to every account on the computer, so the data is behind keys made for each run. The address the
+command prints holds a token as `?access=TOKEN`, good for one visit. That visit is swapped for a second, different
+value, the session key: the page carries it in a meta tag, its script keeps it in sessionStorage and removes the token
+from the address, and every request for data then sends the session key in the X-Superhistory-Key header. The token
+opens no data at all, so a copy of the address left in a process list, a terminal's scrollback or a browser's history is
+worthless once it has been used, and the session key is in no cookie and in no address, so a program listening on
+another port of this computer never receives it. The page and its static files hold no data and need no key.
 """
 import hmac
 import html
@@ -63,7 +64,7 @@ def check_host(host):
 
 def number(values, name, default=0):
     value = (values.get(name) or [""])[0]
-    return int(value) if value.isdigit() and len(value) < 10 else default
+    return int(value) if value.isascii() and value.isdigit() and len(value) < 10 else default
 
 
 class Dashboard:
@@ -116,7 +117,8 @@ class Dashboard:
                 return views.people(catalog)
             if name == "item":
                 page = (values.get("page") or [""])[0]
-                found = views.item(db, catalog, number(values, "id"), int(page) if page.isdigit() else None,
+                found = views.item(db, catalog, number(values, "id"),
+                                   int(page) if page.isascii() and page.isdigit() and len(page) < 10 else None,
                                    (values.get("q") or [""])[0][:200])
             else:
                 found = {"project": views.project, "person": views.person, "source": views.source}[name](
@@ -140,6 +142,8 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("Referrer-Policy", "no-referrer")
         self.send_header("X-Frame-Options", "DENY")
+        self.send_header("Cross-Origin-Resource-Policy", "same-origin")
+        self.send_header("Cross-Origin-Opener-Policy", "same-origin")
         self.send_header("Content-Security-Policy", POLICY)
         if code == 405:
             self.send_header("Allow", "GET, HEAD")
@@ -151,10 +155,10 @@ class Handler(BaseHTTPRequestHandler):
         self._send(code, json.dumps(data).encode(), "application/json", head)
 
     def _has_key(self):
-        return self.server.is_key(self.headers.get(KEY_HEADER, ""))
+        return self.server.is_session(self.headers.get(KEY_HEADER, ""))
 
     def _page(self, key, head):
-        """The page. With a key to hand over, a meta tag carries it to the page's script."""
+        """The page. With a session key to hand over, a meta tag carries it to the page's script."""
         with open(os.path.join(STATIC, "index.html"), "rb") as fh:
             body = fh.read()
         if key:
@@ -170,8 +174,11 @@ class Handler(BaseHTTPRequestHandler):
         query = parse_qs(url.query)
         parts = [p for p in url.path.split("/") if p]
         if "access" in query:
-            if not head and (not parts or parts[0] in PAGES) and self.server.spend((query["access"] or [""])[0]):
-                return self._page(self.server.key, head)
+            session = None
+            if not head and (not parts or parts[0] in PAGES):
+                session = self.server.spend((query["access"] or [""])[0])
+            if session:
+                return self._page(session, head)
             return self._send(403, USED.encode(), "text/plain; charset=utf-8", head)
         if parts[:1] == ["api"] and not self._has_key():
             return self._json(403, {"error": NEEDS_KEY}, head)
@@ -212,31 +219,35 @@ class Handler(BaseHTTPRequestHandler):
 
 class Server(ThreadingHTTPServer):
     daemon_threads = True
+    allow_reuse_address = False  # on Windows this would let another account bind the same port
 
     def __init__(self, address, dashboard):
         super().__init__(address, Handler)
         self.dashboard = dashboard
         port = self.server_address[1]
         self.allowed_hosts = {f"127.0.0.1:{port}", f"localhost:{port}"}
-        self.key = secrets.token_hex(16)
+        self.token = secrets.token_hex(16)  # in the printed address, good for one visit, opens no data
+        self.session = None  # made by that visit; the only value the data accepts
         self.spent = threading.Event()
         self._lock = threading.Lock()
 
-    def is_key(self, value):
-        return hmac.compare_digest(str(value).encode(), self.key.encode())
+    def is_session(self, value):
+        session = self.session
+        return session is not None and hmac.compare_digest(str(value).encode(), session.encode())
 
     def spend(self, value):
-        """True for the first visit with the key, and only that one."""
+        """The session key for the first visit with the token, and None for every other attempt."""
         with self._lock:
-            if self.spent.is_set() or not self.is_key(value):
-                return False
+            if self.spent.is_set() or not hmac.compare_digest(str(value).encode(), self.token.encode()):
+                return None
+            self.session = secrets.token_hex(16)
             self.spent.set()
-            return True
+            return self.session
 
     @property
     def url(self):
-        """The address to open: it holds this run's key, good for one visit."""
-        return f"http://127.0.0.1:{self.server_address[1]}/?access={self.key}"
+        """The address to open: it holds this run's token, good for one visit."""
+        return f"http://127.0.0.1:{self.server_address[1]}/?access={self.token}"
 
 
 def make_server(paths, config, port=0, host="127.0.0.1"):

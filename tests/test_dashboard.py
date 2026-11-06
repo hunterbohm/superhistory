@@ -53,7 +53,10 @@ class Served(unittest.TestCase):
         return srv
 
     def keyed(self):
-        return {server.KEY_HEADER: self.srv.key}
+        """The header the page's script sends: the session key the printed address is swapped for on its one visit."""
+        if self.srv.session is None:
+            self.assertTrue(self.srv.spend(self.srv.token))
+        return {server.KEY_HEADER: self.srv.session}
 
     def get(self, path, headers=None, key=True):
         """GET as the page's script would, sending the run's key in its header, unless `key` is False."""
@@ -371,22 +374,23 @@ class SafetyTest(Served):
         db.close()
 
     def test_data_needs_this_runs_key_in_its_header_and_a_cookie_never_stands_in_for_it(self):
+        self.keyed()
         for path in ("/api/overview", "/api/item?id=1", "/api/projects", "/api/search?q=body"):
             self.assertEqual(self.get(path, key=False)[0], 403, path)
             wrong = {server.KEY_HEADER: "0" * 32}
             self.assertEqual(self.get(path, wrong, key=False)[0], 403, path)
-            for jar in (f"superhistory-{self.srv.server_address[1]}={self.srv.key}", f"{server.KEY_HEADER}={self.srv.key}",
-                        f"access={self.srv.key}", "junk;;="):
+            for jar in (f"superhistory-{self.srv.server_address[1]}={self.srv.session}", f"{server.KEY_HEADER}={self.srv.session}",
+                        f"access={self.srv.session}", "junk;;="):
                 self.assertEqual(self.get(path, {"Cookie": jar}, key=False)[0], 403, (path, jar))
             self.assertEqual(self.get(path)[0], 200, path)
-        self.assertEqual(self.get("/api/overview?access=" + self.srv.key, key=False)[0], 403)
-        self.assertEqual(self.get("/api/overview?key=" + self.srv.key, key=False)[0], 403)
+        self.assertEqual(self.get("/api/overview?access=" + self.srv.session, key=False)[0], 403)
+        self.assertEqual(self.get("/api/overview?key=" + self.srv.session, key=False)[0], 403)
 
     def test_the_page_and_its_files_hold_no_data_and_need_no_key(self):
         for path in ("/", "/projects", "/item/1", "/static/app.js", "/static/app.css"):
             status, body, headers = self.get(path, key=False)
             self.assertEqual(status, 200, path)
-            self.assertNotIn(self.srv.key.encode(), body)
+            self.assertNotIn(self.srv.token.encode(), body)
             self.assertIsNone(headers["Set-Cookie"])
 
     def test_the_printed_address_is_good_for_one_visit_and_hands_its_key_to_the_page(self):
@@ -402,16 +406,28 @@ class SafetyTest(Served):
             body = res.read().decode()
             self.assertEqual(res.status, 200)
             self.assertIsNone(res.headers["Set-Cookie"])
-        self.assertIn(f'<meta name="superhistory-key" content="{self.srv.key}">', body)
+        session = re.search(r'<meta name="superhistory-key" content="([0-9a-f]{32})">', body).group(1)
+        self.assertEqual(session, self.srv.session)
+        self.assertNotEqual(session, self.srv.token, "the page gets a new value, not the address's token")
         self.assertTrue(self.srv.spent.is_set())
         for again in (address, address.replace("/?", "/projects?"), self.srv.url.split("?")[0] + "api/overview?access="
-                      + self.srv.key):
+                      + self.srv.token):
             with self.assertRaises(urllib.error.HTTPError) as caught:
-                urllib.request.urlopen(urllib.request.Request(again, headers=self.keyed()))
+                urllib.request.urlopen(urllib.request.Request(again, headers={server.KEY_HEADER: session}))
             self.assertEqual(caught.exception.code, 403, again)
         status, data, _ = self.get("/api/overview")
-        self.assertEqual(status, 200, "the header still works after the address is spent")
-        self.assertNotIn(self.srv.key.encode(), data)
+        self.assertEqual(status, 200, "the session key works after the address is spent")
+        self.assertNotIn(self.srv.token.encode(), data)
+        self.assertNotIn(session.encode(), data)
+
+    def test_the_token_in_the_printed_address_opens_no_data_before_or_after_its_visit(self):
+        token = self.srv.token
+        for when in ("before the visit", "after the visit"):
+            for path in ("/api/overview", "/api/projects", "/api/item?id=1"):
+                self.assertEqual(self.get(path, {server.KEY_HEADER: token}, key=False)[0], 403, (when, path))
+            if when == "before the visit":
+                with urllib.request.urlopen(self.srv.url) as res:
+                    res.read()
 
     def test_the_script_keeps_the_key_in_the_tab_and_never_in_a_cookie(self):
         script = (Path(server.STATIC) / "app.js").read_text(encoding="utf-8")
@@ -432,6 +448,16 @@ class SafetyTest(Served):
             self.assertIn("script-src 'self'", policy)
             self.assertNotRegex(policy, r"https?:|\*")
             self.assertEqual(headers["X-Content-Type-Options"], "nosniff")
+            self.assertEqual(headers["Cross-Origin-Resource-Policy"], "same-origin")
+            self.assertEqual(headers["Cross-Origin-Opener-Policy"], "same-origin")
+
+    def test_a_number_that_is_not_plain_digits_is_the_default_and_never_an_error(self):
+        for value in ("%C2%B2", "%D9%A3", "1e3", "-1", ""):
+            self.assertEqual(self.get(f"/api/item?id={value}&page={value}")[0], 404, value)
+            self.assertEqual(self.get(f"/api/source?name=notes&offset={value}")[0], 200, value)
+
+    def test_the_port_is_not_shared_with_another_listener(self):
+        self.assertFalse(server.Server.allow_reuse_address)
 
     def test_the_page_names_no_outside_address_and_ships_its_fonts(self):
         folder = Path(server.STATIC)
@@ -551,8 +577,8 @@ class CommandTest(unittest.TestCase):
             self.assertEqual(seen["opened"].call_count, 1)
             argument, path = self.handoff_path(seen)
             self.assertTrue(argument.startswith("file://"), argument)
-            self.assertNotIn(srv.key, repr(seen["opened"].call_args))
-            self.assertNotIn(srv.key, argument)
+            self.assertNotIn(srv.token, repr(seen["opened"].call_args))
+            self.assertNotIn(srv.token, argument)
             folder = os.path.dirname(path)
             if os.name == "posix":
                 self.assertEqual(stat.S_IMODE(os.stat(path).st_mode), 0o600)
@@ -571,7 +597,7 @@ class CommandTest(unittest.TestCase):
         def during(srv, seen):
             _, path = self.handoff_path(seen)
             self.assertTrue(os.path.exists(path))
-            self.assertTrue(srv.spend(srv.key))
+            self.assertTrue(srv.spend(srv.token))
             for _ in range(100):
                 if not os.path.exists(os.path.dirname(path)):
                     break

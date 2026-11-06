@@ -136,7 +136,7 @@ async function render() {
     document.title = (missing ? "Not found" : "Problem") + " · Superhistory";
   }
 }
-function go(url) { history.pushState(null, "", url); render().then(() => { const h = location.hash && $(location.hash); if (h) h.scrollIntoView(); else scrollTo(0, 0); }); }
+function go(url) { history.pushState(null, "", url); render().then(() => { const h = location.hash && document.getElementById(decodeURIComponent(location.hash.slice(1))); if (h) h.scrollIntoView(); else scrollTo(0, 0); }); }
 document.addEventListener("click", e => {
   const a = e.target.closest("a[href]");
   if (!a || e.defaultPrevented || e.button || e.metaKey || e.ctrlKey || e.shiftKey || a.target) return;
