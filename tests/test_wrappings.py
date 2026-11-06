@@ -2369,7 +2369,7 @@ class ReviewTwentyFiveTest(unittest.TestCase):
 
 class RevisionTest(unittest.TestCase):
     def test_stored_rows_are_masked_again(self):
-        self.assertEqual(masking.REVISION, 20)
+        self.assertEqual(masking.REVISION, 21)
 
 
 if __name__ == "__main__":

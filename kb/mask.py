@@ -338,6 +338,7 @@ _TODAYS_ESCAPED_INVISIBLE = (
     r"|\\U000(?:1[bB][cC][aA][0-3]|1[dD]17[3-9aA]|[eE]0[0-9a-fA-F]{3})")
 _TODAYS_INVISIBLE = re.compile(
     _TODAYS_CSI + rf"|{_TODAYS_ESCAPED_INVISIBLE}|[\x00-\x08\x0e-\x1b\x7f-\x84\x86-\x9f{_FORMAT_CHARACTERS}]")
+_TODAYS_NEW_INVISIBLE = re.compile(_TODAYS_CSI + rf"|{_TODAYS_ESCAPED_INVISIBLE}|[\x7f-\x84\x86-\x9f]")
 
 # Google's app password, four groups of four lower-case letters, after a password's name and "=" or in quotes. A
 # character a reader does not see may stand anywhere among its letters, as one may in any value read through them.
@@ -345,17 +346,26 @@ _TODAYS_INVISIBLE = re.compile(
 # read one way only and a run of colour codes costs time in proportion.
 _UNSEEN = (rf"(?:{_CSI}|(?!\\{{1,2}}(?:u001[bB]|x1[bB]|u009[bB]|x9[bB]))(?:{_ESCAPED_INVISIBLE})"
            rf"|[\x00-\x08\x0e-\x1a\x7f-\x84\x86-\x9a\x9c-\x9f{_FORMAT_CHARACTERS}])*")
-_APP_GROUP = _UNSEEN.join(["[a-z]"] * 4)
-_APP_GROUPS = rf"({_UNSEEN}{_APP_GROUP}(?:{_UNSEEN} {_UNSEEN}{_APP_GROUP}){{3}}{_UNSEEN})"
-# On a line of its own, as YAML writes one, after an unquoted colon too: the four groups and nothing after them but a
-# comment. Neither reading takes a sentence of common words (_app_password_span).
-APP_PASSWORD_LINE = re.compile(r"(?m)(?:^|(?<=\\n))[ \t]*(?:export[ \t]+|-[ \t]+)?(?i:" + _KEY_NAME[4:] + r")([ \t]*:[ \t]*)"
-                               + _APP_GROUPS + r"(?=[ \t]+#[^\r\n]*$|[ \t]*\r?$|\\[nr])")
-# Four-letter words common in English and in technical text, defined at the end of this file: four groups holding
-# three or more of them are a sentence ("password: read from smtp logs"), which a random app password's groups are
-# about once in a million times.
-APP_PASSWORD = re.compile(_KEY_NAME + r"""((?:[ \t]*=|[\"']?[ \t]*[:=][ \t]*[\"'])[ \t]*)""" + _APP_GROUPS
-                          + r"(?![A-Za-z0-9])")
+_TODAYS_UNSEEN = (rf"(?:{_TODAYS_CSI}|(?!\\(?:u001[bB]|x1[bB]|u009[bB]|x9[bB]))(?:{_TODAYS_ESCAPED_INVISIBLE})"
+                  rf"|[\x00-\x08\x0e-\x1a\x7f-\x84\x86-\x9a\x9c-\x9f{_FORMAT_CHARACTERS}])*")  # main 032391d's own
+
+
+def _app_passwords(unseen):
+    """The app password's two readings, with `unseen` the characters read through among its letters: after a password's
+    name and "=" or in quotes, and on a line of its own, as YAML writes one, after an unquoted colon too: the four
+    groups and nothing after them but a comment. Neither reading takes a sentence of common words
+    (_app_password_span): four-letter words common in English and in technical text, defined at the end of this file;
+    four groups holding three or more of them are a sentence ("password: read from smtp logs"), which a random app
+    password's groups are about once in a million times."""
+    group = unseen.join(["[a-z]"] * 4)
+    groups = rf"({unseen}{group}(?:{unseen} {unseen}{group}){{3}}{unseen})"
+    return (re.compile(_KEY_NAME + r"""((?:[ \t]*=|[\"']?[ \t]*[:=][ \t]*[\"'])[ \t]*)""" + groups + r"(?![A-Za-z0-9])"),
+            re.compile(r"(?m)(?:^|(?<=\\n))[ \t]*(?:export[ \t]+|-[ \t]+)?(?i:" + _KEY_NAME[4:] + r")([ \t]*:[ \t]*)"
+                       + groups + r"(?=[ \t]+#[^\r\n]*$|[ \t]*\r?$|\\[nr])"))
+
+
+APP_PASSWORD, APP_PASSWORD_LINE = _app_passwords(_UNSEEN)
+_TODAYS_APP_PASSWORD, _TODAYS_APP_PASSWORD_LINE = _app_passwords(_TODAYS_UNSEEN)  # main 032391d's own
 # An HTTP Authorization header's credentials: its first word, or after a scheme word ("Token ...", "Bot ...",
 # "ApiKey ..."), the next. _authorization_span() reads which is the secret.
 # Its first word, the scheme, ends at a space a link encodes too, as in "Authorization%3A%20Token%20<credential>".
@@ -605,7 +615,7 @@ def _gitleaks_edits(text):
 # Which mask() a stored row was masked with. A row of another version, or of none, is masked again when read and by
 # the next ingest. The patterns change it by themselves; bump REVISION when the code that applies them changes what
 # it masks.
-REVISION = 20
+REVISION = 21
 VERSION = hashlib.sha256(repr((REVISION, [p.pattern for p in SECRET_PATTERNS + PREFIXED_SECRETS], KEYED_SECRET.pattern,
                                 ENV_KEY_SECRET.pattern, JSON_SECRET.pattern, FLAG_SECRET.pattern, AUTH_SECRET.pattern,
                                 COMMAND_FLAGS, PASSWORD_NAME.pattern, sorted(PLACEHOLDERS), REFERENCE.pattern,
@@ -2293,14 +2303,16 @@ _MAIN_RULES = ([p for p in SECRET_PATTERNS if p is not ENCODED_PRIVATE_KEY],
                tuple((_main_reading(p), _keyed_span) for p in (JSON_SECRET, KEYED_SECRET, ENV_KEY_SECRET, FLAG_SECRET))
                + ((AUTH_SECRET, _authorization_span),), "main")
 # The readings of text main's own lack, read by name.
-_NEW_READINGS = frozenset([p for p, _ in _WHOLE_VALUES] + [SHORT_PASSWORD])
+_NEW_READINGS = frozenset([p for p, _ in _WHOLE_VALUES] + [SHORT_PASSWORD, _TODAYS_APP_PASSWORD, _TODAYS_APP_PASSWORD_LINE])
 _TEXT_RULES = (SECRET_PATTERNS, ((JSON_SECRET, _keyed_span), *_WHOLE_VALUES, (KEYED_SECRET, _keyed_span),
                                  (ENV_KEY_SECRET, _keyed_span), (SHORT_PASSWORD, _short_password_span),
                                  (FLAG_SECRET, _keyed_span), (AUTH_SECRET, _authorization_span)), "named")
 _ID_RULES = (_ID_PATTERNS, ((KEYED_ID, _keyed_span), (ENV_KEY_ID, _keyed_span)), "plain")
-# Main's text readings as main 33c82f6 reads them: these, with every row of COMMAND_FLAGS read as it reads them
-# (_todays_password_edits), no wrappings, and no row reading the text as it was before the rows masked.
-_TODAYS_RULES = (SECRET_PATTERNS, _TEXT_RULES[1], "today")
+# Main's text readings as main 032391d reads them: these, with its own app password (_TODAYS_APP_PASSWORD), every row
+# of COMMAND_FLAGS read as it reads them (_todays_password_edits), no wrappings, and no row reading the text as it was
+# before the rows masked.
+_TODAYS_RULES = (SECRET_PATTERNS, tuple(({APP_PASSWORD: _TODAYS_APP_PASSWORD, APP_PASSWORD_LINE: _TODAYS_APP_PASSWORD_LINE}
+                                         .get(pattern, pattern), span_of) for pattern, span_of in _TEXT_RULES[1]), "today")
 
 
 def _edit(text, origin, edits):
@@ -2521,6 +2533,11 @@ def _reading_starts(keyed, env, flag, prefixed, commands):
 
 
 _READING_START = _reading_starts(KEYED_SECRET, ENV_KEY_SECRET, FLAG_SECRET, PREFIXED_SECRETS[0], COMMAND_FLAGS)
+# Main 032391d's own, where its rows spell a command as it does: "az" and "aws" alone, with no ".exe" or ".cmd".
+_TODAYS_READING_START = _reading_starts(KEYED_SECRET, ENV_KEY_SECRET, FLAG_SECRET, PREFIXED_SECRETS[0], [
+    (command.replace(_WINDOWS_FILE, ""), flag, always) for command, flag, always in COMMAND_FLAGS])
+_WINDOWS_SPELLING = re.compile(r"(?i)\.(?:exe|cmd)")  # all _TODAYS_READING_START lacks
+_ESCAPED_PRINTABLE = re.compile(r"\\u00[2-7][0-9a-fA-F]")  # a printable character as JSON escapes it, as "\u006c"
 _MAIN_READING_START = _reading_starts(*map(_main_reading, (KEYED_SECRET, ENV_KEY_SECRET, FLAG_SECRET)),
                                       _MAIN_PREFIXED[0], COMMAND_FLAGS[:_MAIN_COMMANDS])  # main's own
 # Where one could start: a letter, a digit or "-" after anything but a letter or digit, as "7token is" starts a name.
@@ -2609,17 +2626,20 @@ def _split_secrets(text, rules):
     stood, as after a space, so one before a key glued to a word reads it ("budget<ZWSP>s<ZWSP>k-..."). A run of them
     just before where a secret's reading starts stays in the view, as a break. A split token ends before the last of
     them ahead of any reading the text as written starts inside it, such as a link's scheme in the token's tail, and a
-    split value ends where such a reading starts: the pass over the text as given reads those. Where main 032391d's own
-    invisible characters (_TODAYS_INVISIBLE) make another view, as a surrogate pair or a colour code escaped twice,
-    which only this branch removes, keeps a token whole, that view is read too, and what either hides is hidden."""
+    split value ends where such a reading starts: the pass over the text as given reads those. The text is also read
+    as main 032391d reads it, with its own copy of every table this branch widened that this reading uses: its
+    invisible characters (_TODAYS_INVISIBLE), where its readings start (_TODAYS_READING_START, "az.exe login" none),
+    its app password (_TODAYS_RULES) and its commands' rows, and what either reading hides is hidden: a token this
+    branch keeps apart from a word, main may read glued to it."""
     # All main's own view hides, the text without its invisible characters only (_main_split_spans): where removing a
     # colour code, DEL or a C1 control too glues a token to a word, or a name to a placeholder, main's still reads it.
     seen_by_main = _main_split_spans(text, rules)
-    spans = _split_secrets_seen(text, rules, _INVISIBLE_RUN, seen_by_main)
-    if _TODAYS_INVISIBLE_RUN.sub("", text) == _INVISIBLE_RUN.sub("", text):
+    spans = _split_secrets_seen(text, rules, _INVISIBLE_RUN, _READING_START, seen_by_main)
+    if not _todays_view_differs(text):
         return spans
+    todays = _TODAYS_RULES if rules[2] in ("named", "today") else rules
     merged = []
-    for start, end in sorted(spans + _split_secrets_seen(text, rules, _TODAYS_INVISIBLE_RUN, [])):
+    for start, end in sorted(spans + _split_secrets_seen(text, todays, _TODAYS_INVISIBLE_RUN, _TODAYS_READING_START, [])):
         if merged and start < merged[-1][1]:
             merged[-1] = (merged[-1][0], max(merged[-1][1], end))
         else:
@@ -2627,10 +2647,22 @@ def _split_secrets(text, rules):
     return merged
 
 
-def _split_secrets_seen(text, rules, run, seen_by_main):
-    """_split_secrets in the view without the characters `run` finds, with what main's own view hides (`seen_by_main`),
-    as merged (start, end) spans of the text as written."""
-    v = _Split(text, run)
+def _todays_view_differs(text):
+    """Whether main 032391d's reading of `text` in _split_secrets can differ from this branch's: where its invisible
+    characters make other runs, as a surrogate pair, a JSON backspace or anything escaped twice does, and with it its
+    app password; where the text spells a program as only this branch reads it, as "az.exe" (_WINDOWS_FILE), and with it
+    where a reading starts; or where its rows of a command, which it reads as main does, or this branch's wrappings may
+    read a command's name, in the text read without its invisible characters or in a JSON string it holds escaped."""
+    return ([m.span() for m in _INVISIBLE_RUN.finditer(text)] != [m.span() for m in _TODAYS_INVISIBLE_RUN.finditer(text)]
+            or _WINDOWS_SPELLING.search(text) or _ANY_COMMAND.search(_INVISIBLE_RUN.sub("", text))
+            or _ESCAPED_PRINTABLE.search(text))
+
+
+def _split_secrets_seen(text, rules, run, starts, seen_by_main):
+    """_split_secrets in the view without the characters `run` finds, a run before where `starts` finds a reading
+    starting kept, with what main's own view hides (`seen_by_main`), as merged (start, end) spans of the text as
+    written."""
+    v = _Split(text, run, starts)
     gone, view, places, where, removed = v.gone, v.view, v.places, v.where, v.removed
     if not gone:
         return seen_by_main
@@ -2849,7 +2881,8 @@ class _Split:
         for name_start, name_end, start, end in named:
             if not self.split(name_start, name_end + 1) or start >= end:
                 continue
-            if self.starts is _READING_START and _NEW_INVISIBLE.search(self.text, *self.raw(name_start, name_end + 1)):
+            parted = {_READING_START: _NEW_INVISIBLE, _TODAYS_READING_START: _TODAYS_NEW_INVISIBLE}.get(self.starts)
+            if parted and parted.search(self.text, *self.raw(name_start, name_end + 1)):
                 # Parted by a colour code, DEL or a C1 control, which main sees, as grep's colour parts the word it
                 # found: read strictly, only a name that ends in a secret's word and is about none
                 # ("password_ESC[31mpolicy", "x-authESC[31m-flow" are not), and but for a password's, only a value
