@@ -537,7 +537,7 @@ def _gitleaks_edits(text):
 # Which mask() a stored row was masked with. A row of another version, or of none, is masked again when read and by
 # the next ingest. The patterns change it by themselves; bump REVISION when the code that applies them changes what
 # it masks.
-REVISION = 11
+REVISION = 12
 VERSION = hashlib.sha256(repr((REVISION, [p.pattern for p in SECRET_PATTERNS + PREFIXED_SECRETS], KEYED_SECRET.pattern,
                                 ENV_KEY_SECRET.pattern, JSON_SECRET.pattern, FLAG_SECRET.pattern, AUTH_SECRET.pattern,
                                 COMMAND_FLAGS, PASSWORD_NAME.pattern, sorted(PLACEHOLDERS), REFERENCE.pattern,
@@ -1050,7 +1050,6 @@ _HEADER_START = re.compile(rf"(?:(?<![^\s\"'`{{\[(,;|>])|{_AFTER_ESCAPE})")
 # A plain word: letters with a letter past "f", so a hex run such as "dead" in a UUID is none, or capitalized words run
 # together with digits after them, as a product's name is ("WindowsServer2022").
 _PLAIN_WORD = re.compile(r"(?=.*[g-zG-Z])[A-Za-z][a-z]{3,}|(?:[A-Z][a-z]{2,}){2,}\d*")
-_NUMBER_DATE_OR_TIME = re.compile(r"[\d:.+TZ-]+")
 
 
 def _random_run(text, shortest=12):
@@ -1063,13 +1062,14 @@ def _random_run(text, shortest=12):
 
 def _credential_shaped(word):
     """Whether a lone token reads as a credential: 12 or more characters with no whitespace, mixing letters and digits,
-    not a number, a date or a time, and either holding a random run of 10 or more between its separators ("live_<run>",
+    not a real date or time (_date_or_time: a run of digits and ":.+TZ-" with a T or a Z in it, such as
+    "20261101T100000Z1234", is none), and either holding a random run of 10 or more between its separators ("live_<run>",
     a three-part token), or holding no plain word and reading as random whole (a UUID). An identifier with a plain word
     in it stays: "RFC7235-compliant", "WPA2-Enterprise"."""
     word = word.rstrip(".,;:!?)")
     if len(word) < 12 or not re.search(r"\d", word) or not re.search(r"[A-Za-z]", word) or re.search(r"\s", word):
         return False
-    if _NUMBER_DATE_OR_TIME.fullmatch(word):
+    if _date_or_time(word):
         return False
     parts = re.split(r"[-_./:]", word)
     if any(_random_run(part, 10) for part in parts):
