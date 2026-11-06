@@ -178,10 +178,12 @@ def all_marks(db):
     if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='supersedes'").fetchone():
         rows = db.execute("SELECT source, source_id, marked_by, new_source, new_source_id, at, v FROM supersedes "
                           "ORDER BY at, source, source_id, marked_by").fetchall()
-    held = {row[:3] for row in rows}
+    marks = {row[:3]: row for row in rows}
     at = now_iso()
-    return rows + [(*item, MOVED_MARK_BY, *new, at, None) for item, new in _old_marks(db).items()
-                   if (*item, MOVED_MARK_BY) not in held]
+    for item, new in _old_marks(db).items():
+        key = (*item, MOVED_MARK_BY)  # as _move_marks does: the column's replacement and time win, the row's version stays
+        marks[key] = (*key, *new, at, marks[key][6] if key in marks else None)
+    return list(marks.values())
 
 
 def has_unversioned(db):

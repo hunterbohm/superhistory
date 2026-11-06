@@ -488,7 +488,7 @@ def _carry_marks(db, marks, before, config):
             return (source, new)
         return None
 
-    left = []
+    left, wins = [], {}
     for mark in marks:
         source, source_id, by, new_source, new_source_id, at, v = mark
         item = placed(source, source_id)
@@ -496,13 +496,23 @@ def _carry_marks(db, marks, before, config):
         if item is None or (new_source is not None and new is None):
             left.append(mark)
             continue
+        # Two old items can be one item now (an older kb's id and this install's), each with a mark by the same
+        # install: the later one stands, as the later of two marks would have, and the other is left behind.
+        held = wins.get((item, by))
+        if held is not None and (held[0][5], held[0][1]) > (at, source_id):
+            left.append(mark)
+            continue
+        if held is not None:
+            left.append(held[0])
+        wins[item, by] = (mark, new)
+    for (item, by), ((_, _, _, new_source, _, at, v), new) in wins.items():
         try:
             if new_source is None:
                 store.clear_superseded(db, *item, by, at, v)
             else:
                 store.mark_superseded(db, *item, new, by, at, v)
         except ValueError:
-            left.append(mark)
+            left.append(wins[item, by][0])
     return left
 
 
@@ -529,8 +539,8 @@ def _marks_note(marks, left, log_file):
         return note
     named = [_named(mark) for mark in left]
     more = f", and {len(named) - 10:,} more in {log_file}" if len(named) > 10 else ""
-    return (f"{note} and left {len(left):,} behind, since an item they name is not in the new knowledge base "
-            f"({'; '.join(named[:10])}{more}). The old knowledge base is gone, so those can't come back")
+    return (f"{note} and left {len(left):,} behind, since an item they name is not in the new knowledge base, "
+            f"or a later mark by the same install covers the same item ({'; '.join(named[:10])}{more}). The old knowledge base is gone, so those can't come back")
 
 
 def _reading_back(config, before):

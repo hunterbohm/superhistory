@@ -467,7 +467,7 @@ class OlderStoreTest(TempHome):
         self.assertEqual(code, 0, err)
         self.assertIn("kept 1 item", out)
         self.assertIn("carried 0 supersede marks across and left 2 behind, since an item they name is not in the new "
-                      "knowledge base (notes studio:plan.md, replaced by notes studio:new.md; "
+                      "knowledge base, or a later mark by the same install covers the same item (notes studio:plan.md, replaced by notes studio:new.md; "
                       "notes studio:plan.md, replaced by notes studio:new.md)", out)
         self.assertIn("The old knowledge base is gone, so those can't come back", out)
 
@@ -1011,7 +1011,7 @@ class RebuildMarksTest(TempHome):
         code, out, err = self.run_kb("rebuild", "--accept-loss")
         self.assertEqual(code, 0, err)
         self.assertIn(f"carried 0 supersede marks across and left 1 behind, since an item they name is not in the new "
-                      f"knowledge base (notes {self.mine()}:trip-v1.md (cleared))", out)
+                      f"knowledge base, or a later mark by the same install covers the same item (notes {self.mine()}:trip-v1.md (cleared))", out)
 
     def test_a_rebuild_names_up_to_ten_marks_it_left_and_logs_each(self):
         with contextlib.closing(store.connect(self.path)) as db:
@@ -1085,3 +1085,37 @@ class RebuildMarksTest(TempHome):
         self.assertIn("carried 1 supersede mark across", out)
         self.assertEqual(self.marks()[0][1:5], (f"{self.mine()}:plan-v1.md", "", "notes", f"{self.mine()}:plan-v2.md"))
         self.assertIn(f"(superseded by #{self.rid('plan-v2.md')})", self.get(self.rid("plan-v1.md")))
+
+    def test_a_rebuild_keeps_the_later_of_two_marks_on_what_are_one_item_now(self):
+        # An older kb's id and this install's for one note, each marked by this install; the clear is the later.
+        me = self.mine()
+        with contextlib.closing(store.connect(self.path)) as db:
+            db.execute("INSERT INTO docs(kind, source, source_id, ts, title, content, metadata, masked) VALUES "
+                       "('doc', 'notes', 'studio:plan-v1.md', ?, 't', 'the pangolin plan, first draft', '{}', ?)",
+                       (iso(), store.VERSION))
+            db.execute("INSERT INTO supersedes VALUES ('notes', 'studio:plan-v1.md', ?, 'notes', ?, "
+                       "'2026-10-01T08:00:00Z', NULL)", (me, f"{me}:plan-v2.md"))
+            db.execute("INSERT INTO supersedes VALUES ('notes', ?, ?, NULL, NULL, '2026-10-02T08:00:00Z', NULL)",
+                       (f"{me}:plan-v1.md", me))
+            db.commit()
+        code, out, err = self.run_kb("rebuild", "--accept-loss")
+        self.assertEqual(code, 0, err)
+        self.assertIn("carried 1 supersede mark across and left 1 behind", out)
+        self.assertEqual([(m[1], m[3]) for m in self.marks()], [(f"{me}:plan-v1.md", None)])
+        self.assertNotIn("superseded", self.get(self.rid("plan-v1.md")))
+
+    def test_a_rebuild_keeps_an_older_kbs_replacement_over_the_one_it_moved_before(self):
+        # The column names a newer replacement than the row an earlier move wrote, as _move_marks would take it.
+        me = self.mine()
+        with contextlib.closing(store.connect(self.path)) as db:
+            db.execute("INSERT INTO supersedes VALUES ('notes', ?, '', 'notes', ?, '2026-10-01T08:00:00Z', 5)",
+                       (f"{me}:plan-v1.md", f"{me}:trip-v2.md"))
+            db.execute("ALTER TABLE docs ADD COLUMN superseded_by INTEGER")
+            db.execute("UPDATE docs SET superseded_by=(SELECT min(id) FROM docs WHERE source_id=?) "
+                       "WHERE source_id=?", (f"{me}:plan-v2.md", f"{me}:plan-v1.md"))
+            db.commit()
+        code, out, err = self.run_kb("rebuild")
+        self.assertEqual(code, 0, err)
+        self.assertIn("carried 1 supersede mark across", out)
+        self.assertEqual([(m[1], m[2], m[4], m[6]) for m in self.marks()],
+                         [(f"{me}:plan-v1.md", "", f"{me}:plan-v2.md", 5)])
