@@ -130,43 +130,36 @@ def connect(path, readonly=False):
 
 
 def _stamp(path):
-    """What changes when a writer touches the store at `path`, or None while it does not exist."""
-    def of(name):
-        try:
-            st = os.stat(name)
-        except FileNotFoundError:
-            return None
-        return st.st_ino, st.st_size, st.st_mtime_ns
-    return of(path), of(path + "-wal"), of(path + "-shm")
+    """What a write to the store's main file changes at `path`, and whether a -wal file and an -shm file are beside
+    it. None for the main file while it does not exist."""
+    try:
+        st = os.stat(path)
+    except FileNotFoundError:
+        return None, False, False
+    return (st.st_ino, st.st_size, st.st_mtime_ns), os.path.exists(path + "-wal"), os.path.exists(path + "-shm")
 
 
 READ_TRIES = 5
 
 
 def read_only(path, run):
-    """What `run(db)` returns, for a connection that cannot write the store and leaves no file beside it. A read-only
-    connection to a WAL store makes the -wal and -shm files it finds missing, and fails where the folder is not
-    writable, so it opens the real store only when both files are there, the sign of a writer that is open. With
-    neither there, no writer is open and the main file holds every row, so `run` reads it as immutable, without
-    a lock. With a -wal file left and no -shm, a writer died: its rows are in the -wal file, and reading them makes an
-    index file, so `run` reads a copy of the two in a folder of its own. Whatever changes meanwhile (a writer starts or
-    closes) is seen in the files' stamps, and the read starts again. One window is left: a writer that closes between
-    the look and the open of the real store leaves its files for the reader to remake. `run` must return its result,
-    not print it."""
+    """What `run(db)` returns, for a connection that cannot write the store and makes no file beside it. Even a
+    read-only SQLite connection to a WAL store makes the -wal and -shm files it finds missing, and fails where the
+    folder is not writable, so `run` reads the main file as immutable, with no lock and no sidecar. That is a snapshot
+    of the last checkpoint: rows a writer has committed since, and that are still only in its -wal file, are not in
+    it. The main file changes only when a checkpoint writes into it, which moves its modification time, and the read
+    starts again. A -wal file with no -shm file beside it is a writer that died, and its rows would be lost to a
+    snapshot, so `run` reads a copy of the two files in a folder of its own, where SQLite may make what it needs. `run`
+    must return its result, not print it."""
     path = os.path.realpath(path)
     for _ in range(READ_TRIES):
         before = _stamp(path)
         if before[0] is None:
             raise sqlite3.OperationalError(f"unable to open database file: {path}")
-        if before[1] and before[2]:
-            with contextlib.closing(_open_read_only(path, path, immutable=False)) as db:
-                return run(db)
         result = error = None
+        dead = before[1] and not before[2]
         try:
-            if before[1] is None:
-                with contextlib.closing(_open_read_only(path, path, immutable=True)) as db:
-                    result = run(db)
-            else:
+            if dead:
                 with tempfile.TemporaryDirectory(prefix="kb-read-") as folder:
                     copy = os.path.join(folder, "kb.sqlite")
                     shutil.copyfile(path, copy)
@@ -175,11 +168,15 @@ def read_only(path, run):
                         continue
                     with contextlib.closing(_open_read_only(copy, path, immutable=False)) as db:
                         result = run(db)
+            else:
+                with contextlib.closing(_open_read_only(path, path, immutable=True)) as db:
+                    result = run(db)
         except NeedsRebuild:
             raise
         except Exception as exc:
             error = exc
-        if _stamp(path) == before:
+        after = _stamp(path)
+        if after[0] == before[0] and (not dead or after == before):
             if error:
                 raise error
             return result

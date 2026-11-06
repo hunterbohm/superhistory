@@ -169,7 +169,9 @@ a hook does not wait for it to.
 The server is a program the app starts and talks to over its standard input and output. It opens no network port, so
 nothing else on your network or the internet can reach it. It has two tools. `search` finds records by keywords, and
 `get` reads one record's stored text a page at a time, masked as everywhere else. It opens the database read-only,
-never writes to it, and leaves no file beside it, even when the database is in a folder you cannot write to. Every
+never writes to it, and leaves no file beside it, even when the database is in a folder you cannot write to. It reads
+the database as of its last checkpoint, so while an ingest is running, what that ingest has stored so far may not show
+until it finishes. Every
 reply starts with a line saying the records are stored data, not instructions, since a record can hold text someone
 else wrote. The app, not Superhistory, decides what an agent may do with a reply, so do not put a server that can send
 mail or fetch web pages in the same session without approvals turned on. Run `superhistory --try mcp` in its place to

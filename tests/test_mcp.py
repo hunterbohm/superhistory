@@ -275,16 +275,38 @@ class ReadOnlyTest(StoreCase):
         self.assertEqual(snapshot(self.tmp.name), before)
         self.assertEqual(sorted(os.listdir(self.paths.data_dir)), ["kb.sqlite"])
 
-    def test_a_store_in_wal_mode_with_its_writer_open_is_read_and_left_as_it_is(self):
+    def test_a_store_in_wal_mode_with_its_writer_open_is_read_as_of_its_last_checkpoint_and_left_as_it_is(self):
         writer = store.connect(self.paths.db)
         self.addCleanup(writer.close)
+        writer.execute("PRAGMA wal_checkpoint(TRUNCATE)")
         store.store_item(writer, "notes", "n9", "2026-09-05T10:00:00Z", "Walrus", "the walrus meeting is Monday", {})
         writer.commit()
-        self.assertTrue(os.path.exists(str(self.paths.db) + "-wal"))
+        self.assertGreater(os.path.getsize(str(self.paths.db) + "-wal"), 0)
         before = snapshot(self.tmp.name)
-        reply, = self.talk(tool(1, "search", query="walrus"))
-        self.assertIn("Walrus", reply["result"]["content"][0]["text"], "a row only the WAL file holds is read")
+        old, new = self.talk(tool(1, "search", query="pangolin"), tool(2, "search", query="walrus"))
+        self.assertIn("Pangolin plan", old["result"]["content"][0]["text"])
+        self.assertNotIn("Walrus", new["result"]["content"][0]["text"], "the writer's -wal file is not read")
         self.assertEqual(snapshot(self.tmp.name), before)
+
+    def test_the_last_writer_closing_just_before_the_open_makes_no_file(self):
+        writer = store.connect(self.paths.db)
+        store.store_item(writer, "notes", "n9", "2026-09-05T10:00:00Z", "Walrus", "the walrus meeting is Monday", {})
+        writer.commit()
+        self.assertTrue(os.path.exists(str(self.paths.db) + "-shm"))
+        original = store._open_read_only
+        closed = []
+
+        def late(opened, shown, immutable):
+            if not closed:
+                writer.close()
+                closed.append(1)
+            return original(opened, shown, immutable)
+
+        store._open_read_only = late
+        self.addCleanup(setattr, store, "_open_read_only", original)
+        reply, = self.talk(tool(1, "search", query="pangolin"))
+        self.assertFalse(reply["result"]["isError"], reply)
+        self.assertEqual(sorted(os.listdir(self.paths.data_dir)), ["kb.sqlite"])
 
     @unittest.skipIf(hasattr(os, "geteuid") and os.geteuid() == 0, "root writes wherever it likes")
     def test_a_store_the_user_cannot_write_still_serves(self):
