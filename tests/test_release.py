@@ -214,6 +214,40 @@ class ScanTest(unittest.TestCase):
         self.assertEqual(result.returncode, 1)
         self.assertIn("tools/release_exceptions.tsv:1:", result.stdout)
 
+    def private_exceptions(self, text):
+        # beside the patterns file, outside the repo, as a private row must be: no tracked file may hold its text
+        path = os.path.join(self.tmp, "exceptions.tsv")
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(text)
+        return path
+
+    def test_a_private_exception_passes_its_own_text_in_its_own_file_only(self):
+        private = self.private_exceptions("a.txt\tAcmeCorp\ta made-up company\n")
+        self.write("a.txt", "see AcmeCorp now\n")
+        self.write("b.txt", "see AcmeCorp now\n")
+        self.git("add", "-A")
+        self.git("commit", "-q", "-m", "x")
+        result = subprocess.run([sys.executable, "-I", "tools/release_scan.py", "--exceptions", private, self.patterns],
+                                cwd=self.repo, capture_output=True, text=True, timeout=60)
+        self.assertEqual(result.returncode, 1)
+        self.assertNotIn("a.txt", result.stdout)
+        self.assertIn("b.txt:1:", result.stdout)
+        # without it, the same commit's a.txt is a hit
+        result = subprocess.run([sys.executable, "-I", "tools/release_scan.py", self.patterns], cwd=self.repo,
+                                capture_output=True, text=True, timeout=60)
+        self.assertIn("a.txt:1:", result.stdout)
+
+    def test_the_build_reads_the_private_exceptions(self):
+        self.write("a.txt", "acmecorp\n")
+        self.git("add", "-A")
+        self.git("commit", "-q", "-m", "x")
+        private = self.private_exceptions("a.txt\tacmecorp\ta made-up company\n")
+        out = os.path.join(self.tmp, "assets")
+        result = subprocess.run(["sh", "tools/release.sh", "--patterns", self.patterns, "--exceptions", private, out],
+                                cwd=self.repo, capture_output=True, text=True, timeout=60)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(sorted(os.listdir(out)), ASSETS)
+
     def test_the_dataset_files_are_not_read(self):
         self.write("bench/DATASET_ROWS.txt", "bench/rows.jsonl\tsomeone else's dataset\n")
         self.write("bench/rows.jsonl", "acmecorp\n")
