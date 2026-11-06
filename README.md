@@ -263,6 +263,9 @@ Known limits:
   is masked with it. A newline escaped inside "$'...'" ends that line early, and the password after it shows; so
   does a list item holding a flag and its value together ("-p ...") right after another option, whose value it may
   be.
+- A list of a command's arguments that also holds a number of a thousand digits or more, with or without underscores
+  between them, is not read as a list, since such a number takes long to read on Python 3.9. Its text is read
+  instead, as kb read such lists before, so a password after a flag in it can show.
 - A YAML list of secrets under a secret's name (`tokens:` followed by `- value` lines) is masked only where an item
   holds a provider's token shape.
 
