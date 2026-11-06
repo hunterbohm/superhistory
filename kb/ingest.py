@@ -22,8 +22,9 @@ _UNBUILT = object()
 
 
 class LocalReader:
-    def __init__(self, model_factory=None):
+    def __init__(self, model_factory=None, plugins_dir=""):
         self._model_factory = model_factory or (lambda: None)
+        self._plugins_dir = plugins_dir
         self._built = _UNBUILT
 
     def _model(self):
@@ -36,7 +37,8 @@ class LocalReader:
         return self._built
 
     def _run(self, source, since):
-        return Run(source.options, Excludes(source.exclude), since, self._model() if source.type.needs_model else None)
+        return Run(source.options, Excludes(source.exclude), since, self._model() if source.type.needs_model else None,
+                   self._plugins_dir)
 
     def events(self, source, since):
         if sys.platform not in source.type.platforms:
@@ -138,7 +140,7 @@ def run(db, config, log, only=(), with_summaries=True, model_factory=None):
     model_factory = model_factory or (lambda: ai.load(config.ai))
     store.clean_state(db)
     db.commit()
-    local = LocalReader(model_factory)
+    local = LocalReader(model_factory, config.plugins_dir)
     remote = {h.name: SshReader(h) for h in config.hosts}
     away = set()
     failures = 0

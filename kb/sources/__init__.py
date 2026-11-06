@@ -54,6 +54,7 @@ class Run(NamedTuple):
     excludes: "Excludes"
     since: Optional[Mark]         # the last run's largest mark, or None on the first run
     model: Any = None             # the AI plug-in, for types that need one
+    plugins_dir: str = ""         # the folder source plug-ins are run from, for the plugin type
 
 
 class SourceType(NamedTuple):

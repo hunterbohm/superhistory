@@ -20,6 +20,7 @@ folder names, job labels and printed text come from it, so a rename is one edit.
 | `kb/ids.py` | The install id and the prefix on every stored `source_id`. |
 | `kb/ai/` | AI plug-ins. Each one answers `ask(prompt, timeout)` with the model's text. |
 | `kb/sources/` | Source types. Each module defines `TYPE`, and its name is the type's name. |
+| `kb/sources/plugin.py` | The `plugin` type: runs a program from the plug-ins folder and reads its items from JSON lines. The format is in `docs/plugins.md`. |
 | `kb/sync/` | Reserved for the Sync client. |
 
 ## Where Sync plugs in

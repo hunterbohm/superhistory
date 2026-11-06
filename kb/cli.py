@@ -240,6 +240,54 @@ def cmd_login(paths, config, args):
         print(f"Add this line under [sources.{args.source}]:\n\nrefresh_token = \"file:{key_file}\"")
 
 
+def cmd_plugins(paths, config, args):
+    from kb.sources import Excludes, Gone, Item, Progress, Run, plugin
+    folder = paths.plugins_dir
+    if args.action == "list":
+        used = {}
+        for source in config.sources:
+            if source.type_name == "plugin":
+                used.setdefault(source.options.plugin, []).append(source.name)
+        print(f"Plug-ins folder: {folder}")
+        names = sorted(n for n in os.listdir(folder) if not n.startswith(".")) if folder.is_dir() else []
+        for name in names:
+            try:
+                plugin.executable(folder, name)
+                state = "ready"
+            except plugin.PluginError as exc:
+                state = f"will not run: {exc}"
+            print(f"  {name:<24}{state}; used by {', '.join(used.get(name, [])) or 'no source yet'}")
+        for name in sorted(set(used) - set(names)):
+            print(f"  {name:<24}missing; used by {', '.join(used[name])}")
+        if not names and not used:
+            print("  none yet; docs/plugins.md says how to write one")
+        return 0
+    source = config.source(args.source) if args.source else None
+    if not source or source.type_name != "plugin":
+        raise Fail(f"name a source with type = \"plugin\" from {paths.config_file}, such as `{NAME.lower()} plugins "
+                   "test calendar`")
+    run = Run(source.options, Excludes(source.exclude), None, None, str(folder))
+    items = gone = 0
+    shown = []
+    try:
+        for event in plugin.extract(run):
+            if isinstance(event, Item):
+                items += 1
+                shown = (shown + [f"{event.ts[:10]}  {event.title}"])[:5]
+            elif isinstance(event, Gone):
+                gone += 1
+            elif isinstance(event, Progress):
+                print(f"watermark   {event.mark}")
+    except (plugin.PluginError, config_mod.SecretError) as exc:
+        print(f"{source.name}: failed: {exc}", file=sys.stderr)
+        print("Nothing was stored.", file=sys.stderr)
+        return 1
+    print(f"{source.name}: {items} items and {gone} removals read in one run from the start; nothing was stored.")
+    for line in shown:
+        print(f"  {line}")
+    return 0
+
+
 def cmd_ai(paths, config, args):
     if args.action == "list":
         for name in ai.visible_plugins():
@@ -364,7 +412,7 @@ def cmd_schedule(paths, config, args):
 
 def cmd_paths(paths, config, args):
     for label, where in (("config", paths.config_file), ("database", paths.db), ("logs", paths.log_dir),
-                         ("cache", paths.cache_dir)):
+                         ("cache", paths.cache_dir), ("plug-ins", paths.plugins_dir)):
         print(f"{label:<10}{where}")
 
 
@@ -606,7 +654,7 @@ def cmd_rebuild(paths, config, args):
 
 
 def _own(paths, config):
-    return dataclasses.replace(config, install=ids.install_id(paths))
+    return dataclasses.replace(config, install=ids.install_id(paths), plugins_dir=str(paths.plugins_dir))
 
 
 def cmd_forget(paths, config, args):
@@ -707,6 +755,10 @@ def parser():
     a = sub.add_parser("ai", help="list the AI plug-ins, or test the one in the config with one tiny call")
     a.add_argument("action", choices=("list", "test"))
     a.set_defaults(fn=cmd_ai)
+    pg = sub.add_parser("plugins", help="list the source plug-ins, or run one once without storing anything")
+    pg.add_argument("action", choices=("list", "test"))
+    pg.add_argument("source", nargs="?", help="for test: the name of a source with type = \"plugin\"")
+    pg.set_defaults(fn=cmd_plugins)
     hk = sub.add_parser("hook", help="run by an agent on each prompt: print the check's records for it")
     hk.add_argument("agent")
     hk.set_defaults(fn=cmd_hook)

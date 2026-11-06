@@ -78,6 +78,7 @@ roots = ["~/code"]
 | `kb ai list`, `kb ai test` | Lists the AI plug-ins, or makes one tiny call and says which plug-in answered. |
 | `kb setup`, `kb try` | Sets kb up, or shows it on a made-up month. |
 | `kb login NAME` | Signs a Gmail source in with your own Google OAuth client. |
+| `superhistory plugins list`, `superhistory plugins test NAME` | Lists the source plug-ins in your plug-ins folder, or runs one once and shows what it found, storing nothing. |
 
 ## Sources
 
@@ -91,9 +92,14 @@ roots = ["~/code"]
 | `notes` | A folder of Markdown or text files, such as an Obsidian vault | the note's path in the folder |
 | `git` | Your commits in the repositories under `roots` | the repository's folder |
 | `github` | Issues and pull requests you are involved in, through `gh` | `owner/repo` |
+| `plugin` | A program of yours in the plug-ins folder (`superhistory paths` shows it), which prints items as JSON lines | the item's id |
 
 Add as many sources of one type as you like, each in its own `[sources.NAME]` table with `type = "..."`. The table's
 name is what `kb search --source` takes.
+
+Any other source is a small program you, or your agent, put in the plug-ins folder and name in the config as
+`type = "plugin"`. It prints items as JSON lines, and Superhistory masks and stores them like any source's.
+[docs/plugins.md](docs/plugins.md) is the whole format.
 
 Every source only reads. Mail and texts drop 2FA codes and password resets one message at a time, and every record
 passes through a mask that replaces API keys, tokens and passwords with `[masked]` before it is stored.
