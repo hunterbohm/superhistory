@@ -1420,10 +1420,11 @@ def _masked_parts(decoded, masked):
 
 # A run of digits, with single underscores between them as Python allows ("9_999" is 9999), long enough that
 # str-to-int is slow on Python 3.9 (no digit limit there), or that no real value holds: a span with one is left for
-# the fallback, not parsed. A number written in hexadecimal, octal or binary parses in time in proportion, so its
-# value is held to the same bound once parsed (_LONG_NUMBER): past it, printing it beside its field's name, as
-# mask_all does, raises ValueError past Python's digit limit.
-_DIGIT_RUN = re.compile(r"[0-9](?:_?[0-9]){999,}")
+# the fallback, not parsed. It is looked for only where a run starts, so each run is read once. A number written in
+# hexadecimal, octal or binary parses in time in proportion, so its value is held to the same bound once parsed
+# (_LONG_NUMBER): past it, printing it beside its field's name, as mask_all does, raises ValueError past Python's
+# digit limit.
+_DIGIT_RUN = re.compile(r"(?<![0-9])(?<![0-9]_)[0-9](?:_?[0-9]){999,}")
 _LONG_NUMBER = 10 ** 999
 # A span longer than 1 MiB, the bar's item size, or nested past _CONTAINER_DEPTH, is left for the fallback.
 _CONTAINER_MAX = 1 << 20
