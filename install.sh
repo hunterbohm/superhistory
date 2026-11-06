@@ -3,10 +3,14 @@
 # newer, then copies kb into your data folder and puts the `kb` command in ~/.local/bin.
 #
 #   sh install.sh --from /path/to/a/checkout
-#   curl -fsSL <address of install.sh> | sh        (downloads the release archive named below)
+#   curl -fsSL https://github.com/hunterbohm/superhistory/releases/latest/download/install.sh | sh
+#
+# With no --from it downloads the latest release's archive and checks it against the SHA256SUMS file next to it.
+# SUPERHISTORY_ARCHIVE_URL names another archive, such as file:///path/to/superhistory.tar.gz; its SHA256SUMS must
+# be in the same folder.
 set -eu
 
-ARCHIVE_URL="${KB_ARCHIVE_URL:-}"
+ARCHIVE_URL="${SUPERHISTORY_ARCHIVE_URL:-https://github.com/hunterbohm/superhistory/releases/latest/download/superhistory.tar.gz}"
 SRC=""
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -17,7 +21,7 @@ while [ $# -gt 0 ]; do
 done
 
 find_python() {
-  for py in "${KB_PYTHON:-}" python3 python3.14 python3.13 python3.12 python3.11 python3.10 python3.9; do
+  for py in "${SUPERHISTORY_PYTHON:-}" python3 python3.14 python3.13 python3.12 python3.11 python3.10 python3.9; do
     [ -n "$py" ] || continue
     command -v "$py" >/dev/null 2>&1 || continue
     if "$py" -c 'import sqlite3, sys
@@ -43,8 +47,21 @@ if [ -z "$SRC" ]; then
   fi
   WORK="$(mktemp -d)"
   trap 'rm -rf "$WORK"' EXIT
-  curl -fsSL "$ARCHIVE_URL" | tar -xz -C "$WORK"
-  SRC="$(find "$WORK" -mindepth 1 -maxdepth 1 -type d | head -n 1)"
+  NAME="${ARCHIVE_URL##*/}"
+  curl -fsSL -o "$WORK/archive" "$ARCHIVE_URL"
+  curl -fsSL -o "$WORK/SHA256SUMS" "${ARCHIVE_URL%/*}/SHA256SUMS"
+  "$PY" -I - "$WORK/archive" "$WORK/SHA256SUMS" "$NAME" <<'PYEOF' || exit 1
+import hashlib, sys
+archive, sums, name = sys.argv[1:]
+with open(archive, "rb") as fh:
+    got = hashlib.sha256(fh.read()).hexdigest()
+want = [line.split()[0] for line in open(sums, encoding="utf-8") if line.split()[1:] == [name]]
+if want != [got]:
+    sys.exit("install.sh: the download does not match %s in SHA256SUMS (got %s). Nothing was installed." % (name, got))
+PYEOF
+  mkdir "$WORK/src"
+  tar -xzf "$WORK/archive" -C "$WORK/src"
+  SRC="$(find "$WORK/src" -mindepth 1 -maxdepth 1 -type d | head -n 1)"
 fi
 
 if [ ! -f "$SRC/kb/__init__.py" ]; then
