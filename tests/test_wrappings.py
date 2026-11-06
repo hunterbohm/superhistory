@@ -2166,12 +2166,13 @@ class TodaysRowsTest(unittest.TestCase):
                          [(line.pattern, flag.pattern, always) for line, flag, always in today._COMMANDS])
 
     # Values main reads as passwords that this branch's INVISIBLE, which is wider than main's, would read as a pointer:
-    # JSON's "\b" between a token's characters, a surrogate pair, or either escaped twice, inside a name in capitals or
-    # a dotted name, after each of #29's rows
+    # JSON's "\b" between a token's characters, a surrogate pair, either escaped twice, or a colour code escaped twice or
+    # more, inside a name in capitals or a dotted name, after each of #29's rows
     ROWS = ("keytool -storepass {}", "keytool -keypass {}", "jarsigner -storepass {}", "mongosh -p {}",
             "twine upload -p {} dist/*", "az login -u ci -p {}", "aws configure set aws_secret_access_key {}")
     VALUES = (r"FOO\bBAR", r"DB\b_PASS", r"API\bKEY\bVALUE", r"ab\b.cd", r"FOO\\bBAR", r"FOO\\u200bBAR",
-              r"FOO\udb40\udc01BAR", r"PASS\u200bWORD")
+              r"FOO\udb40\udc01BAR", r"PASS\u200bWORD", r"FOO\\u001b[0mBAR", r"FOO\\x1b[1mBAR",
+              r"FOO\\033[0mBAR", r"FOO\\\\u001b[0mBAR", r"DB\\u009b0m_PASS", r"FOO\\e[0mBAR")
 
     def test_a_value_main_reads_as_a_password_is_masked_after_each_row(self):
         # round 24: main judges a value without its own invisible characters, so "FOO\bBAR" is a password to it, where
