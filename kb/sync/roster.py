@@ -1,8 +1,11 @@
 """The signed device list. Each change is a link; a computer accepts a link only when it follows the last one it trusts.
 
 link  = {version, epoch, prev_hash, signer, entries, keys}
-entry = {device_id, prefix, age_recipient, ssh_key, label, added_in,
+entry = {device_id, prefix, age_recipient, ssh_key, label, added_in, accounts,
          removed: {in_version, head_dseq, head_hash, clear} or none}
+
+`accounts` is the sorted digests of the online accounts (Gmail, GitHub) the computer reads. At most one active computer
+holds a digest. Only the computer itself changes its entry's `accounts`, in a link that changes nothing else.
 """
 import hashlib
 import re
@@ -13,11 +16,21 @@ from ..mask import mask
 
 LINK_KEYS = {"version", "epoch", "prev_hash", "signer", "entries", "keys"}
 _HEX64 = re.compile(r"[0-9a-f]{64}")
-ENTRY_KEYS = {"device_id", "prefix", "age_recipient", "ssh_key", "label", "added_in", "removed"}
+ENTRY_KEYS = {"device_id", "prefix", "age_recipient", "ssh_key", "label", "added_in", "accounts", "removed"}
 REMOVED_KEYS = {"in_version", "head_dseq", "head_hash", "clear"}
 FIXED = ("prefix", "age_recipient", "ssh_key", "label", "added_in")
 # A label is shown and stored as is, so it may not hold a source_id or a phone number.
 _PRIVATE_IN_LABEL = re.compile(r"c-[a-z2-7]{13}[:@]|\+?[0-9](?:[ ().-]?[0-9]){6,}")
+
+
+def claim(account_key):
+    """What the roster holds for an account key (`Config.account_keys`): a digest, so roster.json on disk names no address."""
+    return hashlib.sha256(b"superhistory-sync-account\0" + account_key.encode()).hexdigest()
+
+
+def claims(account_keys):
+    """The `accounts` of an entry for the sources whose account keys are `{source name: key}`."""
+    return sorted({claim(key) for key in account_keys.values()})
 
 
 def link_hash(link):
@@ -35,12 +48,18 @@ def valid_label(label):
             and not keys.code_spans(label) and not _PRIVATE_IN_LABEL.search(label))
 
 
+def _digests(accounts):
+    return (isinstance(accounts, list) and all(isinstance(d, str) and _HEX64.fullmatch(d) for d in accounts)
+            and accounts == sorted(set(accounts)))
+
+
 def check_entry(e):
     ok = (isinstance(e, dict) and set(e) == ENTRY_KEYS and isinstance(e["device_id"], str)
           and keys.DEVICE_ID.fullmatch(e["device_id"]) and isinstance(e["prefix"], str)
           and ids.INSTALL_ID.fullmatch(e["prefix"]) and isinstance(e["age_recipient"], str)
           and keys.AGE_RECIPIENT.fullmatch(e["age_recipient"]) and isinstance(e["ssh_key"], str)
-          and keys.SSH_KEY.fullmatch(e["ssh_key"]) and valid_label(e["label"]) and _int(e["added_in"], 1))
+          and keys.SSH_KEY.fullmatch(e["ssh_key"]) and valid_label(e["label"]) and _int(e["added_in"], 1)
+          and _digests(e["accounts"]))
     r = e.get("removed") if ok else None
     if ok and r is not None:
         ok = (isinstance(r, dict) and set(r) == REMOVED_KEYS and _int(r["in_version"], 2) and _int(r["head_dseq"], 0)
@@ -64,6 +83,9 @@ def check_link(link):
     active = [e["prefix"] for e in link["entries"] if e["removed"] is None]
     if len(set(active)) != len(active):
         raise keys.Refused("roster lists two active devices under one install id")
+    claimed = [d for e in link["entries"] if e["removed"] is None for d in e["accounts"]]
+    if len(set(claimed)) != len(claimed):
+        raise keys.Refused("roster gives one online account to two active computers")
     cleared = _cleared(link["entries"])
     if any(e["removed"] is None and e["prefix"] in cleared for e in link["entries"]):
         raise keys.Refused("roster lists an active device under an install id whose items were cleared")
@@ -91,6 +113,22 @@ class Roster:
     def active(self):
         return [e for e in self.entries if e["removed"] is None]
 
+    def holders(self, digests, besides=None):
+        """{digest: [labels of the active computers other than `besides` that hold it]} for each of `digests` that is held."""
+        held = {d: [e["label"] for e in self.active() if d in e["accounts"] and e["device_id"] != besides]
+                for d in digests}
+        return {d: labels for d, labels in held.items() if labels}
+
+    def _accounts_change_alone(self, link, rotated, new):
+        """An entry's `accounts` change only in a link its own computer signed that changes nothing else: no rotation,
+        no removal, no added computer and no other entry's `accounts`."""
+        changed = {old["device_id"] for old in self.entries
+                   if old["device_id"] in new and new[old["device_id"]]["accounts"] != old["accounts"]}
+        others = {old["device_id"] for old in self.entries if old["device_id"] in new
+                  and new[old["device_id"]]["removed"] != old["removed"]} | (set(new) - {e["device_id"] for e in self.entries})
+        if changed and (changed != {link["signer"]} or rotated or others):
+            raise keys.Refused("roster link changes the online accounts of a computer other than its signer, or more than that")
+
     def accept(self, link, body, sig):
         """The next link, if it follows this one and an active member signed it. Raises Refused otherwise."""
         check_link(link)
@@ -105,6 +143,7 @@ class Roster:
         if not rotated and link["epoch"] != self.epoch:
             raise keys.Refused("roster epoch jumps")
         new = {e["device_id"]: e for e in link["entries"]}
+        self._accounts_change_alone(link, rotated, new)
         for old in self.entries:
             e = new.pop(old["device_id"], None)
             if e is None or any(e[k] != old[k] for k in FIXED):

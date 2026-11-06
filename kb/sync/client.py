@@ -117,6 +117,7 @@ class Proven:
 
 
 DEVICE_KEYS = ("prefix", "age_recipient", "ssh_key")
+JOIN_KEYS = ("device_id", "prefix", "age_recipient", "ssh_key", "label", "accounts")
 
 
 @dataclasses.dataclass(frozen=True)
@@ -205,8 +206,9 @@ def _locked(method):
 
 
 class SyncClient:
-    def __init__(self, paths, db, app, relay_api, login, prefix, clock):
+    def __init__(self, paths, db, app, relay_api, login, prefix, clock, accounts=None):
         self.paths, self.db, self.app, self.relay, self.clock = paths, db, app, relay_api, clock
+        self.accounts = accounts or {}  # {source name: account key}, from kb's config (`Config.account_keys`)
         self.device_id, self.label = login["device_id"], login["label"]
         self.app_token = login["app_token"]  # the relay gets only the sync token
         self.app_url = login["app"]
@@ -256,10 +258,11 @@ class SyncClient:
             os.close(fd)
 
     @classmethod
-    def load(cls, kb_paths, transport=None, clock=time.time):
+    def load(cls, kb_paths, transport=None, clock=time.time, accounts=None):
         """A client for the signed-in computer whose paths are `kb_paths` (kb.paths.Paths). It works in kb's own
         database, which it opens in autocommit since it opens its own transactions; a database that needs
-        `rebuild` raises store.NeedsRebuild."""
+        `rebuild` raises store.NeedsRebuild. `accounts` is `Config.account_keys()`: the online accounts this computer
+        reads."""
         paths = Paths(kb_paths)
         login = _signed_in(paths)
         app_t = transport or relay.HttpTransport(login["app"])
@@ -268,7 +271,7 @@ class SyncClient:
         db.isolation_level = None
         state.init(db)
         return cls(paths, db, relay.App(app_t), relay.Relay(relay_t, login["sync_token"]), login, ids.install_id(kb_paths),
-                   clock)
+                   clock, accounts)
 
     def close(self):
         self.db.close()
@@ -285,7 +288,8 @@ class SyncClient:
     def _my_entry(self, added_in):
         return roster.check_entry({
             "device_id": self.device_id, "prefix": self.prefix, "age_recipient": keys.device_recipient(self.paths.device_age),
-            "ssh_key": keys.ssh_public(self.paths.device_ssh), "label": self.label, "added_in": added_in, "removed": None})
+            "ssh_key": keys.ssh_public(self.paths.device_ssh), "label": self.label, "added_in": added_in,
+            "accounts": roster.claims(self.accounts), "removed": None})
 
     def _trust(self, proven):
         """Save the key ring and trust the roster of a chain `_verified_walk` proved, confirm it to the app, and clear
@@ -486,8 +490,7 @@ class SyncClient:
         joined = self._wait_slot(pk.slot_id, 0, wait, sleep)
         try:
             data = pack.open_tagged(pk.join_key, joined, identity=pk.join_identity)
-            entry = roster.check_entry({**{k: data[k] for k in ("device_id", "prefix", "age_recipient", "ssh_key", "label")},
-                                        "added_in": 1, "removed": None})
+            entry = roster.check_entry({**{k: data[k] for k in JOIN_KEYS}, "added_in": 1, "removed": None})
         except (Refused, KeyError, TypeError):
             self.relay.delete_slot(pk.slot_id)
             raise Refused("the join was not made with this pairing code") from None
@@ -538,7 +541,7 @@ class SyncClient:
             raise SyncError("That is not a pairing code.") from None
         self._require_keys()
         me = self._my_entry(1)
-        payload = {k: me[k] for k in ("device_id", "prefix", "age_recipient", "ssh_key", "label")}
+        payload = {k: me[k] for k in JOIN_KEYS}
         self.relay.put_join(pk.slot_id, pack.seal_tagged(pk.join_key, keys.recipient_of(pk.join_identity), payload))
         self._joining = pk
         return keys.fingerprint_words(me["device_id"], me["age_recipient"], me["ssh_key"])
