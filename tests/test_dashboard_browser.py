@@ -55,6 +55,10 @@ class BrowserTest(unittest.TestCase):
             raise unittest.SkipTest(f"no Chromium: {exc}")
         cls.addClassCleanup(cls.browser.close)
 
+    @property
+    def base(self):
+        return f"http://127.0.0.1:{self.srv.server_address[1]}/"
+
     def shot(self, page, name):
         folder = os.environ.get("SUPERHISTORY_TEST_SHOTS")
         if folder:
@@ -83,7 +87,7 @@ class BrowserTest(unittest.TestCase):
         self.assertIn("43 items", page.inner_text(".hero .meta"))
         self.shot(page, "project")
 
-        page.goto(self.srv.url + "people")
+        page.goto(self.base + "people")
         page.click("a.listrow:has-text('Dana Whitfield')")
         page.wait_for_selector("h1:has-text('Dana Whitfield')")
         self.assertIn("Email", page.inner_text(".chips-static"))
@@ -102,13 +106,13 @@ class BrowserTest(unittest.TestCase):
         self.assertGreater(page.locator(".turn.assistant").count(), 1)
         self.shot(page, "transcript")
 
-        page.goto(self.srv.url + "search?q=needleword")
+        page.goto(self.base + "search?q=needleword")
         page.click("a.hit")
         page.wait_for_selector(".reader h1")
         self.assertEqual(page.evaluate("window.__owned"), None, "a hostile title must not run")
         self.assertIn("<script>", page.inner_text(".reader h1"))
 
-        page.goto(self.srv.url + "source/gmail")
+        page.goto(self.base + "source/gmail")
         page.wait_for_selector("a.listrow")
         page.click("#more")
         page.wait_for_selector("#items a.listrow >> nth=50")
@@ -117,6 +121,13 @@ class BrowserTest(unittest.TestCase):
         self.assertEqual({u.split("/")[2] for u in requested}, {f"127.0.0.1:{self.srv.server_address[1]}"})
         page.close()
         self.assertEqual(fingerprint(self.paths.db), before)
+
+    def test_the_address_without_its_key_shows_nothing(self):
+        page = self.browser.new_page()
+        response = page.goto(self.base)
+        self.assertEqual(response.status, 403)
+        self.assertNotIn("Superhistory dashboard", page.inner_text("body"))
+        page.close()
 
     def test_the_page_reads_on_a_phone(self):
         page = self.browser.new_page(viewport={"width": 390, "height": 800})

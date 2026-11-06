@@ -289,12 +289,13 @@ def item(db, catalog, rid, page=None, query=""):
     item_meta = json.loads(first[5])
     title = first[3]
     text = "".join(r[4] for r in rows)
-    summaries = [{"kind": k, "title": t, "content": c} for k, t, c in db.execute(
-        "SELECT kind, title, content FROM docs WHERE source = ? AND source_id = ? AND kind IN ('segment', 'atom') "
-        "ORDER BY id LIMIT 40", (src, sid))]
+    # A summary is masked again unless its own row is of today's version, whatever the item's rows are.
+    summaries = [{"kind": k, "title": t if v == store.VERSION else mask(t), "content": c if v == store.VERSION else mask(c)}
+                 for k, t, c, v in db.execute(
+                     "SELECT kind, title, content, masked FROM docs WHERE source = ? AND source_id = ? "
+                     "AND kind IN ('segment', 'atom') ORDER BY id LIMIT 40", (src, sid))]
     if not fresh:
         text, title, item_meta = mask(text), mask(title), mask_all(item_meta)
-        summaries = [{**s, "title": mask(s["title"]), "content": mask(s["content"])} for s in summaries]
     anchor = None
     own = json.loads(meta)
     if kind in ("segment", "atom") and isinstance(own.get("from_chars"), int):

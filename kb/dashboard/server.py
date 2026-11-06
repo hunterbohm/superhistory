@@ -2,15 +2,21 @@
 
 It binds a loopback address only, answers only GET and HEAD, opens the store read-only, and loads nothing from
 outside: every font, script and style is served from this folder, and a content-security policy keeps it that way.
+Loopback is open to every account on the computer, so a request must also carry this run's key: the address the
+command prints holds it once, the first visit turns it into an HttpOnly, SameSite=Strict cookie and a redirect to the
+same address without it, and any other request is refused.
 """
+import hmac
 import ipaddress
 import json
 import os
+import secrets
 import sqlite3
 import sys
 import threading
 import traceback
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.cookies import SimpleCookie
 from urllib.parse import parse_qs, urlparse
 
 from kb import store
@@ -130,11 +136,36 @@ class Handler(BaseHTTPRequestHandler):
     def _json(self, code, data, head=False):
         self._send(code, json.dumps(data).encode(), "application/json", head)
 
+    def _redirect(self, location, cookie, head):
+        self.send_response(303)
+        self.send_header("Location", location)
+        self.send_header("Set-Cookie", cookie)
+        self.send_header("Content-Length", "0")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Referrer-Policy", "no-referrer")
+        self.end_headers()
+
+    def _has_key(self):
+        jar = SimpleCookie()
+        try:
+            jar.load(self.headers.get("Cookie", ""))
+        except Exception:
+            return False
+        morsel = jar.get(self.server.cookie_name)
+        return morsel is not None and self.server.is_key(morsel.value)
+
     def do_GET(self, head=False):
         host = self.headers.get("Host", "")
         if host not in self.server.allowed_hosts:
             return self._send(403, b"This address is not served.", "text/plain; charset=utf-8", head)
         url = urlparse(self.path)
+        sent = (parse_qs(url.query).get("access") or [""])[0]
+        if sent and self.server.is_key(sent):
+            cookie = f"{self.server.cookie_name}={sent}; HttpOnly; SameSite=Strict; Path=/"
+            return self._redirect("/", cookie, head)
+        if not self._has_key():
+            return self._send(403, b"Open the address that `superhistory dashboard` printed; it carries this run's key.",
+                              "text/plain; charset=utf-8", head)
         parts = [p for p in url.path.split("/") if p]
         try:
             if parts[:1] == ["api"] and len(parts) == 2:
@@ -180,10 +211,17 @@ class Server(ThreadingHTTPServer):
         self.dashboard = dashboard
         port = self.server_address[1]
         self.allowed_hosts = {f"127.0.0.1:{port}", f"localhost:{port}"}
+        self.key = secrets.token_hex(16)
+        # Cookies are not kept apart by port, so a second dashboard on this computer must not share a name.
+        self.cookie_name = f"superhistory-{port}"
+
+    def is_key(self, value):
+        return hmac.compare_digest(str(value).encode(), self.key.encode())
 
     @property
     def url(self):
-        return f"http://127.0.0.1:{self.server_address[1]}/"
+        """The address to open: it holds this run's key, which the first visit swaps for a cookie."""
+        return f"http://127.0.0.1:{self.server_address[1]}/?access={self.key}"
 
 
 def make_server(paths, config, port=0, host="127.0.0.1"):

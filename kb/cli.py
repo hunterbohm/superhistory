@@ -317,8 +317,10 @@ def cmd_dashboard(paths, config, args):
         dashboard = server.make_server(paths, config, args.port)
     except OSError as exc:
         raise Fail(f"cannot listen on port {args.port}: {exc.strerror or exc}")
-    print(f"The Superhistory dashboard is at {dashboard.url}\nIt reads your knowledge base and changes nothing. "
-          "Press Ctrl-C to stop.", flush=True)
+    # The address holds this run's key, which masking would take for a secret and mangle; it is made here, not read.
+    shown = getattr(sys.stdout, "_stream", sys.stdout)
+    print(f"The Superhistory dashboard is at {dashboard.url}\nOnly this address opens it: it carries a key for this run. "
+          "It reads your knowledge base and changes nothing. Press Ctrl-C to stop.", file=shown, flush=True)
     if not args.no_open:
         webbrowser.open(dashboard.url)
     try:

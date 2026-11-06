@@ -49,8 +49,13 @@ class Served(unittest.TestCase):
         self.srv = srv
         return srv
 
-    def get(self, path, headers=None):
-        request = urllib.request.Request(self.srv.url.rstrip("/") + path, headers=headers or {})
+    def cookie(self):
+        return {"Cookie": f"{self.srv.cookie_name}={self.srv.key}"}
+
+    def get(self, path, headers=None, key=True):
+        """GET as a browser that opened the printed address would, unless `key` is False."""
+        request = urllib.request.Request(self.srv.url.split("?")[0].rstrip("/") + path,
+                                         headers={**(self.cookie() if key else {}), **(headers or {})})
         try:
             with urllib.request.urlopen(request) as res:
                 return res.status, res.read(), res.headers
@@ -241,6 +246,17 @@ class GroupingTest(Served):
         self.assertNotIn(secret, json.dumps(page))
         self.assertNotIn(secret, json.dumps(self.api("overview")))
 
+    def test_a_summary_of_an_older_version_is_masked_though_its_item_is_current(self):
+        secret = "ghp_abcdefghijklmnopqrstuvwxyz0123456789ABCD"
+        self.add("notes", "n", "2026-09-01T10:00:00Z", "plain", "hello", {"path": "/n"})
+        self.db.execute("INSERT INTO docs(kind, source, source_id, ts, title, content, metadata, masked) "
+                        "VALUES ('segment', 'notes', 'here:n', '2026-09-01T10:00:00Z', ?, ?, '{}', 'older')",
+                        (f"topic {secret}", f"summary {secret}"))
+        self.serve()
+        page = self.api("item?id=1")
+        self.assertEqual(len(page["summaries"]), 1)
+        self.assertNotIn(secret, json.dumps(page))
+
 
 SESSION = ("Claude Code session in /w/orders (main)\n\nUSER: why does the build fail\n\nASSISTANT: I will look.\n\n"
            "TOOL Bash: npm run build\n\nRESULT: ok\nsecond line\n\nTOOL Read: a.txt\n\nERROR: no such file\n\n"
@@ -334,13 +350,14 @@ class SafetyTest(Served):
 
     def test_nothing_but_get_and_head_is_answered(self):
         for method in ("POST", "PUT", "DELETE", "PATCH", "OPTIONS"):
-            request = urllib.request.Request(self.srv.url + "api/overview", data=b"x" if method != "OPTIONS" else None,
-                                             method=method)
+            request = urllib.request.Request(self.srv.url.split("?")[0] + "api/overview",
+                                             data=b"x" if method != "OPTIONS" else None, method=method,
+                                             headers=self.cookie())
             with self.assertRaises(urllib.error.HTTPError) as caught:
                 urllib.request.urlopen(request)
             self.assertEqual(caught.exception.code, 405, method)
             self.assertEqual(caught.exception.headers["Allow"], "GET, HEAD")
-        head = urllib.request.Request(self.srv.url + "api/overview", method="HEAD")
+        head = urllib.request.Request(self.srv.url.split("?")[0] + "api/overview", method="HEAD", headers=self.cookie())
         with urllib.request.urlopen(head) as res:
             self.assertEqual((res.status, res.read()), (200, b""))
 
@@ -349,6 +366,36 @@ class SafetyTest(Served):
         with self.assertRaises(Exception):
             db.execute("DELETE FROM docs")
         db.close()
+
+    def test_a_request_without_this_runs_key_is_refused_whatever_it_asks_for(self):
+        for path in ("/", "/api/overview", "/api/item?id=1", "/static/app.js", "/projects"):
+            self.assertEqual(self.get(path, key=False)[0], 403, path)
+        wrong = {"Cookie": f"{self.srv.cookie_name}={'0' * 32}"}
+        self.assertEqual(self.get("/api/overview", wrong, key=False)[0], 403)
+        self.assertEqual(self.get("/api/overview", {"Cookie": "junk;;="}, key=False)[0], 403)
+        self.assertEqual(self.get("/?access=" + "0" * 32, key=False)[0], 403)
+
+    def test_the_printed_address_trades_its_key_for_a_cookie_and_a_clean_address(self):
+        import http.client
+        self.assertRegex(self.srv.url, r"^http://127\.0\.0\.1:\d+/\?access=[0-9a-f]{32}$")
+        conn = http.client.HTTPConnection("127.0.0.1", self.srv.server_address[1])
+        conn.request("GET", "/?access=" + self.srv.key)
+        res = conn.getresponse()
+        res.read()
+        self.assertEqual((res.status, res.getheader("Location")), (303, "/"))
+        cookie = res.getheader("Set-Cookie")
+        self.assertIn("HttpOnly", cookie)
+        self.assertIn("SameSite=Strict", cookie)
+        self.assertTrue(cookie.startswith(f"{self.srv.cookie_name}={self.srv.key}"))
+        conn.request("GET", "/api/overview", headers={"Cookie": cookie.split(";")[0]})
+        res = conn.getresponse()
+        body = res.read()
+        self.assertEqual(res.status, 200)
+        self.assertNotIn(self.srv.key.encode(), body)
+        conn.close()
+        other = server.make_server(self.paths, config_mod.Config())
+        self.addCleanup(other.server_close)
+        self.assertNotEqual((other.cookie_name, other.key), (self.srv.cookie_name, self.srv.key))
 
     def test_a_request_for_another_host_name_is_refused(self):
         self.assertEqual(self.get("/api/overview", {"Host": "evil.example"})[0], 403)
@@ -451,7 +498,7 @@ class CommandTest(unittest.TestCase):
             return code
         code, out, _ = self.run_cli("dashboard", "--no-open", env=run)
         self.assertEqual(code, 0)
-        self.assertRegex(out, r"http://127\.0\.0\.1:\d+/")
+        self.assertRegex(out, r"http://127\.0\.0\.1:\d+/\?access=[0-9a-f]{32}\n")
         self.assertIn("Stopped.", out)
 
     def test_it_opens_the_browser_unless_told_not_to(self):
