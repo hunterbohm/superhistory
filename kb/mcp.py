@@ -257,7 +257,7 @@ class Server:
 
     def _tools_call(self, params):
         name, arguments = params.get("name"), params.get("arguments")
-        if name not in {t["name"] for t in TOOLS}:
+        if not isinstance(name, str) or name not in {t["name"] for t in TOOLS}:
             raise Rpc(INVALID_PARAMS, f"Unknown tool: {name}")
         if arguments is None:
             arguments = {}

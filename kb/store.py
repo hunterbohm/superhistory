@@ -11,7 +11,9 @@ import itertools
 import json
 import os
 import pathlib
+import shutil
 import sqlite3
+import tempfile
 import time
 from datetime import datetime, timezone
 
@@ -129,43 +131,68 @@ def connect(path, readonly=False):
 
 def _stamp(path):
     """What changes when a writer touches the store at `path`, or None while it does not exist."""
-    try:
-        st = os.stat(path)
-    except FileNotFoundError:
-        return None
-    return st.st_ino, st.st_size, st.st_mtime_ns, os.path.exists(path + "-wal"), os.path.exists(path + "-shm")
+    def of(name):
+        try:
+            st = os.stat(name)
+        except FileNotFoundError:
+            return None
+        return st.st_ino, st.st_size, st.st_mtime_ns
+    return of(path), of(path + "-wal"), of(path + "-shm")
+
+
+READ_TRIES = 5
 
 
 def read_only(path, run):
     """What `run(db)` returns, for a connection that cannot write the store and leaves no file beside it. A read-only
-    connection to a WAL store still makes the -wal and -shm files and leaves them, and fails outright where the
-    folder or the file is not writable. With neither file there, no writer is open and the main file holds every row,
-    so `run` reads it as immutable, with no lock. A writer that starts meanwhile changes the stamp, and `run` then
-    reads again the ordinary way, which takes the WAL into account. `run` must return its result, not print it."""
+    connection to a WAL store makes the -wal and -shm files it finds missing, and fails where the folder is not
+    writable, so it opens the real store only when both files are there, the sign of a writer that is open. With
+    neither there, no writer is open and the main file holds every row, so `run` reads it as immutable, without
+    a lock. With a -wal file left and no -shm, a writer died: its rows are in the -wal file, and reading them makes an
+    index file, so `run` reads a copy of the two in a folder of its own. Whatever changes meanwhile (a writer starts or
+    closes) is seen in the files' stamps, and the read starts again. One window is left: a writer that closes between
+    the look and the open of the real store leaves its files for the reader to remake. `run` must return its result,
+    not print it."""
     path = os.path.realpath(path)
-    before = _stamp(path)
-    if before and not (before[3] or before[4]):
+    for _ in range(READ_TRIES):
+        before = _stamp(path)
+        if before[0] is None:
+            raise sqlite3.OperationalError(f"unable to open database file: {path}")
+        if before[1] and before[2]:
+            with contextlib.closing(_open_read_only(path, path, immutable=False)) as db:
+                return run(db)
         result = error = None
         try:
-            with contextlib.closing(_open_read_only(path, immutable=True)) as db:
-                result = run(db)
+            if before[1] is None:
+                with contextlib.closing(_open_read_only(path, path, immutable=True)) as db:
+                    result = run(db)
+            else:
+                with tempfile.TemporaryDirectory(prefix="kb-read-") as folder:
+                    copy = os.path.join(folder, "kb.sqlite")
+                    shutil.copyfile(path, copy)
+                    shutil.copyfile(path + "-wal", copy + "-wal")
+                    if _stamp(path) != before:
+                        continue
+                    with contextlib.closing(_open_read_only(copy, path, immutable=False)) as db:
+                        result = run(db)
+        except NeedsRebuild:
+            raise
         except Exception as exc:
             error = exc
         if _stamp(path) == before:
             if error:
                 raise error
             return result
-    with contextlib.closing(_open_read_only(path, immutable=False)) as db:
-        return run(db)
+    raise sqlite3.OperationalError("the knowledge base keeps changing under the read; ask again")
 
 
-def _open_read_only(path, immutable):
-    uri = pathlib.Path(path).as_uri() + "?mode=ro" + ("&immutable=1" if immutable else "")
+def _open_read_only(opened, shown, immutable):
+    uri = pathlib.Path(opened).as_uri() + "?mode=ro" + ("&immutable=1" if immutable else "")
     db = sqlite3.connect(uri, uri=True)
     db.execute(f"PRAGMA busy_timeout={BUSY_MS}")
     if has_unversioned(db):
         db.close()
-        raise NeedsRebuild(REBUILD.format(path=path))
+        raise NeedsRebuild(REBUILD.format(path=shown))
     return db
 
 

@@ -213,6 +213,23 @@ class ToolTest(StoreCase):
         self.assertFalse(reply["result"]["isError"])
         self.assertIn("Pangolin plan", reply["result"]["content"][0]["text"])
 
+    def test_whatever_a_tool_call_holds_it_is_never_an_internal_error(self):
+        junk = [[], {}, None, 5, 1.5, True, "", "x" * 10000, [[]], {"a": {"b": []}}]
+        calls = []
+        for i, value in enumerate(junk):
+            calls.append(modern(100 + i, "tools/call", name=value, arguments={}))
+            calls.append(modern(200 + i, "tools/call", name="get", arguments={"id": value, "offset": value}))
+            calls.append(modern(300 + i, "tools/call", name="search", arguments={"query": value}))
+            calls.append(modern(400 + i, "tools/call", name=value))
+            calls.append(modern(500 + i, "tools/call", name="get", arguments=value))
+            calls.append(request(600 + i, "tools/list", cursor=value))
+            calls.append(request(700 + i, "tools/list", _meta=value))
+            calls.append(request(800 + i, "initialize", protocolVersion=value))
+            calls.append({"jsonrpc": "2.0", "id": 900 + i, "method": value})
+            calls.append({"jsonrpc": "2.0", "id": value, "method": "ping"})
+        for reply in self.talk(*calls):
+            self.assertNotEqual(reply.get("error", {}).get("code"), -32603, reply)
+
     def test_a_missing_record_and_an_unknown_tool(self):
         missing, unknown, nameless, bad = self.talk(
             tool(1, "get", id=999), tool(2, "delete", id=1), modern(3, "tools/call", arguments={}),
@@ -305,7 +322,7 @@ class ReadOnlyTest(StoreCase):
         self.assertEqual(db.execute("SELECT count(*) FROM docs").fetchone()[0], 1)
         self.assertTrue(db.execute("SELECT 1 FROM docs WHERE title = 'Pangolin plan'").fetchone())
 
-    def test_a_store_a_writer_changes_between_looks_is_read_again(self):
+    def test_a_writer_that_commits_and_closes_between_the_looks_leaves_no_file_behind(self):
         original = store._stamp
         calls = []
 
@@ -322,6 +339,59 @@ class ReadOnlyTest(StoreCase):
         self.addCleanup(setattr, store, "_stamp", original)
         reply, = self.talk(tool(1, "search", query="heron"))
         self.assertIn("Heron", reply["result"]["content"][0]["text"])
+        self.assertEqual(sorted(os.listdir(self.paths.data_dir)), ["kb.sqlite"])
+
+    def orphan_wal_store(self):
+        """A copy of the store as a crashed writer leaves it: rows only in the -wal file, and no -shm file."""
+        writer = store.connect(self.paths.db)
+        store.store_item(writer, "notes", "n8", "2026-09-07T10:00:00Z", "Osprey", "the osprey audit is on Tuesday", {})
+        writer.commit()
+        folder = os.path.join(self.tmp.name, "crashed")
+        os.makedirs(folder)
+        for suffix in ("", "-wal"):
+            with open(str(self.paths.db) + suffix, "rb") as src, open(os.path.join(folder, "kb.sqlite" + suffix),
+                                                                     "wb") as dst:
+                dst.write(src.read())
+        writer.close()
+        self.assertEqual(sorted(os.listdir(folder)), ["kb.sqlite", "kb.sqlite-wal"])
+        self.paths = Paths(self.paths.config_file, type(self.paths.data_dir)(folder), self.paths.log_dir,
+                           self.paths.cache_dir)
+        return folder
+
+    def test_rows_only_a_dead_writers_wal_file_holds_are_read_and_no_file_is_made(self):
+        folder = self.orphan_wal_store()
+        before = snapshot(folder)
+        reply, = self.talk(tool(1, "search", query="osprey"))
+        self.assertIn("Osprey", reply["result"]["content"][0]["text"])
+        self.assertEqual(snapshot(folder), before)
+
+    @unittest.skipIf(hasattr(os, "geteuid") and os.geteuid() == 0, "root writes wherever it likes")
+    def test_a_dead_writers_wal_in_a_folder_the_user_cannot_write_is_read(self):
+        folder = self.orphan_wal_store()
+        os.chmod(folder, stat.S_IRUSR | stat.S_IXUSR)
+        self.addCleanup(os.chmod, folder, stat.S_IRWXU)
+        before = snapshot(folder)
+        reply, = self.talk(tool(1, "search", query="osprey"))
+        self.assertIn("Osprey", reply["result"]["content"][0]["text"])
+        self.assertEqual(snapshot(folder), before)
+
+    def test_a_store_that_keeps_changing_is_a_tool_error_not_a_write(self):
+        original = store._stamp
+        count = []
+
+        def always_new(path):
+            count.append(1)
+            main, wal, shm = original(path)
+            return (main[0], main[1], len(count)), wal, shm
+
+        store._stamp = always_new
+        self.addCleanup(setattr, store, "_stamp", original)
+        before = snapshot(self.tmp.name)
+        reply, = self.talk(tool(1, "search", query="pangolin"))
+        self.assertTrue(reply["result"]["isError"])
+        self.assertIn("keeps changing", reply["result"]["content"][0]["text"])
+        store._stamp = original
+        self.assertEqual(snapshot(self.tmp.name), before)
 
 
 class ProcessTest(StoreCase):
