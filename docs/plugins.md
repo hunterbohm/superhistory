@@ -31,7 +31,7 @@ A secret is `env:NAME`, `file:PATH` or `cmd:COMMAND`, as for Gmail's password. S
 program starts and puts it in the request. Keep a secret out of `settings`, which is plain text in the config.
 
 The program runs only if the file is in the folder and a source names it. Nothing is downloaded or installed from
-anywhere. It must belong to you and not be writable by your group or others, in a folder that is not writable by them either, or
+anywhere. It must be the program itself, not a link, belong to you and not be writable by your group or others, in a folder that is not writable by them either, or
 Superhistory fails the source and says so. A source runs on this computer only, never over SSH.
 
 ## What it receives

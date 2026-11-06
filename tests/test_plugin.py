@@ -561,6 +561,19 @@ class RulesTest(PluginCase):
             self.assertIn(words, self.failure_of(name))
         self.assertFalse(os.path.exists(marker))
 
+    def test_a_link_in_the_folder_does_not_run_even_to_a_file_of_the_users(self):
+        marker = os.path.join(self.root, "ran")
+        elsewhere = os.path.join(self.root, "elsewhere")
+        os.makedirs(elsewhere, mode=0o700)
+        target = os.path.join(elsewhere, "real")
+        with open(target, "w") as fh:
+            fh.write(script(f"open({marker!r}, 'w').close()\nprint({final('1')!r})\n"))
+        os.chmod(target, 0o755)
+        os.symlink(target, os.path.join(self.dir, "linked"))
+        self.assertEqual(self.ingest(linked=("linked", "")), 1)
+        self.assertIn("is a link", self.failure_of("linked"))
+        self.assertFalse(os.path.exists(marker))
+
     def test_a_folder_that_anyone_can_write_does_not_run_its_plug_ins(self):
         self.write("notes", printing(item("a"), final("1")))
         os.chmod(self.dir, 0o777)

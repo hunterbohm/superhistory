@@ -95,18 +95,20 @@ class BadLine(ValueError):
 
 
 def executable(plugins_dir, name):
-    """The path of the plug-in `name`, or a PluginError saying why it will not run. The file must be the user's own:
-    owned by the user running kb and not writable by others, in a folder others cannot write either."""
+    """The path of the plug-in `name`, or a PluginError saying why it will not run. The file must be the user's own,
+    not a link, and not writable by others, in a folder others cannot write either."""
     if not plugins_dir:
         raise PluginError("this config has no plug-ins folder")
     folder = os.path.abspath(plugins_dir)
     path = os.path.join(folder, name)
     try:
-        folder_stat, stat = os.stat(folder), os.stat(path)
+        folder_stat, stat = os.stat(folder), os.lstat(path)
     except FileNotFoundError:
         raise PluginError(f"there is no plug-in named {name} in {folder}") from None
     except OSError as exc:
         raise PluginError(f"cannot read the plug-in {name} in {folder}: {exc.strerror}") from None
+    if os.path.islink(path):
+        raise PluginError(f"{path} is a link, so {COMMAND} will not run it; put the program itself in the folder")
     if not os.path.isfile(path):
         raise PluginError(f"{path} is not a file")
     if not os.access(path, os.X_OK):
