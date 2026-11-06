@@ -15,7 +15,7 @@ import sqlite3
 import time
 from datetime import datetime, timezone
 
-from . import ids
+from . import COMMAND, ids
 from .config import NAME_RE
 from .mask import ID_NAMES, KEY_WORD, VERSION, clean, holds_secret, mask, mask_all, mask_with_origin, masked_log, secret_in_id
 
@@ -63,8 +63,8 @@ CREATE TRIGGER IF NOT EXISTS docs_au AFTER UPDATE OF title, content ON docs BEGI
   INSERT INTO docs_fts(rowid, title, content) VALUES (new.id, new.title, new.content);
 END;
 """ + SUPERSEDES + """;
--- A change to a row's time, title, text or metadata clears its mask version. kb's own writers stamp it again once
--- they have masked the row; an older kb, which does not, leaves the row to be masked again.
+-- A change to a row's time, title, text or metadata clears its mask version. This program's writers stamp it again once
+-- they have masked the row; an older version, which does not, leaves the row to be masked again.
 CREATE INDEX IF NOT EXISTS supersedes_new ON supersedes(new_source, new_source_id);
 CREATE TRIGGER IF NOT EXISTS docs_unmask AFTER UPDATE OF ts, title, content, metadata ON docs BEGIN
   UPDATE docs SET masked = NULL WHERE id = new.id;
@@ -75,12 +75,12 @@ CREATE TABLE IF NOT EXISTS ingest_state(
 
 
 class NeedsRebuild(Exception):
-    """A store holds rows an older kb wrote, which kb neither reads nor masks again in place."""
+    """A store holds rows an older superhistory wrote, which superhistory neither reads nor masks again in place."""
 
 
-REBUILD = ("{path} holds rows an older kb wrote, before each row recorded how it was masked. kb no longer reads such rows "
-           "or masks them again in place, because an older kb's masking can leave a secret that no pattern finds. Run "
-           "`kb rebuild` to read your sources into a fresh knowledge base; it takes this one's place once it checks out. "
+REBUILD = (f"{{path}} holds rows an older {COMMAND} wrote, before each row recorded how it was masked. {COMMAND} no longer reads such rows "
+           f"or masks them again in place, because an older {COMMAND}'s masking can leave a secret that no pattern finds. Run "
+           f"`{COMMAND} rebuild` to read your sources into a fresh knowledge base; it takes this one's place once it checks out. "
            "If a source no longer has some of this one's items, such as sessions an agent has since deleted, it stops "
            "and says how many.")
 
@@ -100,8 +100,8 @@ def peek(path):
 
 
 def connect(path, readonly=False):
-    """The store at `path`, made if it is new. Raises NeedsRebuild for a store with rows an older kb wrote, before
-    writing anything to it, so an older kb still opens it as it was."""
+    """The store at `path`, made if it is new. Raises NeedsRebuild for a store with rows an older superhistory wrote, before
+    writing anything to it, so an older superhistory still opens it as it was."""
     path = os.fspath(path)
     if os.path.exists(path):
         with contextlib.closing(peek(path)) as db:
@@ -114,7 +114,7 @@ def connect(path, readonly=False):
         os.makedirs(os.path.dirname(path), exist_ok=True)
         db = sqlite3.connect(path)
     db.execute(f"PRAGMA busy_timeout={BUSY_MS}")
-    if has_unversioned(db):  # an older kb wrote since the look above
+    if has_unversioned(db):  # an older superhistory wrote since the look above
         db.close()
         raise NeedsRebuild(REBUILD.format(path=path))
     if not readonly:
@@ -127,7 +127,7 @@ def connect(path, readonly=False):
     return db
 
 
-# Who made a mark moved from a store an older kb wrote: this computer, before it had an install id. As the lowest
+# Who made a mark moved from a store an older superhistory wrote: this computer, before it had an install id. As the lowest
 # name it ranks below any mark this install makes since, a clear too, and above a synced one, as an unsynced mark does.
 MOVED_MARK_BY = ""
 
@@ -137,9 +137,9 @@ def _has_old_marks(db):
 
 
 def _old_marks(db):
-    """{item: the item that replaces it} as an older kb kept them: each in docs.superseded_by, the replacing row's
+    """{item: the item that replaces it} as an older superhistory kept them: each in docs.superseded_by, the replacing row's
     id. A row since gone, as an ingest that refreshed the replacing item leaves it, is named ("", "#<id>"): the item
-    is still superseded, as the older kb read it. Empty for a store with no such column."""
+    is still superseded, as the older superhistory read it. Empty for a store with no such column."""
     if not _has_old_marks(db):
         return {}
     marks = {}
@@ -151,7 +151,7 @@ def _old_marks(db):
 
 
 def _move_marks(db):
-    """Moves an older kb's supersede marks into the supersedes table in one transaction, which makes the table too.
+    """Moves an older superhistory's supersede marks into the supersedes table in one transaction, which makes the table too.
     Should it stop partway, the store is as it was, its readers take the marks from docs.superseded_by as before, and
     the error goes to the caller. The column is emptied as the marks move, so a second run moves nothing."""
     if not _has_old_marks(db) or not db.execute("SELECT 1 FROM docs WHERE superseded_by IS NOT NULL LIMIT 1").fetchone():
@@ -171,7 +171,7 @@ def _move_marks(db):
 
 
 def mark_count(db):
-    """How many supersede marks the store holds: rows of the supersedes table, a clear's too, and an older kb's marks
+    """How many supersede marks the store holds: rows of the supersedes table, a clear's too, and an older superhistory's marks
     still in docs.superseded_by."""
     count = 0
     if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='supersedes'").fetchone():
@@ -183,7 +183,7 @@ def mark_count(db):
 
 
 def has_unversioned(db):
-    """Whether the store holds a row that records no mask version: one an older kb wrote or changed."""
+    """Whether the store holds a row that records no mask version: one an older superhistory wrote or changed."""
     columns = {column[1] for column in db.execute("PRAGMA table_info(docs)")}
     if not columns:
         return False  # a new store
@@ -197,7 +197,7 @@ def _versioned(db):
 
 
 def unversioned(db, ids):
-    """The ids among `ids` that an older kb wrote or changed, which record no mask version, and for a chunk the ids
+    """The ids among `ids` that an older superhistory wrote or changed, which record no mask version, and for a chunk the ids
     of an item any of whose chunks records none. A connection opened before an older writer changed a row can meet
     one; no reader shows it and remask leaves it as it is."""
     if not ids:
@@ -224,7 +224,7 @@ def current(db, ids):
 
 def old_rows(db):
     """How many rows were masked with another version of mask(), which remask brings up to date. Rows that record no
-    version are not among them: an older kb wrote them, and the store is rebuilt instead."""
+    version are not among them: an older superhistory wrote them, and the store is rebuilt instead."""
     if not _versioned(db):
         return 0
     return db.execute("SELECT count(*) FROM docs WHERE masked IS NOT NULL AND masked != ?", (VERSION,)).fetchone()[0]
@@ -269,7 +269,7 @@ def chunk(text, size=CHUNK):
 
 def _masked_chunks(chunks):
     """A long item's chunk texts masked so that each masks clean by itself, as a reader shows one, and all of them as
-    one text, as an older kb or another store may have cut an item before masking it and split a secret neither chunk
+    one text, as an older superhistory or another store may have cut an item before masking it and split a secret neither chunk
     shows: masked as one text, each chunk taking back what came from its own characters (mask_with_origin), then each
     by itself, until neither changes anything. A chunk keeps its place, so no cut moves to leave another token alone
     at a chunk's start; a placeholder goes with the chunk its first character came from, and a chunk can be left
@@ -325,21 +325,21 @@ def _as_stored(rows):
     return rows
 
 
-# Fields of an item's metadata whose values its stored id starts with, each joined by a colon: kb's host, then its
+# Fields of an item's metadata whose values its stored id starts with, each joined by a colon: superhistory's host, then its
 # reader's own (mask.ID_NAMES).
 ID_FIELDS = ("host",) + ID_NAMES
 
 
 def secret_id(source, source_id, names=()):
-    """Whether kb refuses an item under this source and stored id. kb stores "<install>:<reader's id>", or for an item
-    read over SSH "<install>@<host>:<reader's id>" (kb.ids): that prefix is kb's own and is checked apart, its host as
+    """Whether superhistory refuses an item under this source and stored id. superhistory stores "<install>:<reader's id>", or for an item
+    read over SSH "<install>@<host>:<reader's id>" (kb.ids): that prefix is superhistory's own and is checked apart, its host as
     a name config allows. A Config with no install id writes "<machine>:" and "<machine>@<host>:" instead. An id from before the prefix is "<host>:<reader's id>", with the host in the item's
     metadata. `names` are the values the item's rows agree on for ID_FIELDS, the host first. Given
     that host, with the name config allows a host and the id starting with it, the id is checked as the host and the
-    reader's id apart, since joined by kb's colon a host such as "tokenbox" would read as the name of a secret; the
+    reader's id apart, since joined by superhistory's colon a host such as "tokenbox" would read as the name of a secret; the
     reader's id is read with the reader's names (mask.secret_in_id). Any other id is checked whole, so
     "password:...", "token2:..." or a link with a password in it is refused."""
-    # The install's prefix, "<install>:" or "<install>@<host>:" (kb.ids), is kb's own, with a host config allows. A
+    # The install's prefix, "<install>:" or "<install>@<host>:" (kb.ids), is superhistory's own, with a host config allows. A
     # Config with no install id prefixes by the machine instead, "<machine>@<host>:", read so where the item's rows
     # record that host and the machine is a name config allows (its "<machine>:" is the host branch below).
     head, colon, rest = source_id.partition(":")
@@ -363,7 +363,7 @@ def _agreed(values):
 
 def item_names(db, source, source_id):
     """The values the item's own stored rows record for ID_FIELDS, each None where they differ or one records none.
-    Summary rows are left out: an older kb's copy only some fields."""
+    Summary rows are left out: an older superhistory's copy only some fields."""
     fields = ", ".join(f"json_extract(metadata, '$.{field}')" for field in ID_FIELDS)
     rows = db.execute(f"SELECT {fields} FROM docs WHERE source=? AND source_id=? AND kind IN ('doc', 'raw')",
                       (source, source_id)).fetchall()
@@ -415,7 +415,7 @@ def delete_item(db, source, source_id):
 
 
 def _refuse_secret_ids(db, *items):
-    """Raises ValueError when an item's id holds a secret, as an older kb's row can, so no mark copies it."""
+    """Raises ValueError when an item's id holds a secret, as an older superhistory's row can, so no mark copies it."""
     if any(_secret_item(db, *item) for item in items):
         raise ValueError("an item whose id looks like it holds a secret takes no supersede mark")
 
@@ -461,7 +461,7 @@ def superseded(db, items):
     means the item is not superseded."""
     items = list(items)
     if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='supersedes'").fetchone():
-        old = _old_marks(db)  # a store an older kb wrote, read before kb first wrote to it
+        old = _old_marks(db)  # a store an older superhistory wrote, read before superhistory first wrote to it
         return {item: old[item] for item in items if item in old and not _secret_item(db, *old[item])}
     marks = {}
     for i in range(0, len(items), 400):
@@ -473,7 +473,7 @@ def superseded(db, items):
             rank = (v is None, v or 0, by)
             if (src, sid) not in marks or rank > marks[(src, sid)][0]:
                 marks[(src, sid)] = (rank, (new_src, new_sid))
-    # A mark that names an id holding a secret, synced or written before kb refused one, names no replacement. Each
+    # A mark that names an id holding a secret, synced or written before superhistory refused one, names no replacement. Each
     # replacement is read once, however many marks name it.
     secret = {}
     for _, new in marks.values():
@@ -554,8 +554,8 @@ def record_ok(db, unit):
 
 def clean_state(db):
     """Drop what ingest_state holds from before today's mask(), once for each version: every failure line, since an
-    older kb cut one before masking it and the next failing run writes it again, and every row whose source, key or
-    value holds a secret, such as a position an older kb read from an id it now refuses. A source whose position goes
+    older superhistory cut one before masking it and the next failing run writes it again, and every row whose source, key or
+    value holds a secret, such as a position an older superhistory read from an id it now refuses. A source whose position goes
     reads from the start again."""
     if get_watermark(db, STATE, "state_masked") == VERSION:
         return
@@ -594,9 +594,9 @@ def succeeded(db):
 
 def failing(db):
     """(unit, "<when> <error line>") for units whose last run failed. Until clean_state() has run under today's
-    mask(), a line may be an older kb's, which can hold a piece of a secret too short to mask, so only its time shows."""
+    mask(), a line may be an older superhistory's, which can hold a piece of a secret too short to mask, so only its time shows."""
     if get_watermark(db, STATE, "state_masked") != VERSION:
-        return [(unit, line.split(" ", 1)[0] + " (recorded before kb was updated; the next run records the error)")
+        return [(unit, line.split(" ", 1)[0] + f" (recorded before {COMMAND} was updated; the next run records the error)")
                 for unit, line in _state(db, "fail:")]
     return [(unit, mask(line)) for unit, line in _state(db, "fail:")]
 
@@ -612,7 +612,7 @@ def last_ingest(db):
 
 def remask(db, seconds=None, log=None):
     """Mask every row of another version again, a long item's chunks as one text, and record today's version. An item
-    with a row that records no version is left as it is: an older kb wrote it, and the store is rebuilt instead. An
+    with a row that records no version is left as it is: an older superhistory wrote it, and the store is rebuilt instead. An
     item whose source or id looks like a secret is deleted, as ingest would not store it, and named masked on
     `log`. With `seconds`, stops at the first item past that time and leaves the rest old. Returns (rows changed,
     rows left). Once none are left, rebuilds the file so the old values leave no bytes behind."""

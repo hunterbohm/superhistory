@@ -25,27 +25,27 @@ class InstallTest(unittest.TestCase):
 
     def env(self, **extra):
         path = os.pathsep.join([self.bin, "/usr/bin", "/bin"])
-        return {"HOME": self.home, "PATH": path, "KB_HOME": os.path.join(self.tmp, "kbhome"), **extra}
+        return {"HOME": self.home, "PATH": path, "SUPERHISTORY_HOME": os.path.join(self.tmp, "kbhome"), **extra}
 
     def install_sh(self, src=REPO, **extra):
         return subprocess.run(["sh", os.path.join(REPO, "install.sh"), "--from", src], env=self.env(**extra),
                               capture_output=True, text=True, timeout=120)
 
     def kb(self, *args, **extra):
-        return subprocess.run([os.path.join(self.home, ".local", "bin", "kb"), *args], env=self.env(**extra),
+        return subprocess.run([os.path.join(self.home, ".local", "bin", "superhistory"), *args], env=self.env(**extra),
                               capture_output=True, text=True, timeout=120, cwd=self.tmp)
 
     def test_install_sh_writes_a_kb_command_that_runs_from_any_folder(self):
         result = self.install_sh()
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn(f"Installed kb {kb.__version__}", result.stdout)
+        self.assertIn(f"Installed superhistory {kb.__version__}", result.stdout)
         self.assertIn("is not on your PATH", result.stdout)
         version = self.kb("--version")
         self.assertEqual(version.returncode, 0, version.stderr)
         self.assertIn(kb.__version__, version.stdout)
         tried = self.kb("try")
         self.assertEqual(tried.returncode, 0, tried.stderr)
-        # Whichever month the checkout ships: the Benchmarks month in demo/month, or the small one inside kb.
+        # Whichever month the checkout ships: the Benchmarks month in demo/month, or the small one inside superhistory.
         self.assertRegex(tried.stdout, r"Loaded \d+ made-up records")
 
     def test_the_command_ignores_the_checkout_and_pythonpath(self):
@@ -77,19 +77,19 @@ class InstallTest(unittest.TestCase):
     def test_another_kb_first_on_path_is_named(self):
         other = os.path.join(self.tmp, "other-bin")
         os.makedirs(other)
-        with open(os.path.join(other, "kb"), "w") as fh:
+        with open(os.path.join(other, "superhistory"), "w") as fh:
             fh.write("#!/bin/sh\necho other\n")
-        os.chmod(os.path.join(other, "kb"), 0o755)
+        os.chmod(os.path.join(other, "superhistory"), 0o755)
         result = subprocess.run(["sh", os.path.join(REPO, "install.sh"), "--from", REPO],
                                 env={**self.env(), "PATH": os.pathsep.join([other, self.bin, "/usr/bin", "/bin"])},
                                 capture_output=True, text=True, timeout=120)
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn(f"Another kb comes first on your PATH: {other}/kb", result.stdout)
+        self.assertIn(f"Another superhistory comes first on your PATH: {other}/superhistory", result.stdout)
 
     def test_a_folder_without_kb_is_refused(self):
         result = self.install_sh(self.tmp)
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("does not hold kb's source", result.stderr)
+        self.assertIn("does not hold superhistory's source", result.stderr)
 
     def test_no_download_address_means_install_from_a_checkout(self):
         result = subprocess.run(["sh", os.path.join(REPO, "install.sh")], env=self.env(), capture_output=True,

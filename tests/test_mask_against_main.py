@@ -17,7 +17,7 @@ new reading reads.
 
 The texts: a generator of secrets, words and invisible characters that splits some secrets and not others, the write
 fuzz's planted texts and titles, and the old-row cases with what older kbs' masks left of them. Each text runs as
-written and without its invisible characters. KB_DIFF_CASES sets how many of each.
+written and without its invisible characters. SUPERHISTORY_DIFF_CASES sets how many of each.
 """
 import importlib.util
 import os
@@ -32,7 +32,7 @@ from tests import legacy_mask, legacy_store
 from tests.test_old_rows import Case
 from tests.test_write_fuzz import Planted
 
-CASES = int(os.environ.get("KB_DIFF_CASES", "300"))
+CASES = int(os.environ.get("SUPERHISTORY_DIFF_CASES", "300"))
 PLACEHOLDER = "[masked]"
 
 
@@ -397,7 +397,7 @@ def corpus(cases=CASES):
         text = Case(r, n).text
         size = r.randint(40, 400)
         yield f"old row {n}", text
-        yield f"old row {n}, an older kb's mask", legacy_mask.mask(text)
+        yield f"old row {n}, an older superhistory's mask", legacy_mask.mask(text)
         yield f"old row {n}, main's token mask", legacy_store.token_mask(text)
         yield f"old row {n}, masked a chunk at a time", "".join(legacy_mask.mask(text[i:i + size])
                                                                  for i in range(0, len(text), size))

@@ -3,7 +3,6 @@ requires = ["setuptools>=61"]
 build-backend = "setuptools.build_meta"
 
 [project]
-# The command is `kb`. PyPI's "kb" belongs to another project, so the distribution is named for the product.
 name = "superhistory"
 dynamic = ["version"]
 description = "The knowledge base your agents check first."
@@ -13,7 +12,7 @@ requires-python = ">=3.9"
 dependencies = []
 
 [project.scripts]
-kb = "kb.cli:main"
+superhistory = "kb.cli:main"
 
 [tool.setuptools.dynamic]
 version = {attr = "kb.__version__"}

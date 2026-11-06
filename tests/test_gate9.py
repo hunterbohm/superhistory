@@ -16,7 +16,7 @@ TOKENS = ("ghp_Zq7Lm2Xc9Vb4Nn8Kk3Jj6Hh1Gg5Ff0Dd2Ss", "sk_live_51Hq8ZtKx9Lm2Np4Qr
           "sk-proj-Ab3Cd5Ef7Gh9Ij1Kl3Mn5Op7Qr9St1Uv3Wx5",
           "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dBjftJeZ4CVPmB92K27uhbUJU1p1r_wW1gFWFOEjXk")
 PASSWORD = "Tr0ub4dor-Zk9q"
-# How a terminal colour code reaches kb: raw, escaped in JSON, written as Python writes it, in octal, and as the
+# How a terminal colour code reaches superhistory: raw, escaped in JSON, written as Python writes it, in octal, and as the
 # eight-bit introducer.
 FORMS = {"raw": "\x1b[", "json": "\\u001b[", "python": "\\x1b[", "octal": "\\033[", "eight-bit": "\x9b",
          "eight-bit json": "\\u009b", "eight-bit python": "\\x9b"}
@@ -45,7 +45,7 @@ def stored(reader, records):
             with open(path, "w", encoding="utf-8") as fh:
                 fh.write("\n".join(json.dumps(r, separators=(",", ":")) for r in records) + "\n")
             item = codex.render([path], 0) if reader == "codex" else claude_code.render(path, 0)
-        db = store.connect(os.path.join(tmp, "kb.sqlite"))
+        db = store.connect(os.path.join(tmp, "superhistory.sqlite"))
         try:
             store.store_item(db, reader, item.source_id, item.ts, item.title, item.content, item.meta)
             return "".join(r[0] for r in db.execute("SELECT content FROM docs ORDER BY id"))
@@ -308,7 +308,7 @@ class ReviewOneTest(unittest.TestCase):
     def test_an_id_shaped_like_a_provider_token_keeps_its_row(self):
         import tempfile
         with tempfile.TemporaryDirectory() as tmp:
-            db = store.connect(os.path.join(tmp, "kb.sqlite"))
+            db = store.connect(os.path.join(tmp, "superhistory.sqlite"))
             try:
                 sid = "notes:TASK0123456789abcdef0123456789abcdef"
                 db.execute("INSERT INTO docs(kind,source,source_id,ts,title,content,metadata,masked) "
@@ -396,7 +396,7 @@ class ReviewTwoTest(unittest.TestCase):
                 self.assertFalse(secret_in_id(sid))
         import tempfile
         with tempfile.TemporaryDirectory() as tmp:
-            db = store.connect(os.path.join(tmp, "kb.sqlite"))
+            db = store.connect(os.path.join(tmp, "superhistory.sqlite"))
             try:
                 db.execute("INSERT INTO docs(kind,source,source_id,ts,title,content,metadata,masked) VALUES(?,?,?,?,?,?,?,?)",
                            ("doc", "notes", "SK0123456789abcdef\u200b0123456789abcdef.md", "2026-11-01", "Plan", "notes",
@@ -439,7 +439,7 @@ class ReviewTwoTest(unittest.TestCase):
 
 HEADER_SECRET = "Pw7xYzQ9mK2nL4pR"
 # HTTP header and form field names, and other field names made of ordinary words, for the check that only a header
-# kb reads as "name: value" changes how its value is masked.
+# superhistory reads as "name: value" changes how its value is masked.
 HTTP_HEADERS = ("Accept", "Accept-Encoding", "Accept-Language", "Age", "Allow", "Cache-Control", "Connection",
                 "Content-Disposition", "Content-Encoding", "Content-Language", "Content-Length", "Content-Type", "Date",
                 "ETag", "Expires", "Host", "If-Modified-Since", "If-None-Match", "Last-Modified", "Link", "Location",
@@ -466,7 +466,7 @@ def field_names():
 
 
 class HeaderFieldTest(unittest.TestCase):
-    """A header held as a field's key, or as a name and a value held apart, is masked as kb masks the header in text,
+    """A header held as a field's key, or as a name and a value held apart, is masked as superhistory masks the header in text,
     "name: value" (found in the Cloud egress review); no other field name changes."""
 
     CASES = (
@@ -716,9 +716,9 @@ class ReviewFiveTest(unittest.TestCase):
             text = f"[masked]{code}README.md"
             with self.subTest(code=code):
                 self.assertEqual(mask(text), text)
-        self.assertEqual(mask("[masked]\u200bREADME.md"), "[masked].md")  # an older kb's leftover, as main reads it
+        self.assertEqual(mask("[masked]\u200bREADME.md"), "[masked].md")  # an older superhistory's leftover, as main reads it
         with tempfile.TemporaryDirectory() as tmp:
-            db = store.connect(os.path.join(tmp, "kb.sqlite"))
+            db = store.connect(os.path.join(tmp, "superhistory.sqlite"))
             try:
                 content = "built [masked]\x1b[0mREADME.md"
                 db.execute("INSERT INTO docs(kind,source,source_id,ts,title,content,metadata,masked) "

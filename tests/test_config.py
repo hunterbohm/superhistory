@@ -146,7 +146,7 @@ class KeyWordHostTest(unittest.TestCase):
                 with self.assertRaises(config.ConfigError) as caught:
                     config.parse(f'machine = "{name}"\n')
                 self.assertIn(f'machine: "{name}" is a word for a secret', str(caught.exception))
-                self.assertIn("run `kb setup` and give this computer another name", str(caught.exception))
+                self.assertIn("run `superhistory setup` and give this computer another name", str(caught.exception))
                 with self.assertRaises(config.ConfigError) as caught:
                     config.parse(f'[hosts.{name}]\nssh = "x"\n')
                 self.assertIn(f"rename the [hosts.{name}] table and that host in each source's hosts list",
@@ -161,30 +161,30 @@ class SecretTest(unittest.TestCase):
             path = os.path.join(tmp, "key")
             with open(path, "w") as fh:
                 fh.write("from-file\n")
-            os.environ["KB_TEST_SECRET"] = "from-env"
-            self.addCleanup(os.environ.pop, "KB_TEST_SECRET", None)
-            self.assertEqual(Secret("env:KB_TEST_SECRET").reveal(), "from-env")
+            os.environ["SUPERHISTORY_TEST_SECRET"] = "from-env"
+            self.addCleanup(os.environ.pop, "SUPERHISTORY_TEST_SECRET", None)
+            self.assertEqual(Secret("env:SUPERHISTORY_TEST_SECRET").reveal(), "from-env")
             self.assertEqual(Secret(f"file:{path}").reveal(), "from-file")
             self.assertEqual(Secret("cmd:echo from-command").reveal(), "from-command")
 
     def test_a_secret_keeps_a_line_separator_it_ends_with(self):
         for separator in ("\u2028", "\u2029", "\x85"):
-            with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(os.environ, {"KB_TEST_SECRET": "pw" + separator}):
+            with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(os.environ, {"SUPERHISTORY_TEST_SECRET": "pw" + separator}):
                 path = os.path.join(tmp, "key")
                 with open(path, "w", encoding="utf-8") as fh:
                     fh.write("pw" + separator + "\n")
-                self.assertEqual(Secret("env:KB_TEST_SECRET").reveal(), "pw" + separator, repr(separator))
+                self.assertEqual(Secret("env:SUPERHISTORY_TEST_SECRET").reveal(), "pw" + separator, repr(separator))
                 self.assertEqual(Secret(f"file:{path}").reveal(), "pw" + separator, repr(separator))
 
     def test_unreadable_or_empty_secrets_raise(self):
-        for ref in ("env:KB_TEST_UNSET_SECRET", "file:/nonexistent/key", "cmd:exit 3", "cmd:true"):
+        for ref in ("env:SUPERHISTORY_TEST_UNSET_SECRET", "file:/nonexistent/key", "cmd:exit 3", "cmd:true"):
             with self.subTest(ref), self.assertRaises(SecretError):
                 Secret(ref).reveal()
 
     def test_repr_never_shows_the_value(self):
-        os.environ["KB_TEST_SECRET"] = "hidden-value"
-        self.addCleanup(os.environ.pop, "KB_TEST_SECRET", None)
-        self.assertNotIn("hidden-value", repr(Secret("env:KB_TEST_SECRET")))
+        os.environ["SUPERHISTORY_TEST_SECRET"] = "hidden-value"
+        self.addCleanup(os.environ.pop, "SUPERHISTORY_TEST_SECRET", None)
+        self.assertNotIn("hidden-value", repr(Secret("env:SUPERHISTORY_TEST_SECRET")))
 
 
 if __name__ == "__main__":

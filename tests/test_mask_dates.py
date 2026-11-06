@@ -189,7 +189,7 @@ class AuthorizationNumberShapedTest(unittest.TestCase):
 
 
 def shape_alone_forms(value):
-    """The places kb reads a value by its shape alone, as the README lists them: after "pass" or "pwd" next to a user's
+    """The places superhistory reads a value by its shape alone, as the README lists them: after "pass" or "pwd" next to a user's
     name, in an XML element not named for a password, after a name a colour code splits, under a header's or a secret's
     name in a two-item list, and in a field with no label."""
     texts = {"pass": f"user=ci pass={value}", "pwd": f"Server=db;Uid=sa;Pwd={value};", "xml": f"<secret>{value}</secret>",
@@ -259,7 +259,7 @@ class StoredRowTest(unittest.TestCase):
     def test_a_row_main_stored_is_masked_again(self):
         text = "\n".join(f"{name}{sep}{value}" for name, sep, value in SHAPES) + "\nexpires_at: 2026-11-01T10:00:00Z\n"
         with tempfile.TemporaryDirectory() as tmp:
-            db = store.connect(os.path.join(tmp, "kb.sqlite"))
+            db = store.connect(os.path.join(tmp, "superhistory.sqlite"))
             try:
                 db.execute("INSERT INTO docs(kind,source,source_id,ts,title,content,metadata,masked) "
                            "VALUES(?,?,?,?,?,?,?,?)", ("doc", "notes", "notes:plan.md", "2026-11-01", "Plan", text, "{}",
@@ -278,7 +278,7 @@ class StoredRowTest(unittest.TestCase):
     def test_a_row_main_2ec4d8c_stored_with_an_authorization_of_digits_is_masked_again(self):
         text = "Authorization: 20261101T100000Z1234\nAuthorization: 2026-11-01T10:00:00Z\n"
         with tempfile.TemporaryDirectory() as tmp:
-            db = store.connect(os.path.join(tmp, "kb.sqlite"))
+            db = store.connect(os.path.join(tmp, "superhistory.sqlite"))
             try:
                 db.execute("INSERT INTO docs(kind,source,source_id,ts,title,content,metadata,masked) "
                            "VALUES(?,?,?,?,?,?,?,?)", ("doc", "notes", "notes:plan.md", "2026-11-01", "Plan", text, "{}",

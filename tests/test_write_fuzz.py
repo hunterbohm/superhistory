@@ -1,13 +1,13 @@
 """A seeded fuzz of write sequences. Rounds 8 and 9 each found writes that, in some order, left a row marked current
 though its item was not masked whole. Each sequence here mixes the writes that ingest, Sync, remask and an
-older kb make, on a few items whose text holds canaries split across chunk and call boundaries. After every sequence:
-- no reader shows a piece of a canary: search's hits, their render, the lookup's prompt, `kb get`, and the
-  summarizer's input, each as kb sends or prints it;
+older superhistory make, on a few items whose text holds canaries split across chunk and call boundaries. After every sequence:
+- no reader shows a piece of a canary: search's hits, their render, the lookup's prompt, `superhistory get`, and the
+  summarizer's input, each as superhistory sends or prints it;
 - no row reads as current unless its whole item masks clean, and no current item's row records a hash of other text
   than its stored title and text.
 
-KB_FUZZ_SEQUENCES and KB_FUZZ_SEED change the run. A failure names its sequence, which reruns on its own with
-KB_FUZZ_ONLY.
+SUPERHISTORY_FUZZ_SEQUENCES and SUPERHISTORY_FUZZ_SEED change the run. A failure names its sequence, which reruns on its own with
+SUPERHISTORY_FUZZ_ONLY.
 """
 import contextlib
 import functools
@@ -29,9 +29,9 @@ from kb.mask import INVISIBLE, mask, mask_all
 from kb.sources import Item
 from tests import legacy_store
 
-SEQUENCES = int(os.environ.get("KB_FUZZ_SEQUENCES", "2500"))
-SEED = int(os.environ.get("KB_FUZZ_SEED", "20261027"))
-ONLY = os.environ.get("KB_FUZZ_ONLY")
+SEQUENCES = int(os.environ.get("SUPERHISTORY_FUZZ_SEQUENCES", "2500"))
+SEED = int(os.environ.get("SUPERHISTORY_FUZZ_SEED", "20261027"))
+ONLY = os.environ.get("SUPERHISTORY_FUZZ_ONLY")
 CHUNK = 120  # small chunks, so a few hundred characters make a long item and canaries cross chunk boundaries
 IDS = ("a.md", "b.md", "c.md")
 TS = "2026-10-01T10:00:00Z"
@@ -76,7 +76,7 @@ class Planted:
 
     def pem(self, whole=False):
         """A private key: whole, long enough that a middle chunk holds only body lines, cut off before its footer, or
-        as an older kb's row-by-row remask leaves it, its placeholder and then the rest of the body."""
+        as an older superhistory's row-by-row remask leaves it, its placeholder and then the rest of the body."""
         line = ("MIIEvQIBAD" + self._value("Fz{}xPemBodyLine" + "PemBodyLine" * 5))[:64]
         self.pieces.update((line, line[:12]))
         body = "\n".join([line] * self.r.randint(2, 10))
@@ -136,7 +136,7 @@ class Planted:
 
 
 def op_ingest(db, r, p):
-    """kb's own write, as ingest makes it."""
+    """superhistory's own write, as ingest makes it."""
     sid, title, text = r.choice(IDS), p.title(), p.text()
     p.items[sid] = (title, text)
     ingest.apply(db, "notes", "desk:", Item(sid, TS, title, text, p.meta(sid), 0), "desk")
@@ -185,14 +185,14 @@ def op_sync_secret_id(db, r, p):
 
 
 def op_old_kb(db, r, p):
-    """An older kb, whose masking misses these canaries: its store_item, and its _repoint for text it already has."""
+    """An older superhistory, whose masking misses these canaries: its store_item, and its _repoint for text it already has."""
     sid = r.choice(IDS) if r.random() < 0.9 else f"key-{p.token()}.md"
     title, text = p.items[sid] if sid in p.items and r.random() < 0.6 else (p.title(), p.text())
     legacy_store.store_item(db, "notes", f"desk:{sid}", TS, title, text, p.meta(sid), CHUNK)
 
 
 def op_old_remask(db, r, p):
-    """An older kb's remask, whose mask knows only token shapes and masks each row by itself."""
+    """An older superhistory's remask, whose mask knows only token shapes and masks each row by itself."""
     legacy_store.remask(db, legacy_store.token_mask)
 
 
@@ -272,7 +272,7 @@ def not_masked_whole(db):
 
 
 def shown(db, path):
-    """Everything a reader shows or sends, as kb shows or sends it."""
+    """Everything a reader shows or sends, as superhistory shows or sends it."""
     out = []
     for query in ("walrus ledger", "deploy notes", "harbor plan"):
         hits = search.search(db, query, limit=10)
@@ -306,7 +306,7 @@ def run_sequence(seq, root, ops=None):
     db.execute("PRAGMA synchronous=OFF")  # a scratch file: no write here needs to survive a power cut
     planted, done = Planted(r, seq), []
     names = [r.choice(ops or sorted(OPERATIONS)) for _ in range(r.randint(3, 9))]
-    # An older kb only ever stored real keys, wrapped at 64 to 76 characters; narrower ones come from kb's own writes.
+    # An older superhistory only ever stored real keys, wrapped at 64 to 76 characters; narrower ones come from superhistory's own writes.
     planted.narrowest = 16 if {"old_kb", "old_remask"} & set(names) else 1
     try:
         for name in names:
@@ -318,7 +318,7 @@ def run_sequence(seq, root, ops=None):
                 done[-1] += " (stopped)"
                 db.rollback()
         problems = not_masked_whole(db)
-        if store.has_unversioned(db):  # an older kb wrote or changed a row: the store must not open again
+        if store.has_unversioned(db):  # an older superhistory wrote or changed a row: the store must not open again
             try:
                 store.connect(path).close()
                 problems.append("a store with a row of no mask version opened")
@@ -354,8 +354,8 @@ class WriteSequenceFuzz(unittest.TestCase):
         failures = run()
         if failures:
             seq, done, problems = failures[0]
-            self.fail(f"{len(failures)} of {SEQUENCES} sequences fail; the first, KB_FUZZ_ONLY={seq} "
-                      f"KB_FUZZ_SEED={SEED}: {' -> '.join(done)}: {problems[:3]}")
+            self.fail(f"{len(failures)} of {SEQUENCES} sequences fail; the first, SUPERHISTORY_FUZZ_ONLY={seq} "
+                      f"SUPERHISTORY_FUZZ_SEED={SEED}: {' -> '.join(done)}: {problems[:3]}")
 
 
 if __name__ == "__main__":

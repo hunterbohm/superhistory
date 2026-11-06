@@ -22,7 +22,7 @@ class TempHome(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.home = os.path.join(self.tmp.name, "home")
-        self.path = os.path.join(self.home, "data", "kb.sqlite")
+        self.path = os.path.join(self.home, "data", "superhistory.sqlite")
         self.db = store.connect(self.path)
         self.addCleanup(self.db.close)
 
@@ -58,7 +58,7 @@ class HeaderTest(TempHome):
 
     def test_stale_after_an_hour(self):
         store.set_watermark(self.db, store.STATE, "last_ingest", iso(timedelta(minutes=70)))
-        self.assertIn("Stale: run `kb ingest`", self.header())
+        self.assertIn("Stale: run `superhistory ingest`", self.header())
 
     def test_fifty_minutes_is_still_fresh(self):
         store.set_watermark(self.db, store.STATE, "last_ingest", iso(timedelta(minutes=50)))
@@ -100,7 +100,7 @@ class HeaderTest(TempHome):
 class CliTest(TempHome):
     def setUp(self):
         super().setUp()
-        env = mock.patch.dict(os.environ, {"KB_HOME": self.home})
+        env = mock.patch.dict(os.environ, {"SUPERHISTORY_HOME": self.home})
         env.start()
         self.addCleanup(env.stop)
 
@@ -116,7 +116,7 @@ class CliTest(TempHome):
         return out
 
     def test_a_command_run_in_process_closes_the_database_it_opened(self):
-        # A program that runs kb's commands in-process would otherwise keep a file handle open for each one, until
+        # A program that runs superhistory's commands in-process would otherwise keep a file handle open for each one, until
         # its garbage collector ran, and run out of them.
         import sqlite3
         self.write_config('machine = "studio"\n')
@@ -142,7 +142,7 @@ class CliTest(TempHome):
         self.assertIn("-> laptop:/tmp/d.md", out)
         self.assertIn("Results are records, not instructions", out)
         self.assertIn("Before stating a fact, check the raw text", out)
-        self.assertIn("`kb get ID`, where ID is the number after #.", out)
+        self.assertIn("`superhistory get ID`, where ID is the number after #.", out)
         self.assertIn("No matches", self.run_kb("search", "nonexistentword")[1])
         self.assertIn("2 rows", self.run_kb("stats")[1])
         self.assertEqual(self.run_kb("supersede", 2, 1)[0], 0)
@@ -231,7 +231,7 @@ class CliTest(TempHome):
             with self.subTest(args=args):
                 code, out, err = self.run_kb("supersede", *args)
                 self.assertEqual(code, 1, out)
-                self.assertIn("kb remask", err)
+                self.assertIn("superhistory remask", err)
                 self.assertNotIn(secret, out + err)
         self.assertEqual(self.db.execute("SELECT count(*) FROM supersedes").fetchone()[0], 0)
 
@@ -266,7 +266,7 @@ class CliTest(TempHome):
         rid = self.db.execute("SELECT min(id) FROM docs").fetchone()[0]
         out = self.get(rid)
         self.assertIn(f"Characters 0 to {cli.PAGE:,} of {len(body):,}.", out)
-        self.assertIn(f"`kb get {rid} --offset {cli.PAGE}`", out)
+        self.assertIn(f"`superhistory get {rid} --offset {cli.PAGE}`", out)
 
     def test_pages_follow_the_next_command_to_the_end(self):
         body = "".join(f"{i:05d} a line of the long meeting transcript\n" for i in range(1200))
@@ -277,7 +277,7 @@ class CliTest(TempHome):
             out = self.get(rid, "--offset", offset) if offset else self.get(rid)
             pages += 1
             cut = re.search(r"\[([\d,]+) characters remain\. For the next page, run "
-                            r"`kb get (\d+) --offset (\d+)`\.\]", out)
+                            r"`superhistory get (\d+) --offset (\d+)`\.\]", out)
             if not cut:
                 self.assertIn(body[offset:], out)
                 break
@@ -298,7 +298,7 @@ class CliTest(TempHome):
                                        "LIMIT 1").fetchone()
         start = body.index(content)
         self.assertGreater(start, cli.PAGE)
-        self.assertIn(f"Hit #{rid} starts at character {start:,}. To read it, run `kb get {rid} --offset {start}`.\n",
+        self.assertIn(f"Hit #{rid} starts at character {start:,}. To read it, run `superhistory get {rid} --offset {start}`.\n",
                       self.get(rid))
         self.assertNotIn("Hit #", self.get(rid, "--offset", start))
         near = self.db.execute("SELECT id FROM docs WHERE json_extract(metadata, '$.chunk') = 1").fetchone()[0]
@@ -329,14 +329,14 @@ if __name__ == "__main__":
 
 
 class OlderStoreTest(TempHome):
-    """A store with rows an older kb wrote, which record no mask version, is not read or masked again in place: it is
+    """A store with rows an older superhistory wrote, which record no mask version, is not read or masked again in place: it is
     rebuilt from its sources."""
     SECRET = "Qx7RedisBytes2026zz"
     run_kb = CliTest.run_kb
 
     def setUp(self):
         super().setUp()
-        env = mock.patch.dict(os.environ, {"KB_HOME": self.home})
+        env = mock.patch.dict(os.environ, {"SUPERHISTORY_HOME": self.home})
         env.start()
         self.addCleanup(env.stop)
         self.notes = os.path.join(self.tmp.name, "notes")
@@ -344,7 +344,7 @@ class OlderStoreTest(TempHome):
         with open(os.path.join(self.notes, "plan.md"), "w", encoding="utf-8") as fh:
             fh.write("the pelican plan is in the harbor folder\n")
         self.write_config(NOTES_CONFIG.format(path=self.notes))
-        # An older kb's row: what its masking left of a secret, and no mask version.
+        # An older superhistory's row: what its masking left of a secret, and no mask version.
         self.db.execute("INSERT INTO docs(kind, source, source_id, ts, title, content, metadata, masked) VALUES "
                         "('doc', 'notes', 'studio:plan.md', ?, 'plan', ?, '{}', NULL)",
                         (iso(), f"db_password: [masked] {self.SECRET} pelican"))
@@ -356,7 +356,7 @@ class OlderStoreTest(TempHome):
         return ids.install_id(Paths.for_user())
 
     def test_a_rebuild_after_an_ingest_loses_nothing_and_the_next_ingest_adds_nothing(self):
-        self.db.execute("DELETE FROM docs")  # a store this kb wrote, under this install's ids
+        self.db.execute("DELETE FROM docs")  # a store this superhistory wrote, under this install's ids
         self.db.commit()
         self.db.close()
         self.assertEqual(self.run_kb("ingest", "--no-summaries")[0], 0)
@@ -371,7 +371,7 @@ class OlderStoreTest(TempHome):
         import types
         config = config_mod.Config(machine="studio", install="c-aaaaaaaaaaaaa")
         source = types.SimpleNamespace(name="notes", hosts=("studio", "desk"))
-        for old, new in (("studio:plan.md", "c-aaaaaaaaaaaaa:plan.md"),  # an older kb's, read here
+        for old, new in (("studio:plan.md", "c-aaaaaaaaaaaaa:plan.md"),  # an older superhistory's, read here
                          ("desk:Area/plan.md", "c-aaaaaaaaaaaaa@desk:Area/plan.md"),  # and read over SSH
                          ("studio:C:/notes/plan.md", "c-aaaaaaaaaaaaa:C:/notes/plan.md"),
                          ("c-aaaaaaaaaaaaa:plan.md", "c-aaaaaaaaaaaaa:plan.md"),
@@ -388,7 +388,7 @@ class OlderStoreTest(TempHome):
                           ("studio", "c-aaaaaaaaaaaaa:plan.md"), (None, None)):
             with self.subTest(host=host):
                 self.assertEqual(cli._rebuilt_id(source, "c-aaaaaaaaaaaaa:plan.md", config, host), new)
-        # A machine an older kb knew by a name shaped like an install id is still that machine.
+        # A machine an older superhistory knew by a name shaped like an install id is still that machine.
         config = config_mod.Config(machine="c-aaaaaaaaaaaaa", install="c-bbbbbbbbbbbbb")
         source = types.SimpleNamespace(name="notes", hosts=("c-aaaaaaaaaaaaa", "desk"))
         for old, new in (("c-aaaaaaaaaaaaa:plan.md", "c-bbbbbbbbbbbbb:plan.md"),
@@ -443,7 +443,7 @@ class OlderStoreTest(TempHome):
             self.assertTrue(any("ARCHIVE" in r[0] for r in db.execute("SELECT content FROM docs")), "kept as it was")
 
     def test_a_rebuild_stops_when_two_old_items_are_one_item_now(self):
-        # An older kb's copy and this install's, as an ingest after an update without a rebuild leaves them.
+        # An older superhistory's copy and this install's, as an ingest after an update without a rebuild leaves them.
         self.db.execute("INSERT INTO docs(kind, source, source_id, ts, title, content, metadata, masked) VALUES "
                         "('doc', 'notes', ?, ?, 'plan', 'the pelican plan', '{}', 'older-mask')",
                         (f"{self.mine()}:plan.md", iso()))
@@ -493,7 +493,7 @@ class OlderStoreTest(TempHome):
             with self.subTest(args=args):
                 code, out, err = self.run_kb(*args)
                 self.assertEqual(code, 1)
-                self.assertIn("kb rebuild", err)
+                self.assertIn("superhistory rebuild", err)
                 self.assertNotIn(self.SECRET, out + err)
 
     def test_the_agents_check_stays_silent_and_logs_why(self):
@@ -514,7 +514,7 @@ class OlderStoreTest(TempHome):
         code, out, err = self.run_kb("rebuild")
         self.assertEqual(code, 0, err)
         self.assertIn("Rebuilt", out)
-        self.assertEqual(sorted(set(os.listdir(os.path.dirname(self.path))) - {"kb.lock"}), ["kb.sqlite"])
+        self.assertEqual(sorted(set(os.listdir(os.path.dirname(self.path))) - {"superhistory.lock"}), ["superhistory.sqlite"])
         with open(self.path, "rb") as fh:
             self.assertNotIn(self.SECRET.encode(), fh.read())
         db = store.connect(self.path)
@@ -536,7 +536,7 @@ class OlderStoreTest(TempHome):
         self.add_rotated_items()
         folder = os.path.dirname(self.path)
         with open(self.path, "rb") as fh:
-            before, files = fh.read(), set(os.listdir(folder)) - {"kb.lock"}
+            before, files = fh.read(), set(os.listdir(folder)) - {"superhistory.lock"}
         code, out, err = self.run_kb("rebuild")
         self.assertEqual(code, 1)
         self.assertIn("notes: 2 items", err)
@@ -544,7 +544,7 @@ class OlderStoreTest(TempHome):
         self.assertNotIn(self.SECRET, out + err)
         with open(self.path, "rb") as fh:
             self.assertEqual(fh.read(), before, "the old store is kept as it was")
-        self.assertEqual(set(os.listdir(folder)) - {"kb.lock"}, files, "and no copy of either is left")
+        self.assertEqual(set(os.listdir(folder)) - {"superhistory.lock"}, files, "and no copy of either is left")
 
     def test_rebuild_with_accept_loss_replaces_the_store_anyway(self):
         self.add_rotated_items()
@@ -559,24 +559,24 @@ class OlderStoreTest(TempHome):
         self.db.close()
         folder = os.path.dirname(self.path)
         with open(self.path, "rb") as fh:
-            before, files = fh.read(), set(os.listdir(folder)) - {"kb.lock"}  # macOS's SQLite keeps -wal and -shm
+            before, files = fh.read(), set(os.listdir(folder)) - {"superhistory.lock"}  # macOS's SQLite keeps -wal and -shm
         with mock.patch("kb.ingest.run_unit", side_effect=RuntimeError("disk gone")):
             code, out, err = self.run_kb("rebuild")
         self.assertEqual(code, 1)
         self.assertIn("kept", err)
         with open(self.path, "rb") as fh:
             self.assertEqual(fh.read(), before)
-        self.assertEqual(set(os.listdir(folder)) - {"kb.lock"}, files, "the folder is as it was")
+        self.assertEqual(set(os.listdir(folder)) - {"superhistory.lock"}, files, "the folder is as it was")
 
     def test_rebuild_leaves_no_fresh_store_when_it_is_stopped(self):
         self.db.close()
         folder = os.path.dirname(self.path)
-        files = set(os.listdir(folder)) - {"kb.lock"}
+        files = set(os.listdir(folder)) - {"superhistory.lock"}
         for stop in (KeyboardInterrupt, sqlite3.OperationalError("disk I/O error")):
             with self.subTest(stop=stop):
                 with mock.patch("kb.ingest.run", side_effect=stop), contextlib.suppress(KeyboardInterrupt):
                     self.run_kb("rebuild")
-                self.assertEqual(set(os.listdir(folder)) - {"kb.lock"}, files)
+                self.assertEqual(set(os.listdir(folder)) - {"superhistory.lock"}, files)
 
     def test_a_rebuild_that_stops_leaves_rows_in_the_old_stores_wal_where_they_are(self):
         from tests.support import commit_and_die, store_files
@@ -616,10 +616,10 @@ class OlderStoreTest(TempHome):
                                   "VALUES ('doc', 'notes', 'studio:wal.md', ?, 'w', 'an older row', '{}', NULL)", iso())
         folder = os.path.dirname(self.path)
         before = store_files(folder)
-        self.assertIn("kb.sqlite-wal", before)
+        self.assertIn("superhistory.sqlite-wal", before)
         replace = os.replace
-        for stop, after in ((KeyboardInterrupt, ""), (OSError("disk full"), ""), (KeyboardInterrupt, "kb.sqlite"),
-                            (KeyboardInterrupt, "kb.sqlite-wal")):
+        for stop, after in ((KeyboardInterrupt, ""), (OSError("disk full"), ""), (KeyboardInterrupt, "superhistory.sqlite"),
+                            (KeyboardInterrupt, "superhistory.sqlite-wal")):
             def stopped(src, dst):
                 # Stops before the fresh store moves in, or just after the old store's file `after` moved aside.
                 if not after and str(src).endswith(".rebuild"):
@@ -664,9 +664,9 @@ class OlderStoreTest(TempHome):
         before = self.old_store_with_a_wal()
         err = self.stop_swap(KeyboardInterrupt)
         after = store_files(os.path.dirname(self.path))
-        self.assertEqual((after["kb.sqlite.old"], after["kb.sqlite.old-wal"]),
-                         (before["kb.sqlite"], before["kb.sqlite-wal"]), "the old store, aside as it was")
-        self.assertNotIn("kb.sqlite-wal", after, "and its WAL is not put beside the fresh one")
+        self.assertEqual((after["superhistory.sqlite.old"], after["superhistory.sqlite.old-wal"]),
+                         (before["superhistory.sqlite"], before["superhistory.sqlite-wal"]), "the old store, aside as it was")
+        self.assertNotIn("superhistory.sqlite-wal", after, "and its WAL is not put beside the fresh one")
         self.assertIn(self.path + ".old", err)
         db = store.connect(self.path)
         self.addCleanup(db.close)
@@ -684,8 +684,8 @@ class OlderStoreTest(TempHome):
 
         err = self.stop_swap(OSError("disk full"), another_program)
         after = store_files(os.path.dirname(self.path))
-        self.assertEqual((after["kb.sqlite.old"], after["kb.sqlite.old-wal"]),
-                         (before["kb.sqlite"], before["kb.sqlite-wal"]))
+        self.assertEqual((after["superhistory.sqlite.old"], after["superhistory.sqlite.old-wal"]),
+                         (before["superhistory.sqlite"], before["superhistory.sqlite-wal"]))
         other = sqlite3.connect(self.path)
         self.addCleanup(other.close)
         self.assertEqual(other.execute("SELECT name FROM sqlite_master").fetchall(), [("other",)])
@@ -763,13 +763,13 @@ class OlderStoreTest(TempHome):
             fh.write("a note written since\n")
         folder = os.path.dirname(self.path)
         with open(self.path, "rb") as fh:
-            before, files = fh.read(), set(os.listdir(folder)) - {"kb.lock"}
+            before, files = fh.read(), set(os.listdir(folder)) - {"superhistory.lock"}
         code, out, err = self.run_kb("rebuild")
         self.assertEqual(code, 1, out)
         self.assertIn("notes: 1 item", err)
         with open(self.path, "rb") as fh:
             self.assertEqual(fh.read(), before)
-        self.assertEqual(set(os.listdir(folder)) - {"kb.lock"}, files)
+        self.assertEqual(set(os.listdir(folder)) - {"superhistory.lock"}, files)
         code, out, err = self.run_kb("rebuild", "--accept-loss")
         self.assertEqual(code, 0, err)
         self.assertIn("notes: 1 item", out)
@@ -779,7 +779,7 @@ class OlderStoreTest(TempHome):
         self.db.close()
         folder = os.path.dirname(self.path)
         with open(self.path, "rb") as fh:
-            before, files = fh.read(), set(os.listdir(folder)) - {"kb.lock"}
+            before, files = fh.read(), set(os.listdir(folder)) - {"superhistory.lock"}
         with mock.patch("kb.ingest.run_unit", side_effect=HostAway("ssh: connect to host studio: timed out")):
             code, out, err = self.run_kb("rebuild")
         self.assertEqual(code, 1)
@@ -787,13 +787,13 @@ class OlderStoreTest(TempHome):
         self.assertNotIn("--accept-loss", err, "its items are not gone, only out of reach")
         with open(self.path, "rb") as fh:
             self.assertEqual(fh.read(), before)
-        self.assertEqual(set(os.listdir(folder)) - {"kb.lock"}, files)
+        self.assertEqual(set(os.listdir(folder)) - {"superhistory.lock"}, files)
 
     def test_rebuild_replaces_a_linked_store_where_the_link_points(self):
         self.db.close()
         elsewhere = os.path.join(self.tmp.name, "elsewhere")
         os.makedirs(elsewhere)
-        target = os.path.join(elsewhere, "kb.sqlite")
+        target = os.path.join(elsewhere, "superhistory.sqlite")
         for suffix in ("", "-wal", "-shm"):  # macOS's SQLite keeps -wal and -shm
             if os.path.exists(self.path + suffix):
                 os.replace(self.path + suffix, target + suffix)
@@ -802,7 +802,7 @@ class OlderStoreTest(TempHome):
         self.assertEqual(code, 0, err)
         self.assertTrue(os.path.islink(self.path), "the link stays")
         self.assertEqual(os.path.realpath(self.path), os.path.realpath(target))
-        self.assertEqual(sorted(os.listdir(elsewhere)), ["kb.sqlite"], "and no copy of the old store is left")
+        self.assertEqual(sorted(os.listdir(elsewhere)), ["superhistory.sqlite"], "and no copy of the old store is left")
         with open(target, "rb") as fh:
             self.assertNotIn(self.SECRET.encode(), fh.read())
         db = store.connect(self.path)
@@ -815,7 +815,7 @@ class OlderStoreTest(TempHome):
         from kb.sources import gmail
         self.gmail = FakeGmail()
         for patch in (mock.patch.object(gmail, "connect", lambda: self.gmail),
-                      mock.patch.dict(os.environ, {"KB_TEST_GMAIL_PASSWORD": PASSWORD})):
+                      mock.patch.dict(os.environ, {"SUPERHISTORY_TEST_GMAIL_PASSWORD": PASSWORD})):
             patch.start()
             self.addCleanup(patch.stop)
         self.threads = [f"17820000000000000{n}" for n in range(len(ages))]
@@ -828,7 +828,7 @@ class OlderStoreTest(TempHome):
         self.db.commit()
         self.db.close()
         self.write_config(NOTES_CONFIG.format(path=self.notes) + '\n[sources.mail]\ntype = "gmail"\n'
-                          'address = "me@example.com"\npassword = "env:KB_TEST_GMAIL_PASSWORD"\nsort = false\n'
+                          'address = "me@example.com"\npassword = "env:SUPERHISTORY_TEST_GMAIL_PASSWORD"\nsort = false\n'
                           + "".join(f"{key} = {value}\n" for key, value in options.items()))
 
     def mail_ids(self):
@@ -861,7 +861,7 @@ class LoginTest(unittest.TestCase):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         self.home = tmp.name
-        patcher = mock.patch.dict(os.environ, {"KB_HOME": self.home, "KB_TEST_CLIENT_SECRET": "shh"})
+        patcher = mock.patch.dict(os.environ, {"SUPERHISTORY_HOME": self.home, "SUPERHISTORY_TEST_CLIENT_SECRET": "shh"})
         patcher.start()
         self.addCleanup(patcher.stop)
 
@@ -877,7 +877,7 @@ class LoginTest(unittest.TestCase):
 
     def test_login_saves_the_refresh_token_where_only_the_user_can_read_it(self):
         from kb.sources import gmail
-        self.write_config('auth = "oauth"\nclient_id = "id-1.apps.example.com"\nclient_secret = "env:KB_TEST_CLIENT_SECRET"\n')
+        self.write_config('auth = "oauth"\nclient_id = "id-1.apps.example.com"\nclient_secret = "env:SUPERHISTORY_TEST_CLIENT_SECRET"\n')
         calls = []
         with mock.patch.object(gmail, "oauth_login", lambda cid, secret: calls.append((cid, secret)) or "token-123"):
             code, out, _ = self.run_cli("login", "mail")
@@ -890,7 +890,7 @@ class LoginTest(unittest.TestCase):
         self.assertIn(f'refresh_token = "file:{key}"', out)
 
     def test_login_refuses_a_source_that_does_not_use_oauth(self):
-        self.write_config('password = "env:KB_TEST_CLIENT_SECRET"\n')
+        self.write_config('password = "env:SUPERHISTORY_TEST_CLIENT_SECRET"\n')
         code, _, err = self.run_cli("login", "mail")
         self.assertEqual(code, 1)
         self.assertIn('auth = "oauth"', err)

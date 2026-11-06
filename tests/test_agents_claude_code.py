@@ -11,7 +11,7 @@ from kb.agents import Change, claude_code
 from kb.ai.cli import NESTED_ENV
 
 AGENT = claude_code.AGENT
-COMMAND = "'/opt/kb tools/kb' hook claude-code"
+COMMAND = "'/opt/superhistory tools/superhistory' hook claude-code"
 
 SETTINGS = {
     "cleanupPeriodDays": 36500,
@@ -49,7 +49,7 @@ class Home(unittest.TestCase):
             return fh.read()
 
     def backups(self):
-        return sorted(f for f in os.listdir(os.path.dirname(self.settings)) if ".bak-kb-" in f)
+        return sorted(f for f in os.listdir(os.path.dirname(self.settings)) if ".bak-superhistory-" in f)
 
     def our_group(self, command=COMMAND, timeout=agents.HOOK_TIMEOUT):
         return {"hooks": [{"type": "command", "command": command, "timeout": timeout}]}
@@ -84,7 +84,7 @@ class InstallTest(Home):
 
     def test_an_older_kb_entry_with_another_path_and_timeout_is_updated_in_place(self):
         data = json.loads(json.dumps(SETTINGS))
-        data["hooks"]["UserPromptSubmit"].append(self.our_group("/old/kb hook claude-code", 14))
+        data["hooks"]["UserPromptSubmit"].append(self.our_group("/old/superhistory hook claude-code", 14))
         data["hooks"]["Stop"] = [{"hooks": [{"type": "command", "command": "echo done"}]}]
         self.put(data)
         self.assertEqual(AGENT.install(self.home, COMMAND), [Change(self.settings, "updated")])
@@ -114,7 +114,7 @@ class UninstallTest(Home):
         self.assertEqual(json.loads(self.text()), {"hooks": {"UserPromptSubmit": [{"hooks": [other]}]}})
 
     def test_leaves_the_codex_entry_that_looks_alike(self):
-        self.put({"hooks": {"UserPromptSubmit": [self.our_group("/kb hook codex")]}})
+        self.put({"hooks": {"UserPromptSubmit": [self.our_group("/superhistory hook codex")]}})
         self.assertEqual(AGENT.uninstall(self.home)[0].action, "unchanged")
         self.assertTrue(agents.has_json_hook(self.settings, "UserPromptSubmit", "codex"))
 
@@ -219,7 +219,7 @@ class HookCommandTest(TranscriptCase):
         os.environ.pop(agents.GROK_ENV, None)
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
-        os.environ["KB_HOME"] = os.path.join(tmp.name, "kb")
+        os.environ["SUPERHISTORY_HOME"] = os.path.join(tmp.name, "superhistory")
         patcher = mock.patch.object(check, "answer", return_value="RECORDS")
         self.answer = patcher.start()
         self.addCleanup(patcher.stop)
@@ -279,7 +279,7 @@ class BrokenConfigTest(unittest.TestCase):
             with open(os.path.join(tmp, "config.toml"), "w") as fh:
                 fh.write("[sources\n")
             out, err = io.StringIO(), io.StringIO()
-            with mock.patch.dict(os.environ, {"KB_HOME": tmp}), mock.patch("sys.stdin", io.StringIO('{"prompt": "hi"}')), \
+            with mock.patch.dict(os.environ, {"SUPERHISTORY_HOME": tmp}), mock.patch("sys.stdin", io.StringIO('{"prompt": "hi"}')), \
                     contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
                 code = cli.main(["hook", "claude-code"])
         self.assertEqual((code, out.getvalue(), err.getvalue()), (0, "", ""))
@@ -289,7 +289,7 @@ class UnreadableConfigTest(unittest.TestCase):
     def test_an_unreadable_config_makes_the_hook_print_nothing_and_exit_0(self):
         with tempfile.TemporaryDirectory() as tmp:
             out, err = io.StringIO(), io.StringIO()
-            with mock.patch.dict(os.environ, {"KB_HOME": tmp}), \
+            with mock.patch.dict(os.environ, {"SUPERHISTORY_HOME": tmp}), \
                     mock.patch("kb.config.open", side_effect=PermissionError(13, "Permission denied"), create=True), \
                     mock.patch("sys.stdin", io.StringIO('{"prompt": "hi"}')), \
                     contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
@@ -303,7 +303,7 @@ class InvalidUtf8ConfigTest(unittest.TestCase):
             with open(os.path.join(tmp, "config.toml"), "wb") as fh:
                 fh.write(b'machine = "\xff"\n')
             out, err = io.StringIO(), io.StringIO()
-            with mock.patch.dict(os.environ, {"KB_HOME": tmp}), mock.patch("sys.stdin", io.StringIO('{"prompt": "hi"}')), \
+            with mock.patch.dict(os.environ, {"SUPERHISTORY_HOME": tmp}), mock.patch("sys.stdin", io.StringIO('{"prompt": "hi"}')), \
                     contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
                 code = cli.main(["hook", "claude-code"])
         self.assertEqual((code, out.getvalue(), err.getvalue()), (0, "", ""))

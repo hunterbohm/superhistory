@@ -23,7 +23,7 @@ class TempDB(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
-        self.path = os.path.join(self.tmp.name, "data", "kb.sqlite")
+        self.path = os.path.join(self.tmp.name, "data", "superhistory.sqlite")
         self.db = store.connect(self.path)
         self.addCleanup(self.db.close)
 
@@ -288,7 +288,7 @@ class SearchTest(TempDB):
         self.add("fresh", "ibis", title="fresh", ts=iso())
         fresh = search.search(self.db, "ibis")[0]["score"]
         self.db.execute("UPDATE docs SET ts=?", (iso(timedelta(days=36500)),))
-        self.db.execute("UPDATE docs SET masked=?", (store.VERSION,))  # the test's edit, not an older kb's
+        self.db.execute("UPDATE docs SET masked=?", (store.VERSION,))  # the test's edit, not an older superhistory's
         old = search.search(self.db, "ibis")[0]["score"]
         self.assertAlmostEqual(fresh / old, 2.0, places=2)
 
@@ -452,7 +452,7 @@ class SupersedeMarkTest(TempDB):
     SECRET = "sk-ant-api03-" + "Q" * 40  # made up
 
     def older_row(self, sid):
-        # A row an older kb wrote under an older mask, before ingest refused an id that holds a secret.
+        # A row an older superhistory wrote under an older mask, before ingest refused an id that holds a secret.
         self.db.execute("INSERT INTO docs(kind, source, source_id, ts, title, content, metadata, masked) VALUES "
                         "('doc', 's', ?, ?, 'old', 'walrus notes', '{}', 'older-mask')", (sid, iso()))
         self.db.commit()
@@ -472,7 +472,7 @@ class SupersedeMarkTest(TempDB):
     def test_remask_deletes_the_item_and_every_mark_that_names_its_id(self):
         self.add("plain", "walrus notes")
         self.older_row(self.SECRET)
-        # Marks written before kb refused them, or synced from another computer.
+        # Marks written before superhistory refused them, or synced from another computer.
         self.db.executemany("INSERT INTO supersedes(source, source_id, marked_by, new_source, new_source_id, at, v) "
                             "VALUES (?,?,?,?,?,'2026-10-01',1)",
                             [("s", "plain", MINE, "s", self.SECRET), ("s", self.SECRET, THEIRS, "s", "plain"),

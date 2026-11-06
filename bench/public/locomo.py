@@ -9,7 +9,7 @@
                                   [--fresh] [--count] [--table]
 
 Each of the 10 conversations gets one store, one item per session with its date. Each question goes through the
-check as a new message, the answer model answers with the check's records and kb tools, and two scores grade the
+check as a new message, the answer model answers with the check's records and superhistory tools, and two scores grade the
 answer: token F1 from LoCoMo's task_eval/evaluation.py, and the J score, Mem0's published LLM judge prompt. Category
 5 (adversarial) is left out; DEVIATIONS.md says why. Rows go to bench/results/public/locomo/<run>.jsonl, one per
 question; a rerun runs only questions with no row yet. uv installs the packages LoCoMo's F1 code imports.

@@ -9,7 +9,7 @@ from kb import agents
 from kb.agents import Change, codex
 
 AGENT = codex.AGENT
-COMMAND = "'/opt/kb tools/kb' hook codex"
+COMMAND = "'/opt/superhistory tools/superhistory' hook codex"
 TIMEOUT = agents.HOOK_TIMEOUT
 
 HOOKS = {"hooks": {"SessionStart": [{"hooks": [
@@ -93,7 +93,7 @@ class Home(unittest.TestCase):
             return fh.read()
 
     def backups(self):
-        return sorted(os.path.join(d, f) for d, _, files in os.walk(self.home) for f in files if ".bak-kb-" in f)
+        return sorted(os.path.join(d, f) for d, _, files in os.walk(self.home) for f in files if ".bak-superhistory-" in f)
 
     def snapshot(self):
         return {p: self.text(p) for p in (self.hooks_json, self.config) if os.path.exists(p)}
@@ -163,7 +163,7 @@ class InstallTest(Home):
 
     def test_a_quoted_hash_key_is_updated_in_place(self):
         for quoted in ('"trusted_hash"', "'trusted_hash'", '"trusted\\u005fhash"'):
-            AGENT.install(self.home, "/old/kb hook codex")
+            AGENT.install(self.home, "/old/superhistory hook codex")
             self.put(self.config, self.text(self.config).replace("trusted_hash =", f"{quoted} ="))
             AGENT.install(self.home, COMMAND)
             self.assertEqual(codex.read_toml(self.text(self.config))["hooks"]["state"][self.key],
@@ -173,7 +173,7 @@ class InstallTest(Home):
             os.remove(self.hooks_json)
 
     def test_a_multi_line_array_in_the_table_does_not_end_it(self):
-        AGENT.install(self.home, "/old/kb hook codex")
+        AGENT.install(self.home, "/old/superhistory hook codex")
         self.put(self.config, self.text(self.config).replace(
             "trusted_hash =", 'notes = [\n  ["approved", "in /hooks"],\n]\ntrusted_hash ='))
         AGENT.install(self.home, COMMAND)
@@ -183,7 +183,7 @@ class InstallTest(Home):
         self.assertEqual(codex.read_toml(self.text(self.config)), {})
 
     def test_a_multi_line_string_in_the_table_does_not_end_it(self):
-        AGENT.install(self.home, "/old/kb hook codex")
+        AGENT.install(self.home, "/old/superhistory hook codex")
         self.put(self.config, self.text(self.config).replace(
             "trusted_hash =", 'note = """\n[not a table]\n"""\ntrusted_hash ='))
         AGENT.install(self.home, COMMAND)
@@ -193,7 +193,7 @@ class InstallTest(Home):
         self.assertEqual(codex.read_toml(self.text(self.config)), {})
 
     def test_a_hash_line_inside_a_multi_line_string_is_not_the_hash(self):
-        AGENT.install(self.home, "/old/kb hook codex")
+        AGENT.install(self.home, "/old/superhistory hook codex")
         self.put(self.config, self.text(self.config).replace(
             "trusted_hash =", 'note = """\ntrusted_hash = "documentation"\n"""\ntrusted_hash ='))
         AGENT.install(self.home, COMMAND)
@@ -229,7 +229,7 @@ class InstallTest(Home):
         hooks["hooks"]["UserPromptSubmit"] = [
             {"hooks": [{"command": "tmux-signal running", "timeout": 5, "type": "command"}]},
             {"hooks": [{"command": "echo hi", "type": "command"},
-                       {"command": "/old/kb hook codex", "timeout": 14, "type": "command"}]}]
+                       {"command": "/old/superhistory hook codex", "timeout": 14, "type": "command"}]}]
         self.put(self.hooks_json, hooks)
         changes = AGENT.install(self.home, COMMAND)
         self.assertEqual([c.action for c in changes], ["updated", "added"])
@@ -257,7 +257,7 @@ class InstallTest(Home):
 
     def test_a_hook_with_fields_kb_cannot_hash_is_left_for_the_user_to_trust(self):
         data = {"hooks": {"UserPromptSubmit": [{"hooks": [
-            {"type": "command", "command": "/old/kb hook codex", "timeout": 14, "futureField": True}]}]}}
+            {"type": "command", "command": "/old/superhistory hook codex", "timeout": 14, "futureField": True}]}]}}
         self.put(self.hooks_json, data)
         changes = AGENT.install(self.home, COMMAND)
         self.assertEqual([c.action for c in changes], ["updated", "skipped"])
@@ -326,7 +326,7 @@ class UninstallTest(Home):
         self.assertEqual(self.text(self.config), CONFIG)
 
     def test_the_claude_code_entry_in_the_same_file_is_not_touched(self):
-        self.put(self.hooks_json, {"hooks": {"UserPromptSubmit": [{"hooks": [self.handler("/kb hook claude-code")]}]}})
+        self.put(self.hooks_json, {"hooks": {"UserPromptSubmit": [{"hooks": [self.handler("/superhistory hook claude-code")]}]}})
         self.assertEqual(AGENT.uninstall(self.home), [Change(self.hooks_json, "unchanged")])
         self.assertTrue(agents.has_json_hook(self.hooks_json, "UserPromptSubmit", "claude-code"))
 
@@ -365,7 +365,7 @@ class DetectTest(Home):
 
     def test_a_changed_hook_is_no_longer_trusted(self):
         AGENT.install(self.home, COMMAND)
-        self.put(self.hooks_json, {"hooks": {"UserPromptSubmit": [{"hooks": [self.handler("/elsewhere/kb hook codex")]}]}})
+        self.put(self.hooks_json, {"hooks": {"UserPromptSubmit": [{"hooks": [self.handler("/elsewhere/superhistory hook codex")]}]}})
         self.assertFalse(AGENT.installed(self.home))
 
     def test_a_malformed_hooks_file_is_not_installed(self):
@@ -482,7 +482,7 @@ class ShiftedTrustTest(Home):
         with mock.patch.object(codex, "_moved", lambda text, old, new: (text, False)):
             changes = AGENT.uninstall(self.home)
         self.assertEqual([c.action for c in changes], ["skipped", "skipped"])
-        self.assertIn("more than kb's own entries", changes[0].note)
+        self.assertIn("more than superhistory's own entries", changes[0].note)
         self.assertIn("by hand", changes[0].note)
         self.assertEqual((self.text(self.hooks_json), self.text(self.config)), before, "nothing is written")
 
@@ -529,7 +529,7 @@ class GuardTest(Home):
         user_key = f"{os.path.realpath(hooks_json)}:user_prompt_submit:1:0"
         kb_key = f"{os.path.realpath(hooks_json)}:user_prompt_submit:0:0"
         user = f'[hooks.state."{user_key}"]\ntrusted_hash = "{codex.codex_hook_hash("user_prompt_submit", self.USER)}"\n'
-        self.put(hooks_json, {"hooks": {"UserPromptSubmit": [{"hooks": [self.handler("/old/kb hook codex")]},
+        self.put(hooks_json, {"hooks": {"UserPromptSubmit": [{"hooks": [self.handler("/old/superhistory hook codex")]},
                                                               {"hooks": [self.USER]}]}})
         # TOML has no raw DEL in a string, so a key holding one is written escaped, as Codex writes it.
         self.put(config_toml, config.format(user=user, kb=kb_key).replace("\x7f", "\\u007f"))
@@ -554,7 +554,7 @@ class GuardTest(Home):
                     moved = {f"{os.path.realpath(hooks_json)}:user_prompt_submit:0:0":
                              state[f"{os.path.realpath(hooks_json)}:user_prompt_submit:1:0"]}
                     self.assertEqual(after, {**original, "hooks": {**original["hooks"], "state": moved}},
-                                     "only kb's entry left, and the user's trust moved with its hook")
+                                     "only superhistory's entry left, and the user's trust moved with its hook")
 
     def test_a_wrong_edit_writes_nothing(self):
         def also_changes_a_setting(text, key, digest):
@@ -575,7 +575,7 @@ class GuardTest(Home):
             with patch:
                 changes = step(home, COMMAND) if step is AGENT.install else step(home)
             self.assertEqual([c.action for c in changes], ["skipped", "skipped"], step.__name__)
-            self.assertIn("more than kb's own entries", changes[0].note)
+            self.assertIn("more than superhistory's own entries", changes[0].note)
             self.assertIn("by hand", changes[0].note)
             self.assertEqual((self.text(hooks_json), self.text(config_toml)), before, "nothing is written")
 

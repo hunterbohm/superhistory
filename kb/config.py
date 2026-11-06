@@ -9,7 +9,7 @@
     per_run = 150
     [schedule]
     every_minutes = 15
-    [sources.notes]               # one table per source; its name is what `kb search --source` takes
+    [sources.notes]               # one table per source; its name is what `superhistory search --source` takes
     type = "notes"                # default: the table name
     path = "~/Notes"
     exclude = ["Journal"]         # added to the type's default excludes
@@ -28,6 +28,7 @@ import typing
 from dataclasses import dataclass
 from typing import Any, Mapping, Optional, Tuple
 
+from kb import COMMAND
 from kb.mask import mask
 
 from kb.mask import KEY_WORD, holds_secret, mask
@@ -35,12 +36,12 @@ from kb.mask import KEY_WORD, holds_secret, mask
 # Names go into every stored id and into the logs, so one that looks like a key is refused; the message is masked.
 SECRET_NAME = "{where}: this name looks like a secret; use a plain name"
 # A name that is a secret's word can be printed: it is the word itself, not a secret.
-KEY_WORD_NAME = ('{where}: "{name}" is a word for a secret, such as "password" or "token", so kb could not tell an id '
+KEY_WORD_NAME = (f'{{where}}: "{{name}}" is a word for a secret, such as "password" or "token", so {COMMAND} could not tell an id '
                  'made from it from a secret. To fix it, {fix}.')
 NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,39}$")
 SOURCE_KEYS = {"type", "enabled", "exclude", "exclude_defaults", "summarize", "hosts"}
 MAX_CHECK_BUDGET = 25.0
-# Tables kb keeps as they are for the packages that read them: [sync] for the Sync client (kb/sync), and [cloud], an
+# Tables superhistory keeps as they are for the packages that read them: [sync] for the Sync client (kb/sync), and [cloud], an
 # older name for the same table that is still read.
 EXTENSION_TABLES = ("sync", "cloud")
 SECRET_TIMEOUT = 60.0
@@ -165,7 +166,7 @@ class Config:
     schedule: Schedule = Schedule()
     sources: Tuple[Source, ...] = ()
     hosts: Tuple[Host, ...] = ()
-    # Whose items these are: the install id kb fills in when it writes (kb.ids). A Config built elsewhere, such as the
+    # Whose items these are: the install id superhistory fills in when it writes (kb.ids). A Config built elsewhere, such as the
     # sync relay's, may leave it empty; its items are then prefixed by `machine`.
     install: str = ""
     extra: Mapping[str, Any] = dataclasses.field(default_factory=dict)
@@ -224,7 +225,7 @@ def parse(text):
         problems.append("machine: use lowercase letters, digits, - and _, up to 40 characters")
         machine = "local"
     elif KEY_WORD.fullmatch(machine):
-        problems.append(KEY_WORD_NAME.format(where="machine", name=machine, fix="run `kb setup` and give this "
+        problems.append(KEY_WORD_NAME.format(where="machine", name=machine, fix=f"run `{COMMAND} setup` and give this "
                                              "computer another name, or change the machine line in this file"))
         machine = "local"
     elif holds_secret(machine):
