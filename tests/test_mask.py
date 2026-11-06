@@ -2751,6 +2751,424 @@ class Base64ReviewTwentyFindingsTest(unittest.TestCase):
                                                 self.assertIn("next paragraph", masked)
 
 
+class Base64ReviewTwentyOneFindingsTest(unittest.TestCase):
+    """#34's twenty-first review: a footer written into an armour header after a line break (a carriage return in a
+    comment, or a line of its own above the comments), with text after it or none, still ended the key, and the lines
+    past it down to a control byte in a later comment showed; and a placeholder glued to a body line with a space, a tab
+    or another placeholder between kept the short last line that runs on into words. Made-up keys only."""
+    FORMS = {"after a carriage return, with text": b"Comment: x\r%s suffix", "with spaces and text": b"Comment: x\r%s  tail",
+             "between carriage returns": b"Comment: x\r%s\rmore", "a line after a comment": b"Comment: x\n%s",
+             "after a CRLF": b"Comment: x\r\n%s\r", "a line of its own": b"%s"}
+
+    @staticmethod
+    def forged(footer, form):
+        block = Base64ReviewNineteenFindingsTest.fixture("gnupg_control_comment").split(b"\n")
+        at = next(i for i, line in enumerate(block) if line.startswith(b"Comment:"))
+        block.insert(at, form % footer.encode())
+        return b"\n".join(block)
+
+    def test_a_footer_that_is_no_whole_line_or_has_another_below_ends_no_key(self):
+        import base64
+        import textwrap
+        from kb import mask as masking
+        for footer in Base64ReviewTwentyFindingsTest.FOOTERS:
+            for form_name, form in self.FORMS.items():
+                data = self.forged(footer, form)
+                encoded = base64.b64encode(data).decode()
+                # also each width that ends a line of the block right where the forged footer's bytes end
+                end = data.index(footer.encode()) + len(footer)
+                ends_there = [w for w in range(16, 80, 4) if end % 3 == 0 and (end // 3 * 4) % w == 0]
+                for width in sorted({16, 32, 48, 64, 76, len(encoded), *ends_there}):
+                    lines = textwrap.wrap(encoded, width)
+                    for lead in ("", "intro notes\n", "key: "):
+                        text = lead + "\n".join(lines) + "\n\nnext paragraph"
+                        for depth in range(3):
+                            written = Base64ReviewNineteenFindingsTest.written(text, depth)
+                            for older in (False, True):
+                                with self.subTest(footer=footer[9:20], form=form_name, width=width, lead=lead[:5],
+                                                  depth=depth, older=older):
+                                    if older:
+                                        with masking.stored_row(None):
+                                            masked = mask(written)
+                                    else:
+                                        masked = mask(written)
+                                    self.assertEqual([i for i, line in enumerate(lines) if line in masked], [])
+                                    self.assertIn("next paragraph", masked)
+
+    def test_a_short_last_line_after_a_placeholder_and_a_gap_before_a_body_line_is_masked(self):
+        import textwrap
+        from kb import mask as masking
+        for kind, (body, width) in Base64KeyCutBeforeWordsTest.bodies().items():
+            lines = textwrap.wrap(body, width)
+            for start in ("[masked]", f"-----BEGIN {kind}-----"):
+                for above in (lines[:1], lines[:2]):
+                    glued = lines[len(above)]
+                    for gap in (" ", "  ", "\t", " [masked] ", "[masked]", " - "):
+                        for fragment in ("ei", "Ynu"):
+                            for q in ("> ", ""):
+                                for brk in ("\n", "\r\n"):
+                                    text = (f"intro notes{brk}{q}{start}{brk}" + "".join(q + line + brk for line in above)
+                                            + f"{q}[masked]{gap}{glued}{brk}{q}{fragment} walrus moved today{brk}{brk}"
+                                            "next paragraph")
+                                    for depth in (0, 1, 2):
+                                        written = Base64ReviewNineteenFindingsTest.written(text, depth)
+                                        for older in (False, True):
+                                            with self.subTest(kind=kind, start=start[:9], above=len(above), gap=gap,
+                                                              fragment=fragment, q=q, brk=brk, depth=depth, older=older):
+                                                if older:
+                                                    with masking.stored_row(None):
+                                                        masked = mask(written)
+                                                else:
+                                                    masked = mask(written)
+                                                self.assertNotIn(f"{fragment} walrus", masked)
+                                                key = above + [glued]
+                                                self.assertEqual([line[i:i + 8] for line in key
+                                                                  for i in range(0, len(line) - 8, 4)
+                                                                  if line[i:i + 8] in masked], [])
+                                                self.assertIn("intro notes", masked)
+                                                if depth < 2 or start == "[masked]":
+                                                    self.assertIn("next paragraph", masked)
+
+
+class Base64KeyFooterWholeLineTest(unittest.TestCase):
+    """#34 round 22, after the twenty-first review: a footer ends a key only as a whole line with no other footer after
+    it in its stream; prose between a key's real footer and a stray one later in its stream, and headers and footers
+    written into a key under a header that text before it on its line holds back. Made-up keys only."""
+    PROSE = {"plain": b"Plan notes: deploy the harbor ledger today.\nThe walrus moved next steps.\n",
+             "UTF-8": "Notes: d\u00e9ployer le registre aujourd'hui.\n\u4eca\u65e5\u306f\u5730\u56f3\u3092\u66f4\u65b0\u3057\u305f\u3002\n".encode(),
+             "a heading": b"RENT\nPlan notes today.\n"}
+    STRAYS = (b"-----END PGP PRIVATE KEY BLOCK-----\n", b"-----END PRIVATE KEY-----\n")
+
+    @staticmethod
+    def masked(text, older):
+        from kb import mask as masking
+        if older:
+            with masking.stored_row(None):
+                return mask(text)
+        return mask(text)
+
+    def stray_forms(self, prose):
+        import base64
+        import textwrap
+        for name in ("openssl_p256", "gnupg_control_comment"):
+            key = Base64ReviewNineteenFindingsTest.fixture(name)
+            for stray in self.STRAYS:
+                encoded = base64.b64encode(key.rstrip(b"\n") + b"\n" + prose + stray).decode()
+                for width in (64, 76):
+                    lines = textwrap.wrap(encoded, width)
+                    text = "intro notes\n" + "\n".join(lines) + "\n\nnext paragraph"
+                    for depth in range(3):
+                        for older in (False, True):
+                            yield (name, stray[9:20], width, depth, older), lines, self.masked(
+                                Base64ReviewNineteenFindingsTest.written(text, depth), older)
+
+    def test_prose_between_a_keys_footer_and_a_stray_footer_keeps_what_it_kept(self):
+        # A stray footer's reading up from it took the prose above it, which decodes to text, as before this rule: so
+        # plain and UTF-8 prose, every line of which went, still goes. Under a heading, the stray footer's own last line
+        # ("----", "KEY BLOCK-----") stayed before, and no word of the prose: it goes now too.
+        import base64
+        for prose_name, prose in self.PROSE.items():
+            for form, lines, masked in self.stray_forms(prose):
+                with self.subTest(prose=prose_name, form=form):
+                    kept = [line for line in lines if line in masked]
+                    if prose_name == "a heading":
+                        stray = next(s for s in self.STRAYS if s[9:20] == form[1])
+                        self.assertEqual([line for line in kept if not stray.endswith(base64.b64decode(line))], [])
+                    else:
+                        self.assertEqual(kept, [])
+                    self.assertIn("intro notes", masked)
+                    if form[3] < 2:
+                        self.assertIn("next paragraph", masked)
+
+    def test_prose_holding_a_control_character_between_a_keys_footer_and_a_stray_footer_goes_with_the_key(self):
+        # A listed limit (README): a footer with another after it in its stream and no header between is read as one
+        # written into the key, so the key runs on to the later one, and prose between them goes with it, here also
+        # prose with a control character, at which a stray footer's reading up from it stops.
+        prose = b"Plan notes: deploy\x01 the ledger today.\nThe walrus moved.\n"
+        for form, lines, masked in self.stray_forms(prose):
+            with self.subTest(form=form):
+                self.assertEqual([i for i, line in enumerate(lines) if line in masked], [])
+                self.assertIn("intro notes", masked)
+
+    FORGED = {
+        "a header written into the body": ("openssl_p256", 2, b"-----BEGIN PRIVATE KEY-----"),
+        "a header with spaces written into the body": ("openssl_p256", 2, b"-----BEGIN EC PRIVATE KEY----- \t"),
+        "a header written into the armour comments": ("gnupg_control_comment", 1, b"-----BEGIN PGP PRIVATE KEY BLOCK-----"),
+        "a footer right after the header, above a control character": (
+            "gnupg_control_comment", 1, b"-----END RSA PRIVATE KEY----- \t"),
+        "a footer and a header written into the comments": (
+            "gnupg_control_comment", 1, b"-----END PGP SECRET KEY BLOCK-----\n-----BEGIN PRIVATE KEY-----"),
+    }
+
+    def test_a_header_or_footer_written_into_a_key_under_a_held_back_header_ends_or_starts_no_key(self):
+        # Below a stream of encoded words that ends with no line break and no padding, the key's header has text before
+        # it on its decoded line, so it starts no key alone, and the key starts there once its footer is read; a header
+        # or footer written whole into the key between them, and a control character in an armour comment, cut it
+        # short no more.
+        import base64
+        import textwrap
+        words = base64.b64encode(b"notes " * 30).decode()
+        for form_name, (name, at, piece) in self.FORGED.items():
+            block = Base64ReviewNineteenFindingsTest.fixture(name).split(b"\n")
+            block.insert(at, piece)
+            encoded = base64.b64encode(b"\n".join(block)).decode()
+            for width in (16, 32, 48, 64, 76, len(encoded)):
+                lines = textwrap.wrap(encoded, width)
+                for lead in ("", "intro notes\n", words + "\n"):
+                    text = lead + "\n".join(lines) + "\n\nnext paragraph"
+                    for depth in range(3):
+                        for older in (False, True):
+                            with self.subTest(form=form_name, width=width, lead=lead[:5], depth=depth, older=older):
+                                masked = self.masked(Base64ReviewNineteenFindingsTest.written(text, depth), older)
+                                self.assertEqual([i for i, line in enumerate(lines) if line in masked], [])
+                                if lead:
+                                    self.assertIn(lead[:11], masked)
+                                if depth < 2:
+                                    self.assertIn("next paragraph", masked)
+
+    IN_STREAM = {
+        "no header or footer written into it": ("gnupg_control_comment", 1, None),
+        "a header written after an armour comment": ("gnupg_control_comment", 2, b"-----BEGIN PRIVATE KEY-----"),
+        "a header written after a header quoted in a sentence": (
+            "openssl_p256", 1, b"x -----BEGIN OPENSSH PRIVATE KEY-----\n-----BEGIN PGP PRIVATE KEY BLOCK-----"),
+        "an encrypted key's field, then a header": (
+            "openssl_p256", 1, b"Proc-Type: 4,ENCRYPTED\n-----BEGIN EC PRIVATE KEY-----"),
+    }
+
+    def test_a_header_written_into_a_key_whose_header_follows_text_in_its_stream_starts_no_key(self):
+        # The key's header follows words on its decoded line inside one stream, where a line of the block starts or
+        # inside one, so it starts no key alone, as a header quoted in a sentence does. With its footer after it in its
+        # stream, the key starts there, whatever its armour comments hold. A header written whole into the key below
+        # it, with no prose between them (a line of its body, an armour header's line, another header's text, a
+        # control character, or nothing), starts no other key: the key starts at the first. With prose between them,
+        # as a document quoting a header above a key file has, the later header starts its own key
+        # (Base64ReviewSeventeenTest).
+        import base64
+        import textwrap
+        for form_name, (name, at, piece) in {**self.FORGED, **self.IN_STREAM}.items():
+            block = Base64ReviewNineteenFindingsTest.fixture(name).split(b"\n")
+            if name == "gnupg_control_comment" and at > 1:  # past its comment, with no control character in it
+                block = [line.replace(b"\x01", b"-") for line in block]
+            if piece:
+                block.insert(at, piece)
+            for notes in (b"notes " * 8, b"notes " * 8 + b"x", b"notes " * 8 + b"xy"):
+                data = notes + b"\n".join(block)
+                encoded = base64.b64encode(data).decode()
+                for width in (16, 21, 32, 48, 64, 76):
+                    lines = textwrap.wrap(encoded, width)
+                    # by their bits: a line can end inside the base64 group that holds the header's first byte
+                    ahead = [line for j, line in enumerate(lines) if (j + 1) * width * 6 <= len(notes) * 8]
+                    key = [i for i, line in enumerate(lines) if (i + 1) * width * 6 > len(notes) * 8]
+                    text = "\n".join(lines) + "\n\nnext paragraph"
+                    for depth in range(3):
+                        for older in (False, True):
+                            with self.subTest(form=form_name, lead=len(notes), width=width, depth=depth, older=older):
+                                masked = self.masked(Base64ReviewNineteenFindingsTest.written(text, depth), older)
+                                self.assertEqual([i for i in key if lines[i] in masked], [])
+                                if depth == 0:
+                                    self.assertEqual([line for line in ahead if line not in masked], [])
+                                if depth < 2:
+                                    self.assertIn("next paragraph", masked)
+
+    def test_a_key_starts_at_the_line_with_its_headers_first_bits(self):
+        # Where a line of the block is no whole number of base64 groups, the line before a key's header can end inside
+        # the group that holds the header's first byte, with only the bits of the bytes before it: it stays.
+        import base64
+        import textwrap
+        key = Base64ReviewNineteenFindingsTest.fixture("openssl_p256")
+        for lead in (b"see the key: ", b"Notes for today.\n", b"Plan: deploy the harbor ledger today.\n", b"x", b"xy"):
+            data = lead + key
+            encoded = base64.b64encode(data).decode()
+            for width in range(16, 77):
+                lines = textwrap.wrap(encoded, width)
+                ahead = [line for j, line in enumerate(lines) if (j + 1) * width * 6 <= len(lead) * 8]
+                held = [i for i, line in enumerate(lines) if (i + 1) * width * 6 > len(lead) * 8]
+                text = "intro notes\n" + "\n".join(lines) + "\n\nnext paragraph"
+                for depth in range(3):
+                    for older in (False, True):
+                        with self.subTest(lead=lead[:8], width=width, depth=depth, older=older):
+                            masked = self.masked(Base64ReviewNineteenFindingsTest.written(text, depth), older)
+                            self.assertEqual([i for i in held if lines[i] in masked], [])
+                            if depth == 0:
+                                self.assertEqual([line for line in ahead if line not in masked], [])
+
+    def test_a_control_character_in_the_group_before_a_footer_cuts_its_key_short_no_more(self):
+        # A footer's own reading starts with the base64 group that holds its first byte, which can hold the end of the
+        # line above it: a control character there is no part of what follows the footer.
+        import base64
+        import textwrap
+        words = base64.b64encode(b"notes " * 30).decode()
+        key = Base64ReviewNineteenFindingsTest.fixture("openssl_p256").rstrip(b"\n").split(b"\n")
+        for pad in range(3):
+            block = key[:-1] + [b"x" * pad + b"\x01", b"-----END PGP SECRET KEY BLOCK-----", key[-1]]
+            encoded = base64.b64encode(b"\n".join(block) + b"\n").decode()
+            for width in (16, 28, 32, 64, 76):
+                lines = textwrap.wrap(encoded, width)
+                for lead in ("", words + "\n"):
+                    text = lead + "\n".join(lines) + "\n\nnext paragraph"
+                    for depth in range(3):
+                        for older in (False, True):
+                            with self.subTest(pad=pad, width=width, lead=lead[:5], depth=depth, older=older):
+                                masked = self.masked(Base64ReviewNineteenFindingsTest.written(text, depth), older)
+                                self.assertEqual([i for i, line in enumerate(lines) if line in masked], [])
+
+
+    def test_text_between_two_whole_keys_in_one_encoded_stream_goes_with_them(self):
+        # A listed limit (README): a footer with another footer later in its stream reads as one written into the key,
+        # so a key runs on to the last, and text between two whole keys in one stream goes with them. Before, the first
+        # key ended at its own footer, and where the second's header shared its last line, a line of it showed.
+        import base64
+        import textwrap
+        first = Base64ReviewNineteenFindingsTest.fixture("openssl_p256").rstrip(b"\n") + b"\n"
+        second = Base64ReviewNineteenFindingsTest.fixture("gnupg_control_comment")
+        for prose in (b"Plan notes: deploy the harbor ledger today.\nThe walrus moved next steps.\n",
+                      b"Plan\x01 notes today.\n", b""):
+            encoded = base64.b64encode(first + prose + second).decode()
+            for width in (16, 32, 64, 76):
+                lines = textwrap.wrap(encoded, width)
+                text = "intro notes\n" + "\n".join(lines) + "\n\nnext paragraph"
+                for depth in range(3):
+                    for older in (False, True):
+                        with self.subTest(prose=prose[:9], width=width, depth=depth, older=older):
+                            masked = self.masked(Base64ReviewNineteenFindingsTest.written(text, depth), older)
+                            self.assertEqual([i for i, line in enumerate(lines) if line in masked], [])
+                            self.assertIn("intro notes", masked)
+
+    def test_a_key_whose_header_shares_the_line_where_the_key_above_ends_is_masked(self):
+        # Each key read is passed over whole, but a header past its end on its last line starts its own: a second key
+        # cut before its footer, after a whole one, showed a line where its header shared the first's last line.
+        import base64
+        import textwrap
+        first = Base64ReviewNineteenFindingsTest.fixture("openssl_p256").rstrip(b"\n") + b"\n"
+        second = Base64ReviewNineteenFindingsTest.fixture("openssl_ed25519").rstrip(b"\n").split(b"\n")
+        for gap in (b"", b"ok.\n", b"ok\x01.\n"):
+            data = first + gap + b"\n".join(second[:-1]) + b"\n"
+            start = len(first + gap)
+            encoded = base64.b64encode(data).decode()
+            for width in range(16, 80, 4):
+                lines = textwrap.wrap(encoded, width)
+                text = "intro notes\n" + "\n".join(lines) + "\n\nnext paragraph"
+                for depth in range(3):
+                    for older in (False, True):
+                        with self.subTest(gap=gap, width=width, depth=depth, older=older):
+                            masked = self.masked(Base64ReviewNineteenFindingsTest.written(text, depth), older)
+                            self.assertEqual([i for i, line in enumerate(lines)
+                                              if (i * width * 6) // 8 >= start and line in masked], [])
+
+    def test_the_line_after_a_keys_footer_that_holds_none_of_its_bits_stays(self):
+        # Where a line is no whole number of base64 groups, the group that holds a footer's last byte can end on the
+        # next line, which then holds bits of the text after the key alone: it stays, in a row read fresh.
+        import base64
+        import textwrap
+        for lead in (b"", b"a\n", b"ab\n"):  # each place in its group the footer's last byte can take
+            key = lead + Base64ReviewNineteenFindingsTest.fixture("openssl_p256").rstrip(b"\n") + b"\n"
+            self.check_bits_after(key, b"Next steps: move the walrus.\n")
+
+    def check_bits_after(self, key, after):
+        import base64
+        import textwrap
+        encoded = base64.b64encode(key + after).decode()
+        end = len(key) - 1  # the footer's line break
+        for width in range(16, 77):
+            lines = textwrap.wrap(encoded, width)
+            text = "intro notes\n" + "\n".join(lines) + "\n\nnext paragraph"
+            for depth in range(2):
+                with self.subTest(lead=key[:2], width=width, depth=depth):
+                    masked = self.masked(Base64ReviewNineteenFindingsTest.written(text, depth), False)
+                    self.assertEqual([i for i, line in enumerate(lines)
+                                      if -(-((i + 1) * width * 6) // 8) <= end and line in masked], [])
+                    self.assertEqual([i for i, line in enumerate(lines)
+                                      if (i * width * 6) // 8 >= end and line.strip("=") and line not in masked], [])
+
+    def test_in_an_older_row_encoded_text_after_a_key_in_its_stream_goes_as_a_keys_rest(self):
+        # A listed limit (README): masked text masks to itself, so the passes read it again, and in a row stored by a
+        # kb before keys were masked whole, base64 after a placeholder is an older kb's rest of a key unless it decodes
+        # as public material: the key's own placeholder is read so too, and encoded text after the key in its stream
+        # goes. Read fresh, it stays.
+        import base64
+        import textwrap
+        key = Base64ReviewNineteenFindingsTest.fixture("openssl_p256").rstrip(b"\n") + b"\n"
+        data = key + b"Plan notes for the harbor deploy.\n"
+        encoded = base64.b64encode(data).decode()
+        # widths where the text's line after the key, a line of base64 after the key's placeholder, does not decode
+        # from its start to words (its first group holds the key's last bits, or it is short): a line that does stays
+        for width in (46, 47, 55, 65, 66):
+            lines = textwrap.wrap(encoded, width)
+            text = "intro notes\n" + "\n".join(lines) + "\n\nnext paragraph"
+            after = [line for i, line in enumerate(lines) if (i * width * 6) // 8 >= len(key) and line.strip("=")]
+            self.assertTrue(after)
+            for older in (False, True):
+                with self.subTest(width=width, older=older):
+                    masked = self.masked(text, older)
+                    if older:
+                        self.assertEqual([line for line in after if line in masked], [])
+                    else:
+                        self.assertEqual([line for line in after if line in masked], after)
+                    self.assertIn("next paragraph", masked)
+
+class KeyRestPastWordsWholeLineTest(unittest.TestCase):
+    """#34 round 22's audit of the key readers' line recognizers. Past a line of base64 right after a placeholder that
+    decodes to words, where main's reading takes a key's rest on, a word alone, a placeholder alone or a line of words
+    was passed over as read by its start: up to an escape that is no line break (an escaped tab), a quote, a "<" or a
+    "…", or by its first two words, so a key's line or fragment later on it showed, which main hides; as did the rest of
+    the line of words itself past such a quote or escape. Each is read whole now. Made-up keys only."""
+
+    @staticmethod
+    def parts():
+        import base64
+        import random
+        import textwrap
+        body = textwrap.wrap(base64.b64encode(made_up_private_key(random.Random(67))).decode(), 64)
+        words = base64.b64encode(b"open the harbor door and walk the ledger today, notes for the walrus").decode()
+        return body, words
+
+    def test_a_line_past_encoded_words_with_a_keys_run_later_on_it_is_masked(self):
+        from kb import mask as masking
+        body, words = self.parts()
+        key = body[2]
+        forms = {
+            "a word alone, a tab": "\nThanks\t" + key, "a word alone, a quote": "\nThanks' " + key,
+            "a word alone, a <": "\nThanks<" + key, "a word alone, an ellipsis": "\nThanks\u2026 " + key,
+            "a line of words": "\nnext steps " + key, "a line of words, a fragment": "\nnext steps " + key[:20],
+            "a placeholder alone, a tab": "\n[masked]\t" + key, "a placeholder alone, a quote": "\n[masked]' " + key[:30],
+            "the words line, a quote": "' " + key[:20], "the words line, an escape": "\\x " + key[:20],
+            "two words lines, then a line of words": "\n" + words + "\nnext steps " + key[:20],
+        }
+        for name, form in forms.items():
+            text = "[masked]\n" + words + form + "\n\nnext paragraph"
+            for depth in range(3):
+                written = Base64ReviewNineteenFindingsTest.written(text, depth)
+                for older in (False, True):
+                    with self.subTest(form=name, depth=depth, older=older):
+                        if older:
+                            with masking.stored_row(None):
+                                masked = mask(written)
+                        else:
+                            masked = mask(written)
+                        self.assertEqual([key[i:i + 16] for i in range(0, len(key) - 15, 4) if key[i:i + 16] in masked], [])
+                        if depth < 2:
+                            self.assertIn("next paragraph", masked)
+
+    def test_a_word_alone_or_a_line_of_words_past_encoded_words_still_stays(self):
+        # Guard: a line with no run a key's could be is still passed over, and stays.
+        from kb import mask as masking
+        _, words = self.parts()
+        for name, form in {"a word alone": "\nThanks", "a line of words": "\nnext steps for the walrus",
+                           "a word alone, a quote": "\nThanks' said the walrus"}.items():
+            text = "[masked]\n" + words + form + "\n\nnext paragraph"
+            for depth in range(2):
+                written = Base64ReviewNineteenFindingsTest.written(text, depth)
+                for older in (False, True):
+                    with self.subTest(form=name, depth=depth, older=older):
+                        if older:
+                            with masking.stored_row(None):
+                                masked = mask(written)
+                        else:
+                            masked = mask(written)
+                        self.assertIn(form.strip("\n").split("'")[0], masked)
+                        self.assertIn(words, masked)
+
+
 class HeadlessKeyTest(unittest.TestCase):
     """A key's body without its header, as an older kb's row-by-row remask leaves the chunk after the header's."""
     LINE = "MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7"
