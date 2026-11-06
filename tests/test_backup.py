@@ -17,6 +17,19 @@ from kb.paths import Paths
 
 PASSPHRASE = "correct horse battery staple"
 CONFIG = 'machine = "studio"\n'
+_month = {}
+
+
+def month_store():
+    """The made-up month in a store, loaded once: masking its items takes longer than anything a test checks."""
+    if not _month:
+        tmp = tempfile.TemporaryDirectory()
+        unittest.addModuleCleanup(tmp.cleanup)
+        db = store.connect(Path(tmp.name) / "kb.sqlite")
+        _month["items"] = trial.load(db, trial.month_dir())
+        db.close()
+        _month["path"] = Path(tmp.name) / "kb.sqlite"
+    return _month["path"], _month["items"]
 
 
 class BackupCase(unittest.TestCase):
@@ -30,9 +43,9 @@ class BackupCase(unittest.TestCase):
         patch = mock.patch.object(backup, "ITERATIONS", 1000)  # the real count is checked once, below
         patch.start()
         self.addCleanup(patch.stop)
-        db = store.connect(self.paths.db)
-        self.items = trial.load(db, trial.month_dir())
-        db.close()
+        template, self.items = month_store()
+        self.paths.data_dir.mkdir(parents=True)
+        shutil.copy(template, self.paths.db)
         self.paths.config_file.write_text(CONFIG, encoding="utf-8")
         self.install = ids.install_id(self.paths)
         self.secret = self.tmp / "passphrase"
@@ -59,8 +72,12 @@ class BackupCase(unittest.TestCase):
         finally:
             db.close()
 
+    def has_item(self, source_id):
+        with contextlib.closing(sqlite3.connect(self.paths.db)) as db:
+            return db.execute("SELECT count(*) FROM docs WHERE source_id=?", (source_id,)).fetchone()[0] > 0
+
     def tree(self):
-        return sorted(str(p.relative_to(self.tmp)) for p in self.tmp.rglob("*") if p.is_file())
+        return sorted(str(p.relative_to(self.tmp)) for p in self.tmp.rglob("*") if p.is_file() and p.name != "kb.lock")
 
 
 class RoundTripTest(BackupCase):
@@ -103,7 +120,7 @@ class RoundTripTest(BackupCase):
 
     def test_the_file_is_readable_by_hand_with_openssl_gunzip_and_tar(self):
         self.make()
-        data = self.file.read_bytes()[backup.BODY + backup.DIGEST:]
+        data = self.file.read_bytes()[backup.BODY:]
         read, write = os.pipe()
         os.write(write, PASSPHRASE.encode() + b"\n")
         os.close(write)
@@ -209,7 +226,7 @@ class RefusalTest(BackupCase):
     def test_a_file_cut_short_fails(self):
         self.make()
         data = self.file.read_bytes()
-        for keep in (len(data) - 1, len(data) // 2, backup.BODY + backup.DIGEST):
+        for keep in (len(data) - 1, len(data) // 2, backup.BODY):
             self.file.write_bytes(data[:keep])
             with self.assertRaisesRegex(backup.BackupError, "damaged or cut short"):
                 self.restore()
@@ -320,7 +337,7 @@ class ReplaceTest(BackupCase):
 
     def test_agreeing_replaces_it_and_leaves_nothing_aside(self):
         self.restore()
-        self.assertEqual(self.hits("written after the backup"), [])
+        self.assertFalse(self.has_item("x:new"))
         self.assertTrue(self.hits("sandbox key"))
         self.assertEqual([p for p in self.tree() if "restore" in p or "before" in p], [])
 
@@ -372,8 +389,7 @@ class ReplaceTest(BackupCase):
         self.assertTrue(os.path.exists(f"{self.paths.db}-wal"))
         self.restore()
         db.close()
-        self.assertEqual(self.hits("only in the log file"), [])
-        self.assertEqual(self.hits("A late note"), [])
+        self.assertFalse(self.has_item("x:late"))
 
 
 class DuringIngestTest(BackupCase):
@@ -522,7 +538,7 @@ class CommandTest(BackupCase):
     def test_the_passphrase_can_come_from_standard_input(self):
         out = io.StringIO(PASSPHRASE + "\n")
         out.isatty = lambda: False
-        with mock.patch.object(cli.sys, "stdin", out):
+        with mock.patch.object(cli.sys, "stdin", out), contextlib.redirect_stdout(io.StringIO()):
             code = cli.main(["backup", str(self.file), "--passphrase-file", "-"])
         self.assertEqual(code, 0)
 

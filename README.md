@@ -78,6 +78,38 @@ roots = ["~/code"]
 | `kb ai list`, `kb ai test` | Lists the AI plug-ins, or makes one tiny call and says which plug-in answered. |
 | `kb setup`, `kb try` | Sets kb up, or shows it on a made-up month. |
 | `kb login NAME` | Signs a Gmail source in with your own Google OAuth client. |
+| `superhistory backup [PATH]` | Writes your knowledge base, config and install id to one encrypted file. |
+| `superhistory restore PATH` | Puts a backup back, after checking it, and asks before it replaces anything. |
+
+## Backup
+
+Your history is one file on one disk, and some of it no source can give again: Claude Code deletes sessions after 30 days.
+`superhistory backup` writes an encrypted copy, so a lost disk does not lose it.
+
+```sh
+superhistory backup ~/Documents          # asks for a passphrase twice; writes superhistory-DATE.backup there
+superhistory restore ~/Documents/superhistory-2026-11-06.backup
+```
+
+The copy is taken with SQLite's backup API, so an ingest can run meanwhile. The file holds the knowledge base, `config.toml`
+and the install id, so a restored computer goes on as the same install. It does not hold the sign-in keys in the `keys`
+folder next to the config: run `superhistory login` again. The passphrase must be at least 12 characters. Give it on
+the terminal, or in a file only you can read with `--passphrase-file FILE` (`-` reads standard input); it is never taken
+from the command line or the environment, where other programs can read it, and Superhistory does not keep it. If you
+lose the passphrase, nothing can open the backup: there is no reset. A wrong passphrase, a damaged file and a file cut
+short each stop with a plain message and change nothing.
+
+A backup is read back whole before it appears under its name. A restore opens and checks the backup first. If there is
+already a knowledge base, config or install id, it names them and asks before replacing them (`--yes` skips the
+question). They are set aside while the restored store is checked where it now stands, and deleted once it passes; if
+anything fails, they are put back.
+
+The encryption is the `openssl` command, which a Mac has and most Linux systems have (OpenSSL 1.1.1 or LibreSSL 3.1 or
+newer): AES-256 in counter mode, the key made from your passphrase with 600,000 rounds of PBKDF2-HMAC-SHA256, and an
+HMAC-SHA256 over everything, checked before anything is decrypted. `age` was left out because a Mac does not have it and
+its passphrase mode needs a terminal. The file starts with its format number, so a later Superhistory can still read
+this one. The layout is at the top of `kb/backup.py`, and with the passphrase the file can be opened by hand with
+`openssl`, `gunzip` and `tar`.
 
 ## Sources
 

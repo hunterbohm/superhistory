@@ -17,6 +17,7 @@ folder names, job labels and printed text come from it, so a rename is one edit.
 | `kb/check.py` | The check: one model call writes a query, search finds candidates, a second call keeps the ones that fit. |
 | `kb/summarize.py` | Segment and atom rows for long items. |
 | `kb/ingest.py` | The runner that reads every source and stores what changed. |
+| `kb/backup.py` | The encrypted backup file (its layout and version are in the module's docstring), and the restore that puts it back. It needs the `openssl` command and no Python package. |
 | `kb/ids.py` | The install id and the prefix on every stored `source_id`. |
 | `kb/ai/` | AI plug-ins. Each one answers `ask(prompt, timeout)` with the model's text. |
 | `kb/sources/` | Source types. Each module defines `TYPE`, and its name is the type's name. |

@@ -54,7 +54,8 @@ ITERATIONS = 600_000
 MAX_ITERATIONS = 20_000_000
 HEADER = struct.Struct("!20sII16s")
 DIGEST = 32
-BODY = HEADER.size + 2 * DIGEST
+CHECKED = HEADER.size + DIGEST  # the header and its key check: what the tag covers before the ciphertext
+BODY = CHECKED + DIGEST  # where the ciphertext starts
 CIPHER = "aes-256-ctr"
 MIN_PASSPHRASE = 12
 MAX_PASSPHRASE = 1000
@@ -120,11 +121,12 @@ def choose_passphrase(text):
     return passphrase_bytes(text)
 
 
-def read_passphrase(file, making, ask=getpass.getpass, stdin=None):
+def read_passphrase(file, making, ask=None, stdin=None):
     """The passphrase from `file` (a path, or "-" for standard input) or, with none, asked for on the terminal, twice
     when `making` a backup. It is never taken from the command line or the environment, where other programs can read
     it."""
     stdin = sys.stdin if stdin is None else stdin
+    ask = ask or getpass.getpass
     if file:
         try:
             if file == "-":
@@ -337,20 +339,20 @@ def _seal(command, out, copy, manifest, config, install, passphrase, iterations)
         sealing.proc.stdin.close()
         sealing.finish()
     out.seek(0)
-    mac = hmac.new(key, out.read(BODY), hashlib.sha256)
-    out.seek(BODY + DIGEST)
+    mac = hmac.new(key, out.read(CHECKED), hashlib.sha256)
+    out.seek(BODY)
     for block in iter(lambda: out.read(CHUNK), b""):
         mac.update(block)
-    out.seek(BODY)
+    out.seek(CHECKED)
     out.write(mac.digest())
 
 
 def _opened(path, fh):
     """The header of the backup in `fh`, as (iterations, salt), after the checks that need no passphrase."""
-    data = fh.read(BODY + DIGEST)
+    data = fh.read(BODY)
     if not data.startswith(MAGIC[:len(data)]) or not data:
         raise BackupError(f"{path} is not a Superhistory backup")
-    if len(data) < BODY + DIGEST:
+    if len(data) < BODY:
         raise BackupError(f"{path} is cut short, so it is not a whole backup")
     _, number, iterations, salt = HEADER.unpack(data[:HEADER.size])
     if number > FORMAT:
@@ -372,13 +374,13 @@ def read(path, passphrase, store_to=None):
             data, iterations, salt = _opened(path, fh)
             key = _key(passphrase, salt, iterations)
             head = data[:HEADER.size]
-            if not hmac.compare_digest(_tag(key, head), data[HEADER.size:BODY]):
+            if not hmac.compare_digest(_tag(key, head), data[HEADER.size:CHECKED]):
                 raise BackupError(f"that passphrase does not open {path}, or its first bytes are damaged. Nothing was "
                                   f"changed. A passphrase that is lost cannot be got back: no one can open the file.")
-            if not hmac.compare_digest(_tag(key, data[:BODY], fh), data[BODY:]):
+            if not hmac.compare_digest(_tag(key, data[:CHECKED], fh), data[CHECKED:BODY]):
                 raise BackupError(f"{path} is damaged or cut short: it does not match its own check. Nothing was "
                                   f"changed.")
-            fh.seek(BODY + DIGEST)
+            fh.seek(BODY)
             with _Openssl(openssl_path(), True, passphrase, iterations, fh, subprocess.PIPE) as opening:
                 try:
                     contents = _unpack(opening.proc.stdout, store_to)
