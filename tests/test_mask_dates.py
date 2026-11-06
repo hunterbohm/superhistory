@@ -127,12 +127,24 @@ class NumberShapedSecretTest(unittest.TestCase):
 
 
 # After "Authorization:" with no scheme word, a credential made only of digits and ":.+TZ-", with a T or a Z in it:
-# main 2ec4d8c read each as a number, a date or a time, as it reads any such run in a lone token, and showed it. A date
-# in ISO 8601's basic form ("20261101T100000Z") is no date there, as under a key's name.
+# main 2ec4d8c read each as a number, a date or a time, as it reads any such run in a lone token, and showed it. The
+# last five are shaped as a date and a time, with a field out of its range.
 AUTHORIZATION_SHAPES = ("20261101T100000Z1234", "2026-11-01T10:00:00Z1234", "1234-5678T9012Z3456", "T1234567890Z12345",
-                        "2026-13-01T10:00:00Z", "2026-11-01T10:00:00.1234567890Z", "20261101T100000Z")
+                        "2026-13-01T10:00:00Z", "2026-11-01T10:00:00.1234567890Z", "20261301T100000Z",
+                        "20261101T250000Z", "2026-366T10:00:00Z", "2026-11-01T24:00:01Z", "2026-11-01T10:00:00+2400")
 AUTHORIZATION_DATES = ("2026-11-01T10:00:00Z", "2026-11-01T23:59:59.123Z", "2026-11-01T10:00:00.123456789+05:30",
                        "2024-02-29T10:00:00Z", "2026-11-01T10:00", "2026-11-01")
+# A date and a time as logs and clocks write them besides ISO 8601's extended form: its basic form (AWS's X-Amz-Date),
+# an offset without its colon or of hours alone (strftime's %z), a leap second, the day's end and an ordinal date.
+TIMESTAMPS = ("20261101T100000Z", "20261101T100000.123Z", "20261101T100000+0530", "20261101T100000-08",
+              "2026-11-01T10:00:00+0000", "2026-11-01T10:00:00.000+0000", "2026-11-01T10:00:00+00",
+              "2016-12-31T23:59:60Z", "2026-11-01T24:00:00Z", "2026-305T10:00:00Z", "2024-366T10:00:00.5Z",
+              "2026305T100000Z")
+# Numbers agents' logs hold, none with a letter, so none is shaped like a credential, here or on main.
+EVERYDAY = ("192.168.10.254", "192.168.10.254:8080", "10.0.19045.3803", "1.2.3+20261101", "2.0.0-rc.1",
+            "+44-20-7946-0958", "+1-555-0100", "00:01:23.456", "1793527200", "1793527200123", "1793527200.123456",
+            "1,299.00", "12,345,678.90", "41.8781,-87.6298", "112-4567890-1234567", "2026-000123-4567-8890", "+05:30",
+            "-08:00", "+0530")
 
 
 def header_forms(value):
@@ -205,6 +217,30 @@ class ShapeAloneNumberShapedTest(unittest.TestCase):
                     self.assertEqual(mask_all(item), item)
             with self.subTest(value=value, form="field with no label"):
                 self.assertEqual(masking.typed_secrets("browser_type", {"text": value}), {"text": value})
+
+    def assertShownByShape(self, value):
+        texts, held = shape_alone_forms(value)
+        texts.update(header_forms(value))
+        for form, text in texts.items():
+            with self.subTest(value=value, form=form):
+                self.assertEqual(mask(text), text)
+        held["headers"] = {"headers": {"Authorization": value}}
+        for form, item in held.items():
+            with self.subTest(value=value, form=form):
+                self.assertEqual(mask_all(item), item)
+        with self.subTest(value=value, form="field with no label"):
+            self.assertEqual(masking.typed_secrets("browser_type", {"text": value}), {"text": value})
+
+    def test_a_date_and_time_as_logs_write_it_read_by_its_shape_alone_is_shown_as_on_main(self):
+        # Read by its shape alone, a real date and time is no credential in any form ISO 8601 or a clock writes it;
+        # under a key's name only the extended form is, as #39 has it.
+        for value in TIMESTAMPS:
+            self.assertShownByShape(value)
+        self.assertEqual(mask("api_key: 20261101T100000Z"), "api_key: [masked]")
+
+    def test_everyday_numbers_read_by_their_shape_alone_are_shown_as_on_main(self):
+        for value in EVERYDAY:
+            self.assertShownByShape(value)
 
 
 class StoredRowTest(unittest.TestCase):
