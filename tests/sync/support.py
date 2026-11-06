@@ -6,7 +6,7 @@ import tempfile
 import time
 import uuid
 
-from kb import store
+from kb import config as config_mod, store
 from kb.mask import VERSION, clean
 from kb.paths import Paths
 from kb.sync import keys, login, pack, records
@@ -106,6 +106,7 @@ class Computer:
         self.config = self.home  # kb's config folder: config.toml, install-id and sync/ are in it
         self.store = os.fspath(self.paths.db)
         self.client = None
+        self.accounts = {}
 
     def login(self, label=None):
         login.login(self.paths, self.world.fake, "https://app.test", "https://relay.test", label=label or self.name,
@@ -117,7 +118,16 @@ class Computer:
             self.client.close()
         self.client = SyncClient.load(self.paths, transport=self.world.fake,
                                       clock=lambda: self.world.now + self.offset)
+        self.client.accounts = self.accounts
         return self.client
+
+    def reads(self, *sources):
+        """The online accounts this computer's config names, from `[sources.X]` tables, as `Config.account_keys` says."""
+        text = "\n".join(sources) + "\n[sync]\n"
+        self.accounts = config_mod.parse(text).account_keys()
+        if self.client:
+            self.client.accounts = self.accounts
+        return self.accounts
 
     @property
     def db(self):
