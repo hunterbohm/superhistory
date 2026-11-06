@@ -833,6 +833,23 @@ class ReviewSevenTest(unittest.TestCase):
                 mask(text)
                 self.assertEqual(any(digits in source for source in parsed), read)
 
+    def test_the_guard_reads_each_run_of_digits_once(self):
+        # the guard looks for 1,000 digits only from where a run starts, so a megabyte of runs one digit too short
+        # costs it each run once (a guard free to start mid-run spent the square of each run on it, 16 s a megabyte)
+        for run in ("9" * 999, "9_" * 998 + "9"):
+            text = "[" + ", ".join([run] * (1_000_000 // len(run))) + "]"
+            with self.subTest(run=run[:4]):
+                start = time.process_time()
+                found = masking._number_run(text, 0, len(text), [])
+                self.assertLess(time.process_time() - start, 1.0)
+                self.assertFalse(found)
+        # and it still finds a run of 1,000 among them, however it is split by underscores, but not in a string
+        for run in ("9" * 1000, "9_" * 999 + "9", "12_" + "9" * 998, "x_" + "9" * 1000, "0x_" + "9" * 1000):
+            for text, found in (("[" + "9" * 999 + ", " + run + "]", True), ('["' + run + '", ' + "9" * 999 + "]", False)):
+                with self.subTest(run=run[:4], text=text[:4]):
+                    literals = list(masking._STRING_LITERAL.finditer(text))
+                    self.assertEqual(masking._number_run(text, 0, len(text), literals), found)
+
     def test_a_span_that_does_not_parse_only_adds(self):
         # A span that does not parse falls back to the line readings, which only add: no crash, and the text around a
         # mask is kept. A bare command line inside the brackets is still masked by the fail-closed reading.
