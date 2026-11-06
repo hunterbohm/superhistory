@@ -3023,6 +3023,24 @@ class Base64KeyFooterWholeLineTest(unittest.TestCase):
                             if depth == 0:
                                 self.assertEqual([line for line in ahead if line not in masked], [])
 
+    def test_many_headers_after_words_below_one_held_back_cost_time_in_proportion(self):
+        # Each header after words that starts a line of the block, below a held one, asks what lies between them (here
+        # a line a key's body could be, so none takes its place); those lines are read once, so four times the text
+        # takes about four times as long.
+        import base64
+        import textwrap
+        import time
+        unit = b"-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSj\nnotes notes notes notes not"
+        took = {}
+        for n in (200, 800):
+            data = b"notes " * 8 + unit * n + b"\n-----END PRIVATE KEY-----\n"
+            text = "\n".join(textwrap.wrap(base64.b64encode(data).decode(), 64)) + "\n\nnext paragraph"
+            started = time.process_time()
+            masked = mask(text)
+            took[n] = time.process_time() - started
+            self.assertIn("next paragraph", masked)
+        self.assertLess(took[800], 6 * max(took[200], 0.05), took)
+
     def test_a_key_starts_at_the_line_with_its_headers_first_bits(self):
         # Where a line of the block is no whole number of base64 groups, the line before a key's header can end inside
         # the group that holds the header's first byte, with only the bits of the bytes before it: it stays.
