@@ -39,7 +39,7 @@ class Month(NamedTuple):
 
 MONTHS = {
     "a": Month(2026, ("stories.copperline", "stories.fernbrook", "stories.harbor", "stories.quill", "stories.studio",
-                      "stories.personal", *NOISE, "stories.none"), os.path.join(ROOT, "demo", "month")),
+                      "stories.personal", *NOISE, "stories.none", "stories.changes"), os.path.join(ROOT, "demo", "month")),
     "b": Month(2027, ("stories_b.client1", "stories_b.client2", "stories_b.client3", "stories_b.prospect",
                       "stories_b.studio", "stories_b.personal", *NOISE, "stories_b.none"),
                os.path.join(ROOT, "bench", "month-b")),

@@ -18,14 +18,14 @@ text, and a phone call lands in a Hermes chat that the next coding session ignor
 
 | Source | Items |
 |---|---|
-| `claude_code` | 34 |
+| `claude_code` | 38 |
 | `codex` | 26 |
-| `hermes` | 21 |
-| `gmail` | 80 |
-| `imessage` | 79 |
-| `notes` | 47 |
-| `git` | 159 |
-| `github` | 25 |
+| `hermes` | 22 |
+| `gmail` | 86 |
+| `imessage` | 83 |
+| `notes` | 51 |
+| `git` | 164 |
+| `github` | 27 |
 
 `questions.jsonl` holds one question per line:
 
@@ -33,14 +33,17 @@ text, and a phone call lands in a Hermes chat that the next coding session ignor
 {"id": "har-01", "question": "...", "answer": "...", "evidence": ["<source_id>", "..."], "kind": "update"}
 ```
 
+The 18 questions with ids `chg-`, `chb-` and `chk-` also carry `wrong_answer`: what an agent says if it takes the wrong
+record. `bench/month/stories/changes.py` writes them (see "Changes").
+
 `evidence` lists the `source_id` of each item that holds the answer. `kind` is one of these:
 
 | Kind | Questions | Meaning |
 |---|---|---|
 | `single` | 105 | One item answers it. |
-| `multi` | 10 | The answer needs two or more items. |
-| `update` | 9 | A later item changed an earlier fact. The answer is the latest one. |
-| `temporal` | 7 | The answer needs dates: when something happened, or how long between two events. |
+| `multi` | 13 | The answer needs two or more items. |
+| `update` | 19 | A later item changed an earlier fact. The answer is the latest one. |
+| `temporal` | 12 | The answer needs dates: when something happened, or how long between two events. |
 | `none` | 40 | Nothing in the month fits. The right lookup adds nothing. |
 
 Each question arrives as a new message to an agent, with no conversation before it. Ask them as of October 1,
@@ -61,6 +64,13 @@ up anywhere in the month, when two items share an id, or when a denied word appe
 of real names kept outside the repository, pass `--deny FILE`.
 
 ## Changes
+
+- 2026-11-06, for the replaced-decision measurement (`bench/results/u11-dev-measures/`). 26 items and 18 questions
+  added, in `bench/month/stories/changes.py`; no earlier item or question changed. `chg-01` to `chg-10` ask about a
+  decision that a later record replaced, as it is now. `chb-01` to `chb-05` ask about the time before the change.
+  `chk-01` to `chk-03` ask about a decision that a later record argued against and that stood. The kinds are
+  `update`, `temporal` and `multi`. Runs before this date used the 471 items and 171 questions, which are the first
+  171 rows of `questions.jsonl`; their tables say "of 171".
 
 - 2026-10-27, agreed with the coordinator. Two auditors who saw only the questions, gold answers and cited items
   checked all 171 questions. The first found nothing contradicted or ambiguous. The second looked for gold answers

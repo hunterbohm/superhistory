@@ -55,10 +55,14 @@ class Q:
     evidence: tuple = ()
     evidence_has: tuple = ()
     month_lacks: tuple = ()
+    wrong_answer: str = ""
 
     def row(self, ids):
-        return {"id": self.id, "question": self.question, "answer": self.answer,
-                "evidence": [ids[key] for key in self.evidence], "kind": self.kind}
+        row = {"id": self.id, "question": self.question, "answer": self.answer,
+               "evidence": [ids[key] for key in self.evidence], "kind": self.kind}
+        if self.wrong_answer:
+            row["wrong_answer"] = self.wrong_answer
+        return row
 
 
 @dataclass
