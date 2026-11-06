@@ -326,6 +326,18 @@ INVISIBLE = re.compile(_CSI + rf"|{_ESCAPED_INVISIBLE}|[\x00-\x08\x0e-\x1b\x7f-\
 # (_NEW_INVISIBLE).
 _MAIN_INVISIBLE_RUN = re.compile(rf"[\x00-\x08\x0e-\x1b{_FORMAT_CHARACTERS}]+")
 _NEW_INVISIBLE = re.compile(_CSI + rf"|{_ESCAPED_INVISIBLE}|[\x7f-\x84\x86-\x9f]")
+# Main 33c82f6's own INVISIBLE, as the copy of its command code judges a value without it (_todays_password_edits):
+# no surrogate pair, nothing escaped twice, no colour code escaped twice and no JSON backspace between a token's
+# characters, so "FOO\bBAR", a password to main, is not read as FOOBAR, a name in capitals.
+_TODAYS_CSI = r"(?:\x1b\[|\x9b|\\(?:u001[bB]|x1[bB]|033|[eE])\[|\\(?:u009[bB]|x9[bB]|233))(?!masked\])[0-?]*[ -/]*[@-~]"
+_TODAYS_ESCAPED_INVISIBLE = (
+    r"\\u(?:000[0-8]|000[eEfF]|001[0-9a-bA-B]|007[fF]|008[0-46-9a-fA-F]|009[0-9a-fA-F]|00[aA][dD]|034[fF]|061[cC]"
+    r"|115[fF]|1160|17[bB][45]|180[b-fB-F]|200[b-fB-F]|202[a-eA-E]|206[0-9a-fA-F]|3164|[fF][eE]0[0-9a-fA-F]"
+    r"|[fF][eE][fF][fF]|[fF][fF][aA]0|[fF][fF][fF][0-8])"
+    r"|\\x(?:0[0-8]|0[eEfF]|1[0-9a-bA-B]|7[fF]|8[0-46-9a-fA-F]|9[0-9a-fA-F]|[aA][dD])"
+    r"|\\U000(?:1[bB][cC][aA][0-3]|1[dD]17[3-9aA]|[eE]0[0-9a-fA-F]{3})")
+_TODAYS_INVISIBLE = re.compile(
+    _TODAYS_CSI + rf"|{_TODAYS_ESCAPED_INVISIBLE}|[\x00-\x08\x0e-\x1b\x7f-\x84\x86-\x9f{_FORMAT_CHARACTERS}]")
 
 # Google's app password, four groups of four lower-case letters, after a password's name and "=" or in quotes. A
 # character a reader does not see may stand anywhere among its letters, as one may in any value read through them.
@@ -593,7 +605,7 @@ def _gitleaks_edits(text):
 # Which mask() a stored row was masked with. A row of another version, or of none, is masked again when read and by
 # the next ingest. The patterns change it by themselves; bump REVISION when the code that applies them changes what
 # it masks.
-REVISION = 18
+REVISION = 19
 VERSION = hashlib.sha256(repr((REVISION, [p.pattern for p in SECRET_PATTERNS + PREFIXED_SECRETS], KEYED_SECRET.pattern,
                                 ENV_KEY_SECRET.pattern, JSON_SECRET.pattern, FLAG_SECRET.pattern, AUTH_SECRET.pattern,
                                 COMMAND_FLAGS, PASSWORD_NAME.pattern, sorted(PLACEHOLDERS), REFERENCE.pattern,
@@ -1144,7 +1156,7 @@ def _todays_password_edits(text, line_pattern, flag, always, unseen=False):
             if k >= 0 and m.start() < inside[k][1]:
                 continue  # a flag inside a quoted argument or a substitution is another program's
 
-            value = INVISIBLE.sub("", m.group(2)) if unseen else m.group(2)
+            value = _TODAYS_INVISIBLE.sub("", m.group(2)) if unseen else m.group(2)
             if always == "field":  # a .netrc line's password, which nothing expands: any value but a placeholder
                 if _netrc_password(value) and _NETRC_AFTER_VALUE.match(text, m.end(2)) \
                         and not _netrc_prose(text[line.start():end], value):
@@ -1406,11 +1418,12 @@ def _masked_parts(decoded, masked):
     return parts
 
 
-# A run of digits long enough that str-to-int is slow on Python 3.9 (no digit limit there), or that no real value
-# holds: a span with one is left for the fallback, not parsed. A number written in hexadecimal, octal or binary parses
-# in time in proportion, so its value is held to the same bound once parsed (_LONG_NUMBER): past it, printing it beside
-# its field's name, as mask_all does, raises ValueError past Python's digit limit.
-_DIGIT_RUN = re.compile(r"[0-9]{1000,}")
+# A run of digits, with single underscores between them as Python allows ("9_999" is 9999), long enough that
+# str-to-int is slow on Python 3.9 (no digit limit there), or that no real value holds: a span with one is left for
+# the fallback, not parsed. A number written in hexadecimal, octal or binary parses in time in proportion, so its
+# value is held to the same bound once parsed (_LONG_NUMBER): past it, printing it beside its field's name, as
+# mask_all does, raises ValueError past Python's digit limit.
+_DIGIT_RUN = re.compile(r"[0-9](?:_?[0-9]){999,}")
 _LONG_NUMBER = 10 ** 999
 # A span longer than 1 MiB, the bar's item size, or nested past _CONTAINER_DEPTH, is left for the fallback.
 _CONTAINER_MAX = 1 << 20

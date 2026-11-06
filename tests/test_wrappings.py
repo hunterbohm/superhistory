@@ -2157,7 +2157,8 @@ class TodaysRowsTest(unittest.TestCase):
                 function = next(node for node in ast.parse(f.read()).body
                                 if isinstance(node, ast.FunctionDef) and node.name == name)
             function.name, function.body = "", function.body[1:]
-            return ast.dump(function).replace("_todays_command_line", "_command_line")
+            return ast.dump(function).replace("_todays_command_line", "_command_line").replace("_TODAYS_INVISIBLE",
+                                                                                              "INVISIBLE")
 
         for ours, mains in (("_todays_command_line", "_command_line"),
                             ("_todays_password_edits", "_command_password_edits")):
@@ -2251,7 +2252,7 @@ class TodaysRowsTest(unittest.TestCase):
 
 class RevisionTest(unittest.TestCase):
     def test_stored_rows_are_masked_again(self):
-        self.assertEqual(masking.REVISION, 18)
+        self.assertEqual(masking.REVISION, 19)
 
 
 if __name__ == "__main__":
