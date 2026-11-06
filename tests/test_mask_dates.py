@@ -167,6 +167,46 @@ class AuthorizationNumberShapedTest(unittest.TestCase):
                 self.assertEqual(mask_all({"headers": {"Authorization": value}}), {"headers": {"Authorization": value}})
 
 
+def shape_alone_forms(value):
+    """The places kb reads a value by its shape alone, as the README lists them: after "pass" or "pwd" next to a user's
+    name, in an XML element not named for a password, after a name a colour code splits, under a header's or a secret's
+    name in a two-item list, and in a field with no label."""
+    texts = {"pass": f"user=ci pass={value}", "pwd": f"Server=db;Uid=sa;Pwd={value};", "xml": f"<secret>{value}</secret>",
+             "xml key": f"<api_key>{value}</api_key>", "colour code": f"api_\x1b[1mkey\x1b[0m: {value}"}
+    held = {"header list": ["Authorization", value], "secret list": ["api_key", value],
+            "pass beside a user": {"user": "ci", "pass": value}}
+    return texts, held
+
+
+class ShapeAloneNumberShapedTest(unittest.TestCase):
+    # Each reads the value by _credential_shaped, which main 2ec4d8c read as no credential when it was only digits and
+    # ":.+TZ-", and so showed.
+    def test_a_credential_of_digits_and_t_or_z_read_by_its_shape_alone_is_masked(self):
+        for value in AUTHORIZATION_SHAPES:
+            texts, held = shape_alone_forms(value)
+            for form, text in texts.items():
+                with self.subTest(value=value, form=form):
+                    self.assertNotIn(value, mask(text))
+            for form, item in held.items():
+                with self.subTest(value=value, form=form):
+                    self.assertNotIn(value, json.dumps(mask_all(item)))
+            with self.subTest(value=value, form="field with no label"):
+                self.assertEqual(masking.typed_secrets("browser_type", {"text": value}), {"text": "[masked]"})
+        self.assertEqual(mask("<secret>20261101T100000Z1234</secret>"), "<secret>[masked]</secret>")
+
+    def test_a_real_date_read_by_its_shape_alone_is_shown_as_on_main(self):
+        for value in AUTHORIZATION_DATES:
+            texts, held = shape_alone_forms(value)
+            for form, text in texts.items():
+                with self.subTest(value=value, form=form):
+                    self.assertEqual(mask(text), text)
+            for form, item in held.items():
+                with self.subTest(value=value, form=form):
+                    self.assertEqual(mask_all(item), item)
+            with self.subTest(value=value, form="field with no label"):
+                self.assertEqual(masking.typed_secrets("browser_type", {"text": value}), {"text": value})
+
+
 class StoredRowTest(unittest.TestCase):
     """A row main 68506d9 masked, which showed these values, is masked again."""
     MAIN = "ed98bfebca16cee4"  # the version main 68506d9 records on its rows
