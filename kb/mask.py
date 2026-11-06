@@ -605,7 +605,7 @@ def _gitleaks_edits(text):
 # Which mask() a stored row was masked with. A row of another version, or of none, is masked again when read and by
 # the next ingest. The patterns change it by themselves; bump REVISION when the code that applies them changes what
 # it masks.
-REVISION = 19
+REVISION = 20
 VERSION = hashlib.sha256(repr((REVISION, [p.pattern for p in SECRET_PATTERNS + PREFIXED_SECRETS], KEYED_SECRET.pattern,
                                 ENV_KEY_SECRET.pattern, JSON_SECRET.pattern, FLAG_SECRET.pattern, AUTH_SECRET.pattern,
                                 COMMAND_FLAGS, PASSWORD_NAME.pattern, sorted(PLACEHOLDERS), REFERENCE.pattern,
@@ -1865,8 +1865,7 @@ def _short_name_secret(value):
     """Whether a value after "pass" or "pwd" alone is a secret: a credential's shape, and no path, read without the
     characters a reader does not see, such as a colour code. Either word alone names much else, a working directory or
     a compiler's pass."""
-    value = INVISIBLE.sub("", value)
-    return not _PATH_VALUE.match(value) and _password_shaped(value)
+    return any(not _PATH_VALUE.match(seen) and _password_shaped(seen) for seen in _seen_views(value))
 
 
 def _short_password_span(m):
@@ -1994,16 +1993,18 @@ def _app_password_span(m):
     """_password_span for an app password's four groups, but where three or four are common words ("password: this
     will work fine", "password: read from smtp logs"), read as main reads them: a random app password's groups hold
     three such words about once in a million times."""
-    groups = INVISIBLE.sub("", m.group(3)).split()
-    return None if sum(group in _COMMON_WORDS for group in groups) >= 3 else _password_span(m)
+    if all(sum(group in _COMMON_WORDS for group in seen.split()) >= 3 for seen in _seen_views(m.group(3))):
+        return None
+    return _password_span(m)
 
 
 def _xml_span(m):
     """Where an XML element's secret is: _keyed_span, but for an element about a password (_ABOUT_A_PASSWORD), and for
     one not named for a password, a value without a credential's shape: an element named "token" or "secret" holds a
     word as often as a secret ("<tokens><token>internationalization</token></tokens>")."""
-    name, value = m.group(1), INVISIBLE.sub("", m.group(3))
-    if _ABOUT_A_PASSWORD.search(name) or not _XML_PASSWORD.search(name) and not _password_shaped(value):
+    name = m.group(1)
+    if _ABOUT_A_PASSWORD.search(name) or not _XML_PASSWORD.search(name) and \
+            not any(map(_password_shaped, _seen_views(m.group(3)))):
         return None
     return _keyed_span(m)
 
@@ -2181,13 +2182,22 @@ def _password_shaped(word):
     return _credential_shaped(word) and not _identifier_shaped(word.rstrip(".,;:!?)"))
 
 
+def _seen_views(value):
+    """`value` without the characters a reader does not see, as this branch reads them (INVISIBLE) and as main 032391d
+    does (_TODAYS_INVISIBLE), once each where they differ. A reading that judges a value by its shape asks each, and a
+    value either finds a secret is one: this branch's INVISIBLE also removes a surrogate pair or a colour code escaped
+    twice, so "ZD\\\\udb40\\\\udc01VVVX", a random token to main, alone would read as ZDVVVX, a name in capitals."""
+    return dict.fromkeys((INVISIBLE.sub("", value), _TODAYS_INVISIBLE.sub("", value)))
+
+
 def _bare_credential(word):
     """The credential-shaped token a header's value starts with, up to an escaped line break or a placeholder, and
     without a closing mark after it; or "". Judged by its shape alone, as a reader sees it, without the characters a
     reader does not see, so base64 that starts with "/" counts and "RFC7235-compli<SHY>ant" does not."""
     head = _CREDENTIAL_END.split(word, 1)[0].rstrip(".,;:!?)")
-    # As this view reads it, and as main's own does, without its own invisible characters only.
-    shaped = _credential_shaped(INVISIBLE.sub("", head)) or _credential_shaped(_MAIN_INVISIBLE_RUN.sub("", head))
+    # As this view reads it, as main 032391d does, and as main's own view does, without its own invisible characters
+    # only.
+    shaped = any(map(_credential_shaped, (*_seen_views(head), _MAIN_INVISIBLE_RUN.sub("", head))))
     return head if shaped else ""
 
 
@@ -2516,6 +2526,7 @@ _MAIN_READING_START = _reading_starts(*map(_main_reading, (KEYED_SECRET, ENV_KEY
 # Where one could start: a letter, a digit or "-" after anything but a letter or digit, as "7token is" starts a name.
 _MAY_START = re.compile(r"(?<![A-Za-z0-9])(?=[A-Za-z0-9-])")
 _INVISIBLE_RUN = re.compile(f"(?:{INVISIBLE.pattern})+")
+_TODAYS_INVISIBLE_RUN = re.compile(f"(?:{_TODAYS_INVISIBLE.pattern})+")  # main 032391d's own (_split_secrets)
 # How far a token that starts right after a letter, where an invisible character stood, is read before it counts as a
 # longer one: each such start is read once, so repeated starts cost time in proportion to the text.
 _GLUED_START_WINDOW = 512
@@ -2598,11 +2609,28 @@ def _split_secrets(text, rules):
     stood, as after a space, so one before a key glued to a word reads it ("budget<ZWSP>s<ZWSP>k-..."). A run of them
     just before where a secret's reading starts stays in the view, as a break. A split token ends before the last of
     them ahead of any reading the text as written starts inside it, such as a link's scheme in the token's tail, and a
-    split value ends where such a reading starts: the pass over the text as given reads those."""
+    split value ends where such a reading starts: the pass over the text as given reads those. Where main 032391d's own
+    invisible characters (_TODAYS_INVISIBLE) make another view, as a surrogate pair or a colour code escaped twice,
+    which only this branch removes, keeps a token whole, that view is read too, and what either hides is hidden."""
     # All main's own view hides, the text without its invisible characters only (_main_split_spans): where removing a
     # colour code, DEL or a C1 control too glues a token to a word, or a name to a placeholder, main's still reads it.
     seen_by_main = _main_split_spans(text, rules)
-    v = _Split(text, _INVISIBLE_RUN)
+    spans = _split_secrets_seen(text, rules, _INVISIBLE_RUN, seen_by_main)
+    if _TODAYS_INVISIBLE_RUN.sub("", text) == _INVISIBLE_RUN.sub("", text):
+        return spans
+    merged = []
+    for start, end in sorted(spans + _split_secrets_seen(text, rules, _TODAYS_INVISIBLE_RUN, [])):
+        if merged and start < merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+        else:
+            merged.append((start, end))
+    return merged
+
+
+def _split_secrets_seen(text, rules, run, seen_by_main):
+    """_split_secrets in the view without the characters `run` finds, with what main's own view hides (`seen_by_main`),
+    as merged (start, end) spans of the text as written."""
+    v = _Split(text, run)
     gone, view, places, where, removed = v.gone, v.view, v.places, v.where, v.removed
     if not gone:
         return seen_by_main
@@ -2998,7 +3026,7 @@ def secret_in_id(text, names=()):
     name = names[0] if names else None
     if isinstance(name, str) and name and text.startswith(f"{name}:") and not text.startswith("//", len(name) + 1):
         return secret_in_id(name) or secret_in_id(text[len(name) + 1:], names[1:])
-    if any(_basic_credential(m.group(1)) for view in (INVISIBLE.sub("", text), _MAIN_INVISIBLE_RUN.sub("", text))
+    if any(_basic_credential(m.group(1)) for view in (*_seen_views(text), _MAIN_INVISIBLE_RUN.sub("", text))
            for m in _BASIC_VALUE.finditer(view)):
         return True
     return _mask_once(text, _ID_RULES) != text
@@ -3024,8 +3052,13 @@ def _pair_secret(name, value, listed=False):
     """Whether a value held apart from its name is a secret by that name: under a header's (_HEADER_NAMES), when the
     header read in text hides any of it, or under a secret's field name, when the field's rule says so (mask_all).
     `listed` for a list of the two, which may be two words, as tags are: then the value holds the header's own
-    content, a cookie's "name=" or a credential, or is shaped like a credential under a secret's name."""
-    name, value = name.strip(), INVISIBLE.sub("", value).strip()
+    content, a cookie's "name=" or a credential, or is shaped like a credential under a secret's name. The value is
+    judged as each view sees it (_seen_views)."""
+    return any(_pair_secret_seen(name.strip(), seen.strip(), listed) for seen in _seen_views(value))
+
+
+def _pair_secret_seen(name, value, listed):
+    """_pair_secret for a value without the characters a reader does not see, as one view reads it."""
     lowered = name.lower()
     if lowered in _HEADER_NAMES:
         if listed and not (_COOKIE_CONTENT.search(value) if "cookie" in lowered else
@@ -3430,7 +3463,7 @@ def typed_secrets(name, args):
         for key in _TYPED_KEYS:
             value = item.get(key)
             if isinstance(value, (str, int)) and not isinstance(value, bool) and str(value) and (
-                    secret or not labels and _password_shaped(INVISIBLE.sub("", str(value)))):
+                    secret or not labels and any(map(_password_shaped, _seen_views(str(value))))):
                 out[key] = "[masked]"
         return out
 
@@ -3732,7 +3765,7 @@ def _labels_ask_for_a_secret(labels):
 def _typed_values(text, labels, typed):
     secret = _labels_ask_for_a_secret(tuple(labels))
     return [(a, b, "[masked]") for a, b in typed
-            if b > a and (secret or not labels and _password_shaped(INVISIBLE.sub("", text[a:b])))]
+            if b > a and (secret or not labels and any(map(_password_shaped, _seen_views(text[a:b]))))]
 
 
 # A regex literal where a value starts inside a locator's brackets: first, or after ",", ":" or "=".
@@ -3959,8 +3992,8 @@ def _typed_code_edits(text):
             continue  # a value from a variable, or a call on no page and no locator
         if not labels:  # only typing into the focused field (page.keyboard.type) is read, by the value's shape
             a, b = _code_text(text, strings[0])
-            if "keyboard" in names and b > a and not _built_at_run_time(text, strings[0]) and _password_shaped(
-                    INVISIBLE.sub("", text[a:b])):
+            if "keyboard" in names and b > a and not _built_at_run_time(text, strings[0]) and any(
+                    map(_password_shaped, _seen_views(text[a:b]))):
                 edits.append((a, b, "[masked]"))
             continue
         # any one string that asks for a secret on its own names the field so: no other string, a container's, a
