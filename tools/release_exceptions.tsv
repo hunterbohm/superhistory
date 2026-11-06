@@ -45,3 +45,4 @@ tests/test_release.py	github.com/hunterbohm/superhistory	the repo's own address,
 README.md	github.com/hunterbohm/superhistory	the repo's own address, in the install line and the clone line
 README.md	raw.githubusercontent.com/hunterbohm/superhistory	the repo's own address, where the page for an agent is fetched
 docs/agent-setup.md	github.com/hunterbohm/superhistory	the repo's own address, where the install line downloads the latest release
+kb/mask.py	mini	an English word in the masking word list
