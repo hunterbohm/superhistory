@@ -2267,6 +2267,52 @@ class TodaysRowsTest(unittest.TestCase):
                     self.assertEqual([password for password in hidden if any(password in out for out in outputs)], [])
 
 
+class SplitValueTest(unittest.TestCase):
+    """Round 24's first finding past #29's rows, which the standing comparison's split values found after its fix:
+    each reading this branch shares with main that judges a value by its shape without the characters a reader does
+    not see (a value after "pass" or "pwd" alone, an XML element's, typing into the focused field, a field's under a
+    secret's or a header's name in mask_all, a name split by colour codes) read it without this branch's wider
+    INVISIBLE only, which also removes a surrogate pair or a colour code escaped twice. So "ZD\\\\udb40\\\\udc01VVVX",
+    a random token to main 032391d, read as ZDVVVX, a name in capitals, and showed. Each now judges the value both
+    ways, as this branch and as main reads it, and a value either finds a secret is one. Every value here is masked
+    whole by main 032391d (#41's random tokens) in each text as written and in each list and dict; this branch masks
+    it whole at every depth, and in "api_<colour code>key: ..." escaped twice, where main shows it."""
+
+    TEXTS = ("user=ci pass={}", "Server=db;Uid=sa;Pwd={};", "<secret>{}</secret>", "<api_key>{}</api_key>",
+             'await page.keyboard.type("{}")', "api_\x1b[1mkey\x1b[0m: {}")
+    ITEMS = (lambda v: ["api_key", v], lambda v: ["Authorization", v], lambda v: {"user": "ci", "pass": v},
+             lambda v: {"api_key": v})
+    VALUES = (r"FOO\\udb40\\udc01BAR", r"FOO\\udb40\\udc01BAR\\udb40\\udc01QUX", r"ZD\\udb40\\udc01VVVX",
+              r"ZD\\udb40\\udc01VVVX\\udb40\\udc01QM", r"AQHP\\udb40\\udc01ZDMAH", r"HCVLWB\\udb40\\udc01ERQDK",
+              r"VKRRFG\\udb40\\udc01JFRQF", r"fvhuz\\u001b[0m.af\\udb40\\udc01vbehe",
+              r"vghqez\\033[0m.qpkuw\\udb40\\udc01wdz", r"wnk28EA\\x1b[1mZnEx\\e[0mt" + "\U000e0001" + "vn")
+    # masked whole by main 032391d once escaped, in each text, and in a dict under "api_key"
+    ESCAPED = r"ytzgsa\\udb40\\udc01.vrp" + "\U000e0001" + "qkd"
+
+    @staticmethod
+    def escaped(text, depth):
+        for _ in range(depth):
+            text = json.dumps(text)
+        return text
+
+    def test_a_token_main_masks_is_masked_in_each_reading(self):
+        for template in self.TEXTS:
+            for value in self.VALUES + (self.ESCAPED,):
+                for depth in (0, 1, 2) if value in self.VALUES else (1, 2):
+                    form = self.escaped(template.format(value), depth)
+                    with self.subTest(form=form, depth=depth):
+                        self.assertEqual(mask(form), self.escaped(template.format("[masked]"), depth))
+
+    def test_a_field_main_masks_by_its_name_is_masked_in_mask_all(self):
+        for shape in self.ITEMS:
+            for value in self.VALUES:
+                items = shape(value)
+                with self.subTest(items=items):
+                    self.assertEqual(mask_all(items), shape("[masked]"))
+                    self.assertEqual(mask(json.dumps(items)), json.dumps(shape("[masked]")))
+        self.assertEqual(mask_all({"api_key": self.ESCAPED}), {"api_key": "[masked]"})
+
+
 class RevisionTest(unittest.TestCase):
     def test_stored_rows_are_masked_again(self):
         self.assertEqual(masking.REVISION, 19)
