@@ -408,6 +408,24 @@ class IsolationTest(PluginCase):
             self.assertNotIn(line[10:40], text)
         self.assertIn("done", text)
 
+    def test_a_secret_cut_by_the_stderr_limit_does_not_reach_the_log_in_part(self):
+        self.write("cut", script(f"""
+            sys.stderr.write("z" * 150 + "\\n" + {SECRET!r} + "\\n")
+            sys.exit(2)
+            """))
+        records = []
+        handler = logging.Handler()
+        handler.emit = lambda record: records.append(record.getMessage())
+        log = logging.getLogger("kb.plugin")
+        log.addHandler(handler)
+        log.setLevel(logging.INFO)
+        self.addCleanup(log.removeHandler, handler)
+        with mock.patch.object(plugin, "STDERR_BYTES", 170):
+            self.assertEqual(self.ingest(cut=("cut", "")), 1)
+        text = "\n".join(records) + self.failing()["cut@m1"]
+        self.assertNotIn(SECRET[:12], text)
+        self.assertIn("zzzz", text)
+
     def test_a_completed_line_over_the_limit_is_refused_even_when_it_arrives_with_its_newline(self):
         self.write("fat", script("""
             sys.stdout.write("x" * 3000 + "\\n")

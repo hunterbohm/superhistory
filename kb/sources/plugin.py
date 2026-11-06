@@ -156,7 +156,10 @@ class _Stderr:
         self.cut = self.cut or len(data) > room
 
     def text(self):
-        return mask(self.data.decode("utf-8", errors="replace").replace("\r\n", "\n"))
+        """The kept text, masked. When the limit cut it, the line it cut is left out, since the start of a secret is
+        too short for the masking to know."""
+        data = self.data[:self.data.rfind(b"\n") + 1] if self.cut else self.data
+        return mask(data.decode("utf-8", errors="replace").replace("\r\n", "\n"))
 
     def finish(self):
         if self.finished:
