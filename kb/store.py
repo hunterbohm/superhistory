@@ -170,16 +170,18 @@ def _move_marks(db):
         raise
 
 
-def mark_count(db):
-    """How many supersede marks the store holds: rows of the supersedes table, a clear's too, and an older kb's marks
-    still in docs.superseded_by."""
-    count = 0
+def all_marks(db):
+    """Every supersede mark and clear the store holds, as (source, source_id, marked_by, new_source, new_source_id, at,
+    v) in the order they were made: the rows of the supersedes table, a clear's too, and an older kb's marks still in
+    docs.superseded_by, read as _move_marks would move them."""
+    rows = []
     if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='supersedes'").fetchone():
-        count += db.execute("SELECT count(*) FROM supersedes").fetchone()[0]
-    if _has_old_marks(db):
-        count += db.execute("SELECT count(DISTINCT source || char(0) || source_id) FROM docs "
-                            "WHERE superseded_by IS NOT NULL").fetchone()[0]
-    return count
+        rows = db.execute("SELECT source, source_id, marked_by, new_source, new_source_id, at, v FROM supersedes "
+                          "ORDER BY at, source, source_id, marked_by").fetchall()
+    held = {row[:3] for row in rows}
+    at = now_iso()
+    return rows + [(*item, MOVED_MARK_BY, *new, at, None) for item, new in _old_marks(db).items()
+                   if (*item, MOVED_MARK_BY) not in held]
 
 
 def has_unversioned(db):

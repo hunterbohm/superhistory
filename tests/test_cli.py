@@ -457,7 +457,7 @@ class OlderStoreTest(TempHome):
         with contextlib.closing(store.connect(self.path)) as db:
             self.assertEqual([r[0] for r in db.execute("SELECT source_id FROM docs")], [f"{self.mine()}:plan.md"])
 
-    def test_a_rebuild_says_how_many_supersede_marks_it_drops_and_that_they_cannot_come_back(self):
+    def test_a_rebuild_names_the_supersede_marks_it_cannot_carry_and_that_they_cannot_come_back(self):
         self.db.executemany("INSERT INTO supersedes(source, source_id, marked_by, new_source, new_source_id, at, v) "
                             "VALUES ('notes', ?, ?, 'notes', 'studio:new.md', '2026-10-01', NULL)",
                             [("studio:plan.md", self.mine()), ("studio:plan.md", "c-bbbbbbbbbbbbb")])
@@ -466,8 +466,10 @@ class OlderStoreTest(TempHome):
         code, out, err = self.run_kb("rebuild")
         self.assertEqual(code, 0, err)
         self.assertIn("kept 1 item", out)
-        self.assertIn("dropped 2 supersede marks (they aren't rebuilt from sources)", out)
-        self.assertIn("the old knowledge base is gone, so they can't come back", out)
+        self.assertIn("carried 0 supersede marks across and left 2 behind, since an item they name is not in the new "
+                      "knowledge base (notes studio:plan.md, replaced by notes studio:new.md; "
+                      "notes studio:plan.md, replaced by notes studio:new.md)", out)
+        self.assertIn("The old knowledge base is gone, so those can't come back", out)
 
     def test_a_rebuild_with_no_marks_names_none(self):
         self.db.close()
@@ -475,7 +477,7 @@ class OlderStoreTest(TempHome):
         self.assertEqual(code, 0, err)
         self.assertNotIn("supersede", out)
 
-    def test_a_rebuild_counts_the_marks_of_a_store_main_wrote(self):
+    def test_a_rebuild_carries_the_marks_of_a_store_main_wrote(self):
         self.db.execute("DROP TABLE supersedes")
         self.db.execute("ALTER TABLE docs ADD COLUMN superseded_by INTEGER")
         self.db.execute("INSERT INTO docs(kind, source, source_id, ts, title, content, metadata, masked) VALUES "
@@ -484,9 +486,15 @@ class OlderStoreTest(TempHome):
                         "WHERE source_id='studio:plan.md'")
         self.db.commit()
         self.db.close()
-        code, out, err = self.run_kb("rebuild", "--accept-loss")
+        with open(os.path.join(self.notes, "new.md"), "w", encoding="utf-8") as fh:
+            fh.write("a newer plan\n")
+        code, out, err = self.run_kb("rebuild")
         self.assertEqual(code, 0, err)
-        self.assertIn("dropped 1 supersede mark (they aren't rebuilt from sources)", out)
+        self.assertIn("carried 1 supersede mark across", out)
+        self.assertNotIn("left", out)
+        with contextlib.closing(store.connect(self.path)) as db:
+            self.assertEqual(db.execute("SELECT source_id, new_source_id FROM supersedes").fetchall(),
+                             [(f"{self.mine()}:plan.md", f"{self.mine()}:new.md")])
 
     def test_reading_commands_refuse_and_name_the_rebuild(self):
         for args in (("search", "pelican"), ("get", 1), ("stats",), ("ingest",)):
@@ -894,3 +902,186 @@ class LoginTest(unittest.TestCase):
         code, _, err = self.run_cli("login", "mail")
         self.assertEqual(code, 1)
         self.assertIn('auth = "oauth"', err)
+
+
+class RebuildMarksTest(TempHome):
+    """A rebuild carries the supersede marks and clears across, as users see them in `search` and `get`."""
+    OTHER = "c-bbbbbbbbbbbbb"
+
+    def setUp(self):
+        super().setUp()
+        env = mock.patch.dict(os.environ, {"KB_HOME": self.home})
+        env.start()
+        self.addCleanup(env.stop)
+        self.db.close()
+        self.notes = os.path.join(self.tmp.name, "notes")
+        os.makedirs(self.notes)
+        self.write_config(NOTES_CONFIG.format(path=self.notes))
+        for name, text in (("plan-v1.md", "the pangolin plan, first draft"), ("plan-v2.md", "the pangolin plan, final"),
+                           ("trip-v1.md", "the walrus trip, first draft"), ("trip-v2.md", "the walrus trip, final"),
+                           ("menu-v1.md", "the okapi menu, first draft"), ("menu-v2.md", "the okapi menu, final")):
+            self.write(name, text)
+        self.assertEqual(self.run_kb("ingest", "--no-summaries")[0], 0)
+
+    run_kb = CliTest.run_kb
+    get = CliTest.get
+
+    def write(self, name, text):
+        with open(os.path.join(self.notes, name), "w", encoding="utf-8") as fh:
+            fh.write(text)
+
+    def mine(self):
+        from kb import ids
+        from kb.paths import Paths
+        return ids.install_id(Paths.for_user())
+
+    def rid(self, name):
+        """The record number the item for the note `name` has now."""
+        with contextlib.closing(store.connect(self.path, readonly=True)) as db:
+            return db.execute("SELECT min(id) FROM docs WHERE source_id=?", (f"{self.mine()}:{name}",)).fetchone()[0]
+
+    def logged(self):
+        """The warnings kb logs from here on, as the list their text is added to."""
+        import logging
+        lines = []
+
+        class Keep(logging.Handler):
+            def emit(self, record):
+                lines.append(record.getMessage())
+
+        handler = Keep(logging.WARNING)
+        logging.getLogger("kb").addHandler(handler)
+        self.addCleanup(logging.getLogger("kb").removeHandler, handler)
+        return lines
+
+    def marks(self):
+        with contextlib.closing(store.connect(self.path, readonly=True)) as db:
+            return db.execute("SELECT source, source_id, marked_by, new_source, new_source_id, at, v FROM supersedes "
+                              "ORDER BY source_id, marked_by").fetchall()
+
+    def test_a_rebuild_keeps_a_mark_a_clear_and_a_mark_from_another_computer(self):
+        self.assertEqual(self.run_kb("supersede", self.rid("plan-v1.md"), self.rid("plan-v2.md"))[0], 0)
+        self.assertEqual(self.run_kb("supersede", self.rid("trip-v1.md"), self.rid("trip-v2.md"))[0], 0)
+        self.assertEqual(self.run_kb("supersede", self.rid("trip-v1.md"), "--clear")[0], 0)
+        with contextlib.closing(store.connect(self.path)) as db:  # a mark Sync brought from another computer
+            store.mark_superseded(db, "notes", f"{self.mine()}:menu-v1.md", ("notes", f"{self.mine()}:menu-v2.md"),
+                                  self.OTHER, "2026-10-03T08:00:00Z", 7)
+            db.commit()
+        before = self.marks()
+        self.assertEqual(len(before), 3)
+        self.assertIn("(superseded)", self.run_kb("search", "pangolin")[1])
+
+        code, out, err = self.run_kb("rebuild")
+
+        self.assertEqual(code, 0, err)
+        self.assertIn("carried 3 supersede marks across", out)
+        self.assertNotIn("left", out)
+        self.assertEqual(self.marks(), before)  # the other computer's keeps its marked_by, time and version
+        found = self.run_kb("search", "pangolin")[1]
+        self.assertRegex(found, rf"#{self.rid('plan-v1.md')} \(superseded\)")
+        self.assertNotRegex(found, rf"#{self.rid('plan-v2.md')} \(superseded\)")
+        self.assertIn(f"(superseded by #{self.rid('plan-v2.md')})", self.get(self.rid("plan-v1.md")))
+        self.assertNotIn("superseded", self.get(self.rid("trip-v1.md")))  # the clear holds
+        self.assertIn(f"(superseded by #{self.rid('menu-v2.md')})", self.get(self.rid("menu-v1.md")))
+
+    def test_a_rebuild_keeps_the_marks_it_can_and_names_the_one_whose_item_is_gone_from_the_source(self):
+        self.assertEqual(self.run_kb("supersede", self.rid("plan-v1.md"), self.rid("plan-v2.md"))[0], 0)
+        self.assertEqual(self.run_kb("supersede", self.rid("menu-v1.md"), self.rid("menu-v2.md"))[0], 0)
+        self.assertEqual(self.run_kb("supersede", self.rid("trip-v1.md"), self.rid("trip-v2.md"))[0], 0)
+        os.remove(os.path.join(self.notes, "trip-v2.md"))
+        code, out, err = self.run_kb("rebuild")
+        self.assertEqual(code, 1)
+        self.assertIn("--accept-loss", err)
+        self.assertEqual(len(self.marks()), 3)  # the old store is kept as it was
+
+        code, out, err = self.run_kb("rebuild", "--accept-loss")
+
+        self.assertEqual(code, 0, err)
+        self.assertIn("carried 2 supersede marks across and left 1 behind", out)
+        self.assertIn(f"notes {self.mine()}:trip-v1.md, replaced by notes {self.mine()}:trip-v2.md", out)
+        self.assertIn("can't come back", out)
+        self.assertEqual([m[1] for m in self.marks()], [f"{self.mine()}:menu-v1.md", f"{self.mine()}:plan-v1.md"])
+        self.assertIn("(superseded)", self.run_kb("search", "pangolin")[1])
+        self.assertIn("(superseded)", self.run_kb("search", "okapi")[1])
+        self.assertNotIn("(superseded)", self.run_kb("search", "walrus")[1])
+
+    def test_a_rebuild_names_a_cleared_mark_whose_item_is_gone(self):
+        self.assertEqual(self.run_kb("supersede", self.rid("trip-v1.md"), "--clear")[0], 0)
+        os.remove(os.path.join(self.notes, "trip-v1.md"))
+        code, out, err = self.run_kb("rebuild", "--accept-loss")
+        self.assertEqual(code, 0, err)
+        self.assertIn(f"carried 0 supersede marks across and left 1 behind, since an item they name is not in the new "
+                      f"knowledge base (notes {self.mine()}:trip-v1.md (cleared))", out)
+
+    def test_a_rebuild_names_up_to_ten_marks_it_left_and_logs_each(self):
+        with contextlib.closing(store.connect(self.path)) as db:
+            for i in range(12):
+                store.mark_superseded(db, "notes", f"gone:{i}", ("notes", f"{self.mine()}:plan-v2.md"), self.OTHER,
+                                      f"2026-10-{i + 1:02d}T08:00:00Z")
+            db.commit()
+        logged = self.logged()
+        code, out, err = self.run_kb("rebuild", "--accept-loss")
+        self.assertEqual(code, 0, err)
+        self.assertIn("left 12 behind", out)
+        self.assertIn(", and 2 more in ", out)
+        self.assertNotIn("gone:10", out)
+        self.assertEqual(len(logged), 12)
+        self.assertIn("gone:10", "\n".join(logged))
+
+    def test_a_rebuild_does_not_print_an_id_that_reads_as_a_secret(self):
+        with contextlib.closing(store.connect(self.path)) as db:  # a row an older kb kept under such an id
+            db.execute("INSERT INTO docs(kind, source, source_id, ts, title, content, metadata, masked) VALUES "
+                       "('doc', 'notes', 'password:swordfish7zzqq', ?, 't', 'x', '{}', ?)", (iso(), store.VERSION))
+            store.set_watermark(db, store.STATE, "x", "y")
+            db.execute("INSERT INTO supersedes VALUES ('notes', 'password:swordfish7zzqq', ?, 'notes', ?, '2026-10-01', NULL)",
+                       (self.mine(), f"{self.mine()}:plan-v2.md"))
+            db.commit()
+        logged = self.logged()
+        code, out, err = self.run_kb("rebuild", "--accept-loss")
+        self.assertEqual(code, 0, err)
+        self.assertIn("left 1 behind", out)
+        self.assertEqual(len(logged), 1)
+        self.assertNotIn("swordfish7zzqq", out + "\n".join(logged))
+        self.assertIn("an id that reads as a secret", out)
+
+    def test_a_mark_on_an_item_whose_id_reads_as_a_secret_is_left_as_mark_superseded_refuses_it(self):
+        self.assertEqual(self.run_kb("supersede", self.rid("plan-v1.md"), self.rid("plan-v2.md"))[0], 0)
+        self.assertEqual(self.run_kb("supersede", self.rid("menu-v1.md"), self.rid("menu-v2.md"))[0], 0)
+        real = store._secret_item
+        with mock.patch.object(store, "_secret_item", lambda db, source, sid: sid.endswith("plan-v2.md") or real(db, source, sid)):
+            code, out, err = self.run_kb("rebuild")
+        self.assertEqual(code, 0, err)
+        self.assertIn("carried 1 supersede mark across and left 1 behind", out)
+        self.assertEqual([m[1] for m in self.marks()], [f"{self.mine()}:menu-v1.md"])
+
+    def test_a_mark_that_fails_to_copy_fails_the_rebuild_and_keeps_the_old_store(self):
+        self.assertEqual(self.run_kb("supersede", self.rid("plan-v1.md"), self.rid("plan-v2.md"))[0], 0)
+        before = self.marks()
+        with mock.patch.object(store, "mark_superseded", side_effect=sqlite3.OperationalError("disk I/O error")):
+            code, out, err = self.run_kb("rebuild")
+        self.assertEqual(code, 1)
+        self.assertIn("could not carry the supersede marks over (disk I/O error)", err)
+        self.assertIn("is kept as it was", err)
+        self.assertEqual(self.marks(), before)
+        self.assertNotIn("kb.sqlite.rebuild", os.listdir(os.path.dirname(self.path)))
+
+    def test_a_rebuild_with_no_marks_names_none(self):
+        code, out, err = self.run_kb("rebuild")
+        self.assertEqual(code, 0, err)
+        self.assertNotIn("supersede", out)
+
+    def test_a_rebuild_moves_an_older_kbs_mark_to_the_item_it_is_now(self):
+        # An older kb read this note as "studio:<name>" and kept its mark in docs.superseded_by.
+        with contextlib.closing(store.connect(self.path)) as db:
+            db.execute("UPDATE docs SET source_id=? WHERE source_id=?", ("studio:plan-v1.md", f"{self.mine()}:plan-v1.md"))
+            db.execute("UPDATE docs SET source_id=? WHERE source_id=?", ("studio:plan-v2.md", f"{self.mine()}:plan-v2.md"))
+            db.execute("DROP TABLE supersedes")
+            db.execute("ALTER TABLE docs ADD COLUMN superseded_by INTEGER")
+            db.execute("UPDATE docs SET superseded_by=(SELECT min(id) FROM docs WHERE source_id='studio:plan-v2.md') "
+                       "WHERE source_id='studio:plan-v1.md'")
+            db.commit()
+        code, out, err = self.run_kb("rebuild")
+        self.assertEqual(code, 0, err)
+        self.assertIn("carried 1 supersede mark across", out)
+        self.assertEqual(self.marks()[0][1:5], (f"{self.mine()}:plan-v1.md", "", "notes", f"{self.mine()}:plan-v2.md"))
+        self.assertIn(f"(superseded by #{self.rid('plan-v2.md')})", self.get(self.rid("plan-v1.md")))
