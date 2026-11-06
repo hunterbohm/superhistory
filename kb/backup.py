@@ -284,6 +284,10 @@ def make(paths, dest, passphrase, overwrite=False, iterations=None):
     target = os.path.realpath(paths.db)
     if not os.path.exists(target):
         raise BackupError(f"there is no knowledge base at {paths.db}, so there is nothing to back up")
+    live = {os.path.realpath(p) for p in (target, f"{target}-wal", f"{target}-shm", paths.config_file,
+                                          paths.config_file.parent / ids.FILE_NAME)}
+    if os.path.realpath(dest) in live:
+        raise BackupError(f"{dest} is one of your live Superhistory files. Name another file for the backup.")
     if os.path.lexists(dest) and not overwrite:
         raise BackupError(f"{dest} exists. Name another file, or add --force to replace it.")
     config = _optional(paths.config_file)
@@ -542,10 +546,11 @@ def _swap(paths, target, fresh, contents):
         for name in reversed(placed):
             with contextlib.suppress(FileNotFoundError):
                 os.remove(name)
-        for suffix in ("-wal", "-shm"):
-            if f"{target}{suffix}" not in asides:
-                with contextlib.suppress(FileNotFoundError):
-                    os.remove(f"{target}{suffix}")
+        if target in placed:  # only then can a WAL file here be the restored store's own, not the old store's
+            for suffix in ("-wal", "-shm"):
+                if f"{target}{suffix}" not in asides:
+                    with contextlib.suppress(FileNotFoundError):
+                        os.remove(f"{target}{suffix}")
         for name in reversed(asides):
             os.replace(name + ASIDE, name)
         raise

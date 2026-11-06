@@ -286,6 +286,17 @@ class RefusalTest(BackupCase):
         self.assertEqual(self.file.read_bytes(), first)
         self.assertEqual([p.name for p in self.file.parent.iterdir()], [self.file.name])
 
+    def test_force_cannot_aim_a_backup_at_the_live_files(self):
+        link = self.tmp / "link"
+        os.symlink(self.paths.config_file, link)
+        live = [self.paths.db, Path(f"{self.paths.db}-wal"), self.paths.config_file,
+                self.paths.config_file.parent / ids.FILE_NAME, link]
+        before = {p: p.read_bytes() for p in live if p.exists()}
+        for dest in live:
+            with self.assertRaisesRegex(backup.BackupError, "live"):
+                backup.make(self.paths, dest, PASSPHRASE.encode(), overwrite=True)
+        self.assertEqual({p: p.read_bytes() for p in live if p.exists()}, before)
+
     def test_no_store_means_no_backup(self):
         self.remove_everything()
         with self.assertRaisesRegex(backup.BackupError, "nothing to back up"):
@@ -365,6 +376,20 @@ class ReplaceTest(BackupCase):
         with mock.patch.object(backup, "_check_store", side_effect=[None, KeyboardInterrupt()]):
             with self.assertRaises(KeyboardInterrupt):
                 self.restore()
+        self.assertEqual(self.paths.db.read_bytes(), self.newer)
+
+    def test_a_stop_before_anything_moved_leaves_the_old_wal_file_alone(self):
+        db = store.connect(self.paths.db)
+        self.addCleanup(db.close)
+        store.store_item(db, "notes", "x:late", "2026-10-31T10:00:00Z", "A late note", "only in the log file", {})
+        db.commit()
+        wal = Path(f"{self.paths.db}-wal")
+        before = wal.read_bytes()
+        self.assertTrue(before)
+        with mock.patch.object(backup.os, "replace", side_effect=KeyboardInterrupt()):
+            with self.assertRaises(KeyboardInterrupt):
+                self.restore()
+        self.assertEqual(wal.read_bytes(), before)
         self.assertEqual(self.paths.db.read_bytes(), self.newer)
 
     def test_a_store_left_aside_by_an_earlier_restore_stops_the_next(self):
