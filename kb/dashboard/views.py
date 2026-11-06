@@ -159,30 +159,33 @@ def read_log(path, now=None):
 
 
 def _units(db):
-    ok = dict(store.succeeded(db))
+    """The health state's units and their last good time or error, each name masked: a unit is "<source>@<host>" as an
+    older kb wrote it, and an old name may hold a secret."""
+    ok = {mask(unit): when for unit, when in store.succeeded(db)}
     failing = {}
     for unit, line in store.failing(db):
         when, _, error = line.partition(" ")
-        failing[unit] = {"t": when, "error": error}
+        failing[mask(unit)] = {"t": when, "error": mask(error)}
     return ok, failing
 
 
 def source_rows(db, catalog, config):
     ok, failing = _units(db)
     names = set(catalog.sources) | {u.split("@", 1)[0] for u in (*ok, *failing)} - {"summarize", "sync"}
-    names |= {s.name for s in config.sources} if config else set()
+    names |= {mask(s.name) for s in config.sources} if config else set()
     rows = []
     for name in sorted(names):
         entries = catalog.sources.get(name, [])
         units = [u for u in {*ok, *failing} if u.split("@", 1)[0] == name]
         if config:
-            units = sorted({*units, *(f"{s.name}@{h}" for s in config.sources if s.name == name for h in s.hosts)})
+            units = sorted({*units, *(mask(f"{s.name}@{h}") for s in config.sources if mask(s.name) == name
+                                      for h in s.hosts)})
         bad = [{"unit": u, **failing[u]} for u in units if u in failing]
         done = [ok[u] for u in units if u in ok]
         rows.append({"name": name, "items": len(entries), "newest": max((e.ts for e in entries), default=None),
                      "families": sorted({e.family for e in entries}), "last_ok": max(done, default=None),
                      "failing": bad, "units": units, "configured": bool(config and any(
-                         s.name == name for s in config.sources))})
+                         mask(s.name) == name for s in config.sources))})
     for unit in ("summarize", "sync"):
         if unit in ok or unit in failing:
             rows.append({"name": unit, "items": None, "newest": None, "families": [], "last_ok": ok.get(unit),
@@ -208,7 +211,7 @@ def overview(db, catalog, paths, config):
         "items": len(catalog.entries), "rows": docs[0], "summaries": docs[1] or 0, "families": counts,
         "newest": newest, "last_ingest": store.last_ingest(db), "stale_hours": STALE_HOURS,
         "failing": [{"unit": u, **f} for u, f in sorted(failing.items())],
-        "away": [{"host": h, "since": since} for h, since in store.away(db)],
+        "away": [{"host": mask(h), "since": since} for h, since in store.away(db)],
         "old_rows": store.old_rows(db),
         "mask_capped": int(store.get_watermark(db, store.STATE, "mask_capped") or 0),
         "sources": source_rows(db, catalog, config), "daily": _daily(catalog.entries),
@@ -229,7 +232,17 @@ def search_hits(db, query, source_name=None):
 
 
 def turn_starts(text):
-    return [m.start() for m in TURN.finditer(text)]
+    """Where a page may start: at a user or assistant turn, or at a tool call that does not follow another call. A result
+    stays on its call's page, and calls made together on one, so a page never opens on a result or on the second call of a
+    batch, whose results parse_turns could then pair with the wrong call."""
+    out, before = [], None
+    for m in TURN.finditer(text):
+        label = m.group(1)
+        tool = label.startswith("TOOL")
+        if label in ("USER", "ASSISTANT") or (tool and before != "tool"):
+            out.append(m.start())
+        before = "tool" if tool else label
+    return out
 
 
 def page_bounds(text, turns=()):
@@ -301,17 +314,19 @@ def item(db, catalog, rid, page=None, query=""):
                      "AND kind IN ('segment', 'atom') ORDER BY id LIMIT 40", (src, sid))]
     if not fresh:
         text, title, item_meta = mask(text), mask(title), mask_all(item_meta)
+    shown = (lambda t: t) if fresh else mask
     anchor = None
     own = json.loads(meta)
     if kind in ("segment", "atom") and isinstance(own.get("from_chars"), int):
         anchor = own["from_chars"]
     elif kind == "raw":
-        anchor = sum(len(r[4]) for r in rows[:ids.index(rid)]) if rid in ids else None
+        # Offsets are in the text as shown: a text shown masked again is shorter than its stored rows.
+        anchor = len(shown("".join(r[4] for r in rows[:ids.index(rid)]))) if rid in ids else None
     if query:
         # With no place of its own the query marks one, the whole phrase if the text holds it, else its earliest word; a chunk's
         # place moves to that spot within the chunk.
         low = text.lower()
-        span = len(rows[ids.index(rid)][4]) if kind == "raw" and rid in ids else len(text)
+        span = len(shown(rows[ids.index(rid)][4])) if kind == "raw" and rid in ids else len(text)
         start = anchor or 0
         phrase = low.find(" ".join(query.lower().split()), start, start + span)
         found = [phrase] if phrase >= 0 else [low.find(t, start, start + span) for t in re.findall(r"\w{3,}", query.lower())]

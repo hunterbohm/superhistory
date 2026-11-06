@@ -218,6 +218,13 @@ class GroupingTest(Served):
         self.assertEqual({g.name: (g.count, sorted(g.addresses)) for g in found.people.values()},
                          {"Rosa Diaz": (3, ["rosa.diaz@two.example", "rosa@one.example"])})
 
+    def test_a_thread_naming_one_person_in_two_cases_counts_once_and_keeps_both_addresses(self):
+        self.mail("a", "From: Rosa Diaz <rosa@one.example>\nTo: ROSA DIAZ <rosa@two.example>")
+        found = self.stored()
+        self.assertEqual({g.name: (g.count, sorted(g.addresses)) for g in found.people.values()},
+                         {"Rosa Diaz": (1, ["rosa@one.example", "rosa@two.example"])})
+        self.assertEqual(len(found.entries[0].people), 1)
+
     def test_the_users_own_address_and_name_are_nobody_to_list(self):
         self.mail("a", "From: Me Myself <me@own.example>\nTo: Kay <kay@x.example>")
         self.mail("b", "From: Kay <kay@x.example>\nTo: Me Myself <me@own.example>")
@@ -263,6 +270,20 @@ class GroupingTest(Served):
             self.assertNotIn(secret.encode(), body, path)
         self.assertEqual([i["title"] for i in self.api("source?name=notes")["items"]], ["other"])
 
+    def test_a_long_item_masked_again_opens_a_later_chunk_at_the_passage_in_the_text_as_shown(self):
+        secret = "ghp_abcdefghijklmnopqrstuvwxyz0123456789ABCD"
+        lines = [f"SECRETX {'filler ' * 20}" for _ in range(1500)]
+        lines[750] = "needleword in the middle"
+        self.add("notes", "long", "2026-09-01T10:00:00Z", "long", "\n".join(lines), {"path": "/n"})
+        self.db.execute("UPDATE docs SET content = replace(content, 'SECRETX', ?)", (secret,))
+        self.db.execute("UPDATE docs SET masked = 'older'")  # a change to the text clears the version, so it is set after
+        chunk = self.db.execute("SELECT id FROM docs WHERE kind = 'raw' AND content LIKE '%needleword%'").fetchone()[0]
+        self.serve()
+        page = self.api(f"item?id={chunk}&q=needleword")
+        self.assertGreater(page["pages"], 3, "the text shown is still several pages")
+        self.assertIn("needleword", page["text"])
+        self.assertNotIn(secret, json.dumps(page))
+
     def test_a_summary_of_an_older_version_is_masked_though_its_item_is_current(self):
         secret = "ghp_abcdefghijklmnopqrstuvwxyz0123456789ABCD"
         self.add("notes", "n", "2026-09-01T10:00:00Z", "plain", "hello", {"path": "/n"})
@@ -303,6 +324,12 @@ class TranscriptTest(Served):
         self.assertNotIn("output", turns[2])
         self.assertEqual((turns[3]["text"], turns[4]["text"]), ("for a", "for b"))
         self.assertEqual((turns[6]["output"], turns[6]["failed"]), ("for c", False), "a call alone is still paired")
+
+    def test_a_page_never_starts_on_a_result_or_on_the_second_call_of_a_batch(self):
+        text = ("Claude Code session in /w/x\n\nUSER: go\n\nTOOL A: one\n\nTOOL B: two\n\nRESULT: for a\n\n"
+                "ERROR: for b\n\nASSISTANT: done\n\nTOOL C: three\n\nRESULT: for c\n\nTOOL D: four\n\nUSER: more")
+        starts = views.turn_starts(text)
+        self.assertEqual([text[i:i + 6] for i in starts], ["USER: ", "TOOL A", "ASSIST", "TOOL C", "TOOL D", "USER: "])
 
     def test_the_item_page_gives_turns_for_a_session_and_text_for_a_note(self):
         self.add("claude_code", "s", "2026-09-01T10:00:00Z", "build", SESSION, {"cwd": "/w/orders"})
@@ -517,6 +544,16 @@ class HealthTest(Served):
         self.assertEqual([(f["what"], f["reason"]) for f in found["failures"]],
                          [("gmail@studio", "OSError: could not reach the mail server")])
         self.assertEqual(views.read_log(Path(self.paths.db).parent / "missing.log")["log"], False)
+
+    def test_an_old_health_entry_whose_name_holds_a_secret_is_masked_in_the_overview(self):
+        secret = "ghp_abcdefghijklmnopqrstuvwxyz0123456789ABCD"
+        store.record_ok(self.db, f"{secret}@{secret}")
+        store.record_ok(self.db, f"notes@{secret}")
+        store.set_watermark(self.db, store.STATE, f"fail:{secret}@here", f"{store.now_iso()} no {secret}")
+        store.set_watermark(self.db, store.STATE, f"away:{secret}", store.now_iso())
+        self.db.commit()
+        self.serve()
+        self.assertNotIn(secret.encode(), self.get("/api/overview")[1])
 
     def test_a_failing_source_shows_in_the_overview_with_its_reason(self):
         self.add("notes", "n", "2026-09-01T10:00:00Z", "n", "x", {"path": "/n"})

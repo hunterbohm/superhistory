@@ -169,13 +169,12 @@ def build(db):
     own_names = {names[a].casefold() for a in own if a in names}
     for rid, source, source_id, ts, title, meta, family in rows:
         project = project_name(family, meta)
-        people, display, automated = [], {}, False
+        found, automated = {}, False  # person's key (case folded) -> (name to show, what each mention gave)
         if family == "text":
             for who in meta.get("participants") or []:
                 who = _clean(who)
                 if who and who.casefold() not in own_names:
-                    people.append(who)
-                    display[who] = who
+                    found.setdefault(who.casefold(), (who, []))[1].append(who)
         elif family == "mail":
             labels = meta.get("labels") or []
             automated = any(CATEGORY.match(str(label)) for label in labels)
@@ -186,28 +185,20 @@ def build(db):
                 name = names.get(address)
                 if name and name.casefold() in own_names:
                     continue
-                key = name or address
-                people.append(key)
-                display[key] = (name, address)
-        keys = []
-        for who in dict.fromkeys(people):
-            keys.append(who.casefold())
-        entry = Entry(rid, source, source_id, ts, title, family, project.casefold() if project else None,
-                      tuple(dict.fromkeys(keys)))
+                who = name or address
+                found.setdefault(who.casefold(), (who, []))[1].append((name, address))
+        entry = Entry(rid, source, source_id, ts, title, family, project.casefold() if project else None, tuple(found))
         catalog.entries.append(entry)
         catalog.by_id[rid] = entry
         catalog.sources.setdefault(source, []).append(entry)
         if project:
             group = catalog.projects.setdefault(entry.project, Group(entry.project, project))
             group.add(entry, project)
-        for who in dict.fromkeys(people):
-            key = who.casefold()
+        for key, (who, mentions) in found.items():
             group = catalog.people.setdefault(key, Group(key, who))
-            info = display[who]
             if family == "mail":
-                name, address = info
-                group.add(entry, name)
-                group.addresses.add(address)
+                group.add(entry, mentions[0][0])  # once for the thread, however many of the person's addresses it names
+                group.addresses.update(address for _, address in mentions)
                 group.automated = group.automated and automated
             else:
                 group.add(entry, who)
