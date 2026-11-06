@@ -1945,7 +1945,9 @@ class Base64ReviewSixteenTest(unittest.TestCase):
                                 self.assertEqual([line for line in public if line not in masked], [])
                                 self.assertIn(words, masked)
                                 self.assertIn("next steps", masked)
-                                if older or fresh:
+                                # past a blank line, a piece with neither its header nor its footer is the next
+                                # paragraph's, which no rest reaches: it shows, as on main
+                                if fresh or older and gap == "\n":
                                     self.assertEqual([line for line in key[:-1] if line in masked], [])
                                 self.assertEqual(again, masked)
 

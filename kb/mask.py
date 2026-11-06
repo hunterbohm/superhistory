@@ -2602,14 +2602,14 @@ def _key_rests(text, starts=_REST_START):
     """Each key's rest after an older kb's placeholder (`starts`, _REST) that main's reading would remove, in order, as
     (where it starts, where it ends, whether it stays): it stays where it starts with public material and holds no run
     of base64 past it (_public_first), and is removed unless its base64 decodes whole as public material. Base64 glued
-    to a placeholder that starts no rest, as before a line break escaped twice, is read so too, but only to stay: such
-    a run's own reading (_glued_run_edits) masks it otherwise, as main's does. Lines that decode to words right after a
-    placeholder (_encoded_words) stay, and the rest starts past them where their next line starts one; main reads no
-    rest there, so such a rest takes none of the tail of tokens main's rest takes. Where main's rest from the
-    placeholder runs on past them, base64 alone on a line of its own at any length starts one too (_REST_PAST_WORDS),
-    as a stream's short last line is, past any word alone on its line, and runs on as main's does. Each placeholder
-    outside the core of the rest before it is read once, and each core runs once to its end, so a paragraph of many
-    costs time in proportion."""
+    to a placeholder that starts no rest, as before a line break escaped twice, is read so too, but only to stay: such a
+    run's own reading (_glued_run_edits) masks it otherwise, as main's does. Lines that decode to words right after a
+    placeholder (_encoded_words) stay, and the rest starts past them where their next line starts one, in the
+    placeholder's paragraph, as main's ends with it; main reads no rest there, so such a rest takes none of the tail of
+    tokens main's rest takes. Where main's rest from the placeholder runs on past them, base64 alone on a line of its
+    own at any length starts one too (_REST_PAST_WORDS), as a stream's short last line is, past any word alone on its
+    line, and runs on as main's does. Each placeholder outside the core of the rest before it is read once, and each
+    core runs once to its end, so a paragraph of many costs time in proportion."""
     core, covered, tail, past, ends = 0, 0, None, None, _rest_ends(text)
     start = _ID_REST_START if starts is _REST_START and not _STORED_ROW.get() else starts
     for at in _PLACEHOLDER.finditer(text):
@@ -2618,6 +2618,10 @@ def _key_rests(text, starts=_REST_START):
         begin = at.end()
         rest, main_reach, as_main = start.match(text, begin), None, False
         while rest and _encoded_words(rest.group()):
+            if _BLANK_LINE.search(text, begin, rest.end()):
+                # past a blank line, the line is the next paragraph's, and so is all after it: main's rest ends there
+                rest = None
+                break
             # another stream's line of words holds no key's rest, as a line of words does not: the rest, if any,
             # starts past it, with its next line read as one right after the placeholder is
             begin = _line_past(text, rest)
