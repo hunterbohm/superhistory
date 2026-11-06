@@ -3,6 +3,7 @@
 An item is one `doc` row, or `raw` chunks when its text is long. The summarizer adds `segment` and `atom` rows that
 point back at a long item. `ingest_state` holds each source's watermark and the health of every source on every host.
 """
+import atexit
 import bisect
 import contextlib
 import fcntl
@@ -129,67 +130,167 @@ def connect(path, readonly=False):
     return db
 
 
-def _stamp(path):
-    """What a write to the store's main file changes at `path`, and whether a -wal file is beside it. None for the main
-    file while it does not exist."""
+def _stat(name):
     try:
-        st = os.stat(path)
+        st = os.stat(name)
     except FileNotFoundError:
-        return None, False
-    return (st.st_ino, st.st_size, st.st_mtime_ns), os.path.exists(path + "-wal")
+        return None
+    return st.st_ino, st.st_size, st.st_mtime_ns
+
+
+def _stamp(path):
+    """(main file, -wal file, -shm file) at `path`, each as its inode, size and modification time, or None."""
+    return _stat(path), _stat(path + "-wal"), _stat(path + "-shm")
 
 
 READ_TRIES = 5
+COPY_PREFIX = "kb-read-"
+IMMUTABLE, ORDINARY, COPY = "immutable", "ordinary", "copy"
+_copies = {}  # a store's path -> [folder holding a private copy, the stamp of the store's files it was copied from]
 
 
-def read_only(path, run):
-    """What `run(db)` returns, for a connection that cannot write the store and makes no file beside it. Even a
-    read-only SQLite connection to a WAL store makes the -wal and -shm files it finds missing, and fails where the
-    folder is not writable. With no -wal file, no writer is open and the main file holds every row, so `run` reads it
-    as immutable, with no lock and no sidecar. With one, rows may be only in it, and a checkpoint may be half through the
-    main file, so `run` reads a copy of the main file and the -wal file in a folder of its own, where SQLite may make
-    what it needs: the -wal file wins over any page of the copy that a checkpoint has begun to write. A write to the
-    main file while it is read or copied, or a -wal file that appears during an immutable read, starts the read again.
-    `run` must return its result, not print it."""
+def read_only(path, run, scratch=None):
+    """What `run(db)` returns, for a connection that cannot write the store. `run` must return its result, not print it.
+    Which connection it gets depends on the files beside the store, and so does what the read promises:
+
+    1. No -wal file, or an empty one and no -shm file: no writer is open and the main file holds every row. It is read
+       as immutable, which takes no lock and makes no file, in a folder you can write or not.
+    2. A -wal file and an -shm file: a writer is open. An ordinary read-only connection reads one snapshot of the store,
+       rows not yet checkpointed included, and SQLite's own locks keep a checkpoint from changing it. It copies
+       nothing and makes no file, in a folder you can write or not.
+    3. The window between the look at 2 and SQLite's first read: a writer that closes there removes its two files. In a
+       folder you cannot write SQLite cannot make them, the open fails, and the read starts again at 1. In a writable
+       folder SQLite makes its own empty -wal and -shm, which the next writer takes over. That is the one case where
+       files can appear beside a store that is being read. They hold none of the store's rows, and the rows read are
+       right. The window is narrowed by looking again after the connection is made.
+    4. A -wal file with rows and no -shm file: a writer died. In a writable folder an ordinary read-only connection
+       reads its rows, and makes an -shm file. In a folder you cannot write that fails, so `run` reads a private copy of
+       the main file and the -wal file in `scratch` (the system's temporary folder by default). The copy's folder is
+       readable only by you, it is kept for the next call while neither file changes, and drop_copies() removes it; it
+       also goes at normal exit and on an exception. A process ended by SIGKILL cannot remove its copy, and the next
+       process that makes a copy removes what a dead one left.
+
+    A write to the main file during an immutable read, or a -wal file with rows that appears during it, starts the read
+    again."""
     path = os.path.realpath(path)
+    last = None
     for _ in range(READ_TRIES):
         before = _stamp(path)
         if before[0] is None:
             raise sqlite3.OperationalError(f"unable to open database file: {path}")
-        result = error = None
+        mode = _mode(path, before)
         try:
-            if before[1]:
-                with tempfile.TemporaryDirectory(prefix="kb-read-") as folder:
-                    copy = os.path.join(folder, "kb.sqlite")
-                    shutil.copyfile(path, copy)
-                    shutil.copyfile(path + "-wal", copy + "-wal")
-                    if _stamp(path)[0] != before[0]:
-                        continue
-                    with contextlib.closing(_open_read_only(copy, path, immutable=False)) as db:
-                        result = run(db)
+            if mode == COPY:
+                db = _connect(_private_copy(path, scratch, before), immutable=False)
             else:
-                with contextlib.closing(_open_read_only(path, path, immutable=True)) as db:
-                    result = run(db)
-        except NeedsRebuild:
-            raise
-        except Exception as exc:
-            error = exc
+                db = _connect(path, immutable=mode == IMMUTABLE)
+        except sqlite3.OperationalError as exc:
+            last = exc
+            continue
+        with contextlib.closing(db):
+            if mode == ORDINARY and (os.path.exists(path + "-wal"), os.path.exists(path + "-shm")) != (
+                    before[1] is not None, before[2] is not None):
+                continue  # a writer came or went since the look
+            try:
+                _check_version(db, path)
+            except sqlite3.OperationalError as exc:
+                last = exc
+                continue
+            result = error = None
+            try:
+                result = run(db)
+            except NeedsRebuild:
+                raise
+            except Exception as exc:
+                error = exc
         after = _stamp(path)
-        if after[0] == before[0] and (before[1] or not after[1]):
+        if mode != IMMUTABLE or (after[0] == before[0] and not (after[1] and after[1][1])):
             if error:
                 raise error
             return result
-    raise sqlite3.OperationalError("the knowledge base keeps changing under the read; ask again")
+    raise last or sqlite3.OperationalError("the knowledge base keeps changing under the read; ask again")
 
 
-def _open_read_only(opened, shown, immutable):
-    uri = pathlib.Path(opened).as_uri() + "?mode=ro" + ("&immutable=1" if immutable else "")
+def _mode(path, stamp):
+    main, wal, shm = stamp
+    if wal is None or (not wal[1] and shm is None):
+        return IMMUTABLE
+    if shm is not None or os.access(os.path.dirname(path), os.W_OK | os.X_OK):
+        return ORDINARY
+    return COPY
+
+
+def _connect(path, immutable):
+    uri = pathlib.Path(path).as_uri() + "?mode=ro" + ("&immutable=1" if immutable else "")
     db = sqlite3.connect(uri, uri=True)
     db.execute(f"PRAGMA busy_timeout={BUSY_MS}")
+    return db
+
+
+def _check_version(db, shown):
+    """The first read of the connection: where SQLite makes a missing -wal and -shm file, and fails if it cannot."""
     if has_unversioned(db):
         db.close()
         raise NeedsRebuild(REBUILD.format(path=shown))
-    return db
+
+
+def _copy_file(src, dst):
+    os.close(os.open(dst, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600))
+    shutil.copyfile(src, dst)
+
+
+def _private_copy(path, scratch, stamp):
+    """The path of a private copy of the store's main file and -wal file, as of `stamp`: the one made for an earlier
+    call when neither file has changed since, else a new one. Raises sqlite3.OperationalError when the files changed
+    while they were copied, or the disk has no room."""
+    held = _copies.get(path)
+    if held and held[1] == (stamp[0], stamp[1]) and os.path.isdir(held[0]):
+        return os.path.join(held[0], "kb.sqlite")
+    drop_copies(path)
+    scratch = os.fspath(scratch or tempfile.gettempdir())
+    os.makedirs(scratch, mode=0o700, exist_ok=True)
+    _sweep(scratch)
+    folder = tempfile.mkdtemp(prefix=f"{COPY_PREFIX}{os.getpid()}-", dir=scratch)  # mode 0700
+    _copies[path] = [folder, None]  # registered before the copy, so a signal halfway through still removes it
+    try:
+        need = stamp[0][1] + stamp[1][1]
+        if shutil.disk_usage(folder).free < need + need // 10 + (64 << 20):
+            raise sqlite3.OperationalError(f"not enough room in {scratch} to read the knowledge base at {path}")
+        copy = os.path.join(folder, "kb.sqlite")
+        _copy_file(path, copy)
+        _copy_file(path + "-wal", copy + "-wal")
+        if _stamp(path)[:2] != stamp[:2] or _stat(path + "-shm"):
+            raise sqlite3.OperationalError("the knowledge base changed while it was copied")
+    except BaseException:
+        drop_copies(path)
+        raise
+    _copies[path][1] = (stamp[0], stamp[1])
+    return copy
+
+
+def drop_copies(path=None):
+    """Remove the private copy of the store at `path`, or every private copy."""
+    for key in [path] if path else list(_copies):
+        held = _copies.pop(key, None)
+        if held:
+            shutil.rmtree(held[0], ignore_errors=True)
+
+
+atexit.register(drop_copies)
+
+
+def _sweep(scratch):
+    """Remove the copies a process that no longer runs left in `scratch`."""
+    for name in os.listdir(scratch):
+        pid = name[len(COPY_PREFIX):].split("-", 1)[0]
+        if not name.startswith(COPY_PREFIX) or not pid.isdigit() or int(pid) == os.getpid():
+            continue
+        try:
+            os.kill(int(pid), 0)
+        except ProcessLookupError:
+            shutil.rmtree(os.path.join(scratch, name), ignore_errors=True)
+        except OSError:
+            pass
 
 
 # Who made a mark moved from a store an older kb wrote: this computer, before it had an install id. As the lowest

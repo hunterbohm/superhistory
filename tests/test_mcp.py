@@ -2,10 +2,12 @@ import io
 import json
 import os
 import re
+import signal
 import stat
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 
 from kb import config as config_mod, mcp, store
@@ -49,6 +51,56 @@ class StoreCase(unittest.TestCase):
         db.commit()
         db.close()
         self.config = config_mod.Config()
+        self.addCleanup(store.drop_copies)
+
+    def forbid_copies(self):
+        """Make any copy of the store fail the test that asks for it."""
+        original = store._copy_file
+
+        def boom(src, dst):
+            raise AssertionError(f"copied {src}")
+
+        store._copy_file = boom
+        self.addCleanup(setattr, store, "_copy_file", original)
+
+    def count_copies(self):
+        """The list that every file copy appends its source to."""
+        original, copied = store._copy_file, []
+
+        def counting(src, dst):
+            copied.append(os.path.basename(src))
+            return original(src, dst)
+
+        store._copy_file = counting
+        self.addCleanup(setattr, store, "_copy_file", original)
+        return copied
+
+    def orphan_wal_store(self):
+        """A copy of the store as a crashed writer leaves it: rows only in the -wal file, and no -shm file."""
+        writer = store.connect(self.paths.db)
+        store.store_item(writer, "notes", "n8", "2026-09-07T10:00:00Z", "Osprey", "the osprey audit is on Tuesday", {})
+        writer.commit()
+        folder = os.path.join(self.tmp.name, "crashed")
+        os.makedirs(folder)
+        for suffix in ("", "-wal"):
+            with open(str(self.paths.db) + suffix, "rb") as src, open(os.path.join(folder, "kb.sqlite" + suffix),
+                                                                     "wb") as dst:
+                dst.write(src.read())
+        writer.close()
+        self.assertEqual(sorted(os.listdir(folder)), ["kb.sqlite", "kb.sqlite-wal"])
+        self.paths = Paths(self.paths.config_file, type(self.paths.data_dir)(folder), self.paths.log_dir,
+                           self.paths.cache_dir)
+        return folder
+
+    def locked_orphan(self):
+        folder = self.orphan_wal_store()
+        os.chmod(folder, stat.S_IRUSR | stat.S_IXUSR)
+        self.addCleanup(os.chmod, folder, stat.S_IRWXU)
+        return folder
+
+    def copies(self):
+        cache = self.paths.cache_dir
+        return sorted(n for n in os.listdir(cache) if n.startswith("kb-read-")) if os.path.isdir(cache) else []
 
     def talk(self, *requests, raw=None):
         sink = io.StringIO()
@@ -275,17 +327,23 @@ class ReadOnlyTest(StoreCase):
         self.assertEqual(snapshot(self.tmp.name), before)
         self.assertEqual(sorted(os.listdir(self.paths.data_dir)), ["kb.sqlite"])
 
-    def test_a_store_in_wal_mode_with_its_writer_open_is_read_with_its_wal_and_left_as_it_is(self):
+    def test_case_2_a_writer_open_with_its_wal_and_shm_is_read_with_no_file_made_and_nothing_copied(self):
+        self.forbid_copies()
         writer = store.connect(self.paths.db)
         self.addCleanup(writer.close)
         writer.execute("PRAGMA wal_checkpoint(TRUNCATE)")
         store.store_item(writer, "notes", "n9", "2026-09-05T10:00:00Z", "Walrus", "the walrus meeting is Monday", {})
         writer.commit()
         self.assertGreater(os.path.getsize(str(self.paths.db) + "-wal"), 0)
+        listing = sorted(os.listdir(self.paths.data_dir))
+        self.assertEqual(listing, ["kb.sqlite", "kb.sqlite-shm", "kb.sqlite-wal"])
         before = snapshot(self.tmp.name)
-        reply, = self.talk(tool(1, "search", query="walrus"))
+        reply, got = self.talk(tool(1, "search", query="walrus"), tool(2, "get", id=1))
         self.assertIn("Walrus", reply["result"]["content"][0]["text"], "a row only the -wal file holds is read")
-        self.assertEqual(snapshot(self.tmp.name), before)
+        self.assertFalse(got["result"]["isError"])
+        self.assertEqual(sorted(os.listdir(self.paths.data_dir)), listing, "no file was made")
+        self.assertEqual(snapshot(self.tmp.name), before, "and none of the three changed")
+        self.assertFalse(os.path.exists(self.paths.cache_dir), "and nothing was copied")
 
     def test_a_row_a_writer_deleted_and_not_yet_checkpointed_is_not_served(self):
         writer = store.connect(self.paths.db)
@@ -297,26 +355,6 @@ class ReadOnlyTest(StoreCase):
         reply, = self.talk(tool(1, "search", query="pangolin"))
         self.assertNotIn("Pangolin plan", reply["result"]["content"][0]["text"])
         self.assertEqual(snapshot(self.tmp.name), before)
-
-    def test_the_last_writer_closing_just_before_the_open_makes_no_file(self):
-        writer = store.connect(self.paths.db)
-        store.store_item(writer, "notes", "n9", "2026-09-05T10:00:00Z", "Walrus", "the walrus meeting is Monday", {})
-        writer.commit()
-        self.assertTrue(os.path.exists(str(self.paths.db) + "-shm"))
-        original = store._open_read_only
-        closed = []
-
-        def late(opened, shown, immutable):
-            if not closed:
-                writer.close()
-                closed.append(1)
-            return original(opened, shown, immutable)
-
-        store._open_read_only = late
-        self.addCleanup(setattr, store, "_open_read_only", original)
-        reply, = self.talk(tool(1, "search", query="pangolin"))
-        self.assertFalse(reply["result"]["isError"], reply)
-        self.assertEqual(sorted(os.listdir(self.paths.data_dir)), ["kb.sqlite"])
 
     @unittest.skipIf(hasattr(os, "geteuid") and os.geteuid() == 0, "root writes wherever it likes")
     def test_a_store_the_user_cannot_write_still_serves(self):
@@ -373,39 +411,237 @@ class ReadOnlyTest(StoreCase):
         self.assertIn("Heron", reply["result"]["content"][0]["text"])
         self.assertEqual(sorted(os.listdir(self.paths.data_dir)), ["kb.sqlite"])
 
-    def orphan_wal_store(self):
-        """A copy of the store as a crashed writer leaves it: rows only in the -wal file, and no -shm file."""
+    def hold_writer_for(self, rows="walrus"):
         writer = store.connect(self.paths.db)
-        store.store_item(writer, "notes", "n8", "2026-09-07T10:00:00Z", "Osprey", "the osprey audit is on Tuesday", {})
+        store.store_item(writer, "notes", "n9", "2026-09-05T10:00:00Z", "Walrus", "the walrus meeting is Monday", {})
         writer.commit()
-        folder = os.path.join(self.tmp.name, "crashed")
-        os.makedirs(folder)
-        for suffix in ("", "-wal"):
-            with open(str(self.paths.db) + suffix, "rb") as src, open(os.path.join(folder, "kb.sqlite" + suffix),
-                                                                     "wb") as dst:
-                dst.write(src.read())
-        writer.close()
-        self.assertEqual(sorted(os.listdir(folder)), ["kb.sqlite", "kb.sqlite-wal"])
-        self.paths = Paths(self.paths.config_file, type(self.paths.data_dir)(folder), self.paths.log_dir,
-                           self.paths.cache_dir)
-        return folder
+        self.assertTrue(os.path.exists(str(self.paths.db) + "-shm"))
+        return writer
 
-    def test_rows_only_a_dead_writers_wal_file_holds_are_read_and_no_file_is_made(self):
-        folder = self.orphan_wal_store()
-        before = snapshot(folder)
-        reply, = self.talk(tool(1, "search", query="osprey"))
-        self.assertIn("Osprey", reply["result"]["content"][0]["text"])
-        self.assertEqual(snapshot(folder), before)
+    def at_first_read(self, action):
+        """Run `action` once, just before SQLite's first read of the connection store.read_only made."""
+        original, done = store._check_version, []
+
+        def late(db, shown):
+            if not done:
+                done.append(1)
+                action()
+            return original(db, shown)
+
+        store._check_version = late
+        self.addCleanup(setattr, store, "_check_version", original)
+
+    def test_case_1_no_wal_file_is_read_as_immutable_with_nothing_made_or_copied(self):
+        self.forbid_copies()
+        before = snapshot(self.tmp.name)
+        reply, = self.talk(tool(1, "search", query="pangolin"))
+        self.assertIn("Pangolin plan", reply["result"]["content"][0]["text"])
+        self.assertEqual(snapshot(self.tmp.name), before)
+        self.assertEqual(sorted(os.listdir(self.paths.data_dir)), ["kb.sqlite"])
 
     @unittest.skipIf(hasattr(os, "geteuid") and os.geteuid() == 0, "root writes wherever it likes")
-    def test_a_dead_writers_wal_in_a_folder_the_user_cannot_write_is_read(self):
+    def test_case_1_in_a_folder_the_user_cannot_write_is_the_same(self):
+        self.forbid_copies()
+        os.chmod(self.paths.data_dir, stat.S_IRUSR | stat.S_IXUSR)
+        self.addCleanup(os.chmod, self.paths.data_dir, stat.S_IRWXU)
+        before = snapshot(self.tmp.name)
+        reply, = self.talk(tool(1, "search", query="pangolin"))
+        self.assertIn("Pangolin plan", reply["result"]["content"][0]["text"])
+        self.assertEqual(snapshot(self.tmp.name), before)
+
+    @unittest.skipIf(hasattr(os, "geteuid") and os.geteuid() == 0, "root writes wherever it likes")
+    def test_case_2_in_a_folder_the_user_cannot_write_makes_nothing_and_copies_nothing(self):
+        self.forbid_copies()
+        writer = self.hold_writer_for()
+        self.addCleanup(writer.close)
+        os.chmod(self.paths.data_dir, stat.S_IRUSR | stat.S_IXUSR)
+        self.addCleanup(os.chmod, self.paths.data_dir, stat.S_IRWXU)
+        before = snapshot(self.tmp.name)
+        reply, = self.talk(tool(1, "search", query="walrus"))
+        self.assertIn("Walrus", reply["result"]["content"][0]["text"])
+        self.assertEqual(snapshot(self.tmp.name), before)
+
+    def test_case_2_a_checkpoint_in_the_middle_changes_nothing_the_reader_sees(self):
+        self.forbid_copies()
+        writer = self.hold_writer_for()
+        self.addCleanup(writer.close)
+        self.at_first_read(lambda: writer.execute("PRAGMA wal_checkpoint(PASSIVE)"))
+        reply, = self.talk(tool(1, "search", query="walrus"))
+        self.assertIn("Walrus", reply["result"]["content"][0]["text"])
+
+    def test_case_3_a_writer_that_closes_before_the_first_read_in_a_writable_folder_may_leave_empty_files(self):
+        self.forbid_copies()
+        writer = self.hold_writer_for()
+        self.at_first_read(writer.close)
+        reply, = self.talk(tool(1, "search", query="walrus"))
+        text = reply["result"]["content"][0]["text"]
+        self.assertFalse(reply["result"]["isError"], text)
+        self.assertIn("Walrus", text, "the rows read are right")
+        names = sorted(os.listdir(self.paths.data_dir))
+        self.assertLessEqual(set(names), {"kb.sqlite", "kb.sqlite-shm", "kb.sqlite-wal"})
+        wal = str(self.paths.db) + "-wal"
+        self.assertEqual(os.path.getsize(wal) if os.path.exists(wal) else 0, 0, "the files hold no rows")
+
+    @unittest.skipIf(hasattr(os, "geteuid") and os.geteuid() == 0, "root writes wherever it likes")
+    def test_case_3_in_a_folder_the_user_cannot_write_the_open_fails_and_the_read_starts_again(self):
+        self.forbid_copies()
+        writer = self.hold_writer_for()
+
+        def closes_and_the_folder_locks():
+            writer.close()
+            for suffix in ("-wal", "-shm"):
+                if os.path.exists(str(self.paths.db) + suffix):
+                    os.remove(str(self.paths.db) + suffix)
+            os.chmod(self.paths.data_dir, stat.S_IRUSR | stat.S_IXUSR)
+
+        self.addCleanup(os.chmod, self.paths.data_dir, stat.S_IRWXU)
+        self.at_first_read(closes_and_the_folder_locks)
+        reply, = self.talk(tool(1, "search", query="walrus"))
+        self.assertFalse(reply["result"]["isError"], reply)
+        self.assertIn("Walrus", reply["result"]["content"][0]["text"])
+        self.assertEqual(sorted(os.listdir(self.paths.data_dir)), ["kb.sqlite"], "nothing was made")
+
+    def test_case_3_a_writer_gone_between_the_look_and_the_connection_starts_the_read_again(self):
+        self.forbid_copies()
+        writer = self.hold_writer_for()
+        original, done = store._connect, []
+
+        def late(path, immutable):
+            db = original(path, immutable)
+            if not done:
+                done.append(1)
+                writer.close()
+            return db
+
+        store._connect = late
+        self.addCleanup(setattr, store, "_connect", original)
+        reply, = self.talk(tool(1, "search", query="walrus"))
+        self.assertIn("Walrus", reply["result"]["content"][0]["text"])
+        self.assertEqual(sorted(os.listdir(self.paths.data_dir)), ["kb.sqlite"], "the second look saw it gone")
+
+    def test_case_4_a_dead_writers_wal_in_a_writable_folder_is_read_in_place_and_makes_only_an_shm_file(self):
+        self.forbid_copies()
         folder = self.orphan_wal_store()
-        os.chmod(folder, stat.S_IRUSR | stat.S_IXUSR)
-        self.addCleanup(os.chmod, folder, stat.S_IRWXU)
         before = snapshot(folder)
         reply, = self.talk(tool(1, "search", query="osprey"))
         self.assertIn("Osprey", reply["result"]["content"][0]["text"])
-        self.assertEqual(snapshot(folder), before)
+        self.assertEqual(sorted(os.listdir(folder)), ["kb.sqlite", "kb.sqlite-shm", "kb.sqlite-wal"])
+        after = snapshot(folder)
+        for name in ("kb.sqlite", "kb.sqlite-wal"):
+            self.assertEqual(after[os.path.join(folder, name)], before[os.path.join(folder, name)])
+
+    @unittest.skipIf(hasattr(os, "geteuid") and os.geteuid() == 0, "root writes wherever it likes")
+    def test_case_4_a_dead_writers_wal_in_an_unwritable_folder_is_read_from_a_private_copy(self):
+        folder = self.locked_orphan()
+        copied = self.count_copies()
+        before = snapshot(folder)
+        reply, = self.talk(tool(1, "search", query="osprey"))
+        self.assertIn("Osprey", reply["result"]["content"][0]["text"])
+        self.assertEqual(snapshot(folder), before, "the store's folder is as it was")
+        self.assertEqual(copied, ["kb.sqlite", "kb.sqlite-wal"])
+        kept, = self.copies()
+        where = os.path.join(self.paths.cache_dir, kept)
+        self.assertEqual(stat.S_IMODE(os.stat(where).st_mode), 0o700)
+        for name in os.listdir(where):
+            self.assertEqual(stat.S_IMODE(os.stat(os.path.join(where, name)).st_mode) & 0o077, 0, name)
+        for name in ("kb.sqlite", "kb.sqlite-wal"):
+            self.assertEqual(stat.S_IMODE(os.stat(os.path.join(where, name)).st_mode), 0o600)
+
+    @unittest.skipIf(hasattr(os, "geteuid") and os.geteuid() == 0, "root writes wherever it likes")
+    def test_case_4_one_copy_serves_the_next_calls_until_a_file_changes(self):
+        folder = self.locked_orphan()
+        copied = self.count_copies()
+        self.talk(tool(1, "search", query="osprey"))
+        first, = self.copies()
+        replies = self.talk(tool(2, "search", query="osprey"), tool(3, "get", id=1), tool(4, "search", query="osprey"))
+        self.assertTrue(all("Osprey" in r["result"]["content"][0]["text"] or r["id"] == 3 for r in replies))
+        self.assertEqual(copied, ["kb.sqlite", "kb.sqlite-wal"], "copied once, for four calls")
+        self.assertEqual(self.copies(), [first])
+        wal = os.path.join(folder, "kb.sqlite-wal")
+        os.utime(wal, ns=(1, 1))  # a writer that appended to it would move its modification time
+        self.talk(tool(5, "search", query="osprey"))
+        self.assertEqual(copied, ["kb.sqlite", "kb.sqlite-wal"] * 2, "copied again")
+        self.assertEqual(len(self.copies()), 1, "and the old copy is gone")
+        self.assertNotEqual(self.copies(), [first])
+
+    @unittest.skipIf(hasattr(os, "geteuid") and os.geteuid() == 0, "root writes wherever it likes")
+    def test_case_4_drop_copies_removes_every_copy(self):
+        self.locked_orphan()
+        self.talk(tool(1, "search", query="osprey"))
+        self.assertEqual(len(self.copies()), 1)
+        store.drop_copies()
+        self.assertEqual(self.copies(), [])
+
+    @unittest.skipIf(hasattr(os, "geteuid") and os.geteuid() == 0, "root writes wherever it likes")
+    def test_case_4_a_copy_that_fails_halfway_leaves_nothing(self):
+        self.locked_orphan()
+        original = store._copy_file
+
+        def half(src, dst):
+            original(src, dst)
+            if src.endswith("-wal"):
+                raise OSError("disk went away")
+
+        store._copy_file = half
+        self.addCleanup(setattr, store, "_copy_file", original)
+        reply, = self.talk(tool(1, "search", query="osprey"))
+        self.assertTrue(reply["result"]["isError"])
+        self.assertIn("disk went away", reply["result"]["content"][0]["text"])
+        self.assertEqual(self.copies(), [])
+
+    @unittest.skipIf(hasattr(os, "geteuid") and os.geteuid() == 0, "root writes wherever it likes")
+    def test_case_4_no_room_for_the_copy_is_a_tool_error_and_leaves_nothing(self):
+        self.locked_orphan()
+        original = store.shutil.disk_usage
+        store.shutil.disk_usage = lambda folder: type("U", (), {"free": 0})()
+        self.addCleanup(setattr, store.shutil, "disk_usage", original)
+        copied = self.count_copies()
+        reply, = self.talk(tool(1, "search", query="osprey"))
+        self.assertTrue(reply["result"]["isError"])
+        self.assertIn("not enough room", reply["result"]["content"][0]["text"])
+        self.assertEqual((copied, self.copies()), ([], []))
+
+    @unittest.skipIf(hasattr(os, "geteuid") and os.geteuid() == 0, "root writes wherever it likes")
+    def test_case_4_a_copy_a_dead_process_left_is_removed_by_the_next_copy_and_a_live_ones_is_not(self):
+        self.locked_orphan()
+        cache = self.paths.cache_dir
+        os.makedirs(cache)
+        dead = 4194000
+        while True:
+            try:
+                os.kill(dead, 0)
+                dead += 1
+            except ProcessLookupError:
+                break
+            except OSError:
+                dead += 1
+        gone, alive = os.path.join(cache, f"kb-read-{dead}-x"), os.path.join(cache, f"kb-read-{os.getppid()}-y")
+        other = os.path.join(cache, "something-else")
+        for d in (gone, alive, other):
+            os.mkdir(d)
+            open(os.path.join(d, "kb.sqlite"), "w").close()
+        self.talk(tool(1, "search", query="osprey"))
+        self.assertFalse(os.path.exists(gone))
+        self.assertTrue(os.path.exists(alive))
+        self.assertTrue(os.path.exists(other))
+
+    @unittest.skipIf(hasattr(os, "geteuid") and os.geteuid() == 0, "root writes wherever it likes")
+    def test_case_4_the_copy_is_made_for_the_stamp_it_was_taken_at_not_a_later_one(self):
+        folder = self.locked_orphan()
+        original = store._copy_file
+        moved = []
+
+        def while_copying(src, dst):
+            original(src, dst)
+            if not moved:
+                moved.append(1)
+                os.utime(os.path.join(folder, "kb.sqlite-wal"), ns=(2, 2))
+
+        store._copy_file = while_copying
+        self.addCleanup(setattr, store, "_copy_file", original)
+        reply, = self.talk(tool(1, "search", query="osprey"))
+        self.assertIn("Osprey", reply["result"]["content"][0]["text"])
+        self.assertEqual(len(self.copies()), 1)
 
     def test_a_store_that_keeps_changing_is_a_tool_error_not_a_write(self):
         original = store._stamp
@@ -413,8 +649,8 @@ class ReadOnlyTest(StoreCase):
 
         def always_new(path):
             count.append(1)
-            main, wal = original(path)
-            return (main[0], main[1], len(count)), wal
+            main, wal, shm = original(path)
+            return (main[0], main[1], len(count)), wal, shm
 
         store._stamp = always_new
         self.addCleanup(setattr, store, "_stamp", original)
@@ -465,6 +701,109 @@ class ProcessTest(StoreCase):
         replies = [json.loads(line) for line in done.stdout.decode().splitlines()]
         self.assertTrue(replies[0]["result"]["isError"])
         self.assertEqual(replies[1]["result"], {})
+
+
+CHILD = """
+import pathlib, signal, sys, time
+from kb import config, mcp, store
+from kb.paths import Paths
+
+root, folder, marker, mode = sys.argv[1:5]
+signal.signal(signal.SIGINT, signal.default_int_handler)
+paths = Paths(pathlib.Path(root) / "config.toml", pathlib.Path(folder), pathlib.Path(root) / "logs",
+              pathlib.Path(root) / "cache")
+copy = store._copy_file
+
+
+def slow(src, dst):
+    copy(src, dst)
+    if mode == "midcopy":
+        open(marker, "w").close()
+        time.sleep(120)
+
+
+store._copy_file = slow
+sys.exit(mcp.cmd_mcp(paths, config.Config(), None))
+"""
+
+
+@unittest.skipIf(hasattr(os, "geteuid") and os.geteuid() == 0, "root writes wherever it likes")
+class CopyCleanupTest(StoreCase):
+    """A real server process with a private copy, ended in every way but SIGKILL."""
+
+    def start(self, mode):
+        folder = self.locked_orphan()
+        script = os.path.join(self.tmp.name, "child.py")
+        with open(script, "w") as f:
+            f.write(CHILD)
+        marker = os.path.join(self.tmp.name, "marker")
+        root = os.path.dirname(os.path.dirname(os.path.abspath(mcp.__file__)))
+        env = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
+        env["PYTHONPATH"] = root
+        child = subprocess.Popen([sys.executable, script, self.tmp.name, folder, marker, mode], stdin=subprocess.PIPE,
+                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
+        def reap():
+            if child.poll() is None:
+                child.kill()
+                child.wait()
+            for pipe in (child.stdin, child.stdout, child.stderr):
+                pipe.close()
+
+        self.addCleanup(reap)
+        child.stdin.write((json.dumps(tool(1, "search", query="osprey")) + "\n").encode())
+        child.stdin.flush()
+        return child, marker
+
+    def wait_for(self, what, seconds=30):
+        deadline = time.monotonic() + seconds
+        while time.monotonic() < deadline:
+            if what():
+                return
+            time.sleep(0.05)
+        self.fail("timed out")
+
+    def run_one(self, mode, sent, status):
+        child, marker = self.start(mode)
+        if mode == "midcopy":
+            self.wait_for(lambda: os.path.exists(marker))
+            self.assertEqual(len(self.copies()), 1, "a copy is there halfway through")
+        else:
+            reply = json.loads(child.stdout.readline())
+            self.assertIn("Osprey", reply["result"]["content"][0]["text"])
+            self.assertEqual(len(self.copies()), 1, "and kept for the next call")
+        child.send_signal(sent)
+        self.assertEqual(child.wait(timeout=30), status, child.stderr.read())
+        self.assertEqual(self.copies(), [])
+
+    def test_sigterm_in_the_middle_of_a_copy_removes_it(self):
+        self.run_one("midcopy", signal.SIGTERM, 143)
+
+    def test_sigint_in_the_middle_of_a_copy_removes_it(self):
+        self.run_one("midcopy", signal.SIGINT, 130)
+
+    def test_sigterm_between_calls_removes_the_copy(self):
+        self.run_one("between", signal.SIGTERM, 143)
+
+    def test_sigint_between_calls_removes_the_copy(self):
+        self.run_one("between", signal.SIGINT, 130)
+
+    def test_closing_stdin_removes_the_copy_and_ends_cleanly(self):
+        child, _ = self.start("between")
+        json.loads(child.stdout.readline())
+        self.assertEqual(len(self.copies()), 1)
+        child.stdin.close()
+        self.assertEqual(child.wait(timeout=30), 0)
+        self.assertEqual(self.copies(), [])
+
+    def test_an_exception_in_the_server_removes_the_copy(self):
+        child, _ = self.start("between")
+        json.loads(child.stdout.readline())
+        child.stdout.close()  # the next reply cannot be written: BrokenPipeError
+        child.stdin.write((json.dumps(tool(2, "search", query="osprey")) + "\n").encode())
+        child.stdin.flush()
+        child.stdin.close()
+        child.wait(timeout=30)
+        self.assertEqual(self.copies(), [])
 
 
 if __name__ == "__main__":

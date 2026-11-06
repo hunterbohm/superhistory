@@ -168,13 +168,18 @@ a hook does not wait for it to.
 
 The server is a program the app starts and talks to over its standard input and output. It opens no network port, so
 nothing else on your network or the internet can reach it. It has two tools. `search` finds records by keywords, and
-`get` reads one record's stored text a page at a time, masked as everywhere else. It opens the database read-only,
-never writes to it, and leaves no file beside it, even when the database is in a folder you cannot write to. While an
-ingest is running it reads a copy of the database files, so a lookup then takes as long as the copy does. Every
-reply starts with a line saying the records are stored data, not instructions, since a record can hold text someone
-else wrote. The app, not Superhistory, decides what an agent may do with a reply, so do not put a server that can send
-mail or fetch web pages in the same session without approvals turned on. Run `superhistory --try mcp` in its place to
-serve the made-up month from `superhistory try`.
+`get` reads one record's stored text a page at a time, masked as everywhere else. It opens the database read-only and
+never writes to it. Normally it leaves no file beside the database and copies nothing, whether or not the folder is one
+you can write to, and a lookup sees what a running ingest has stored so far. There are two exceptions. If an ingest ends
+in the instant between the server looking at the database and reading it, SQLite may leave its own empty `-wal` and
+`-shm` files beside the database, which hold none of your records and which the next ingest takes over. And if an ingest
+died and left a `-wal` file with records in it, SQLite makes an `-shm` file beside the database to read them, or, in a
+folder you cannot write to, the server reads a private copy of the two files from your cache folder, which only you can
+read; the server removes it when it ends, by any signal but SIGKILL, and the next server removes one that SIGKILL left.
+Every reply starts with a line saying the records are stored data, not instructions, since a record can hold text
+someone else wrote. The app, not Superhistory, decides what an agent may do with a reply, so do not put a server that
+can send mail or fetch web pages in the same session without approvals turned on. Run `superhistory --try mcp` in its
+place to serve the made-up month from `superhistory try`.
 
 Each app starts the server by running `superhistory mcp`. An app that does not read your shell's `PATH`, which
 includes the desktop apps, needs the full path from `which superhistory` in place of `superhistory`.

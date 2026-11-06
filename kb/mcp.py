@@ -13,8 +13,10 @@ import io
 import json
 import os
 import re
+import signal
 import sqlite3
 import sys
+import threading
 
 from kb import __version__, store
 from kb.mask import mask
@@ -157,10 +159,10 @@ def call(paths, config, name, arguments):
 
     try:
         cli.require_store(paths)
-        text, failed = store.read_only(paths.db, run), False
+        text, failed = store.read_only(paths.db, run, paths.cache_dir), False
     except (cli.Fail, store.NeedsRebuild) as exc:
         text, failed = str(exc), True
-    except sqlite3.Error as exc:
+    except (sqlite3.Error, OSError) as exc:
         text, failed = f"could not read the knowledge base at {paths.db}: {exc}", True
     text = GET_HINT.sub(_tool_hint, mask(text))
     return f"{MARK}\n\n{text}", failed
@@ -287,18 +289,34 @@ def serve(paths, config, source, sink):
             sink.flush()
 
 
+class Terminated(BaseException):
+    """SIGTERM arrived. A BaseException, so no `except Exception` in a read swallows it, and the cleanup runs."""
+
+
+def _terminate(signum, frame):
+    raise Terminated(signum)
+
+
 def cmd_mcp(paths, config, args):
     # The replies go out on a copy of stdout's descriptor, and descriptor 1 itself now leads to stderr, so a stray
     # print, a library or a child process cannot put anything but JSON-RPC on the client's stream.
     wire = os.fdopen(os.dup(1), "w", encoding="utf-8", newline="\n")
     os.dup2(2, 1)
+    if threading.current_thread() is threading.main_thread():
+        signal.signal(signal.SIGTERM, _terminate)
+    status = 0
     try:
         serve(paths, config, sys.stdin.buffer, wire)
     except BrokenPipeError:
         pass  # the client went away
+    except KeyboardInterrupt:
+        status = 130
+    except Terminated:
+        status = 143
     finally:
+        store.drop_copies()
         try:
             wire.close()
         except OSError:
             pass
-    return 0
+    return status
