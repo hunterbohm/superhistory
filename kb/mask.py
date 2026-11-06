@@ -609,7 +609,7 @@ def _gitleaks_edits(text):
 # Which mask() a stored row was masked with. A row of another version, or of none, is masked again when read and by
 # the next ingest. The patterns change it by themselves; bump REVISION when the code that applies them changes what
 # it masks.
-REVISION = 35
+REVISION = 36
 VERSION = f"r{REVISION}-" + hashlib.sha256(repr((REVISION, [p.pattern for p in SECRET_PATTERNS + PREFIXED_SECRETS], KEYED_SECRET.pattern,
                                 ENV_KEY_SECRET.pattern, JSON_SECRET.pattern, FLAG_SECRET.pattern, AUTH_SECRET.pattern,
                                 COMMAND_FLAGS, PASSWORD_NAME.pattern, sorted(PLACEHOLDERS), REFERENCE.pattern,
@@ -2744,9 +2744,39 @@ def _rest_ends(text):
     def end(at):
         if not last[0] <= at <= last[1]:
             m = _REST.match(text, at)
-            last[:] = at, m.end(1), m.end()
+            stop = m.end()
+            if stop == m.end(1) and _WORDS_LINE_AT.match(text, stop):
+                stop = _cut_body_end(text, at, stop)
+            last[:] = at, m.end(1), stop
         return last[2]
     return end
+
+
+# A key's body that runs on into a line of words, as a snippet cuts one: where its last line is base64 to its end with
+# no "=" and no shorter than a line of base64 above it, the body has not ended there, so the run of base64's characters
+# that starts the line of words after it is the body's short last line, however much it looks like a word ("ei harbor
+# deploy", "Ynu walrus moved"), and is masked with it; the words after it stay. Where the body's last line is shorter
+# than the one above it, or ends with "=", the body can end there, and the line of words stays whole. A line alone
+# can be a whole key, or a key cut after it: its next line's first word goes with it, which is the cost.
+_CUT_LINE = re.compile(r"[ \t\"'#>*-]*([A-Za-z0-9+/]+)[ \t\r]*")
+_CUT_ABOVE = re.compile(r"(?<![A-Za-z0-9+/=])([A-Za-z0-9+/]+)[ \t\r]*\Z")
+_CUT_END = re.compile(r"(?:\r?\n|(?<!\\)\\+(?:r\\+)?n)[ \t\"'#>*-]*([A-Za-z0-9+/]+)")
+
+
+def _cut_body_end(text, start, stop):
+    """Where a key's rest read from `start` that stops before a line of words at `stop` ends: past the first run of
+    base64's characters on that line where the rest's body has not ended (_CUT_LINE), and the rest is no public
+    material (_public_rest); otherwise at `stop`."""
+    breaks = []  # the rest's last two line breaks: each stretch's rest is read once (_rest_ends), in proportion
+    for m in _LINE_BREAK.finditer(text, start, stop):
+        breaks[:] = breaks[-1:] + [m.span()]
+    last = _CUT_LINE.fullmatch(text, breaks[-1][1] if breaks else start, stop)
+    if not last:
+        return stop
+    above = breaks and _CUT_ABOVE.search(text[breaks[-2][1] if len(breaks) > 1 else start:breaks[-1][0]])
+    if above and len(last.group(1)) < len(above.group(1)) or _public_rest(text[start:stop]):
+        return stop
+    return _CUT_END.match(text, stop).end(1)
 
 
 def _key_rests(text, starts=_REST_START):

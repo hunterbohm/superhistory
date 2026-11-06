@@ -234,7 +234,7 @@ class TokenCostTest(unittest.TestCase):
 
 class RevisionTest(unittest.TestCase):
     def test_stored_rows_are_masked_again(self):
-        self.assertEqual(masking.REVISION, 35)
+        self.assertEqual(masking.REVISION, 36)
 
 
 if __name__ == "__main__":
