@@ -62,7 +62,8 @@ class SecretIdTest(unittest.TestCase):
         (a,), _ = self.world.group("computer 1")
         a.item("notes", f"keys/{self.secret}", "made-up text")
         a.item("notes", "plain", "made-up text")
-        with mock.patch.object(records, "holds_secret", lambda *texts: False):  # as an older client would
+        with mock.patch.object(records, "holds_secret", lambda *texts: False), \
+                mock.patch.object(records, "_kb_refuses", lambda *args: False):  # as an older client would
             a.sync()
             self.assertTrue(a.client.compact(force=True))
         b = self.world.computer("computer 2")
