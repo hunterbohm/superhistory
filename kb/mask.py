@@ -537,7 +537,7 @@ def _gitleaks_edits(text):
 # Which mask() a stored row was masked with. A row of another version, or of none, is masked again when read and by
 # the next ingest. The patterns change it by themselves; bump REVISION when the code that applies them changes what
 # it masks.
-REVISION = 11
+REVISION = 12
 VERSION = hashlib.sha256(repr((REVISION, [p.pattern for p in SECRET_PATTERNS + PREFIXED_SECRETS], KEYED_SECRET.pattern,
                                 ENV_KEY_SECRET.pattern, JSON_SECRET.pattern, FLAG_SECRET.pattern, AUTH_SECRET.pattern,
                                 COMMAND_FLAGS, PASSWORD_NAME.pattern, sorted(PLACEHOLDERS), REFERENCE.pattern,
@@ -575,6 +575,61 @@ def _date_or_time(value):
         return False
     year, month, day = int(m.group(1)), int(m.group(2)), int(m.group(3))
     return day <= _MONTH_DAYS[month - 1] + (month == 2 and calendar.isleap(year))
+
+
+# A date and a time as a log or a clock writes one, in ASCII digits: ISO 8601's extended form, its basic form
+# ("20261101T100000Z", AWS's X-Amz-Date) or the two mixed, as file names take one ("2026-11-01T100000Z"); by month and
+# day or by the day of the year ("2026-305T10:00:00Z"), in a year of four digits, or of six in the extended form, as
+# JavaScript writes one past 9999 with its sign, which a reader may leave out of the value (in the basic form, six
+# digits and more read as no year: "994595031T222415Z"); a fraction of the last field given; an offset of hours alone,
+# without its colon (strftime's "+0000") or with it. Or a time of day alone, in either form, after a T or with none
+# ("10:00:00.123456Z").
+_TIME = (r"(?P<hour>\d\d)(?:(?P<tsep>:?)(?P<minute>\d\d)(?:(?P=tsep)(?P<second>\d\d))?)?(?:\.(?P<fraction>\d{1,9}))?"
+         r"(?:Z|[+-](?:[01]\d|2[0-3])(?::?[0-5]\d)?)?")
+_DATE_AND_TIME = re.compile(r"(?P<year>[+-]?\d{6}(?=-)|\d{4})(?P<dsep>-?)"
+                            r"(?:(?P<month>\d\d)(?P=dsep)(?P<day>\d\d)|(?P<ordinal>\d{3}))T" + _TIME, re.ASCII)
+_TIME_OF_DAY = re.compile(r"(?P<t>T?)" + _TIME, re.ASCII)
+# Only these characters, and no longer than a range of two timestamps at their longest
+_TIMESTAMP_CHARACTERS = re.compile(r"[\d:.+TZ-]{1,78}")
+
+
+def _one_timestamp(value, in_a_range=False):
+    """Whether `value` is a real date and time, or a time of day, as _DATE_AND_TIME and _TIME_OF_DAY read one: each
+    field in its range, a leap second (":60") and the day's end ("24:00:00", naught past it) included. In a range, a
+    time of day alone has a T or its colons, so a number after a timestamp is no time: "20261101T100000Z-1234"."""
+    m = _DATE_AND_TIME.fullmatch(value)
+    if m:
+        leap = calendar.isleap(int(m["year"]))
+        if m["ordinal"]:
+            if not 1 <= int(m["ordinal"]) <= 365 + leap:
+                return False
+        elif not (1 <= int(m["month"]) <= 12
+                  and 1 <= int(m["day"]) <= _MONTH_DAYS[int(m["month"]) - 1] + (m["month"] == "02" and leap)):
+            return False
+    else:
+        m = _TIME_OF_DAY.fullmatch(value)
+        if not m or in_a_range and not (m["t"] or m["tsep"]):
+            return False
+    hour, minute, second = int(m["hour"]), int(m["minute"] or 0), int(m["second"] or 0)
+    if hour == 24:
+        return minute == second == 0 and not (m["fraction"] or "").strip("0")
+    return hour <= 23 and minute <= 59 and second <= 60
+
+
+def _timestamp(value):
+    """Whether `value` is a real date and time or a time of day (_one_timestamp), or a range of two joined by "-" or
+    "--". For a value read by its shape alone, which a key's name does not mark as a secret."""
+    if not _TIMESTAMP_CHARACTERS.fullmatch(value):
+        return False
+    if _one_timestamp(value):
+        return True
+    for sep in ("--", "-"):
+        at = value.find(sep, 1)
+        while at != -1:
+            if _one_timestamp(value[:at], True) and _one_timestamp(value[at + len(sep):], True):
+                return True
+            at = value.find(sep, at + 1)
+    return False
 
 
 _SEP_CHARACTER = re.compile(r"[:=\uff1a\uff1d]|%(?:25)?3[ADad]|u003[AaDd]")
@@ -1050,7 +1105,6 @@ _HEADER_START = re.compile(rf"(?:(?<![^\s\"'`{{\[(,;|>])|{_AFTER_ESCAPE})")
 # A plain word: letters with a letter past "f", so a hex run such as "dead" in a UUID is none, or capitalized words run
 # together with digits after them, as a product's name is ("WindowsServer2022").
 _PLAIN_WORD = re.compile(r"(?=.*[g-zG-Z])[A-Za-z][a-z]{3,}|(?:[A-Z][a-z]{2,}){2,}\d*")
-_NUMBER_DATE_OR_TIME = re.compile(r"[\d:.+TZ-]+")
 
 
 def _random_run(text, shortest=12):
@@ -1063,13 +1117,14 @@ def _random_run(text, shortest=12):
 
 def _credential_shaped(word):
     """Whether a lone token reads as a credential: 12 or more characters with no whitespace, mixing letters and digits,
-    not a number, a date or a time, and either holding a random run of 10 or more between its separators ("live_<run>",
-    a three-part token), or holding no plain word and reading as random whole (a UUID). An identifier with a plain word
-    in it stays: "RFC7235-compliant", "WPA2-Enterprise"."""
+    not a real date or time (_date_or_time, _timestamp: any other run of digits and ":.+TZ-" with a T or a Z in it, such
+    as "20261101T100000Z1234", is none), and either holding a random run of 10 or more between its separators
+    ("live_<run>", a three-part token), or holding no plain word and reading as random whole (a UUID). An identifier
+    with a plain word in it stays: "RFC7235-compliant", "WPA2-Enterprise"."""
     word = word.rstrip(".,;:!?)")
     if len(word) < 12 or not re.search(r"\d", word) or not re.search(r"[A-Za-z]", word) or re.search(r"\s", word):
         return False
-    if _NUMBER_DATE_OR_TIME.fullmatch(word):
+    if _date_or_time(word) or _timestamp(word):
         return False
     parts = re.split(r"[-_./:]", word)
     if any(_random_run(part, 10) for part in parts):

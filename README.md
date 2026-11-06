@@ -175,12 +175,14 @@ Known limits:
 - In JSON written inside other JSON text, a password with an escaped quote in it is masked only up to that quote, and
   not at all when fewer than four characters come before it. In plain JSON, and in a tool's input that kb writes as
   JSON itself, the whole value is masked.
-- After "Authorization:" or "Proxy-Authorization:", the credential is the word after a scheme such as Bearer, Token
-  or AWS4-HMAC-SHA256. With no scheme, header style (the name at a line's start, after a space, a quote or an
-  opening mark, not inside a path), the single token right after the colon is masked when it is shaped like a
-  credential: 12 or more characters with no whitespace, mixing letters and digits, not a number, a date or a time,
-  and holding either a random run of 10 or more characters between its separators or no plain word. So a random
-  token there is masked, and "ISO-27001", "RFC7235-compliant", "WPA2-Enterprise" and "WindowsServer2022" stay.
+- After "Authorization:" or "Proxy-Authorization:", the credential is the word after a scheme such as Bearer, Token or
+  AWS4-HMAC-SHA256. With no scheme, header style (the name at a line's start, after a space, a quote or an opening
+  mark, not inside a path), the single token right after the colon is masked when it is shaped like a credential: 12
+  or more characters with no whitespace, mixing letters and digits, not a real date and time, a time of day or a range
+  of two as ISO 8601 or a log writes one ("2026-11-01T10:00:00Z", "20261101T100000Z", "2026-11-01T10:00:00+0000",
+  "10:00:00.123456Z"), and holding either a random run of 10 or more characters between its separators or no plain
+  word. So a random token there is masked, digits with a T or a Z among them included ("20261101T100000Z1234"), and
+  "ISO-27001", "RFC7235-compliant", "WPA2-Enterprise" and "WindowsServer2022" stay.
 - In escaped text, such as a tool's input stored as JSON, a named value reads on through "\n" into the next line's
   first word and masks it too: "password: <pw>\nnext line" becomes "password: [masked] line". That over-masking is
   kept on purpose, since what follows "\n" in the same run may be the rest of the secret.
