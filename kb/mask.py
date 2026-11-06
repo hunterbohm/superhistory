@@ -577,7 +577,37 @@ def _date_or_time(value):
     return day <= _MONTH_DAYS[month - 1] + (month == 2 and calendar.isleap(year))
 
 
-_SEP_CHARACTER = re.compile(r"[:=\uff1a\uff1d]|%(?:25)?3[ADad]|u003[AaDd]")
+# A date and a time as a log or a clock writes one, in ASCII digits: ISO 8601's extended form or its basic form
+# ("20261101T100000Z", AWS's X-Amz-Date), by month and day or by the day of the year ("2026-305T10:00:00Z"), with an
+# offset of hours alone, without its colon (strftime's "+0000") or with it.
+_OFFSET = r"(?:Z|[+-](?:[01]\d|2[0-3])(?::?[0-5]\d)?)?"
+_TIMESTAMPS = (re.compile(r"(\d{4})-(?:(\d\d)-(\d\d)|(\d{3}))T(\d\d)(?::(\d\d)(?::(\d\d)(?:\.(\d{1,9}))?)?)?" + _OFFSET,
+                          re.ASCII),
+               re.compile(r"(\d{4})(?:(\d\d)(\d\d)|(\d{3}))T(\d\d)(?:(\d\d)(?:(\d\d)(?:\.(\d{1,9}))?)?)?" + _OFFSET,
+                          re.ASCII))
+
+
+def _timestamp(value):
+    """Whether `value` is a real date and time as _TIMESTAMPS reads one: each field in its range, a leap second (":60")
+    and the day's end ("24:00:00", naught past it) included. For a value read by its shape alone, which a key's name
+    does not mark as a secret."""
+    m = next(filter(None, (form.fullmatch(value) for form in _TIMESTAMPS)), None)
+    if not m:
+        return False
+    year, month, day, ordinal, hour, minute, second, fraction = m.groups()
+    leap = calendar.isleap(int(year))
+    if ordinal:
+        if not 1 <= int(ordinal) <= 365 + leap:
+            return False
+    elif not (1 <= int(month) <= 12 and 1 <= int(day) <= _MONTH_DAYS[int(month) - 1] + (int(month) == 2 and leap)):
+        return False
+    hour, minute, second = int(hour), int(minute or 0), int(second or 0)
+    if hour == 24:
+        return minute == second == 0 and not (fraction or "").strip("0")
+    return hour <= 23 and minute <= 59 and second <= 60
+
+
+_SEP_CHARACTER =re.compile(r"[:=\uff1a\uff1d]|%(?:25)?3[ADad]|u003[AaDd]")
 
 
 def _prose(sep):
@@ -1062,14 +1092,14 @@ def _random_run(text, shortest=12):
 
 def _credential_shaped(word):
     """Whether a lone token reads as a credential: 12 or more characters with no whitespace, mixing letters and digits,
-    not a real date or time (_date_or_time: a run of digits and ":.+TZ-" with a T or a Z in it, such as
-    "20261101T100000Z1234", is none), and either holding a random run of 10 or more between its separators ("live_<run>",
-    a three-part token), or holding no plain word and reading as random whole (a UUID). An identifier with a plain word
-    in it stays: "RFC7235-compliant", "WPA2-Enterprise"."""
+    not a real date or time (_date_or_time, _timestamp: any other run of digits and ":.+TZ-" with a T or a Z in it, such
+    as "20261101T100000Z1234", is none), and either holding a random run of 10 or more between its separators
+    ("live_<run>", a three-part token), or holding no plain word and reading as random whole (a UUID). An identifier
+    with a plain word in it stays: "RFC7235-compliant", "WPA2-Enterprise"."""
     word = word.rstrip(".,;:!?)")
     if len(word) < 12 or not re.search(r"\d", word) or not re.search(r"[A-Za-z]", word) or re.search(r"\s", word):
         return False
-    if _date_or_time(word):
+    if _date_or_time(word) or _timestamp(word):
         return False
     parts = re.split(r"[-_./:]", word)
     if any(_random_run(part, 10) for part in parts):
