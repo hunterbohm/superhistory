@@ -31,12 +31,14 @@ def store_path(home):
 def put_rows(db, source, source_id, ts, title, texts, meta):
     """An item's rows exactly as given, their text unmasked, with today's mask version stamped on them, as an older kb
     or a bug in one would leave them. Tests of what leaves a computer need such rows: kb's own writers mask at rest,
-    and then the egress chokepoint would have nothing to do. One text is a `doc` row, several are `raw` chunks."""
+    and then the egress chokepoint would have nothing to do. One text is a `doc` row, several are `raw` chunks, each
+    chunk's keys in the order kb's store_item writes them."""
     if len(texts) == 1:
         rows = [("doc", title, texts[0], meta)]
         kinds = store.ITEM_KINDS + store.SUMMARY_KINDS
     else:
-        rows = [("raw", title, part, {**meta, "chunk": i, "chunks": len(texts)}) for i, part in enumerate(texts)]
+        base, digest = {k: v for k, v in meta.items() if k != "hash"}, {k: v for k, v in meta.items() if k == "hash"}
+        rows = [("raw", title, part, {**base, "chunk": i, "chunks": len(texts), **digest}) for i, part in enumerate(texts)]
         kinds = store.ITEM_KINDS
     db.execute(f"DELETE FROM docs WHERE source=? AND source_id=? AND kind IN ({','.join('?' * len(kinds))})",
                (source, source_id, *kinds))

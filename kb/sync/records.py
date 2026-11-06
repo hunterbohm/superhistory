@@ -481,8 +481,10 @@ def _write_item(db, rec):
         rows = [{"kind": "doc", "ts": b["ts"], "title": b["title"], "content": texts[0], "metadata": meta}]
         kinds = store.ITEM_KINDS + store.SUMMARY_KINDS  # only long items keep summaries
     else:
+        # In the order kb's store_item writes a chunk's keys, hash last, so the rows are the sender's text for text.
+        base, digest = {k: v for k, v in meta.items() if k != "hash"}, {k: v for k, v in meta.items() if k == "hash"}
         rows = [{"kind": "raw", "ts": b["ts"], "title": b["title"], "content": part,
-                 "metadata": {**meta, "chunk": i, "chunks": len(texts)}} for i, part in enumerate(texts)]
+                 "metadata": {**base, "chunk": i, "chunks": len(texts), **digest}} for i, part in enumerate(texts)]
         kinds = store.ITEM_KINDS
     store.replace_rows(db, rec.source, rec.source_id, rows, kinds)
 

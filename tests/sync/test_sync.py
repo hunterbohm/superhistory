@@ -42,6 +42,19 @@ class SyncTest(unittest.TestCase):
         self.assertEqual(store.superseded_by(b.db, "git", theirs), ("notes", long_key))
         self.assertIn("assistant: hello", "".join(b.text("claude_code", session)["rows"]))
 
+    def test_an_item_kb_stored_arrives_as_the_same_rows(self):
+        a = self.world.computer("computer 1")
+        a.client.init(self.world.browser())
+        long_key, short_key = a.key("long"), a.key("short")
+        store.store_item(a.db, "notes", long_key, "2026-10-01", "long", "".join(f"line {i} of a note\n" for i in range(600)),
+                         {"path": "/made-up/long.md"})
+        store.store_item(a.db, "notes", short_key, "2026-10-01", "short", "a short note", {"path": "/made-up/short.md"})
+        a.sync()
+        b = self.world.computer("computer 2")
+        self.world.pair(a, b)
+        self.assertGreater(len(a.text("notes", long_key)["rows"]), 1, "the long item is stored as raw chunks")
+        self.assertEqual(rows(a.db), rows(b.db), "each row, its metadata's text included, is the sender's")
+
     def test_a_newer_clear_outranks_an_older_mark(self):
         (a, b), _ = self.world.group("computer 1", "computer 2")
         target = a.item("notes", "target", "the item that gets superseded")
