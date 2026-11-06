@@ -14,7 +14,7 @@ from .network import Network, run_cli
 from .support import EMAIL, World
 
 GMAIL = '[sources.gmail]\naddress = "person@gmail.com"\n'
-GMAIL_SPELLED_OTHERWISE = '[sources.work_mail]\naddress = "Per.Son@GoogleMail.com"\n'
+GMAIL_SPELLED_OTHERWISE = '[sources.work_mail]\ntype = "gmail"\naddress = "Per.Son@GoogleMail.com"\n'
 GITHUB = '[sources.github]\ninvolves = "octocat"\n'
 SECRETS = ("person@", "gmail.com", "googlemail", "octocat")
 HEX64 = re.compile(r"[0-9a-f]{64}")
@@ -47,7 +47,7 @@ class AccountsTest(unittest.TestCase):
         return (viewer or computer).client.roster.entry(computer.client.device_id)["accounts"]
 
     def sent_to_sync(self, since):
-        return [e for e in self.fake.log[since:] if e[0] != "GET" and e[1].startswith("/sync")]
+        return [e for e in self.fake.log[since:] if e[0] != "GET" and e[1].startswith("/sync") and e[1] != "/sync/applied"]
 
     def assertPlain(self, text):
         for secret in SECRETS:
@@ -109,13 +109,13 @@ class AccountsTest(unittest.TestCase):
     def test_init_and_recover_put_the_digests_of_this_computer_s_accounts_in_its_entry(self):
         a = self.start("laptop", GMAIL, GITHUB)
         self.assertEqual(self.accounts_of(a), sorted([digest("gmail:person@gmail.com"), digest("github:octocat")]))
-        code = a.client.new_recovery_code()
+        code, gone = a.client.new_recovery_code(), a.client.device_id
         a.lose_everything()
         c = self.world.computer("replacement")
         c.reads(GMAIL)
         c.client.recover(code, self.world.browser())
         self.assertEqual(self.accounts_of(c), [digest("gmail:person@gmail.com")], "it replaces the computer it revokes")
-        self.assertIsNotNone(c.client.roster.entry(a.client.device_id)["removed"])
+        self.assertIsNotNone(c.client.roster.entry(gone)["removed"])
         raw = repr(c.client.roster.link)
         self.assertNotIn("person@", raw)
 

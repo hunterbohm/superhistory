@@ -189,6 +189,10 @@ def _recovery_aad(epoch, version):
     return struct.pack(">QQ", epoch, version)
 
 
+def _quoted(labels):
+    return " and ".join(f'"{label}"' for label in labels)
+
+
 def _signed_in(paths):
     try:
         return signed_in(paths)
@@ -494,6 +498,8 @@ class SyncClient:
         except (Refused, KeyError, TypeError):
             self.relay.delete_slot(pk.slot_id)
             raise Refused("the join was not made with this pairing code") from None
+        self._refresh()
+        self._refuse_join_on_clash(pk, entry)
         if not confirm(entry["label"], keys.fingerprint_words(entry["device_id"], entry["age_recipient"], entry["ssh_key"])):
             self.relay.delete_slot(pk.slot_id)
             raise SyncError("Not added.")
@@ -503,6 +509,7 @@ class SyncClient:
             ring, ro = self.keyring, self.roster
             if ro.entry(entry["device_id"]) or any(e["prefix"] == entry["prefix"] for e in ro.active()):
                 raise SyncError("That computer, or its item prefix, is already in the group.")
+            self._refuse_join_on_clash(pk, entry)
             if entry["prefix"] in self._removed().cleared:
                 raise SyncError(f'"{entry["label"]}" was removed with its items cleared, so it cannot join again as the '
                                 "same install. To add it, delete the install-id file in its Superhistory config folder first. "
@@ -552,6 +559,11 @@ class SyncClient:
         pk = self._joining
         welcome = self._wait_slot(pk.slot_id, 1, wait, sleep)
         data = pack.open_tagged(pk.welcome_key, welcome, identity_file=self.paths.device_age)
+        if isinstance(data, dict) and data.get("refused") == "accounts":
+            self._joining = None
+            with contextlib.suppress(relay.RelayError):
+                self.relay.delete_slot(pk.slot_id)
+            raise SyncError(self._taken_message(self._refusal_held(data), "run `superhistory sync join` again"))
         self._anchor(keys.KeyRing.from_json(data["keyring"]))
         version = self.roster.version
         state.put(self.db, "joined_behind", version if self._next_link_stood_behind(version) else None)
@@ -564,6 +576,42 @@ class SyncClient:
             pass
         self._joining = None
         return self.run_once()
+
+    def _refuse_join_on_clash(self, pk, entry):
+        """If the joiner reads an online account an active member already reads, seal a refusal into the welcome position,
+        as a welcome is sealed, and raise. Neither computer's roster changes."""
+        held = self.roster.holders(entry["accounts"])
+        if not held:
+            return
+        labels = sorted({label for owners in held.values() for label in owners})
+        refusal = {"refused": "accounts", "digests": sorted(held), "held_by": labels}
+        self.relay.put_welcome(pk.slot_id, pack.seal_tagged(pk.welcome_key, entry["age_recipient"], refusal))
+        who = _quoted(labels)
+        raise SyncError(f'Did not add "{entry["label"]}": it reads an online account that {who} already '
+                        f'{"reads" if len(labels) == 1 else "read"} in your sync group, and one computer reads each online '
+                        f'account. On "{entry["label"]}", remove the source that reads it from its config, then run '
+                        "`superhistory sync join` there with a new code from `superhistory sync add-device`.")
+
+    @staticmethod
+    def _refusal_held(refusal):
+        """{digest: [labels]} from a refusal an approver sealed into a welcome. Every digest names the same holders."""
+        digests, labels = refusal.get("digests"), refusal.get("held_by")
+        if not (roster.valid_digests(digests) and isinstance(labels, list) and all(roster.valid_label(x) for x in labels)):
+            raise Refused("the other computer's refusal is not one this version reads")
+        return {d: labels for d in digests}
+
+    def _taken_message(self, held, then):
+        """What a person reads when this computer's config names an online account that active members of the group
+        already read. It names this computer's sources and the other computers by label, never the account."""
+        digests, labels = set(held), sorted({label for owners in held.values() for label in owners})
+        names = sorted(name for name, key in self.accounts.items() if roster.claim(key) in digests)
+        where = " and ".join(f"[sources.{name}]" for name in names) or "this computer's config"
+        reads = "reads" if len(labels) == 1 else "read"
+        return (f"This computer reads the online account{'s' if len(names) > 1 else ''} in {where}, which {_quoted(labels)} "
+                f"already {reads} in your sync group. One computer reads each online account. Remove "
+                f"{where if names else 'the source that reads it'} from this computer's config, then {then}. To move that "
+                f"account here instead, run `superhistory forget NAME` on {_quoted(labels)}, where NAME is the source that "
+                "reads it there, remove that source from its config, and sync there first.")
 
     def _refresh(self):
         st = self.relay.state()
@@ -1417,12 +1465,43 @@ class SyncClient:
         if self._finish_removals(report):
             report.stalled = report.stalled or "a removed computer still holds the current key, so nothing was sent"
             return report
+        self._settle_accounts()
         if not (report.stalled and state.get(self.db, "adopting")):
             report.sent = self.push()
         self._check_recovery_envelope()
         if self._compaction_due(self.relay.state()):
             report.compacted = self.compact(force=True)
         return report
+
+    def _settle_accounts(self):
+        """Before anything is sealed or sent: refuse when another active computer reads an online account this one's
+        config names, and otherwise bring this computer's entry in line with its config, one link that changes only
+        its own `accounts`. A link another computer wrote first is read before trying again, and a clash it brings
+        is refused."""
+        mine = roster.claims(self.accounts)
+        for _ in range(3):
+            ro, ring = self.roster, self.keyring
+            held = ro.holders(mine, besides=self.device_id)
+            if held:
+                raise SyncError(self._taken_message(held, "run `superhistory sync` again"))
+            me = ro.entry(self.device_id)
+            if me["accounts"] == mine:
+                return
+            new_ro = roster.Roster(roster.new_link(
+                ro, ro.epoch, self.device_id, [{**e, "accounts": mine} if e is me else e for e in ro.entries], ring))
+            self._confirm_with_app(new_ro)
+            self._may_write_next_link()
+            try:
+                self.relay.put_roster(ro.version, roster.seal_link(new_ro.link, self.paths.device_ssh, ring.recipient(ro.epoch)),
+                                      [], self._recovery_envelope(ring, new_ro))
+            except relay.RelayError as exc:
+                if exc.status == 409:
+                    self._refresh()
+                    continue
+                raise
+            self._trust(Proven.authored(ring, new_ro))
+            return
+        raise SyncError("Another computer kept changing the group. Try again.")
 
     def _assert_members(self):
         """Record with the app, as a member, every computer active in this computer's trusted roster that the app does
@@ -1539,6 +1618,9 @@ class SyncClient:
             problems.append(f"The relay showed device {fork['author']} a different roster at version {fork['version']}.")
         if st["group"] and st["roster_version"] < self.roster.version:
             problems.append("The relay shows an older roster than this computer trusts.")
+        held = self.roster.holders(roster.claims(self.accounts), besides=self.device_id)
+        if held:
+            problems.append(self._taken_message(held, "run `superhistory sync` again") + " Nothing is sent from here until then.")
         if st.get("rotation_due"):
             problems.append("A removed computer still holds keys. The next sync rotates them.")
         if self.recovery_code_due():
@@ -1553,6 +1635,7 @@ class SyncClient:
             "computers": [{"label": e["label"], "device_id": e["device_id"], "this": e["device_id"] == self.device_id,
                            "removed": e["removed"] is not None, "revoked": e["device_id"] in revoked}
                           for e in self.roster.entries],
+            "reads": sorted(self.accounts),
             "behind": max(st.get("head", 0) - state.get(self.db, "cursor", 0), 0),
             "waiting": state.count_outbox(self.db), "problems": problems}
 

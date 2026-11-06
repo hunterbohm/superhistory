@@ -128,6 +128,9 @@ def cmd_status(client, args):
     for c in st["computers"]:
         mark = " (this computer)" if c["this"] else " (removed)" if c["removed"] else " (revoked)" if c["revoked"] else ""
         print(f"  {c['label']}{mark}")
+    if st["reads"]:
+        print(f"This computer reads the online account{'s' if len(st['reads']) > 1 else ''} in "
+              f"{' and '.join(f'[sources.{name}]' for name in st['reads'])}.")
     print(f"{st['behind']} packs behind, {st['waiting']} records waiting to send.")
     for problem in st["problems"]:
         print(f"Problem: {problem}")
@@ -224,7 +227,7 @@ def run(paths, config, args):
     try:
         if args.action == "login":
             return cmd_login(paths, args) or 0
-        client = SyncClient.load(paths)
+        client = SyncClient.load(paths, accounts=config.account_keys())
         try:
             done = SYNC.get(args.action, cmd_sync)(client, args) or 0
         finally:
@@ -261,7 +264,7 @@ def after_ingest(paths, config, db, log):
     """One sync after an ingest. Raises SyncError, with a message for a person, when this computer is not signed in or
     not in a sync group, or when the sync stopped; kb records that as the `sync` health unit. Another sync running on
     this store is not a failure: this run leaves the work to the next."""
-    client = SyncClient.load(paths)
+    client = SyncClient.load(paths, accounts=config.account_keys())
     try:
         report = client.run_once(wait=HOOK_LOCK_WAIT)
     finally:

@@ -48,7 +48,7 @@ def valid_label(label):
             and not keys.code_spans(label) and not _PRIVATE_IN_LABEL.search(label))
 
 
-def _digests(accounts):
+def valid_digests(accounts):
     return (isinstance(accounts, list) and all(isinstance(d, str) and _HEX64.fullmatch(d) for d in accounts)
             and accounts == sorted(set(accounts)))
 
@@ -59,7 +59,7 @@ def check_entry(e):
           and ids.INSTALL_ID.fullmatch(e["prefix"]) and isinstance(e["age_recipient"], str)
           and keys.AGE_RECIPIENT.fullmatch(e["age_recipient"]) and isinstance(e["ssh_key"], str)
           and keys.SSH_KEY.fullmatch(e["ssh_key"]) and valid_label(e["label"]) and _int(e["added_in"], 1)
-          and _digests(e["accounts"]))
+          and valid_digests(e["accounts"]))
     r = e.get("removed") if ok else None
     if ok and r is not None:
         ok = (isinstance(r, dict) and set(r) == REMOVED_KEYS and _int(r["in_version"], 2) and _int(r["head_dseq"], 0)
