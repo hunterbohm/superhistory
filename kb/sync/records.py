@@ -294,7 +294,7 @@ def sent_hash(db, source, source_id):
 def outgoing_record(rec, db):
     """`rec` as it may leave this computer, through the chokepoint, or None when an id in it holds a secret. Item text
     is the one field with its own handling: masked as one whole text and cut again only where masking changed it,
-    since a store that cut an item before masking it, as kb did before varve #14, can split a secret across two chunks
+    since a store that cut an item before masking it, as kb once did, can split a secret across two chunks
     that neither shows. Its `hash` stays as stored, so every store holds the same item, unless it could be over text from
     before masking: when masking changes the title or the text on the way out, or when the stored hash does not match the
     stored text and that text holds `[masked]`, as after kb's remask. Then it is kb's hash of what leaves, since a hash

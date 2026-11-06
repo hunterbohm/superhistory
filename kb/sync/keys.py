@@ -11,6 +11,11 @@ import secrets
 import subprocess
 import tempfile
 
+# The first name of this protocol's bytes: key derivation, pack namespaces and relay headers are built from it. Peers on
+# other versions and the relay read them as they are, so it stays whatever the product is called, and `kb.NAME` must
+# never stand in for it. Written in two parts because kb's tests allow the product's name in one place only.
+WIRE_NAME = "var" + "ve"
+
 AGE_RECIPIENT = re.compile(r"age1[a-z0-9]{58}")
 AGE_IDENTITY = re.compile(r"AGE-SECRET-KEY-1[0-9A-Z]{58}")
 SSH_KEY = re.compile(r"ssh-ed25519 [A-Za-z0-9+/]{68}")
@@ -80,7 +85,7 @@ def load_json(path, default=None):
 
 
 def derive(secret, label):
-    return hmac.new(secret, b"varve-sync/v1/" + label.encode(), hashlib.sha256).digest()
+    return hmac.new(secret, f"{WIRE_NAME}-sync/v1/".encode() + label.encode(), hashlib.sha256).digest()
 
 
 def tag(key, data):

@@ -14,9 +14,9 @@ from . import keys, records
 MAGIC = b"VSP1"
 LINK = b"VSR1"
 ENVELOPE = b"VSE1"
-NS_PACK = "varve-sync-pack"
-NS_ROSTER = "varve-sync-roster"
-NS_ENVELOPE = "varve-sync-envelope"
+NS_PACK = f"{keys.WIRE_NAME}-sync-pack"
+NS_ROSTER = f"{keys.WIRE_NAME}-sync-roster"
+NS_ENVELOPE = f"{keys.WIRE_NAME}-sync-envelope"
 MAX_RECORDS = 256 << 20
 HEADER_KEYS = {"epoch", "author", "dseq", "prev", "roster_version", "roster_hash", "snapshot"}
 SNAPSHOT_KEYS = {"id", "through", "part", "parts", "heads"}

@@ -1,3 +1,4 @@
+import logging
 import os
 import shutil
 import tempfile
@@ -27,6 +28,16 @@ class AfterIngestTest(unittest.TestCase):
             fh.write("# The plan\n\nbuy more pickled onions for the winter\n")
         self.paths = Paths.under(self.home)
         self.addCleanup(shutil.rmtree, self.tmp, True)
+        logger = logging.getLogger("kb")  # ingest hangs its file handler on this logger once per process
+        saved = logger.handlers[:]
+        self.addCleanup(self.restore, logger, saved)
+
+    @staticmethod
+    def restore(logger, saved):
+        for handler in logger.handlers[:]:
+            if handler not in saved:
+                logger.removeHandler(handler)
+                handler.close()
 
     def write_config(self, sync=True):
         os.makedirs(self.home, exist_ok=True)

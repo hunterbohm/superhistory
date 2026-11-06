@@ -573,9 +573,10 @@ class Relay:
         self._send("DELETE", "/sync")
 
     def put_pack(self, pack_id, epoch, blob, snapshot=None):
-        headers = {"X-Varve-Epoch": str(epoch)}
+        head = f"X-{keys.WIRE_NAME.capitalize()}"
+        headers = {f"{head}-Epoch": str(epoch)}
         if snapshot:
-            headers["X-Varve-Snapshot"] = snapshot
+            headers[f"{head}-Snapshot"] = snapshot
         seq = _fields(self._send("PUT", f"/sync/packs/{pack_id}", raw=blob, headers=headers), "seq")["seq"]
         return _shaped(_count(seq), seq)
 
