@@ -24,7 +24,7 @@ class SetupCommandTest(unittest.TestCase):
         out = io.StringIO()
         with mock.patch.object(setup, "run", lambda *a, **k: result), \
                 mock.patch.object(cli.shutil, "which", lambda name: kb_path), \
-                mock.patch.object(cli, "cmd_hooks", lambda paths, config, args: self.calls.append(("hooks", args.kb))), \
+                mock.patch.object(cli, "cmd_hooks", lambda paths, config, args: self.calls.append(("hooks", args.command))), \
                 mock.patch.object(schedule, "on", lambda paths, config, kb: self.calls.append(("schedule", kb)) or "on"), \
                 mock.patch.object(cli, "cmd_ingest", lambda paths, config, args: self.calls.append(("ingest",)) or 0), \
                 contextlib.redirect_stdout(out):

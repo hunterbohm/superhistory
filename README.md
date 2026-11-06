@@ -185,7 +185,16 @@ Known limits:
   of two as ISO 8601 or a log writes one ("2026-11-01T10:00:00Z", "20261101T100000Z", "2026-11-01T10:00:00+0000",
   "10:00:00.123456Z"), and holding either a random run of 10 or more characters between its separators or no plain
   word. So a random token there is masked, digits with a T or a Z among them included ("20261101T100000Z1234"), and
-  "ISO-27001", "RFC7235-compliant", "WPA2-Enterprise" and "WindowsServer2022" stay.
+  "ISO-27001", "RFC7235-compliant", "WPA2-Enterprise" and "WindowsServer2022" stay. Two kinds of credential still show.
+  After a scheme word Superhistory does not know ("Custom", "Custom-Scheme"), the credential is not masked. With no
+  scheme, standard base64 of 32 random bytes (44 characters ending in "=") shows about 22 times in 20,000: a "+" or a "/"
+  splits it into parts, and when every part reads as a name, it shows.
+- Where a value is judged by its shape alone (after "Authorization:" with no scheme, after "pass" beside a user, in an
+  XML element not named for a password, and the other readers listed below), a real timestamp is masked, though it holds
+  no secret, when it is written in another script's digits (fullwidth or Arabic-Indic) or when its fraction has more
+  than nine digits. Under a key's name, such as "api_key:" or "session_key:", only a date and time in ISO 8601's
+  extended form is left shown; the same moment in the basic form, a time of day alone and a range of two, basic form
+  included ("20261101T100000Z-20261101T120000Z"), are masked there.
 - In escaped text, such as a tool's input stored as JSON, a named value reads on through "\n" into the next line's
   first word and masks it too: "password: <pw>\nnext line" becomes "password: [masked] line". That over-masking is
   kept on purpose, since what follows "\n" in the same run may be the rest of the secret.
@@ -228,10 +237,51 @@ Known limits:
   splits), a code identifier ("ConvertBF16ToF32", "OAuth2AuthorizationCode") is no credential. So a password made of
   words and numbers ("Summer2024Garden") reads as an identifier there and stays, and an identifier with a digit run
   into small letters ("Utf8to16Codec") reads as a password and is masked.
+- A token of 16 or more characters reads as a name there only when each part between separators is in one case, or when
+  it looks more like the words of code than like random characters. That check is statistical, in both directions. In
+  20,000 random tokens of letters and digits in an XML element, 18 of 16 characters still show, 6 of 20, and none of 32;
+  the other readers, and tokens of 40 base64url characters or of 20 letters with no digit, leak at similar small rates,
+  up to 16 in 20,000 in the tests of the change that added this check. And a real name that looks random
+  is masked: about 1 real name in 17,000 (11 of 187,134 names from C headers and TypeScript types, such as
+  "RTCRtcpMuxPolicy" and "NI_10MHzRefClock").
+- Commands that take a password (`aws configure set`, `az login`, `mongosh`, `twine`, `keytool`, `jarsigner`, `sshpass`,
+  `mysql`, `curl`, `docker login`, `redis-cli`) are read by their flags, and some ways of writing them are not read, so
+  the password shows:
+  - `aws configure set` with the value after a quoted query that looks like an option, after a line continuation (a
+    backslash, a CR LF, or an escaped line break in JSON) between the setting and its value, with a `profile.NAME.`
+    setting name, with a profile named by a lone backslash, or with `aws`'s own options (`--profile prod`) before
+    `configure`;
+  - a short option's value glued to the flag (`-pSECRET`) after `mongosh`, `az login` or `twine`, and in a list of a
+    command's arguments after any command (`mysql`, `curl -u`);
+  - a list of arguments that puts `az`'s own options before `login`;
+  - a command quoted inside another shell command's quotes, quoted twice;
+  - a password that is itself the name of `curl`, `mysql`, `sshpass`, `docker login` or `redis-cli`, which hides that
+    command's later flag;
+  - a command written as a list in code with a member that cannot be read as a value (a dict keyed by a list, a chain of
+    100,000 signs, an integer of a thousand digits or more).
+  The opposite error also happens, since a flag's value is read across more text than it should be: in prose, "For
+  mongosh, connect through ssh -p 2222 host" masks 2222; a `keytool` or `jarsigner` flag's value is read across a
+  continuation backslash, or in JSON across an escaped line break, so the backslash, or the break and the next line's
+  first word, is masked with it; and in a list of arguments, an `az login` line is read across a ";" item, so a later
+  `ssh -p` value is masked.
+- Code that types into a page leaves more shapes unread than the ones listed above: a typing method called as a method
+  of a browser, driver or client object with the selector as its first argument (`browser.setValue(selector, value)`,
+  `driver.sendKeys(selector, value)`); a method called through brackets (`page.getByLabel("Password")["fill"](...)`);
+  "Type" as a form's verb inside a selector's attribute (`input[placeholder="Type your password"]`), where the field
+  reads as one about the type of a secret; three or more spaces between a mark and a regular expression, or a regular
+  expression that ends in an escaped backslash, which keep a typing call after them from being read; and values built at
+  run time, or typed by other automation libraries and recorder formats.
+- Escaping hides some secrets from the readers. A provider's token split by an invisible character and written as JSON
+  inside JSON inside JSON shows a fragment. A password line of base64 after a placeholder and lines of base64 that
+  decode to words, written as JSON escaped twice, shows, though it is masked when plain or escaped once.
 - Masking costs time in proportion to the text, but a text in which Superhistory's newer readings fire is masked a second time
   beside Superhistory's earlier mask, so a long run of built shapes is slow: 4,000 soft-hyphen-split passwords with a link
   inside each (160 KB) take about 10 s, 30,000 command lines with a password each (900 KB) about 14 s, and 256 KB of
   nothing but Playwright fill calls with a password each about 8 s.
+  One very long line that nests command substitutions of the commands above (`keytool`, `az login`, `twine`,
+  `aws configure set`) costs more than in proportion: about 3 s at 16 KB and 11 s at 32 KB for one shape, and about 47 s
+  at 16 KB for another, on a loaded machine. Typing calls cost about 30 microseconds a byte of text that holds one: 19 s
+  for 640 KB.
 - Where a later pass cuts into a placeholder, a bracket can be left beside it ("[masked]]"), or two placeholders stand
   side by side ("[masked][masked]"); no character of the secret is left.
 - A password with a comma, a semicolon or a bracket in it is masked whole in quotes, in an XML element or on a line of
