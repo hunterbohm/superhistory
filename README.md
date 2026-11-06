@@ -192,9 +192,11 @@ Known limits:
 - Where a value is judged by its shape alone (after "Authorization:" with no scheme, after "pass" beside a user, in an
   XML element not named for a password, and the other readers listed below), a real timestamp is masked, though it holds
   no secret, when it is written in another script's digits (fullwidth or Arabic-Indic) or when its fraction has more
-  than nine digits. Under a key's name, such as "api_key:" or "session_key:", only a date and time in ISO 8601's
-  extended form is left shown; the same moment in the basic form, a time of day alone and a range of two, basic form
-  included ("20261101T100000Z-20261101T120000Z"), are masked there.
+  than nine digits. Under a key's name, such as "api_key:" or "session_key:", a date and time in ISO 8601's extended
+  form is left shown ("2026-11-01T10:00:00Z", with a fraction or a "+00:00" offset too), as is a time of day with no
+  zone ("10:00:00"). The same moment in the basic form ("20261101T100000Z") or with a "+0000" offset, a time of day in
+  UTC ("10:00:00Z"), a quoted date and time with a space for the T, and a range of two ("20261101T100000Z-20261101T120000Z"),
+  basic form included, are masked there.
 - In escaped text, such as a tool's input stored as JSON, a named value reads on through "\n" into the next line's
   first word and masks it too: "password: <pw>\nnext line" becomes "password: [masked] line". That over-masking is
   kept on purpose, since what follows "\n" in the same run may be the rest of the secret.
