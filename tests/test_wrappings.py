@@ -3,6 +3,7 @@ named command's password where kb cannot read the command plainly: shell grammar
 by a continuation, a program name or flag inside a colour code, and a command given as a list of arguments. Made-up
 secrets only."""
 import ast
+import inspect
 import json
 import os
 import random
@@ -11,7 +12,9 @@ import shlex
 import subprocess
 import sys
 import tempfile
+import textwrap
 import time
+import types
 import unittest
 from unittest import mock
 
@@ -810,6 +813,25 @@ class ReviewSevenTest(unittest.TestCase):
                      '["keytool", "-storepass", "' + "9" * 80000 + '"]'):
             with self.subTest(text=text[:12]):
                 self.assertNotIn(PASSWORD, mask(text))
+
+    def test_a_number_with_underscores_is_guarded_as_one_without(self):
+        # round 24: Python reads "9_9_9" as 999, so a long run of digits with underscores between them costs str-to-int
+        # what one without does, the square of its length on a Python 3.9 with no digit limit (a Mac's own 3.9.6); the
+        # list is left for the fallback, unparsed, as a plain run of 1,000 digits is
+        parsed = []
+        real = masking._literal_eval
+
+        def spy(source):
+            parsed.append(source)
+            return real(source)
+
+        for digits, read in (("9_9", True), ("9" * 1000, False), ("9_" * 999 + "9", False), ("1" + "_000" * 333, False),
+                             ("9_" * 998 + "9", True)):
+            text = '["keytool", "-storepass", ' + digits + "]"
+            with self.subTest(digits=digits[:8], length=len(digits)), mock.patch.object(masking, "_literal_eval", spy):
+                parsed.clear()
+                mask(text)
+                self.assertEqual(any(digits in source for source in parsed), read)
 
     def test_a_span_that_does_not_parse_only_adds(self):
         # A span that does not parse falls back to the line readings, which only add: no crash, and the text around a
@@ -2142,6 +2164,78 @@ class TodaysRowsTest(unittest.TestCase):
             self.assertEqual(code(masking.__file__, ours), code(FIXTURE, mains))
         self.assertEqual([(line.pattern, flag.pattern, always) for line, flag, always in masking._TODAYS_COMMANDS],
                          [(line.pattern, flag.pattern, always) for line, flag, always in today._COMMANDS])
+
+    # Values main reads as passwords that this branch's INVISIBLE, which is wider than main's, would read as a pointer:
+    # JSON's "\b" between a token's characters, a surrogate pair, or either escaped twice, inside a name in capitals or
+    # a dotted name, after each of #29's rows
+    ROWS = ("keytool -storepass {}", "keytool -keypass {}", "jarsigner -storepass {}", "mongosh -p {}",
+            "twine upload -p {} dist/*", "az login -u ci -p {}", "aws configure set aws_secret_access_key {}")
+    VALUES = (r"FOO\bBAR", r"DB\b_PASS", r"API\bKEY\bVALUE", r"ab\b.cd", r"FOO\\bBAR", r"FOO\\u200bBAR",
+              r"FOO\udb40\udc01BAR", r"PASS\u200bWORD")
+
+    def test_a_value_main_reads_as_a_password_is_masked_after_each_row(self):
+        # round 24: main judges a value without its own invisible characters, so "FOO\bBAR" is a password to it, where
+        # this branch's wider INVISIBLE read FOOBAR, a name in capitals, in the copy of main's command code too
+        from tests.test_mask_against_today import hidden, main as today
+        for row in self.ROWS:
+            for value in self.VALUES:
+                text = row.format(value)
+                for depth, form in enumerate((text, json.dumps(text), json.dumps(json.dumps(text)))):
+                    with self.subTest(text=text, depth=depth):
+                        self.assertLessEqual(hidden(today, form), hidden(masking, form))
+
+    def test_every_name_the_copy_of_mains_code_reaches_is_mains(self):
+        # round 24: the copy's own code was main's, but a pattern it reads by name, INVISIBLE, was this branch's wider
+        # one. Every module-level name it reaches, through each function of this module it calls, is main's as the
+        # fixture has it, but main's date rule (#39, #40), which main changed after 68506d9 and this branch holds as
+        # main 032391d does
+        from tests.test_mask_against_today import main as today
+        renames = {"_todays_command_line": "_command_line", "_todays_password_edits": "_command_password_edits",
+                   "_TODAYS_COMMANDS": "_COMMANDS", "_TODAYS_INVISIBLE": "INVISIBLE"}
+        since = {"_DATE_OR_TIME", "_MONTH_DAYS", "_date_or_time", "_looks_secret", "calendar"}
+
+        def code(function):
+            node = ast.parse(textwrap.dedent(inspect.getsource(function))).body[0]
+            node.name = ""
+            if ast.get_docstring(node) is not None:
+                node.body = node.body[1:]
+            dumped = ast.dump(node)
+            for ours, mains in renames.items():
+                dumped = dumped.replace(ours, mains)
+            return dumped
+
+        def same(ours, mains):
+            if isinstance(ours, re.Pattern):
+                return isinstance(mains, re.Pattern) and (ours.pattern, ours.flags) == (mains.pattern, mains.flags)
+            if isinstance(ours, types.FunctionType):
+                return isinstance(mains, types.FunctionType) and code(ours) == code(mains)
+            if isinstance(ours, (list, tuple)):
+                return type(ours) is type(mains) and len(ours) == len(mains) and all(map(same, ours, mains))
+            if isinstance(ours, types.ModuleType):
+                return isinstance(mains, types.ModuleType) and \
+                    ours.__name__.split(".")[-1] == mains.__name__.split(".")[-1]
+            return ours == mains
+
+        def names(code_object):
+            found = set(code_object.co_names)
+            for const in code_object.co_consts:
+                if isinstance(const, types.CodeType):
+                    found |= names(const)
+            return found
+
+        seen, todo, differ = set(), ["_todays_command_line", "_todays_password_edits"], []
+        while todo:
+            name = todo.pop()
+            if name in seen or not hasattr(masking, name):
+                continue
+            seen.add(name)
+            ours = getattr(masking, name)
+            if name not in since and not same(ours, getattr(today, renames.get(name, name), None)):
+                differ.append(name)
+            if isinstance(ours, types.FunctionType) and ours.__module__ == masking.__name__:
+                todo += sorted(names(ours.__code__))
+        self.assertGreater(len(seen), 40)
+        self.assertEqual(sorted(differ), [])
 
     def test_every_password_todays_main_hides_is_masked(self):
         from tests.test_mask_against_today import main as today
