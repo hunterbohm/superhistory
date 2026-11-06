@@ -2970,6 +2970,59 @@ class Base64KeyFooterWholeLineTest(unittest.TestCase):
                                 if depth < 2:
                                     self.assertIn("next paragraph", masked)
 
+    def pinned(self, data, at):
+        """Each width's lines of `data` encoded as one stream, and the lines that hold bits from byte `at` on."""
+        import base64
+        import textwrap
+        encoded = base64.b64encode(data).decode()
+        for width in (16, 21, 32, 64, 76):
+            lines = textwrap.wrap(encoded, width)
+            ahead = [line for j, line in enumerate(lines) if (j + 1) * width * 6 <= at * 8]
+            yield width, lines, ahead, [i for i, line in enumerate(lines) if (i + 1) * width * 6 > at * 8]
+
+    def test_text_between_a_header_quoted_after_words_and_a_footer_in_its_stream_goes_with_the_key(self):
+        # A listed limit (README): a header after text on its decoded line, with a footer later in its stream, starts
+        # that key on its line, whatever lies between them; here a line of prose with a control character, at which
+        # the footer's own reading up stops.
+        key = Base64ReviewNineteenFindingsTest.fixture("openssl_p256").split(b"\n")
+        for lead in (b"notes " * 8 + b"see ", b"notes " * 8 + b"x"):
+            data = lead + key[0] + b"\nPlan notes:\x01 deploy the ledger today.\n" + b"\n".join(key[1:])
+            for width, lines, ahead, held in self.pinned(data, len(lead)):
+                text = "\n".join(lines) + "\n\nnext paragraph"
+                for depth in range(3):
+                    for older in (False, True):
+                        with self.subTest(lead=len(lead), width=width, depth=depth, older=older):
+                            masked = self.masked(Base64ReviewNineteenFindingsTest.written(text, depth), older)
+                            self.assertEqual([i for i in held if lines[i] in masked], [])
+                            if depth == 0:
+                                self.assertEqual([line for line in ahead if line not in masked], [])
+
+    def test_a_document_quoting_a_header_above_a_key_file_with_no_prose_between_goes_with_the_key(self):
+        # A listed limit (README): below a header after text on its decoded line, a key file's header with no prose
+        # between them (here an armour header's line) starts no key of its own, so the key starts on the quote's line,
+        # with the words before the quote. With prose between them the document stays, as round 17's does.
+        key = Base64ReviewNineteenFindingsTest.fixture("openssl_p256")
+        lead = b"notes " * 8 + b"see "
+        quote = b"-----BEGIN PRIVATE KEY-----\n"
+        for between, goes in ((b"Note: paste it below.\n", True), (b"Read the documentation before importing.\n", False)):
+            data = lead + quote + between + key
+            for width, lines, ahead, held in self.pinned(data, len(lead)):
+                document = [i for i, line in enumerate(lines) if (i + 1) * width * 6 <= (len(data) - len(key)) * 8]
+                text = "\n".join(lines) + "\n\nnext paragraph"
+                for depth in range(3):
+                    for older in (False, True):
+                        with self.subTest(between=between[:4], width=width, depth=depth, older=older):
+                            masked = self.masked(Base64ReviewNineteenFindingsTest.written(text, depth), older)
+                            if goes:
+                                self.assertEqual([i for i in held if lines[i] in masked], [])
+                            else:
+                                # the key's lines from its own header go, and the document's whole lines stay
+                                self.assertEqual([i for i in held if i not in document and lines[i] in masked], [])
+                                if depth == 0:
+                                    self.assertEqual([i for i in document if lines[i] not in masked], [])
+                            if depth == 0:
+                                self.assertEqual([line for line in ahead if line not in masked], [])
+
     def test_a_key_starts_at_the_line_with_its_headers_first_bits(self):
         # Where a line of the block is no whole number of base64 groups, the line before a key's header can end inside
         # the group that holds the header's first byte, with only the bits of the bytes before it: it stays.
