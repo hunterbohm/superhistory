@@ -715,9 +715,9 @@ class ReviewTwoTest(unittest.TestCase):
                     masked = mask(text)
                     self.assertNotIn(fragment, masked)
                     self.assertNotIn(lines[0], masked)
-        # lines of words after the last fragment stay, as before
+        # the words after a lone body line's first token stay (coordinator's ruling, Nov 6: that token goes with the key)
         self.assertEqual(mask(f"[masked]\n{lines[0]}\nnext steps\nsee the runbook\n"),
-                         "[masked]\nnext steps\nsee the runbook\n")
+                         "[masked] steps\nsee the runbook\n")
 
     def test_text_escaped_as_json_many_times_costs_time_in_proportion(self):
         import json
@@ -746,9 +746,9 @@ class ReviewThreeTest(unittest.TestCase):
                     masked = mask(f"[masked]\n{body}\n{words}\n{fragment}\n")
                     self.assertNotIn(fragment, masked.replace(words, ""))
                     self.assertNotIn(body, masked)
-        # lines of plain words after the last fragment stay, as before
+        # the words after a lone body line's first token stay (coordinator's ruling, Nov 6: that token goes with the key)
         self.assertEqual(mask(f"[masked]\n{body}\nnext steps\nSee the runbook.\n"),
-                         "[masked]\nnext steps\nSee the runbook.\n")
+                         "[masked] steps\nSee the runbook.\n")
 
     def test_base64_after_a_passwords_placeholder_is_no_keys_rest(self):
         import base64
@@ -1367,8 +1367,10 @@ class Base64ReviewFourteenTest(unittest.TestCase):
             der = holding(der)
             if depth in (2, 3, 1500):
                 with self.subTest(depth=depth):
-                    text = f"[masked]\n{base64.b64encode(der).decode()}\nnext steps"
-                    self.assertEqual(mask(text), "[masked]\nnext steps")
+                    encoded = base64.b64encode(der).decode()
+                    # a body with no "=" can run on: its next first token goes with it (coordinator's ruling, Nov 6)
+                    self.assertEqual(mask(f"[masked]\n{encoded}\nnext steps"),
+                                     "[masked]\nnext steps" if encoded.endswith("=") else "[masked] steps")
 
     def test_such_a_row_is_stored_with_its_bundle(self):
         import base64
@@ -1908,7 +1910,8 @@ class Base64ReviewSixteenTest(unittest.TestCase):
                             with mask_module.stored_row("0123456789abcdef"):
                                 masked = mask(written)
                             self.assertEqual([line for line in lines[cut:-1] if line in piece and line in masked], [])
-                            self.assertIn("next steps", masked)
+                            # the rest's next first token can go with it (coordinator's ruling, Nov 6)
+                            self.assertIn("steps", masked)
                             if before:
                                 self.assertIn(words, masked)
 
@@ -1978,7 +1981,8 @@ class Base64KeyPieceLimitTest(unittest.TestCase):
                         self.assertEqual([line for line in lines if line not in masked], [])
                     else:
                         self.assertEqual([line[:16] for line in lines if line[:16] in masked], [])
-                    self.assertIn(kept, masked)
+                    # a rest's next first token can go with it (coordinator's ruling, Nov 6); the words after it stay
+                    self.assertIn(kept if outcome == "shows" else kept.split(" ", 1)[-1], masked)
 
     def test_a_piece_after_a_placeholder_shows_until_its_first_line_starts_a_rest(self):
         # 34 characters after "[masked] ", as the comparison met one; at 36, read as an older kb's rest; at 40, which
@@ -2573,6 +2577,81 @@ class Base64ReviewNineteenFindingsTest(unittest.TestCase):
                             self.assertNotIn(encoded[:40], masked)
                             self.assertTrue(read.startswith("Plan"), read)
                             self.assertTrue(read.endswith("next steps"), read)
+
+
+class Base64KeyCutBeforeWordsTest(unittest.TestCase):
+    """#34 against main 032391d before its twentieth review: a private key with its header and no footer, its body
+    quoted with "> ", whose short last line runs on into words ("ei harbor deploy", "Ynu walrus moved"). Where an older
+    kb had masked the header alone, that line read as a line of words, so the body's last characters showed, which main
+    masks with the rest of the paragraph. Made-up keys only."""
+
+    @staticmethod
+    def bodies():
+        import base64
+        import random
+        r = random.Random(83)
+        openssh = b"openssh-key-v1\0" + bytes(r.randrange(256) for _ in range(380))
+        return {"PRIVATE KEY": (base64.b64encode(made_up_private_key(r)).decode(), 64),
+                "OPENSSH PRIVATE KEY": (base64.b64encode(openssh).decode(), 70)}
+
+    @staticmethod
+    def text(header, lines, fragment, q="> ", brk="\n"):
+        return (f"intro notes{brk}{q}{header}{brk}" + brk.join(q + line for line in lines)
+                + f"{brk}{q}{fragment} walrus moved today{brk}{brk}next paragraph")
+
+    def test_no_character_of_a_body_that_runs_on_into_words_survives(self):
+        import textwrap
+        from kb import mask as masking
+        for kind, (body, width) in self.bodies().items():
+            for header in (f"-----BEGIN {kind}-----", "[masked]"):
+                for full in (1, 2, 3):
+                    lines = textwrap.wrap(body, width)[:full]
+                    for fragment in ("ei", "Ynu", "k", "Abc"):
+                        for q in ("> ", ""):
+                            for brk in ("\n", "\r\n"):
+                                text = self.text(header, lines, fragment, q, brk)
+                                for depth in (0, 1, 2):
+                                    written = text
+                                    for _ in range(depth):
+                                        written = json.dumps(written)
+                                    for older in (False, True):
+                                        with self.subTest(kind=kind, header=header[:9], full=full, fragment=fragment,
+                                                          q=q, brk=brk, depth=depth, older=older):
+                                            # JSON escapes no character of base64 or of these words, so the masked
+                                            # text is read as written; a key masked to its paragraph's end may take
+                                            # an escape's backslash with it, so it is not parsed back
+                                            if older:
+                                                with masking.stored_row(None):
+                                                    masked = mask(written)
+                                            else:
+                                                masked = mask(written)
+                                            self.assertNotIn(f"{fragment} walrus", masked)
+                                            self.assertEqual([line[i:i + 8] for line in lines
+                                                              for i in range(0, len(line) - 8, 4)
+                                                              if line[i:i + 8] in masked], [])
+                                            self.assertIn("intro notes", masked)
+                                            if depth < 2 or header == "[masked]":
+                                                # escaped twice, a header masks to the text's end, as on main
+                                                self.assertIn("next paragraph", masked)
+
+    def test_the_words_after_the_tail_still_show(self):
+        # allowed, not required: where a line splits safely, the words after the body's last characters stay
+        import textwrap
+        for kind, (body, width) in self.bodies().items():
+            for full in (1, 2):
+                with self.subTest(kind=kind, full=full):
+                    masked = mask(self.text("[masked]", textwrap.wrap(body, width)[:full], "Ynu"))
+                    self.assertNotIn("Ynu", masked)
+                    self.assertIn("walrus moved today", masked)
+
+    def test_a_line_of_words_after_a_body_that_can_end_there_stays_whole(self):
+        # a last line shorter than the one above it, or ending in "=", can be the body's last
+        import textwrap
+        for kind, (body, width) in self.bodies().items():
+            lines = textwrap.wrap(body, width)
+            for kept in (lines[:2] + [lines[2][:20]], lines[:2] + [lines[2][:19] + "="]):
+                with self.subTest(kind=kind, last=kept[-1][-1]):
+                    self.assertEqual(mask("[masked]\n" + "\n".join(kept) + "\nnext steps"), "[masked]\nnext steps")
 
 
 class HeadlessKeyTest(unittest.TestCase):
