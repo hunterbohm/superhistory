@@ -19,8 +19,26 @@ folder names, job labels and printed text come from it, so a rename is one edit.
 | `kb/ingest.py` | The runner that reads every source and stores what changed. |
 | `kb/ids.py` | The install id and the prefix on every stored `source_id`. |
 | `kb/ai/` | AI plug-ins. Each one answers `ask(prompt, timeout)` with the model's text. |
+| `kb/dashboard/` | `superhistory dashboard`: a local page over the store, read-only. `catalog.py` finds projects and people, `views.py` shapes each page's data, `server.py` serves it on 127.0.0.1, and `static/` holds the page, its script, style and fonts. |
 | `kb/sources/` | Source types. Each module defines `TYPE`, and its name is the type's name. |
 | `kb/sync/` | Reserved for the Sync client. |
+
+## The dashboard
+
+`superhistory dashboard` serves a page on 127.0.0.1 only, on the port the user picks or a free one, and stops on Ctrl-C.
+It opens the store read-only (`mode=ro` and `query_only`), answers only GET and HEAD, refuses a request whose Host is
+not its own address (a web page cannot reach it by DNS rebinding), and loads nothing from outside: the fonts, script
+and style ship in `kb/dashboard/static/`, and a content-security policy blocks anything else. The fonts are under the
+SIL Open Font License, copied in `static/OFL.txt`. A read-only connection to a store in WAL mode can leave an empty
+`-wal` or `-shm` file beside it; the store's own file is never written.
+
+Items are grouped from what sources record, never from a name. `kb/dashboard/catalog.py` explains the rules at its top:
+an item's family follows its metadata (`cwd` or `session_id`, `account`, `chat`, `sha`, `repo` with a `kind`), a project
+is the folder an agent session ran in or the repository of a commit or pull request (a home folder is no project), and
+a person is a text participant or a mail correspondent other than the user's own accounts, keyed by name so that one
+person texted and mailed is one page. Senders whose threads all carry Gmail's category labels are listed apart as
+lists and notifications. Text shown is masked as `get` masks it: a row of today's mask version as stored, any other
+row masked again whole first.
 
 ## Where Sync plugs in
 
