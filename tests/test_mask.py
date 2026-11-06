@@ -2661,6 +2661,96 @@ class Base64KeyCutBeforeWordsTest(unittest.TestCase):
                     self.assertEqual(mask("[masked]\n" + "\n".join(kept) + "\nnext steps"), "[masked]\nnext steps")
 
 
+class Base64ReviewTwentyFindingsTest(unittest.TestCase):
+    """#34's twentieth review: a key's footer written into one of its armour headers ("Comment: -----END PGP PRIVATE
+    KEY BLOCK-----"), with the real footer below, ended the key at the forged one, and the lines past it down to a
+    control byte in a later comment showed; and a key's rest whose last line is a placeholder glued to a body line
+    ("[masked]MIIC...") kept the short last line that runs on into words, which main masks. Made-up keys only."""
+    FOOTERS = ("-----END PGP PRIVATE KEY BLOCK-----", "-----END PGP SECRET KEY BLOCK-----", "-----END PRIVATE KEY-----")
+
+    @staticmethod
+    def forged(footer, where):
+        """The control-comment fixture with `footer` written into an armour header: a comment of its own before the
+        fixture's, one after it, or inside a comment with text around it."""
+        block = Base64ReviewNineteenFindingsTest.fixture("gnupg_control_comment").split(b"\n")
+        at = next(i for i, line in enumerate(block) if line.startswith(b"Comment:"))
+        header = {"before": b"Comment: " + footer.encode(), "after": b"Comment: " + footer.encode(),
+                  "inside": b"Comment: see " + footer.encode() + b" below"}[where]
+        block.insert(at + (where == "after"), header)
+        return b"\n".join(block)
+
+    def test_a_footer_in_an_armour_header_ends_no_key(self):
+        import base64
+        import textwrap
+        from kb import mask as masking
+        for footer in self.FOOTERS:
+            for where in ("before", "after", "inside"):
+                encoded = base64.b64encode(self.forged(footer, where)).decode()
+                for width in (16, 32, 48, 64, 76, len(encoded)):
+                    lines = textwrap.wrap(encoded, width)
+                    for lead in ("", "intro notes\n", "key: "):
+                        text = lead + "\n".join(lines) + "\n\nnext paragraph"
+                        for depth in range(3):
+                            written = Base64ReviewNineteenFindingsTest.written(text, depth)
+                            for older in (False, True):
+                                with self.subTest(footer=footer[9:20], where=where, width=width, lead=lead[:5],
+                                                  depth=depth, older=older):
+                                    if older:
+                                        with masking.stored_row(None):
+                                            masked = mask(written)
+                                    else:
+                                        masked = mask(written)
+                                    self.assertEqual([i for i, line in enumerate(lines) if line in masked], [])
+                                    self.assertIn("next paragraph", masked)
+                                    if lead:
+                                        self.assertIn(lead.split()[0].rstrip(":"), masked)
+
+    def test_a_footer_that_starts_its_own_line_still_ends_the_key(self):
+        # the forged footer moves no real one: the fixture as GnuPG wrote it, and a key file, still end where they end
+        import base64
+        import textwrap
+        for name in ("gnupg_control_comment", "openssl_ed25519"):
+            encoded = base64.b64encode(Base64ReviewNineteenFindingsTest.fixture(name)).decode()
+            for width in (64, 76):
+                lines = textwrap.wrap(encoded, width)
+                with self.subTest(name=name, width=width):
+                    self.assertEqual(mask("intro notes\n" + "\n".join(lines) + "\nnext steps"),
+                                     "intro notes\n[masked]\nnext steps")
+
+    def test_a_short_last_line_after_a_placeholder_glued_to_a_body_line_is_masked(self):
+        import textwrap
+        from kb import mask as masking
+        for kind, (body, width) in Base64KeyCutBeforeWordsTest.bodies().items():
+            lines = textwrap.wrap(body, width)
+            for start in ("[masked]", f"-----BEGIN {kind}-----"):
+                for above in (lines[:1], lines[:2], []):
+                    glued = lines[len(above)]
+                    for fragment in ("ei", "Ynu", "k"):
+                        for q in ("> ", ""):
+                            for brk in ("\n", "\r\n"):
+                                text = (f"intro notes{brk}{q}{start}{brk}" + "".join(q + line + brk for line in above)
+                                        + f"{q}[masked]{glued}{brk}{q}{fragment} walrus moved today{brk}{brk}"
+                                        "next paragraph")
+                                for depth in (0, 1, 2):
+                                    written = Base64ReviewNineteenFindingsTest.written(text, depth)
+                                    for older in (False, True):
+                                        with self.subTest(kind=kind, start=start[:9], above=len(above),
+                                                          fragment=fragment, q=q, brk=brk, depth=depth, older=older):
+                                            if older:
+                                                with masking.stored_row(None):
+                                                    masked = mask(written)
+                                            else:
+                                                masked = mask(written)
+                                            self.assertNotIn(f"{fragment} walrus", masked)
+                                            key = above + [glued]
+                                            self.assertEqual([line[i:i + 8] for line in key
+                                                              for i in range(0, len(line) - 8, 4)
+                                                              if line[i:i + 8] in masked], [])
+                                            self.assertIn("intro notes", masked)
+                                            if depth < 2 or start == "[masked]":
+                                                self.assertIn("next paragraph", masked)
+
+
 class HeadlessKeyTest(unittest.TestCase):
     """A key's body without its header, as an older kb's row-by-row remask leaves the chunk after the header's."""
     LINE = "MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7"
