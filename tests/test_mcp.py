@@ -352,6 +352,7 @@ class ProcessTest(StoreCase):
         done = subprocess.run([sys.executable, "-m", "kb", "mcp", "--help"], capture_output=True, timeout=60,
                               cwd=os.path.dirname(os.path.dirname(os.path.abspath(mcp.__file__))))
         text = done.stdout.decode()
+        self.assertIn("The local, read-only MCP server", text)
         for line in ("claude mcp add --scope user superhistory -- superhistory mcp", "claude_desktop_config.json",
                      "~/.cursor/mcp.json", "codex mcp add superhistory -- superhistory mcp", "grok mcp add"):
             self.assertIn(line, text)

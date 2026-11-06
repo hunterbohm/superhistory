@@ -58,6 +58,8 @@ TOOLS = (
 )
 
 SETUP = f"""\
+The local, read-only MCP server: it serves your own knowledge base on this computer and nothing else.
+
 Set-up lines. Each starts `{COMMAND} mcp`, over stdio only: it opens no network port, and it only reads. An app that
 does not read your shell's PATH (Claude Desktop and other desktop apps) needs the full path from `which {COMMAND}`
 in place of `{COMMAND}`.

@@ -699,7 +699,7 @@ def parser():
     g.add_argument("--offset", type=int, default=0, help="the character to start from")
     g.set_defaults(fn=cmd_get)
     from kb import mcp
-    sub.add_parser("mcp", help="serve search and get to an MCP app over stdio, read-only", epilog=mcp.SETUP,
+    sub.add_parser("mcp", help="the local, read-only MCP server: serve search and get to an app on this computer over stdio", epilog=mcp.SETUP,
                    formatter_class=argparse.RawDescriptionHelpFormatter).set_defaults(fn=cmd_mcp)
     sub.add_parser("stats", help="row counts and the health of every source").set_defaults(fn=cmd_stats)
     i = sub.add_parser("ingest", help="read every source now, then summarize new long items")
