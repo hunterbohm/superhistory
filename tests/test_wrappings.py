@@ -379,10 +379,20 @@ class ReviewOneTest(unittest.TestCase):
                      "keytool -storepass:env STOREPASS reads the password from the environment.",
                      "mongosh -p prompts for the password when no value follows it.",
                      "aws configure set region us-east-1 sets the default region",
-                     "Run az.cmd login -p $STOREPASS.", "Pass keytool.exe -storepass %STOREPASS%, then -v."):
+                     "Run az.cmd login -p $STOREPASS."):
             for form in (text, json.dumps(text), json.dumps(json.dumps(text))):
                 with self.subTest(text=form[:40]):
                     self.assertEqual(mask(form), form)
+
+    def test_a_variable_main_masks_after_keytool_exe_is_masked_as_main_masks_it(self):
+        # main 33c82f6 reads "%STOREPASS%," after keytool.exe as a password, and the mask hides all main hides
+        # (_todays_hidden), so this line masks as main's does, as round 24's notes say
+        from tests.test_mask_against_today import main as today
+        text = "Pass keytool.exe -storepass %STOREPASS%, then -v."
+        for form in (text, json.dumps(text), json.dumps(json.dumps(text))):
+            with self.subTest(text=form[:40]):
+                self.assertEqual(mask(form), today.mask(form))
+                self.assertEqual(mask(form), form.replace("%STOREPASS%,", "[masked]"))
 
 
 class ReviewTwoTest(unittest.TestCase):
@@ -1872,6 +1882,22 @@ class ReviewTwentyThreeTest(unittest.TestCase):
                 self.assertEqual(listed[1], "notes")
                 self.assertIn(mask_all({"out": form})["out"], expected)
 
+    def assertMaskedAsMain(self, text, *secrets):
+        # each password masked, and nothing else hidden but what main 33c82f6 hides too: main hides more of these
+        # lines than their passwords (it masks a value on through the line), and the mask hides all main hides
+        # (_todays_hidden), so these lines are held to main's output there, as round 24's notes say
+        from tests.test_mask_against_today import hidden, main as today
+        for depth, form in enumerate(self.forms(text)):
+            allowed = hidden(today, form) | {at for secret in secrets for m in re.finditer(re.escape(secret) + "`?", form)
+                                             for at in range(m.start(), m.end())}
+            with self.subTest(text=text, depth=depth):
+                self.assertLessEqual(hidden(masking, form), allowed)
+                for out in (mask(form), masking.mask_with_origin(form)[0], mask_all([form, "notes"])[0],
+                            mask_all({"out": form})["out"]):
+                    self.assertEqual([secret for secret in secrets if secret in out], [])
+                    if "echo done" in text:
+                        self.assertIn("echo done", out)
+
     def test_a_command_quoted_in_the_line_of_a_name_main_does_not_spell_is_read_as_main_reads_it(self):
         for outer in ("az.exe login", "az.cmd login", "AZ.EXE login", "aws.exe configure set"):
             for inner, flag in (("mongosh", "-p"), ("twine upload", "-p"), ("keytool -list", "-storepass")):
@@ -1883,7 +1909,7 @@ class ReviewTwentyThreeTest(unittest.TestCase):
             for opened in ("<(", ">("):
                 text = (f'keytool "$({outer} {opened}twine "`keytool -storepass {self.INNER}`" -p {self.OUTER}) '
                         f'-p {self.LAST})" -storepass Out27mKq4nTs6x; mongosh -p {self.MORE}')
-                self.assertMasked(text, self.INNER, self.OUTER, self.LAST, "Out27mKq4nTs6x", self.MORE)
+                self.assertMaskedAsMain(text, self.INNER, self.OUTER, self.LAST, "Out27mKq4nTs6x", self.MORE)
 
     def test_a_password_after_a_substitution_holding_backticks_is_masked_and_what_follows_the_line_stays(self):
         for inner, flag in (("az.cmd login", "-p"), ("az.exe login", "-p"), ("az login", "-p"), ("twine", "-p"),
@@ -1891,7 +1917,7 @@ class ReviewTwentyThreeTest(unittest.TestCase):
             for outer in ("mongosh", "az.exe login"):
                 text = (f"keytool $({outer} `{inner} {flag} {self.INNER}` -p {self.OUTER}) -storepass {self.LAST}; "
                         "echo done")
-                self.assertMasked(text, self.INNER, self.OUTER, self.LAST)
+                self.assertMaskedAsMain(text, self.INNER, self.OUTER, self.LAST)
 
 
 class NestedLineCostTest(unittest.TestCase):
@@ -2012,7 +2038,8 @@ class TodaysRowsTest(unittest.TestCase):
     and unclosed quotes. This branch's check against main read the text with main's five rows from before #29 alone,
     so where this branch reads such a line its own way, a password main's reading of that row hides could show: one
     line per shape the generated lines found, each password listed hidden by main 33c82f6 and by the frozen main
-    68506d9 as written and escaped once (escaped twice, main shows some of them itself)."""
+    68506d9 as written and escaped once (escaped twice, main shows some of them itself). The check now makes main
+    33c82f6's mask too, its rows read by a copy of main's own code (_todays_hidden)."""
     LINES = (
         ('twine -p WJ7u5NWHMHzG1 kzZGEBG2rQSp3 `mongosh -p GieHTjGQZh6V42` -p 3C6tWa69rsL843',
          ('WJ7u5NWHMHzG1', 'kzZGEBG2rQSp3', 'GieHTjGQZh6V42')),
@@ -2098,6 +2125,24 @@ class TodaysRowsTest(unittest.TestCase):
          ('ZHUV3S2DcsGe10', '75Groopgz6Z211', 'HofgFPwykcYs16', 'QkSgcCmWcRzP25')),
     )
 
+    def test_the_rows_are_read_as_main_reads_them(self):
+        # main's reading of each row, kept here as tests/fixtures/main_mask_68506d9.py has it (main's command code is
+        # the same at 33c82f6), its docstrings aside
+        from tests.test_mask_against_today import FIXTURE, main as today
+
+        def code(path, name):
+            with open(path) as f:
+                function = next(node for node in ast.parse(f.read()).body
+                                if isinstance(node, ast.FunctionDef) and node.name == name)
+            function.name, function.body = "", function.body[1:]
+            return ast.dump(function).replace("_todays_command_line", "_command_line")
+
+        for ours, mains in (("_todays_command_line", "_command_line"),
+                            ("_todays_password_edits", "_command_password_edits")):
+            self.assertEqual(code(masking.__file__, ours), code(FIXTURE, mains))
+        self.assertEqual([(line.pattern, flag.pattern, always) for line, flag, always in masking._TODAYS_COMMANDS],
+                         [(line.pattern, flag.pattern, always) for line, flag, always in today._COMMANDS])
+
     def test_every_password_todays_main_hides_is_masked(self):
         from tests.test_mask_against_today import main as today
         for text, passwords in self.LINES:
@@ -2111,7 +2156,7 @@ class TodaysRowsTest(unittest.TestCase):
 
 class RevisionTest(unittest.TestCase):
     def test_stored_rows_are_masked_again(self):
-        self.assertEqual(masking.REVISION, 16)
+        self.assertEqual(masking.REVISION, 17)
 
 
 if __name__ == "__main__":
