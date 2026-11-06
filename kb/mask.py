@@ -537,7 +537,7 @@ def _gitleaks_edits(text):
 # Which mask() a stored row was masked with. A row of another version, or of none, is masked again when read and by
 # the next ingest. The patterns change it by themselves; bump REVISION when the code that applies them changes what
 # it masks.
-REVISION = 12
+REVISION = 13
 VERSION = hashlib.sha256(repr((REVISION, [p.pattern for p in SECRET_PATTERNS + PREFIXED_SECRETS], KEYED_SECRET.pattern,
                                 ENV_KEY_SECRET.pattern, JSON_SECRET.pattern, FLAG_SECRET.pattern, AUTH_SECRET.pattern,
                                 COMMAND_FLAGS, PASSWORD_NAME.pattern, sorted(PLACEHOLDERS), REFERENCE.pattern,
@@ -1115,14 +1115,91 @@ def _random_run(text, shortest=12):
             and not _PLAIN_WORD.fullmatch(text))
 
 
+# How code's words spell: the cost of each step from a letter, or a word's start ("^"), to the next letter, or its end
+# ("$"), as -10 ln P(next | this), over the words of the names in Python's standard library (tools/code_words.txt),
+# each once, as tools/code_letter_pairs.py prints it. A row for each of "^a...z", two digits for each of "a...z$".
+_CODE_LETTER_PAIRS = """
+303425283030323727574831303236275128223035443751565696
+783427286053346536704321262789327820271842464640407339
+234438422651465926305319434227356431284227756459285925
+226144482447532338852729414516506130372336485974538526
+274543341643555921626236524529466236324036565556548413
+325329274238446051675534372449384721242556434632486916
+306744362927565615786728464421415925313229785262497824
+386243471256433829786733433139467830294237516767785614
+185249411654565024764640384420497632383341656065507618
+384030323735337859896926311428386932232273406742893442
+275443381954545438545443545419385438353818545454545414
+344545371445375430707033593648455142244042543470547012
+245343341549625619675827544422387551333337546167407020
+183554391351626527814840375025238153313936596581508124
+245627242334255533724039504228426052282137406477567721
+453728265538446042684328291836278820303029433551686231
+185041431943584431845126534924336223353037564684358422
+474247423947585847475839583447425839314705475858585823
+245435381647396525734541354025458939273042515563418917
+405732472149473428664640495135316046311833575261437312
+255237431844612923806340444729406425303540534958355417
+342939452935488035808023271738266923262260808069698046
+134553581045585826695850385034426940474269585869696921
+194636342541543021595937462826407022274551544848597024
+354726402639454527696933364736246950351545505844375317
+464141413439615040727236372848187240272561484046567210
+326060440638606024606049494925446044386049606060444927
+"""
+_PAIR_COST = {(a, b): int(row[2 * i:2 * i + 2]) / 10
+              for a, row in zip("^abcdefghijklmnopqrstuvwxyz", _CODE_LETTER_PAIRS.split())
+              for i, b in enumerate("abcdefghijklmnopqrstuvwxyz$")}
+_CODE_SEPARATOR = re.compile(r"([-_./:])")
+
+
+def _word_cost(word):
+    """How unlikely `word` is as a word of code's names: the sum of its steps' costs (_CODE_LETTER_PAIRS), in nats."""
+    word = "^" + word.lower() + "$"
+    return sum(_PAIR_COST[a, b] for a, b in zip(word, word[1:]))
+
+
+def _reads_as_code(word):
+    """Whether `word` is likelier as code's words, acronyms, numbers and separators than as random characters.
+
+    Read as camel case and snake case split it (_LABEL_WORD), each piece costs ln 2 to start, and then: a run of small
+    letters, after a capital or not (ln 2), what its letters cost as a word of code (_word_cost); a run of capitals the
+    least of that and an acronym's cost, a capital each (ln 26) and ln 5, and ln 20 for each past the fourth, as an
+    acronym is short; a number ln 10 a digit and ln 5; a separator ln 4; any other character ln 64. Random characters
+    from the alphabet the word draws on, letters and digits and "-" and "_" if it holds one of them, cost ln 62 or ln 64
+    each. A random token of 20 letters and digits falls in short pieces of letters no word spells, and costs more read
+    as code; "isLikelyNpxGlobal", "GNU_PROPERTY_X86_FEATURE_1_IBT" and "Uint8ClampedArray" cost less."""
+    cost = 0.0
+    for i, piece in enumerate(_CODE_SEPARATOR.split(word)):
+        if i % 2:
+            cost += math.log(4)
+            continue
+        covered = 0
+        for run in _LABEL_WORD.findall(piece):
+            covered += len(run)
+            cost += math.log(2)
+            if run.isdigit():
+                cost += len(run) * math.log(10) + math.log(5)
+            elif run.isupper() and len(run) > 1:
+                acronym = len(run) * math.log(26) + math.log(5) + max(0, len(run) - 4) * math.log(20)
+                cost += min(_word_cost(run), acronym)
+            else:
+                cost += _word_cost(run) + math.log(2)
+        cost += (len(piece) - covered) * math.log(64)
+    return cost < len(word) * math.log(64 if re.search(r"[^A-Za-z0-9]", word) else 62)
+
+
 def _credential_shaped(word):
     """Whether a lone token reads as a credential: 12 or more characters with no whitespace, mixing letters and digits,
     not a real date or time (_date_or_time, _timestamp: any other run of digits and ":.+TZ-" with a T or a Z in it, such
     as "20261101T100000Z1234", is none), and either holding a random run of 10 or more between its separators
     ("live_<run>", a three-part token), or holding no plain word and reading as random whole (a UUID). An identifier
-    with a plain word in it stays: "RFC7235-compliant", "WPA2-Enterprise"."""
+    with a plain word in it stays: "RFC7235-compliant", "WPA2-Enterprise". A token with no digit is one only where it
+    reads as random letters (_random_letters), as a random token of letters and digits sometimes draws no digit."""
     word = word.rstrip(".,;:!?)")
-    if len(word) < 12 or not re.search(r"\d", word) or not re.search(r"[A-Za-z]", word) or re.search(r"\s", word):
+    if not re.search(r"\d", word):
+        return _random_letters(word)
+    if len(word) < 12 or not re.search(r"[A-Za-z]", word) or re.search(r"\s", word):
         return False
     if _date_or_time(word) or _timestamp(word):
         return False
@@ -1139,13 +1216,32 @@ _DIGIT_INTO_A_WORD = re.compile(r"\d[a-z]")
 
 
 def _identifier_shaped(word):
-    """Whether a word reads as a code identifier: no digit runs into lower case letters, and at least half its letters
-    stand in runs of three or more, read as camel case splits them."""
+    """Whether a word reads as a code identifier: no digit runs into lower case letters, at least half its letters
+    stand in runs of three or more, read as camel case splits them, and, 16 characters or longer, its parts between
+    separators are each in one case (_one_case_parts) or it reads more as code's words than as random characters
+    (_reads_as_code), which many random tokens of letters and digits pass the first two tests without: of 2,000 of 20,
+    main 33c82f6 read 317 as identifiers in "<secret>...</secret>" and showed them."""
     if _DIGIT_INTO_A_WORD.search(word):
         return False
     runs = [run for run in _LABEL_WORD.findall(word) if run.isalpha()]
     letters = sum(map(len, runs))
-    return bool(letters) and 2 * sum(len(run) for run in runs if len(run) >= 3) >= letters
+    if not letters or 2 * sum(len(run) for run in runs if len(run) >= 3) < letters:
+        return False
+    return len(word) < 16 or _one_case_parts(word) or _reads_as_code(word)
+
+
+def _one_case_parts(word):
+    """Whether `word` is two or more parts between separators, each in one case, as snake case and constants are
+    ("x86_cpu_VPCLMULQDQ", "SN_kuznyechik_cfb"): random base64url mixes the cases in each of its parts."""
+    parts = re.split(r"[-_./:]", word)
+    return len(parts) > 1 and all(part.lower() == part or part.upper() == part for part in parts)
+
+
+def _random_letters(word):
+    """Whether a token with no digit reads as random: 16 or more letters of both cases, with "-" and "_" at most, that
+    are not code's words (_reads_as_code), as a random token of letters and digits sometimes draws no digit."""
+    return (len(word) >= 16 and bool(re.fullmatch(r"[A-Za-z_-]+", word)) and bool(re.search(r"[a-z]", word))
+            and bool(re.search(r"[A-Z]", word)) and not _one_case_parts(word) and not _reads_as_code(word))
 
 
 def _password_shaped(word):
