@@ -247,29 +247,38 @@ Known limits:
   the end of its paragraph. So whatever follows a key cut off before its footer, up to the next blank line, is masked
   with it, and so is the paragraph before a footer with no header.
 - A private key written as base64 (as a Kubernetes secret holds one) is masked from the line with its header's first
-  byte through the line with its footer's. Cut off before its footer, it is masked while its base64 decodes to text,
-  so a word on the next line that happens to decode to text goes with it; cut off before its header, the same holds
-  for the line above. Base64 of a short label glued to a quoted header, where the label's own base64 is one word in
-  one case as long as the block's lines ("ABC" written "QUJD" at width 4), reads as a heading over a key, so the quote
-  after it is masked; a key there is masked either way. Any line break wraps it, as written or escaped, and it is read
-  with JSON's escapes read once and twice too, as JSON and JSON in JSON write a key with any escape (a tab, \u000a,
-  \/). A field name whose base64 ends in "=" before a value is read as main reads it, which leaves that value
-  readable. After a placeholder, a key's body on the placeholder's own line followed by words ("[masked] MC4C... notes
-  deploy") shows, and so does a fragment that is itself a plain word inside a line of words after a key. In a row an
-  older kb stored, an OpenSSH private key's private section, re-encoded alone after a placeholder, reads as public
-  material and shows.
+  byte through the line with its footer's. A footer ends it only as a whole line with no other footer later in the
+  same encoded stream, so text between a key's footer and a stray footer later in that stream is masked with the key,
+  prose holding a control character included, and so is text between two whole keys in one stream. In a row an older
+  kb stored, encoded text after a key in its stream that does not decode from its line's start to words reads as an
+  older kb's rest of a key after the key's placeholder, and is masked too. A header after text on its decoded line, as
+  a sentence quoting one writes it, starts a key only with a footer later in its stream, and then the key starts on
+  that line, with the words before the header and whatever lies between it and the footer. A key file's header below
+  it, past prose, starts the key instead; past no prose (a run a key's body could be, an armour header such as
+  "Comment: ...", another header's text, a control character, or nothing), the key still starts on the quote's line.
+  Cut off before its footer, it is masked while its base64 decodes to text, so a word on the next line that happens to
+  decode to text goes with it; cut off before its header, the same holds for the line above. Base64 of a short label
+  glued to a quoted header, where the label's own base64 is one word in one case as long as the block's lines ("ABC"
+  written "QUJD" at width 4), reads as a heading over a key, so the quote after it is masked; a key there is masked
+  either way. Any line break wraps it, as written or escaped, and it is read with JSON's escapes read once and twice
+  too, as JSON and JSON in JSON write a key with any escape (a tab, \u000a, \/). A field name whose base64 ends in "="
+  before a value is read as main reads it, which leaves that value readable. After a placeholder, a key's body on the
+  placeholder's own line followed by words ("[masked] MC4C... notes deploy") shows, and so does a fragment that is
+  itself a plain word inside a line of words after a key. In a row an older kb stored, an OpenSSH private key's
+  private section, re-encoded alone after a placeholder, reads as public material and shows.
 - A piece of a private key's base64 with neither its header nor its footer shows, as on main, unless a key's rest
   after a placeholder, as one where a key was masked, takes it. A rest starts with base64 glued to the placeholder, or
   with a line right after it of base64 alone, 40 characters or more, starting as a key's body does ("MIIE..."); in a
   row an older kb stored, 36 characters or more with a capital, a small letter and a digit, "+" or "/" are enough, and
   lines there that decode to words are passed over first. Past them, where main's rest from the placeholder runs on,
   with its tail, it starts at the next line that is no word alone, placeholder alone, line of words or line with no
-  letter or digit but a placeholder's ("---", "  [masked]"), which stay, whatever that line holds (base64 alone at any
-  length, as a stream's short last line is, or any other line main's rest takes), and it runs on as main's does. Only that first line counts: a piece of 34 characters after "[masked] ", or
-  of lines 16 wide after another key's footer, shows, even with a longer line further down. A rest that starts right
-  at its placeholder runs on past lines of words to the last line of its paragraph holding a token, as main's does;
-  one that starts past lines that decode to words, where main reads none, ends where its lines of base64 end, so a
-  piece further down shows.
+  letter or digit but a placeholder's ("---", "  [masked]"), or that holds anywhere in it a run of base64 a key's
+  could be; the lines it passes over stay. It starts there whatever that line holds (base64 alone at any length, as a
+  stream's short last line is, or any other line main's rest takes), and it runs on as main's does. Only that first
+  line counts: a piece of 34 characters after "[masked] ", or of lines 16 wide after another key's footer, shows, even
+  with a longer line further down. A rest that starts right at its placeholder runs on past lines of words to the last
+  line of its paragraph holding a token, as main's does; one that starts past lines that decode to words, where main
+  reads none, ends where its lines of base64 end, so a piece further down shows.
 - After a placeholder where a key was masked, public material (a certificate, a public key) and lines of words in the
   same paragraph are masked with it where a line of base64 past them reads as a possible fragment of a key, base64 of
   words included ("bm90ZXMg..."); in JSON inside JSON, a blank line does not end that paragraph. Main keeps them only

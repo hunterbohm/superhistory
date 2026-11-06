@@ -646,7 +646,7 @@ def _gitleaks_edits(text):
 # Which mask() a stored row was masked with. A row of another version, or of none, is masked again when read and by
 # the next ingest. The patterns change it by themselves; bump REVISION when the code that applies them changes what
 # it masks.
-REVISION = 38
+REVISION = 39
 VERSION = f"r{REVISION}-" + hashlib.sha256(repr((REVISION, [p.pattern for p in SECRET_PATTERNS + PREFIXED_SECRETS], KEYED_SECRET.pattern,
                                 ENV_KEY_SECRET.pattern, JSON_SECRET.pattern, FLAG_SECRET.pattern, AUTH_SECRET.pattern,
                                 COMMAND_FLAGS, PASSWORD_NAME.pattern, sorted(PLACEHOLDERS), REFERENCE.pattern,
@@ -765,9 +765,10 @@ def _wrapped_lines(text, start, end):
 _KEY_WORD_AT = {code: (k, -(-8 * k // 6)) for word in _KEY_WORDS for k, code in enumerate(_base64_of(word))}
 _KEY_FRAME = re.compile(rb"-----(BEGIN|END) (?:[A-Z0-9 ]*PRIVATE KEY|PGP (?:PRIVATE|SECRET) KEY BLOCK)-----")
 _KEY_FOOTER = re.compile(rb"-----END (?:[A-Z0-9 ]*PRIVATE KEY|PGP (?:PRIVATE|SECRET) KEY BLOCK)-----")
-# A footer ends a key only as a line of its own, as _frame reads one: written into an armour header ("Comment:
-# -----END PGP PRIVATE KEY BLOCK-----") it is that header's text, and the key runs on to its real footer.
-_KEY_FOOTER_LINE = re.compile(rb"(?<![^\n\r])" + _KEY_FOOTER.pattern)
+# A footer ends a key only as a whole line of its own: after a line break and before the next or the end of the text,
+# with only spaces or tabs between. Written into an armour header ("Comment: -----END PGP PRIVATE KEY BLOCK-----", or
+# after a carriage return with text after it) it is that header's text, and the key runs on to its real footer.
+_KEY_FOOTER_LINE = re.compile(rb"(?<![^\n\r])" + _KEY_FOOTER.pattern + rb"(?=[ \t]*(?:[\r\n]|\Z))")
 _TEXT_CONTROL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]")
 _CONTINUATION_BYTES = bytes(range(0x80, 0xc0))
 
@@ -810,10 +811,12 @@ def _base64_decoded(joined, start, end):
 
 def _frame(joined, starts, found, refused=False):
     """The key's header or footer that the encoded word `found` is in, as (b"BEGIN" or b"END", where the base64 group
-    holding its first byte starts), or None when the word is in none, as in a field's name or a sentence about keys. A
+    holding its first byte starts, and the character in it that holds that byte's first bits), or None when the word is
+    in none, as in a field's name or a sentence about keys. A
     header or footer is a line of its own: after a line break or where the encoded text starts (a line of the block, or
-    past another stream's padding), and before a line break or where the encoded text ends. With `refused`, also a
-    header after text on its decoded line where a line of the block starts, which alone starts no key (_key_spans)."""
+    past another stream's padding), and before a line break or where the encoded text ends, with only spaces or tabs
+    between. With `refused`, also a header after text on its decoded line, where a line of the block starts or inside
+    one, which alone starts no key (_key_spans)."""
     byte, char = _KEY_WORD_AT[found.group()]
     group = found.start() - char
     lo, hi, opened = max(group - 64, group % 4), min(group + 40, len(joined)), None
@@ -847,7 +850,7 @@ def _frame(joined, starts, found, refused=False):
         # own, whatever its letters decode to ("DCS"): base64 of a label writes letters of both cases and digits.
         wrapped = bool(before) and _reads_as_text(before) and 0 < line < len(starts) and starts[line] == first and (
             _wrapping_break(starts, line, len(joined))) and not _headings(joined, starts, first - (len(before) + 2) // 3 * 4, line)
-        opens = opens or m.start() % 3 == 0 and (refused or not continues and not wrapped) and (
+        opens = opens or m.start() % 3 == 0 and not continues and not wrapped and (
             first == opened or line < len(starts) and starts[line] == first)
         # or after the byte order mark a file saved on Windows starts with, where the encoded text starts: the mark
         # is a group of its own, the one before the header's. With text decoded before it on its line, as from another
@@ -858,10 +861,11 @@ def _frame(joined, starts, found, refused=False):
         lead = before[:-len(_BYTE_ORDER_MARK)] if before.endswith(_BYTE_ORDER_MARK) else None
         opens = opens or lead is not None and m.start() % 3 == 0 and (
             mark == opened or mark_line < len(starts) and starts[mark_line] == mark) and (
-            not lead or refused or not _reads_as_text(lead)
+            not lead or not _reads_as_text(lead)
             or _headings(joined, starts, mark - (len(lead) + 2) // 3 * 4, mark_line))
-        closes = decoded[m.end():m.end() + 1] in (b"\r", b"\n") or m.end() == len(decoded) and closed
-        return (m.group(1), first) if opens and closes else None
+        tail = decoded[m.end():].lstrip(b" \t")  # spaces or tabs after it, before its line's end
+        closes = tail[:1] in (b"\r", b"\n") or not tail and closed
+        return (m.group(1), first, first + m.start() % 3) if (opens or refused) and closes else None
     return None
 
 
@@ -884,43 +888,99 @@ def _headings(joined, starts, start, line):
     return first < line and all(_HEADING_WORD.fullmatch(joined, starts[k], starts[k + 1]) for k in range(first, line))
 
 
-def _footer_ahead(joined, starts, found):
-    """Whether the key whose header holds the encoded word `found` has its footer later in the same block: the first
-    key's frame after it is a footer, not another key's header."""
-    for m in _ENCODED_KEY.finditer(joined, found.end()):
-        frame = _frame(joined, starts, m)
-        if frame:
-            return frame[0] == b"END"
-    return False
+class _Frames:
+    """Each key's header and footer in a joined base64 block (_frame), read once, in order of their encoded words: for
+    any place, the kind of the first after it, and whether a footer comes after it before another."""
+
+    def __init__(self, joined, starts):
+        self.at, self.kinds = [], []
+        for m in _ENCODED_KEY.finditer(joined):
+            frame = _frame(joined, starts, m)
+            if frame:
+                self.at.append(m.start())
+                self.kinds.append(frame[0])
+        self.next_end, last = [None] * (len(self.at) + 1), None  # for each frame, where the first footer from it is
+        for i in range(len(self.at) - 1, -1, -1):
+            last = self.at[i] if self.kinds[i] == b"END" else last
+            self.next_end[i] = last
+
+    def after(self, at, stop):
+        """The kind of the first header or footer whose encoded word starts at `at` or after it and before `stop`."""
+        i = bisect.bisect_left(self.at, at)
+        return self.kinds[i] if i < len(self.at) and self.at[i] < stop else None
+
+    def footer_after(self, at, stop):
+        """Whether a footer's encoded word starts at `at` or after it and before `stop`."""
+        end = self.next_end[bisect.bisect_left(self.at, at)]
+        return end is not None and end < stop
 
 
-def _key_range(joined, starts, ends, found, floor, held=None):
+def _key_text_between(joined, start, end, lead):
+    """Whether what a joined base64 block decodes to, from the line after a header whose first byte's group starts at
+    `start` up to the byte `lead` bytes into the group at `end`, is no prose, as a key's lines between its header and a
+    header written into it are: it holds a control character, a run a key's body could be (_token_like), as a body's
+    line does, an armour header's line ("Comment: ...", "Proc-Type: ..."), another header's or footer's text, or no
+    word at all. What does not decode in the groups of one stream is none either."""
+    decoded = _base64_decoded(joined, start, end + 4) if (end - start) % 4 == 0 else None
+    if decoded is None:
+        return True
+    decoded = decoded[:(end - start) // 4 * 3 + lead]
+    brk = _LINE_BREAK_BYTE.search(decoded)
+    rest = decoded[brk.end():] if brk else b""
+    words = rest.decode("utf-8", "replace")
+    return (not _reads_as_text(rest) or _holds_token(words, 0, len(words)) or not _LETTER.search(words)
+            or bool(_ARMOUR_HEADER_LINE.search(rest) or _KEY_FRAME.search(rest)))
+
+
+_LINE_BREAK_BYTE = re.compile(rb"[\r\n]")
+_LETTER = re.compile(r"[^\W\d_]")
+_ARMOUR_HEADER_LINE = re.compile(rb"(?:^|[\r\n])[A-Za-z][A-Za-z0-9-]*: ")
+
+
+def _key_range(joined, starts, ends, found, floor, frames, stream_end, held=None):
     """The first and last lines of a base64 block that hold the key whose header or footer holds the encoded word
     `found`, none above line `floor`; None when no header or footer holds it. A key starts at the line with its
-    header's first byte. For a footer under a header that starts no key alone, after text on its decoded line (line
-    `held`, _key_spans), it starts there, whatever its bytes between: its armour comment may hold a control character.
+    header's first byte. For a footer under a header that starts no key alone, after text on its decoded line (`held`:
+    its line, whether it starts a stream of its own, and where its first group starts; _key_spans), it starts there,
+    whatever its bytes between: its armour comment may hold a control character. So it does for a header below it,
+    where that one starts a stream of its own or what is between them is no prose (_key_text_between): a header
+    written into its armour comments or its body starts no other key, where one under a document that quotes a header
+    in a sentence above it starts its own.
     With none, as when the block starts inside the key, a line above is the key's while the base64
     through it, in the groups `found` fixes, still decodes to text. A key ends at its footer and the line breaks after
     it: where the block holds its footer later, everything between header and footer is the key, whatever its bytes
     (an armour comment may hold any). With none, it ends where the text it decodes to ends: a heading, a word between
-    two keys or another stream stays, however the lines are wrapped."""
+    two keys or another stream stays, however the lines are wrapped.
+    Its footer is a whole line of its own (_KEY_FOOTER_LINE) with no other footer after it in its stream (`stream_end`,
+    _stream_end; `frames`, _Frames): a footer written into an armour comment or the body as a line of its own, alone or
+    with a header written after it, has the key's real footer after it, so the key runs on to that one. Which fails
+    closed: a key's real footer with a stray one later in its stream, or another whole key after it there, runs on to
+    the last footer, and text between them goes with the key, prose that holds a control character too, at which a
+    stray footer's own reading up from it (above) stops. Also where in the block its reading ended, so a key whose
+    header shares that line is read too."""
     frame = _frame(joined, starts, found)
     if frame is None:
         return None
-    kind, first = frame
-    footer_ahead = kind == b"BEGIN" and _footer_ahead(joined, starts, found)
+    kind, first, bits = frame
+    # where the block holds its footer later: the first header or footer after it is a footer, or a footer comes later
+    # in its stream, past headers written into its armour comments or its body
+    footer_ahead = kind == b"BEGIN" and (frames.after(found.end(), len(joined)) == b"END" or frames.footer_after(
+        found.end(), ends[stream_end[bisect.bisect_right(ends, first)]]))
     phase = first % 4
     down = lambda p: p - (p - phase) % 4  # the group boundary at or before p
     up = lambda p: p + (phase - p) % 4  # the group boundary at or after p
-    top = bisect.bisect_right(ends, first)
-    if kind == b"END" and held is not None and floor <= held < top:
-        top = held
+    top = bisect.bisect_right(ends, bits)  # its first byte's first bits: the line above can end inside its group
+    if held is not None and floor <= held[0] < top and (kind == b"END" or held[1] or _key_text_between(
+            joined, held[2], first, bits - first)):
+        top = held[0]  # a header written between them, into its armour comments or its body, starts no other key
     while kind == b"END" and held is None and top > floor and up(starts[top - 1]) < down(starts[top]):
         above = _base64_decoded(joined, up(starts[top - 1]), down(starts[top]))
         if above is None or not _reads_as_text(above):
             break
         top -= 1
-    bottom, at, recent, ended = bisect.bisect_left(ends, found.end()), first, b"", False
+    # the bytes read are kept from the lines above, so a footer split between two lines is read whole, and `seek`, where
+    # in them the search for a footer goes on: past one that is not the key's
+    bottom, at, recent, ended, seek, cut = bisect.bisect_left(ends, found.end()), first, b"", False, 0, False
     for line in range(bisect.bisect_right(ends, first), len(ends)):
         end = down(ends[line])
         if end <= at:
@@ -929,23 +989,47 @@ def _key_range(joined, starts, ends, found, floor, held=None):
         if below is None:
             break
         if not ended:
-            other = None if footer_ahead else _NOT_KEY_TEXT.search(below)
-            # past the first byte of the kept bytes, whose own line break went with the bytes before them
-            footer = _KEY_FOOTER_LINE.search(recent + (below[:other.start()] if other else below), 1 if recent else 0)
-            if footer:  # the key ends with the group holding its footer's last byte
-                after = footer.end() - len(recent)
+            # from a footer, past the bytes before it in its group: the line it ends may hold a control character
+            other = None if footer_ahead else _NOT_KEY_TEXT.search(below, 3 if kind == b"END" and at == first else 0)
+            read = recent + below
+            stop = len(recent) + other.start() if other else len(read)
+            footer = waiting = None
+            # where the kept bytes were cut from more, past their first byte, whose own line break went with the bytes
+            # before them
+            for m in _KEY_FOOTER_LINE.finditer(read, max(seek, 1 if cut else 0)):
+                if m.start() >= stop:
+                    break
+                if not read[m.end():].strip(b" \t") and line + 1 < len(ends):
+                    waiting = m  # it ends where the bytes read end: the next line's bytes say whether it ends its line
+                    break
+                after = max(m.end() - len(recent), 0)
+                last = at + (after + 2) // 3 * 4  # where the group holding its last byte ends
+                if frames.footer_after(last, ends[stream_end[bisect.bisect_right(ends, last - 1)]]):
+                    # another footer later in its stream: the key runs on to it, whatever its bytes
+                    seek, footer_ahead, other, stop = m.end(), True, None, len(read)
+                    continue
+                footer = m
+                break
+            if footer:
+                # the key ends with the line that holds its footer's last bits: where a line is no whole number of
+                # groups, the next line can start inside that byte's group, with the bits of the bytes after it alone
+                after = max(footer.end() - len(recent), 0)
+                if after:
+                    bottom = max(bottom, bisect.bisect_right(ends, at + (8 * after - 1) // 6))
                 at += (after + 2) // 3 * 4
-                bottom, ended = max(bottom, bisect.bisect_right(ends, at - 1)), True
+                ended = True
                 below = below[(after + 2) // 3 * 3:]
             elif other:
                 break
             else:
-                bottom, at, recent = max(bottom, line), end, (recent + below)[-48:]
+                keep = max(min(len(read) - 128, waiting.start() - 1 if waiting else len(read)), 0)
+                bottom, at, recent = max(bottom, line), end, read[keep:]
+                seek, cut = max(seek - keep, 0), cut or keep > 0
                 continue
         if not _LINE_BREAKS.fullmatch(below):
             break
         bottom, at = max(bottom, line), end
-    return max(top, floor), bottom
+    return max(top, floor), bottom, at
 
 
 def _stream_end(widths, padded, k):
@@ -978,31 +1062,38 @@ def _key_spans(text, lines):
         last = _stream_end(widths, padded, k)
         stream_end += [last] * (last + 1 - k)
         k = last + 1
-    spans, floor, held, held_end = [], 0, None, None
+    spans, floor, done, held, held_end, frames = [], 0, 0, None, None, _Frames(joined, starts)
     for found in _ENCODED_KEY.finditer(joined):
         line = bisect.bisect_right(ends, found.start())
-        if line < floor:
+        if line < floor or found.start() < done:  # inside the key read last, but for a header past its end on its line
             continue
         if held is not None and line > held_end:
             held = None  # a header quoted in a stream that ended above starts no key in a later one
-        key = _key_range(joined, starts, ends, found, floor, held)
+        key = _key_range(joined, starts, ends, found, floor, frames, stream_end, held)
         if key:
             spans.append((lines[key[0]][0], lines[key[1]][1]))
-            floor, held = key[1] + 1, None
+            floor, done, held = key[1], key[2], None
             continue
-        # A header after text on its decoded line, where a line of the block starts ("例：-----BEGIN ...", or
-        # another stream that fills whole lines above), starts no key alone, as a sentence quoting a header shows
-        # one; with a footer after it, the first such since the last key starts that footer's key.
-        frame = held is None and _frame(joined, starts, found, refused=True)
+        # A header after text on its decoded line ("例：-----BEGIN ...", a sentence, or another stream that fills
+        # whole lines above), where a line of the block starts or inside one, starts no key alone, as a sentence
+        # quoting a header shows one; with a footer after it in its stream, the first such since the last key starts
+        # that footer's key, whatever its armour comments hold.
+        frame = _frame(joined, starts, found, refused=True)
         if frame and frame[0] == b"BEGIN":
-            held = bisect.bisect_right(ends, frame[1])  # the line holding its first byte
+            line = bisect.bisect_right(ends, frame[2])  # the line holding its first byte's first bits
             # Where such a header starts its line, after a byte order mark or none, and the line above is not as wide,
             # the block's wrapping does not break there (_wrapping_break): a key file wrapped below another stream,
             # in a line as wide as none above and then its short last line, starts its own stream there, though the
             # widths alone read that line as the last of the stream above.
-            lead = _base64_decoded(joined, starts[held], frame[1]) if frame[1] - starts[held] in (0, 4) else None
-            own = held and lead in (b"", _BYTE_ORDER_MARK) and not _wrapping_break(starts, held, len(joined))
-            held_end = _stream_end(widths, padded, held) if own else stream_end[held]
+            lead = _base64_decoded(joined, starts[line], frame[1]) if frame[1] - starts[line] in (0, 4) else None
+            at_start = bool(line) and lead in (b"", _BYTE_ORDER_MARK)
+            # One that starts its line below another, past prose (_key_text_between), takes its place, as a key file's
+            # header does under a document that quotes one, unless the first starts a stream of its own.
+            if held is not None and (held[1] or not at_start or _key_text_between(
+                    joined, held[2], frame[1], frame[2] - frame[1])):
+                continue
+            own = at_start and not _wrapping_break(starts, line, len(joined))
+            held, held_end = (line, own, frame[1]), _stream_end(widths, padded, line) if own else stream_end[line]
     return spans
 
 
@@ -2665,16 +2756,28 @@ _MARKS_LINE = re.compile(r"(?:\[masked\]|[^A-Za-z0-9\\\r\n]|\\+(?:[^A-Za-z0-9\\\
 def _skipped_line(text, at):
     """Where the line after the line break at `at` ends, if it is a word alone (_WORD_ALONE), a placeholder alone, a
     line of words (_WORDS_LINE) or a line of marks (_MARKS_LINE), which a rest past lines of words passes over; None
-    otherwise."""
-    alone = _WORD_ALONE.match(text, at) or _PLACEHOLDER_ALONE.match(text, at)
-    if alone:
-        return alone.end()
-    words = _WORDS_LINE_AT.match(text, at)
-    if words:
-        return _KEY_LINE_END.search(text, words.end()).start()
+    otherwise. Each is read as a whole line: one that holds a run of base64 a key's could be (_holds_token) anywhere in
+    it, after an escape that is no line break, a quote, a "<", a "…" or its words, is passed over by none, so the rest
+    starts there and takes it, as main's does."""
     brk = _LINE_BREAK.match(text, at)
-    end = brk and _KEY_LINE_END.search(text, brk.end()).start()
-    return end if brk and _MARKS_LINE.fullmatch(text, brk.end(), end) else None
+    if not brk:
+        return None
+    end = _KEY_LINE_END.search(text, brk.end()).start()
+    if _holds_token(text, brk.end(), end):
+        return None
+    if (_WORD_ALONE.match(text, at) or _PLACEHOLDER_ALONE.match(text, at) or _WORDS_LINE_AT.match(text, at)
+            or _MARKS_LINE.fullmatch(text, brk.end(), end)):
+        return end
+    return None
+
+
+def _holds_token(text, start, end):
+    """Whether text[start:end] holds a run of base64 a key's fragment could be (_token_like), read past escapes,
+    placeholders and the characters a reader does not see, as _token_tail reads its tokens."""
+    line = INVISIBLE.sub("", _KEY_ESCAPE.sub(" ", text[start:end])).replace("[masked]", " ")
+    return any(_token_like(m.group()) for m in _RUN.finditer(line))
+
+
 # A line break, plain or escaped, before a line of words, as "next steps", "tls.crt: none" or "- deploy it" are: past
 # a list's or a quote's marks, a word (a letter, then small letters, as "tls.crt" or "don't" are), then a space and
 # the next word's letter. A line of base64 is no word, even with words after it on its line, as a snippet joins it
@@ -3110,8 +3213,9 @@ def _rest_ends(text):
 # deploy", "Ynu walrus moved"), and is masked with it; the words after it stay. Where the body's last line is shorter
 # than the one above it, or ends with "=", the body can end there, and the line of words stays whole. A line alone
 # can be a whole key, or a key cut after it: its next line's first word goes with it, which is the cost. A body line
-# glued to a placeholder ("[masked]MIIC...") is read so too.
-_CUT_LINE = re.compile(r"[ \t\"'#>*-]*(?:\[masked\])?([A-Za-z0-9+/]+)[ \t\r]*")
+# after a placeholder is read so too, glued to it ("[masked]MIIC...") or after any mix of spaces, tabs, quote and list
+# marks, tabs and quotes escaped as JSON writes them, and more placeholders ("[masked] \\t[masked]MIIC...").
+_CUT_LINE = re.compile(r"(?:[ \t\"'#>*-]|\\+[t\"']|\[masked\])*([A-Za-z0-9+/]+)[ \t\r]*")
 _CUT_ABOVE = re.compile(r"(?<![A-Za-z0-9+/=])([A-Za-z0-9+/]+)[ \t\r]*\Z")
 _CUT_END = re.compile(r"(?:\r?\n|(?<!\\)\\+(?:r\\+)?n)[ \t\"'#>*-]*([A-Za-z0-9+/]+)")
 
@@ -3174,6 +3278,11 @@ def _key_rests(text, starts=_REST_START):
                 # past them, any other line main's rest takes starts one: base64 alone on its line, or a line that
                 # holds any other run of base64's characters, with whatever its line holds, as main's rest does
                 rest = main_reach > line and (_REST_PAST_WORDS.match(text, line) or _LINE_BREAK.match(text, line)) or None
+                if rest is None and main_reach > line and line == begin:
+                    # or the rest of a line of encoded words that ended at a quote or an escape that is no line break
+                    # (_line_past), read as a whole line is: where it holds a key's run, the rest starts there
+                    stop = _KEY_LINE_END.search(text, line).start()
+                    rest = _holds_token(text, line, stop) and _BASE64_CHARACTER.search(text, line, stop) or None
                 begin, as_main = (line, True) if rest else (begin, False)
         if not rest and not _BASE64_CHARACTER.match(text, at.end()):
             continue
