@@ -273,7 +273,7 @@ class StoredRowTest(unittest.TestCase):
             self.assertNotIn(value, content)
         self.assertIn("expires_at: 2026-11-01T10:00:00Z", content)
         self.assertEqual(version, store.VERSION)
-        self.assertEqual(masking.REVISION, 34)
+        self.assertEqual(masking.REVISION, 35)
 
     def test_a_row_main_2ec4d8c_stored_with_an_authorization_of_digits_is_masked_again(self):
         text = "Authorization: 20261101T100000Z1234\nAuthorization: 2026-11-01T10:00:00Z\n"
