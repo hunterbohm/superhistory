@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 """Scans one commit's text files and file names for the lines of a patterns file, apart from the listed exceptions.
 
-    python3 tools/release_scan.py PATTERNS_FILE [COMMIT]
+    python3 tools/release_scan.py [--exceptions PRIVATE_FILE] PATTERNS_FILE [COMMIT]
 
 PATTERNS_FILE is read as `grep -i -E -f` reads it. It stays outside the repo, because it names what must not ship.
 tools/release_exceptions.tsv in COMMIT lists what may match, one row per line, tab-separated: the file's path, the exact
-text, and the reason. Blank lines and lines starting with # are skipped. An exception removes its text from that file's
+text, and the reason. Blank lines and lines starting with # are skipped. A row whose text is itself private, such as an
+ordinary word a pattern names, goes in PRIVATE_FILE instead, in the same form and outside the repo beside the patterns
+file, so that no tracked file holds it. An exception removes its text from that file's
 lines before they are matched again, so a line passes only when nothing else on it matches. The list is scanned like any
 file, with every row's text removed from it. A file name is never excepted, and a binary file is not read. The files that bench/DATASET_ROWS.txt lists, which hold
 other people's datasets and which bench/README.md says the public tree leaves out, are not read.
@@ -25,17 +27,22 @@ def git(*args):
     return subprocess.run(("git",) + args, capture_output=True, check=True).stdout
 
 
+def rows(text):
+    """An exceptions list's rows, as {path: [text, ...]}."""
+    found = {}
+    for line in text.splitlines():
+        if line.strip() and not line.startswith("#"):
+            path, string = line.split("\t")[:2]
+            found.setdefault(path, []).append(string.encode("utf-8"))
+    return found
+
+
 def exceptions(commit):
     try:
         text = git("show", commit + ":" + LIST)
     except subprocess.CalledProcessError:
         return {}
-    rows = {}
-    for line in text.decode("utf-8").splitlines():
-        if line.strip() and not line.startswith("#"):
-            path, string = line.split("\t")[:2]
-            rows.setdefault(path, []).append(string.encode("utf-8"))
-    return rows
+    return rows(text.decode("utf-8"))
 
 
 def dataset_rows(commit):
@@ -58,10 +65,12 @@ def matching(patterns, lines):
     return [int(row.split(b":", 1)[0]) - 1 for row in proc.stdout.splitlines()]
 
 
-def scan(patterns, commit):
+def scan(patterns, commit, private=None):
     commit = git("rev-parse", "--verify", commit + "^{commit}").decode().strip()
     allowed, skipped = exceptions(commit), dataset_rows(commit)
-    every = [s for strings in allowed.values() for s in strings]
+    every = [s for strings in allowed.values() for s in strings]  # the tracked list may hold only its own rows' texts
+    for path, strings in (private or {}).items():
+        allowed.setdefault(path, []).extend(strings)
     found = subprocess.run(["git", "grep", "-I", "-i", "-n", "-z", "-E", "-f", patterns, commit],
                            capture_output=True, env={"LC_ALL": "C"})
     if found.returncode > 1:
@@ -86,9 +95,14 @@ def scan(patterns, commit):
 
 
 def main(argv):
-    if len(argv) not in (2, 3):
+    args, private = argv[1:], None
+    if args[:1] == ["--exceptions"] and len(args) > 1:
+        with open(args[1], encoding="utf-8") as fh:
+            private = rows(fh.read())
+        args = args[2:]
+    if len(args) not in (1, 2):
         sys.exit(__doc__)
-    hits = scan(argv[1], argv[2] if len(argv) == 3 else "HEAD")
+    hits = scan(args[0], args[1] if len(args) == 2 else "HEAD", private)
     for hit in hits:
         print(hit)
     return 1 if hits else 0
