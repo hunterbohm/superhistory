@@ -38,7 +38,7 @@ jobs:
           export HOME="$RUNNER_TEMP/home"
           mkdir -p "$HOME"
           SUPERHISTORY_ARCHIVE_URL="file://$RUNNER_TEMP/assets/superhistory.tar.gz" sh "$RUNNER_TEMP/assets/install.sh"
-          "$HOME/.local/bin/kb" --version
+          for command in "$HOME"/.local/bin/*; do "$command" --version; done
 
   test:
     # The tag's check: the whole suite, on the oldest and the newest Python the product supports.
@@ -81,7 +81,7 @@ jobs:
           export HOME="$RUNNER_TEMP/home"
           mkdir -p "$HOME"
           SUPERHISTORY_ARCHIVE_URL="file://$RUNNER_TEMP/assets/superhistory.tar.gz" sh "$RUNNER_TEMP/assets/install.sh"
-          "$HOME/.local/bin/kb" --version
+          for command in "$HOME"/.local/bin/*; do "$command" --version; done
       - name: Create the release
         env:
           GH_TOKEN: ${{ github.token }}
