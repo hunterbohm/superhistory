@@ -275,7 +275,7 @@ class ReadOnlyTest(StoreCase):
         self.assertEqual(snapshot(self.tmp.name), before)
         self.assertEqual(sorted(os.listdir(self.paths.data_dir)), ["kb.sqlite"])
 
-    def test_a_store_in_wal_mode_with_its_writer_open_is_read_as_of_its_last_checkpoint_and_left_as_it_is(self):
+    def test_a_store_in_wal_mode_with_its_writer_open_is_read_with_its_wal_and_left_as_it_is(self):
         writer = store.connect(self.paths.db)
         self.addCleanup(writer.close)
         writer.execute("PRAGMA wal_checkpoint(TRUNCATE)")
@@ -283,9 +283,19 @@ class ReadOnlyTest(StoreCase):
         writer.commit()
         self.assertGreater(os.path.getsize(str(self.paths.db) + "-wal"), 0)
         before = snapshot(self.tmp.name)
-        old, new = self.talk(tool(1, "search", query="pangolin"), tool(2, "search", query="walrus"))
-        self.assertIn("Pangolin plan", old["result"]["content"][0]["text"])
-        self.assertNotIn("Walrus", new["result"]["content"][0]["text"], "the writer's -wal file is not read")
+        reply, = self.talk(tool(1, "search", query="walrus"))
+        self.assertIn("Walrus", reply["result"]["content"][0]["text"], "a row only the -wal file holds is read")
+        self.assertEqual(snapshot(self.tmp.name), before)
+
+    def test_a_row_a_writer_deleted_and_not_yet_checkpointed_is_not_served(self):
+        writer = store.connect(self.paths.db)
+        self.addCleanup(writer.close)
+        writer.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        writer.execute("DELETE FROM docs WHERE title = 'Pangolin plan'")
+        writer.commit()
+        before = snapshot(self.tmp.name)
+        reply, = self.talk(tool(1, "search", query="pangolin"))
+        self.assertNotIn("Pangolin plan", reply["result"]["content"][0]["text"])
         self.assertEqual(snapshot(self.tmp.name), before)
 
     def test_the_last_writer_closing_just_before_the_open_makes_no_file(self):
@@ -403,8 +413,8 @@ class ReadOnlyTest(StoreCase):
 
         def always_new(path):
             count.append(1)
-            main, wal, shm = original(path)
-            return (main[0], main[1], len(count)), wal, shm
+            main, wal = original(path)
+            return (main[0], main[1], len(count)), wal
 
         store._stamp = always_new
         self.addCleanup(setattr, store, "_stamp", original)
