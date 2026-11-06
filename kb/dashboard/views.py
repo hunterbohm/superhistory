@@ -222,11 +222,21 @@ def overview(db, catalog, paths, config):
 
 def search_hits(db, query, source_name=None):
     hits = search.search(db, query[:200], sources=(source_name,) if source_name else (), limit=SEARCH_LIMIT)
-    out = []
+    out, families = [], {}
     for hit in hits:
         meta = hit["meta"]
+        if hit["kind"] in ("segment", "atom"):
+            # A summary's own metadata names no folder, account or chat, so its kind of item is its item's.
+            key = (hit["source"], hit["source_id"])
+            if key not in families:
+                row = db.execute("SELECT metadata FROM docs WHERE source = ? AND source_id = ? AND kind IN ('doc', 'raw') "
+                                 "ORDER BY id LIMIT 1", key).fetchone()
+                families[key] = cat.family_of(json.loads(row[0])) if row else cat.family_of(meta)
+            family = families[key]
+        else:
+            family = cat.family_of(meta)
         out.append({"id": hit["id"], "kind": hit["kind"], "source": hit["source"], "ts": hit["ts"],
-                    "title": hit["title"], "excerpt": hit["excerpt"], "family": cat.family_of(meta),
+                    "title": hit["title"], "excerpt": hit["excerpt"], "family": family,
                     "link": search.pointer(meta), "url": safe_url(meta.get("url"))})
     return out
 
@@ -257,9 +267,10 @@ def page_bounds(text, turns=()):
     return starts
 
 
-def parse_turns(text):
+def parse_turns(text, safe_start=True):
     """The turns in a page of an agent session's text. Text before the first marker, such as the line naming the
-    folder, is the head. A tool call is folded with the result or error that follows it."""
+    folder, is the head. A tool call is folded with the result or error that follows it. A page that does not start at
+    one of turn_starts() may open in the middle of a batch of calls, so its first call is not taken to stand alone."""
     marks = list(TURN.finditer(text))
     head = text[:marks[0].start()].strip() if marks else text.strip()
     raw = []
@@ -272,7 +283,7 @@ def parse_turns(text):
     # The text carries no id tying a result to its call, so a result is folded into a call only when it follows that call
     # directly and the call stands alone. Calls made together (TOOL A, TOOL B, RESULT, RESULT) cannot be paired by
     # guessing, so their results are shown as results of their own, in order, never under the wrong call.
-    turns, before, lone = [], None, False
+    turns, before, lone = [], None if safe_start else "tool", False
     for turn in raw:
         if turn["role"] in ("result", "error") and before == "tool" and lone and "output" not in turns[-1]:
             turns[-1]["output"], turns[-1]["failed"] = turn["text"], turn["role"] == "error"
@@ -336,7 +347,8 @@ def item(db, catalog, rid, page=None, query=""):
     if anchor is not None:
         anchor = max(0, min(anchor, max(len(text) - 1, 0)))
     session = cat.family_of(item_meta) == "agent" and is_session(text)
-    starts = page_bounds(text, turn_starts(text) if session else ())
+    safe = turn_starts(text) if session else []
+    starts = page_bounds(text, safe)
     if page is None:
         page = max(i for i, s in enumerate(starts) if s <= (anchor or 0))
     page = max(0, min(page, len(starts) - 1))
@@ -355,7 +367,7 @@ def item(db, catalog, rid, page=None, query=""):
             out["project"] = {"key": entry.project, "name": catalog.projects[entry.project].name}
         out["people"] = [{"key": k, "name": catalog.people[k].name} for k in entry.people if k in catalog.people]
     if session:
-        out["head"], out["turns"] = parse_turns(text[begin:end])
+        out["head"], out["turns"] = parse_turns(text[begin:end], begin == 0 or begin in safe)
     else:
         out["text"] = text[begin:end]
     return out

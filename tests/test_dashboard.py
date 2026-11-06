@@ -325,6 +325,23 @@ class TranscriptTest(Served):
         self.assertEqual((turns[3]["text"], turns[4]["text"]), ("for a", "for b"))
         self.assertEqual((turns[6]["output"], turns[6]["failed"]), ("for c", False), "a call alone is still paired")
 
+    def test_a_page_that_opens_inside_a_batch_pairs_no_result_with_its_first_call(self):
+        _, turns = views.parse_turns("TOOL B: two\n\nRESULT: for a\n\nASSISTANT: x", safe_start=False)
+        self.assertEqual([t["role"] for t in turns], ["tool", "result", "assistant"])
+        self.assertNotIn("output", turns[0])
+        _, turns = views.parse_turns("TOOL B: two\n\nRESULT: for b", safe_start=True)
+        self.assertEqual(turns[0]["output"], "for b")
+
+    def test_a_summary_hit_has_the_family_of_its_item(self):
+        self.add("claude_code", "s", "2026-09-01T10:00:00Z", "build", "USER: hello", {"cwd": "/w/orders"})
+        self.db.execute("INSERT INTO docs(kind, source, source_id, ts, title, content, metadata, masked) "
+                        "VALUES ('segment', 'claude_code', 'here:s', '2026-09-01T10:00:00Z', 'topic', 'needleword summary', "
+                        "'{}', ?)", (store.VERSION,))
+        self.serve()
+        hits = self.api("search?q=needleword")
+        self.assertIn("segment", {h["kind"] for h in hits})
+        self.assertEqual({h["family"] for h in hits}, {"agent"})
+
     def test_a_page_never_starts_on_a_result_or_on_the_second_call_of_a_batch(self):
         text = ("Claude Code session in /w/x\n\nUSER: go\n\nTOOL A: one\n\nTOOL B: two\n\nRESULT: for a\n\n"
                 "ERROR: for b\n\nASSISTANT: done\n\nTOOL C: three\n\nRESULT: for c\n\nTOOL D: four\n\nUSER: more")
