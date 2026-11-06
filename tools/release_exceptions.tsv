@@ -42,3 +42,6 @@ bench/results/month/claude-mem.jsonl	720-555-0186	a made-up phone number in the 
 demo/month/items.jsonl	414 768 1024	screen widths in pixels, in a shell command in a made-up coding session: they read as a phone number
 install.sh	github.com/hunterbohm/superhistory	the repo's own address, where the installer downloads the latest release
 tests/test_release.py	github.com/hunterbohm/superhistory	the repo's own address, which a test expects as the installer's default download
+README.md	github.com/hunterbohm/superhistory	the repo's own address, in the install line and the clone line
+README.md	raw.githubusercontent.com/hunterbohm/superhistory	the repo's own address, where the page for an agent is fetched
+docs/agent-setup.md	github.com/hunterbohm/superhistory	the repo's own address, where the install line downloads the latest release

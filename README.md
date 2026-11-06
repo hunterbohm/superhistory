@@ -17,15 +17,29 @@ You need a Mac or Linux and Python 3.9 or newer. A Mac's `python3` from the Comm
 installer needs no root, pip or virtual environment.
 
 ```sh
-git clone <this repository> kb-source
-sh kb-source/install.sh --from kb-source
+curl -fsSL https://github.com/hunterbohm/superhistory/releases/latest/download/install.sh | sh
 ```
 
-It copies kb into your data folder and writes the `kb` command to `~/.local/bin`. If that folder is not on your
-`PATH`, the installer prints the line to add. If another program named `kb` comes first on your `PATH` (the
-`kb-manager` package installs one), the installer says so.
+It downloads the latest release, checks it against the `SHA256SUMS` published beside it, copies it into your data folder
+and writes the `superhistory` command to `~/.local/bin`. If that folder is not on your `PATH`, the installer prints the
+line to add. If another program with that name comes first on your `PATH`, the installer says so.
 
-You can also install with `pipx install ./kb-source` or `uv tool install ./kb-source`.
+To have your agent install and set it up, paste this into it. The agent asks before it connects an account or changes a
+setting, and stops for the steps only you can do, such as a Google sign-in:
+
+```text
+Set up Superhistory for me: read https://raw.githubusercontent.com/hunterbohm/superhistory/main/docs/agent-setup.md and
+follow it. Ask me before connecting any account or changing your settings.
+```
+
+To install from a checkout instead:
+
+```sh
+git clone https://github.com/hunterbohm/superhistory superhistory-source
+sh superhistory-source/install.sh --from superhistory-source
+```
+
+You can also install with `pipx install ./superhistory-source` or `uv tool install ./superhistory-source`.
 
 ## Try it before you connect anything
 
