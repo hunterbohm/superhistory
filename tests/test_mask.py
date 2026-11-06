@@ -2498,6 +2498,35 @@ class Base64ReviewNineteenFindingsTest(unittest.TestCase):
                                     kept = json.dumps(kept)[1:-1]
                                 self.assertIn(kept, masked)
 
+    def test_a_keys_rest_in_an_older_row_ends_with_its_placeholders_paragraph(self):
+        # Found by comparing the fix for a password past a line of marks with main: the password went, and so the
+        # placeholder came to stand before a blank line, then a paragraph of base64 that decodes to words and quotes a
+        # header, and a certificate. In a row an older kb stored, the rest read its first line as a line of words to
+        # pass over, across the blank line, and took the lines after it; main's rest ends with its placeholder's
+        # paragraph. In JSON in JSON a blank line does not end a paragraph, so depth 2 is not read here.
+        import base64
+        import random
+        import textwrap
+        from kb import mask as masking
+        document = textwrap.wrap(base64.b64encode(b"notes " * 8 + b"-----BEGIN PRIVATE KEY-----\nsee the runbook\n"
+                                                  b"see the runbook\n").decode(), 64)
+        certificate = textwrap.wrap(base64.b64encode(made_up_certificate(random.Random(34))).decode(), 64)
+        words = base64.b64encode(b"notes " * 8).decode()
+        password = base64.b64encode(b"pw=Fixture9value").decode()
+        for lead in ("[masked]", "- [masked]", "notes [masked]", "[masked]" + words, "[masked]\n" + words,
+                     "[masked]" + words + "\nx = 1\n" + password, "[masked]" + words + "\n***\n" + password):
+            for blank in ("\n\n", "\r\n\r\n", "\n \n"):
+                brk = "\r\n" if "\r" in blank else "\n"
+                for below in (document, document + certificate):
+                    text = lead.replace("\n", brk) + blank + brk.join(below)
+                    for depth in (0, 1):
+                        written = self.written(text, depth)
+                        with self.subTest(lead=lead[:12], blank=blank, lines=len(below), depth=depth):
+                            with masking.stored_row(None):
+                                masked = mask(written)
+                            self.assertEqual([line[:16] for line in below if line not in masked], [])
+                            self.assertNotIn(password, masked)
+
     def test_a_stream_quoting_a_header_stays_with_text_after_its_last_line(self):
         import base64
         import textwrap
