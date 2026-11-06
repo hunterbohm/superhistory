@@ -495,7 +495,6 @@ def restore(paths, src, passphrase, agree):
     been checked where it now stands; if any step fails, it is put back. Returns the Contents."""
     target = os.path.realpath(paths.db)
     config, install = paths.config_file, paths.config_file.parent / ids.FILE_NAME
-    fresh = f"{target}.restore"
     with store.exclusive(paths.lock) as held:
         if not held:
             raise BackupError("an ingest is running; try again when it finishes")
@@ -505,19 +504,19 @@ def restore(paths, src, passphrase, agree):
             raise BackupError(f"an earlier restore left what it replaced aside: {', '.join(left)}. Move or remove "
                               f"{'it' if len(left) == 1 else 'them'}, then restore again.")
         os.makedirs(os.path.dirname(target), exist_ok=True)
-        with contextlib.suppress(FileNotFoundError):
-            os.remove(fresh)  # a stop in the middle of an earlier restore left it
+        # A folder of its own, beside the store so the final move is a rename: no name a user could have given a
+        # backup or a config is ever taken or deleted.
+        staging = tempfile.mkdtemp(dir=os.path.dirname(target), prefix=".restore-")
+        fresh = os.path.join(staging, STORE)
         try:
             contents = read(src, passphrase, store_to=fresh)
             _check_store(fresh, contents.manifest, whole=True)
             existing = _describe_existing(paths)
             if existing and not agree(existing, contents.manifest):
-                os.remove(fresh)
                 return None
             _swap(paths, target, fresh, contents)
         finally:
-            with contextlib.suppress(FileNotFoundError):
-                os.remove(fresh)
+            shutil.rmtree(staging, ignore_errors=True)
     return contents
 
 
@@ -536,10 +535,15 @@ def _swap(paths, target, fresh, contents):
         for name, data in ((config, contents.config), (install, contents.install_id)):
             if data is not None:
                 os.makedirs(name.parent, exist_ok=True)
-                new = f"{name}.restore"
-                with open(new, "wb") as fh:
-                    fh.write(data)
-                os.replace(new, name)
+                handle, new = tempfile.mkstemp(dir=name.parent, prefix=".restore-")
+                try:
+                    with os.fdopen(handle, "wb") as fh:
+                        fh.write(data)
+                    os.replace(new, name)
+                except BaseException:
+                    with contextlib.suppress(FileNotFoundError):
+                        os.remove(new)
+                    raise
                 placed.append(str(name))
         _check_store(target, contents.manifest, whole=False)
     except BaseException:

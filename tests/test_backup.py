@@ -392,6 +392,15 @@ class ReplaceTest(BackupCase):
         self.assertEqual(wal.read_bytes(), before)
         self.assertEqual(self.paths.db.read_bytes(), self.newer)
 
+    def test_a_backup_named_like_the_restore_staging_file_is_not_deleted_by_the_restore(self):
+        for name in (f"{self.paths.db}.restore", f"{self.paths.config_file}.restore"):
+            self.file = Path(name)
+            self.make()
+            kept = self.file.read_bytes()
+            self.restore()
+            self.assertEqual(self.file.read_bytes(), kept)
+            self.assertTrue(self.hits("sandbox key"))
+
     def test_a_store_left_aside_by_an_earlier_restore_stops_the_next(self):
         aside = Path(f"{self.paths.db}.before-restore")
         aside.write_bytes(b"someone's file")
