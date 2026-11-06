@@ -29,7 +29,7 @@ from typing import Dict, NamedTuple, Optional
 
 from kb import NAME
 from kb.config import Secret
-from kb.mask import holds_secret, mask
+from kb.mask import ID_NAMES, holds_secret, mask
 from kb.sources import Gone, Item, Progress, SourceType
 
 PROTOCOL = 1
@@ -50,7 +50,9 @@ STDERR_BYTES = 64_000
 ERROR_TAIL = 400
 GRACE_SECONDS = 2.0
 # Keys kb keeps in an item's metadata for itself.
-RESERVED_META = ("hash", "chunk", "chunks", "host", "atom", "of_hash", "of_chars", "prefix")
+RESERVED_META = ("hash", "chunk", "chunks", "host", "atom", "of_hash", "of_chars", "prefix", "url")
+# Metadata keys kb reads as text: a search hit's pointer, and the names an item's id may start with.
+TEXT_META = ("path",) + ID_NAMES
 ITEM_KEYS = {"id", "time", "title", "text", "url", "meta"}
 TIME = re.compile(r"(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{2}):(\d{2})(?::(\d{2})(?:\.\d+)?)?(Z|z|[+-]\d{2}:?\d{2})?)?")
 CONTROL = re.compile(r"[\x00-\x1f\x7f]")
@@ -275,7 +277,10 @@ def iso(text):
         if zone and zone not in "Zz":
             sign = 1 if zone[0] == "+" else -1
             digits = zone[1:].replace(":", "")
-            moment -= sign * timedelta(hours=int(digits[:2]), minutes=int(digits[2:]))
+            hours, minutes = int(digits[:2]), int(digits[2:])
+            if hours > 23 or minutes > 59:
+                raise ValueError("offset")
+            moment -= sign * timedelta(hours=hours, minutes=minutes)
     except (ValueError, OverflowError):
         raise BadLine('"time" is not a real date or time') from None
     return moment.strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -333,6 +338,9 @@ def parse(raw):
     reserved = [key for key in RESERVED_META if key in meta]
     if reserved:
         raise BadLine(f'"meta" may not use the key {reserved[0]!r}')
+    wrong = [key for key in TEXT_META if key in meta and not isinstance(meta[key], str)]
+    if wrong:
+        raise BadLine(f'"meta" key {wrong[0]!r} must be text')
     if len(json.dumps(meta)) > MAX_META_BYTES:
         raise BadLine(f'"meta" is longer than {MAX_META_BYTES} characters')
     if url is not None:

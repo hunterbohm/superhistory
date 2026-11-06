@@ -8,6 +8,7 @@ import os
 import shutil
 import sqlite3
 import sys
+import tempfile
 import time
 import traceback
 from datetime import datetime, timezone
@@ -241,7 +242,7 @@ def cmd_login(paths, config, args):
 
 
 def cmd_plugins(paths, config, args):
-    from kb.sources import Excludes, Gone, Item, Progress, Run, plugin
+    from kb.sources import plugin
     folder = paths.plugins_dir
     if args.action == "list":
         used = {}
@@ -266,24 +267,31 @@ def cmd_plugins(paths, config, args):
     if not source or source.type_name != "plugin":
         raise Fail(f"name a source with type = \"plugin\" from {paths.config_file}, such as `{NAME.lower()} plugins "
                    "test calendar`")
-    run = Run(source.options, Excludes(source.exclude), None, None, str(folder))
-    items = gone = 0
-    shown = []
-    try:
-        for event in plugin.extract(run):
-            if isinstance(event, Item):
-                items += 1
-                shown = (shown + [f"{event.ts[:10]}  {event.title}"])[:5]
-            elif isinstance(event, Gone):
-                gone += 1
-            elif isinstance(event, Progress):
-                print(f"watermark   {event.mark}")
-    except (plugin.PluginError, config_mod.SecretError) as exc:
-        print(f"{source.name}: failed: {exc}", file=sys.stderr)
+    # The same ingest, into a store of its own that is deleted after, so what the store refuses fails here too.
+    only = dataclasses.replace(_own(paths, config), sources=(source,), ai=None)
+    log = logging.getLogger("kb.plugins-test")
+    log.addHandler(logging.NullHandler())
+    log.propagate = False
+    with tempfile.TemporaryDirectory(prefix="plugins-test-") as scratch:
+        db = store.connect(os.path.join(scratch, "test.sqlite"))
+        try:
+            failures = ingest.run(db, only, log, with_summaries=False)
+            failed = dict(store.failing(db)).get(f"{source.name}@{config.machine}", "")
+            mark = store.get_watermark(db, source.name, config.machine)
+            titles = [f"{ts[:10]}  {mask(title)}" for ts, title in db.execute(
+                "SELECT ts, title FROM docs WHERE kind IN ('doc', 'raw') AND "
+                "coalesce(json_extract(metadata, '$.chunk'), 0) = 0 ORDER BY ts DESC LIMIT 5")]
+            count = db.execute("SELECT count(DISTINCT source_id) FROM docs").fetchone()[0]
+        finally:
+            db.close()
+    if failures:
+        print(f"{source.name}: failed: {failed.split(' ', 1)[-1] if failed else 'see the ingest log'}", file=sys.stderr)
         print("Nothing was stored.", file=sys.stderr)
         return 1
-    print(f"{source.name}: {items} items and {gone} removals read in one run from the start; nothing was stored.")
-    for line in shown:
+    print(f"watermark   {json.loads(mark) if mark else ''}")
+    print(f"{source.name}: {count} {'item' if count == 1 else 'items'} would be stored from a run from the start; "
+          "nothing was stored.")
+    for line in titles:
         print(f"  {line}")
     return 0
 

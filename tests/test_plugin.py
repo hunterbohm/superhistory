@@ -138,6 +138,12 @@ class ProtocolTest(PluginCase):
         stored = json.dumps(self.db.execute("SELECT title, content, metadata FROM docs").fetchall())
         self.assertNotIn(SECRET, stored)
 
+    def test_a_path_in_the_metadata_is_text_and_search_still_works(self):
+        self.write("notes", printing(item("a", meta={"path": "/notes/a.md"}), final("1")))
+        self.assertEqual(self.ingest(notes=("notes", "")), 0)
+        hit = search.search(self.db, "zebrafish")[0]
+        self.assertEqual(search.pointer(hit["meta"], "m1"), "/notes/a.md")
+
     def test_a_removed_item_leaves_the_store(self):
         self.write("notes", printing(item("a"), item("b", "Second", "narwhal"), final("1")))
         cfg = self.config(notes=("notes", ""))
@@ -227,7 +233,8 @@ class ParseTest(unittest.TestCase):
             self.assertEqual(plugin.iso(given), want, given)
 
     def test_a_time_that_is_not_one_is_refused(self):
-        for given in ("yesterday", "2026-13-04", "2026-02-30", "2026-10-04T25:00:00Z", 1759570200, None, ""):
+        for given in ("2026-10-04T09:30:00+02:99", "2026-10-04T09:30:00+24:00", "2026-10-04T09:30:00-0560",
+                      "yesterday", "2026-13-04", "2026-02-30", "2026-10-04T25:00:00Z", 1759570200, None, ""):
             with self.assertRaises(plugin.BadLine, msg=repr(given)):
                 plugin.iso(given)
 
@@ -242,7 +249,8 @@ class ParseTest(unittest.TestCase):
         good = {"id": "a", "time": "2026-10-04", "title": "t", "text": "x"}
         for key, bad in (("id", 7), ("id", ""), ("id", "  "), ("id", "a\nb"), ("id", "x" * 301), ("title", None),
                          ("text", ["x"]), ("url", "not a link"), ("url", 4), ("meta", [1]),
-                         ("meta", {"hash": "x"}), ("meta", {"chunk": 1}), ("extra", 1)):
+                         ("meta", {"hash": "x"}), ("meta", {"chunk": 1}), ("extra", 1),
+                         ("meta", {"url": "https://e.com"}), ("meta", {"path": 5}), ("meta", {"profile": []})):
             with self.assertRaises(plugin.BadLine, msg=f"{key}={bad!r}"):
                 self.parse({**good, key: bad})
 
@@ -630,9 +638,19 @@ class CommandTest(PluginCase):
         code, out, err = self.run_cli("plugins", "test", "cal")
         self.assertEqual((code, err), (0, ""))
         self.assertIn("watermark   w7", out)
-        self.assertIn("1 items and 1 removals", out)
+        self.assertIn("1 item would be stored", out)
         self.assertIn("2026-10-04  Weekly sync", out)
         self.assertEqual(store.connect(self.paths.db).execute("SELECT count(*) FROM docs").fetchone()[0], 0)
+        self.assertIsNone(store.get_watermark(store.connect(self.paths.db), "cal", "m1"))
+
+    def test_test_fails_for_what_the_store_would_refuse_as_ingest_does(self):
+        for line in (item(SECRET, "Named by a token", "carrot"), item("a", meta={"profile": []})):
+            self.write("ready", printing(line, final("w7")))
+            self.write_config('machine = "m1"\n[sources.cal]\ntype = "plugin"\nplugin = "ready"\n')
+            code, out, err = self.run_cli("plugins", "test", "cal")
+            self.assertEqual(code, 1, line[:40])
+            self.assertIn("Nothing was stored", err)
+            self.assertNotIn(SECRET, out + err)
 
     def test_test_says_what_failed(self):
         self.write("ready", printing(item("a"), "nonsense", final("w7")))

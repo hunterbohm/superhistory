@@ -62,11 +62,11 @@ An item:
 | Key | Needed | Meaning |
 | --- | --- | --- |
 | `id` | yes | Text of up to 300 characters on one line. It names the item in your source for good: the same id replaces the item, a new id adds one. Do not put a secret in it. |
-| `time` | yes | ISO 8601: `2026-10-04T09:30:00Z`, `2026-10-04T09:30:00+02:00`, `2026-10-04 09:30` or `2026-10-04`. A time with no zone is UTC, and a date alone is its midnight. This is the item's date in search. |
+| `time` | yes | ISO 8601 (a zone offset is ±HH:MM, hours up to 23 and minutes up to 59): `2026-10-04T09:30:00Z`, `2026-10-04T09:30:00+02:00`, `2026-10-04 09:30` or `2026-10-04`. A time with no zone is UTC, and a date alone is its midnight. This is the item's date in search. |
 | `title` | yes | Text. Cut at 300 characters. |
 | `text` | yes | Text, any length. Long text is split into chunks, as for any source. This is what search finds and `superhistory get` prints. |
 | `url` | no | A link with a scheme and no spaces. Search prints it as the place to open the original. |
-| `meta` | no | An object of anything JSON can hold, up to 16,000 characters. It is stored with the item. The keys `hash`, `chunk`, `chunks`, `host`, `atom`, `of_hash`, `of_chars` and `prefix` are Superhistory's own and are refused. |
+| `meta` | no | An object of anything JSON can hold, up to 16,000 characters. It is stored with the item. The keys `hash`, `chunk`, `chunks`, `host`, `atom`, `of_hash`, `of_chars`, `prefix` and `url` are Superhistory's own and are refused (put the link in `url` at the top). `path` and `profile`, if present, must be text. |
 
 No other key is allowed, so a misspelled key fails loudly.
 
@@ -119,12 +119,12 @@ knowledge base.
 
 ```
 superhistory plugins list           # the folder's files, whether each will run, and which sources use them
-superhistory plugins test notes-feed  # runs it once from the start, prints what it found, stores nothing
+superhistory plugins test notes-feed  # runs it once from the start into a scratch store, stores nothing of yours
 superhistory ingest --only notes-feed # the real run
 superhistory search "weekly sync" --source notes-feed
 ```
 
-`plugins test` prints the first items, the watermark, and on a failure the same message the ingest would record. A
+`plugins test` runs the real ingest into a scratch store that is deleted after, so it prints how many items would be stored, the first few and the watermark, and on a failure the same message the ingest would record, including an item the store refuses. A
 rebuild (`superhistory rebuild`) runs every plug-in from a `null` watermark, so a plug-in must be able to read
 everything it has.
 

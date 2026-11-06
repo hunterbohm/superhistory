@@ -78,7 +78,7 @@ roots = ["~/code"]
 | `kb ai list`, `kb ai test` | Lists the AI plug-ins, or makes one tiny call and says which plug-in answered. |
 | `kb setup`, `kb try` | Sets kb up, or shows it on a made-up month. |
 | `kb login NAME` | Signs a Gmail source in with your own Google OAuth client. |
-| `superhistory plugins list`, `superhistory plugins test NAME` | Lists the source plug-ins in your plug-ins folder, or runs one once and shows what it found, storing nothing. |
+| `superhistory plugins list`, `superhistory plugins test NAME` | Lists the source plug-ins in your plug-ins folder, or runs one once into a scratch store and shows what would be stored, keeping nothing. |
 
 ## Sources
 
