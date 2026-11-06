@@ -329,6 +329,19 @@ INVISIBLE = re.compile(_CSI + rf"|{_ESCAPED_INVISIBLE}|[\x00-\x08\x0e-\x1b\x7f-\
 # (_NEW_INVISIBLE).
 _MAIN_INVISIBLE_RUN = re.compile(rf"[\x00-\x08\x0e-\x1b{_FORMAT_CHARACTERS}]+")
 _NEW_INVISIBLE = re.compile(_CSI + rf"|{_ESCAPED_INVISIBLE}|[\x7f-\x84\x86-\x9f]")
+# Main 33c82f6's own INVISIBLE, as the copy of its command code judges a value without it (_todays_password_edits):
+# no surrogate pair, nothing escaped twice, no colour code escaped twice and no JSON backspace between a token's
+# characters, so "FOO\bBAR", a password to main, is not read as FOOBAR, a name in capitals.
+_TODAYS_CSI = r"(?:\x1b\[|\x9b|\\(?:u001[bB]|x1[bB]|033|[eE])\[|\\(?:u009[bB]|x9[bB]|233))(?!masked\])[0-?]*[ -/]*[@-~]"
+_TODAYS_ESCAPED_INVISIBLE = (
+    r"\\u(?:000[0-8]|000[eEfF]|001[0-9a-bA-B]|007[fF]|008[0-46-9a-fA-F]|009[0-9a-fA-F]|00[aA][dD]|034[fF]|061[cC]"
+    r"|115[fF]|1160|17[bB][45]|180[b-fB-F]|200[b-fB-F]|202[a-eA-E]|206[0-9a-fA-F]|3164|[fF][eE]0[0-9a-fA-F]"
+    r"|[fF][eE][fF][fF]|[fF][fF][aA]0|[fF][fF][fF][0-8])"
+    r"|\\x(?:0[0-8]|0[eEfF]|1[0-9a-bA-B]|7[fF]|8[0-46-9a-fA-F]|9[0-9a-fA-F]|[aA][dD])"
+    r"|\\U000(?:1[bB][cC][aA][0-3]|1[dD]17[3-9aA]|[eE]0[0-9a-fA-F]{3})")
+_TODAYS_INVISIBLE = re.compile(
+    _TODAYS_CSI + rf"|{_TODAYS_ESCAPED_INVISIBLE}|[\x00-\x08\x0e-\x1b\x7f-\x84\x86-\x9f{_FORMAT_CHARACTERS}]")
+_TODAYS_NEW_INVISIBLE = re.compile(_TODAYS_CSI + rf"|{_TODAYS_ESCAPED_INVISIBLE}|[\x7f-\x84\x86-\x9f]")
 
 # Google's app password, four groups of four lower-case letters, after a password's name and "=" or in quotes. A
 # character a reader does not see may stand anywhere among its letters, as one may in any value read through them.
@@ -336,17 +349,26 @@ _NEW_INVISIBLE = re.compile(_CSI + rf"|{_ESCAPED_INVISIBLE}|[\x7f-\x84\x86-\x9f]
 # read one way only and a run of colour codes costs time in proportion.
 _UNSEEN = (rf"(?:{_CSI}|(?!\\{{1,2}}(?:u001[bB]|x1[bB]|u009[bB]|x9[bB]))(?:{_ESCAPED_INVISIBLE})"
            rf"|[\x00-\x08\x0e-\x1a\x7f-\x84\x86-\x9a\x9c-\x9f{_FORMAT_CHARACTERS}])*")
-_APP_GROUP = _UNSEEN.join(["[a-z]"] * 4)
-_APP_GROUPS = rf"({_UNSEEN}{_APP_GROUP}(?:{_UNSEEN} {_UNSEEN}{_APP_GROUP}){{3}}{_UNSEEN})"
-# On a line of its own, as YAML writes one, after an unquoted colon too: the four groups and nothing after them but a
-# comment. Neither reading takes a sentence of common words (_app_password_span).
-APP_PASSWORD_LINE = re.compile(r"(?m)(?:^|(?<=\\n))[ \t]*(?:export[ \t]+|-[ \t]+)?(?i:" + _KEY_NAME[4:] + r")([ \t]*:[ \t]*)"
-                               + _APP_GROUPS + r"(?=[ \t]+#[^\r\n]*$|[ \t]*\r?$|\\[nr])")
-# Four-letter words common in English and in technical text, defined at the end of this file: four groups holding
-# three or more of them are a sentence ("password: read from smtp logs"), which a random app password's groups are
-# about once in a million times.
-APP_PASSWORD = re.compile(_KEY_NAME + r"""((?:[ \t]*=|[\"']?[ \t]*[:=][ \t]*[\"'])[ \t]*)""" + _APP_GROUPS
-                          + r"(?![A-Za-z0-9])")
+_TODAYS_UNSEEN = (rf"(?:{_TODAYS_CSI}|(?!\\(?:u001[bB]|x1[bB]|u009[bB]|x9[bB]))(?:{_TODAYS_ESCAPED_INVISIBLE})"
+                  rf"|[\x00-\x08\x0e-\x1a\x7f-\x84\x86-\x9a\x9c-\x9f{_FORMAT_CHARACTERS}])*")  # main 032391d's own
+
+
+def _app_passwords(unseen):
+    """The app password's two readings, with `unseen` the characters read through among its letters: after a password's
+    name and "=" or in quotes, and on a line of its own, as YAML writes one, after an unquoted colon too: the four
+    groups and nothing after them but a comment. Neither reading takes a sentence of common words
+    (_app_password_span): four-letter words common in English and in technical text, defined at the end of this file;
+    four groups holding three or more of them are a sentence ("password: read from smtp logs"), which a random app
+    password's groups are about once in a million times."""
+    group = unseen.join(["[a-z]"] * 4)
+    groups = rf"({unseen}{group}(?:{unseen} {unseen}{group}){{3}}{unseen})"
+    return (re.compile(_KEY_NAME + r"""((?:[ \t]*=|[\"']?[ \t]*[:=][ \t]*[\"'])[ \t]*)""" + groups + r"(?![A-Za-z0-9])"),
+            re.compile(r"(?m)(?:^|(?<=\\n))[ \t]*(?:export[ \t]+|-[ \t]+)?(?i:" + _KEY_NAME[4:] + r")([ \t]*:[ \t]*)"
+                       + groups + r"(?=[ \t]+#[^\r\n]*$|[ \t]*\r?$|\\[nr])"))
+
+
+APP_PASSWORD, APP_PASSWORD_LINE = _app_passwords(_UNSEEN)
+_TODAYS_APP_PASSWORD, _TODAYS_APP_PASSWORD_LINE = _app_passwords(_TODAYS_UNSEEN)  # main 032391d's own
 # An HTTP Authorization header's credentials: its first word, or after a scheme word ("Token ...", "Bot ...",
 # "ApiKey ..."), the next. _authorization_span() reads which is the secret.
 # Its first word, the scheme, ends at a space a link encodes too, as in "Authorization%3A%20Token%20<credential>".
@@ -429,11 +451,26 @@ _LINE = r"(?:[^\n|;\\]|\\(?![nr]))*"
 # Where the name of one of this PR's commands ends: past a ".exe", and not before a path's next part, as
 # "/opt/keytool/bin/keytool" names a folder first ("/", a backslash, or one escaped as "\\\\"), though a backslash
 # that escapes a line break, a tab or a quote ends the name.
-_PROGRAM_END = _WINDOWS_FILE + r"(?![A-Za-z0-9_.-])(?!/|\\(?![nrt\"']))"
-_COMMANDS = [(re.compile(rf"(?i)(?:(?<![A-Za-z0-9_.-])|{_AFTER_ESCAPE})(?:{command})"
-                         + (rf"(?![A-Za-z0-9_.-]){_LINE}" if n < _MAIN_COMMANDS else _PROGRAM_END)),
+_NAME_END = r"(?![A-Za-z0-9_.-])(?!/|\\(?![nrt\"']))"  # and main's, after its own ".exe"
+_PROGRAM_END = _WINDOWS_FILE + _NAME_END
+
+
+def _command_name(command, end):
+    return re.compile(rf"(?i)(?:(?<![A-Za-z0-9_.-])|{_AFTER_ESCAPE})(?:{command})" + end)
+
+
+_COMMANDS = [(_command_name(command, rf"(?![A-Za-z0-9_.-]){_LINE}" if n < _MAIN_COMMANDS else _PROGRAM_END),
               re.compile(rf"({flag})((?:{_CLOSE}[^ \t\n\r'\"])+)"), always)
              for n, (command, flag, always) in enumerate(COMMAND_FLAGS)]
+# Each of this PR's rows whose command this PR spells more ways than main ("az.exe login", "az.cmd login",
+# "keytool.cmd"), as main spells it: "az" and "aws" alone, and ".exe" alone after a program's name. A row reads the
+# text with main's spelling too, where the text names its command a way main does not (_command_password_edits).
+_MAIN_SPELLING = {line: narrower for n, ((command, _, _), (line, _, _)) in enumerate(zip(COMMAND_FLAGS, _COMMANDS))
+                  if n >= _MAIN_COMMANDS
+                  for narrower in [_command_name(command.replace(_WINDOWS_FILE, ""), r"(?:\.exe)?" + _NAME_END)]
+                  if narrower.pattern != line.pattern}
+# Each row of COMMAND_FLAGS as main 33c82f6 spells its command, read as main reads it there (_todays_password_edits).
+_TODAYS_COMMANDS = [(_MAIN_SPELLING.get(line, line), flag, always) for line, flag, always in _COMMANDS]
 _ANY_COMMAND = re.compile(r"(?i)curl|mysql|mariadb|sshpass|login|redis-cli|mongo|twine|keytool|jarsigner|aws")
 # aws configure set's row, and aws's options that take a value (its global options): a setting's name right after one
 # is that option's value, as "token" is in "aws configure set --profile token ...", not the setting.
@@ -609,7 +646,7 @@ def _gitleaks_edits(text):
 # Which mask() a stored row was masked with. A row of another version, or of none, is masked again when read and by
 # the next ingest. The patterns change it by themselves; bump REVISION when the code that applies them changes what
 # it masks.
-REVISION = 36
+REVISION = 37
 VERSION = f"r{REVISION}-" + hashlib.sha256(repr((REVISION, [p.pattern for p in SECRET_PATTERNS + PREFIXED_SECRETS], KEYED_SECRET.pattern,
                                 ENV_KEY_SECRET.pattern, JSON_SECRET.pattern, FLAG_SECRET.pattern, AUTH_SECRET.pattern,
                                 COMMAND_FLAGS, PASSWORD_NAME.pattern, sorted(PLACEHOLDERS), REFERENCE.pattern,
@@ -1074,35 +1111,50 @@ def _docker_login_edits(text):
     return [(m.end(1), m.end(), "[masked]") for m in _AUTH_FIELD.finditer(text) if _basic_credential(m.group(2))]
 
 
-def _command_line(text, start, stop=None, known=None):
+def _command_line(text, start, stop=None, known=None, keyed=True):
     """(where a command's line from `start` ends, by `stop` if given, the stretches of it inside quotes or a substitution at its top level,
     in order, the command substitutions in it that no other holds, in order), as the shell reads it. The shell's contexts are kept on a stack:
     single quotes, which hold everything to the next one; double quotes, which hold a substitution or a backtick; and
-    "$(", "(" and backticks, which hold quotes and brackets of their own, so arithmetic's "$((...))" closes as it opens.
+    "$(", "(" and backticks, which hold quotes and brackets of their own, so arithmetic's "$((...))" closes as it opens;
+    a process substitution, "<(" or ">(", is a substitution as "$(" is, so the flags after it are the command's own.
     At the top level the line ends at what ends a command or starts another (a pipe, ";", "&" but in a redirection
     such as "2>&1", a bracket), at a comment (a "#" that starts a word), and at a JSON string's end (a '"' that opens no
     quote, before ",", ":", "}" or "]"); anywhere at a line break, plain, or escaped but inside quotes of plain text,
     where quotes still open hold to the line's end, as a script over several lines in quotes holds its own flags. A
     line whose first double quote outside single quotes comes escaped ('\\"'), as JSON holds a command, is read
     unescaped: its escaped quotes are the shell's quotes, an escaped backslash escapes the shell character after it,
-    and a bare '"' ends the JSON string. `known` maps where each substitution read before starts to where it ends, which
-    the reading adds to and passes over, so a command inside one costs no second reading of what it holds."""
+    and a bare '"' ends the JSON string. `known` maps where each substitution read before starts, with whether the
+    line's quotes were found escaped there (None: not yet) where `keyed`, to whether it closed, where (or where a
+    reading ended with it still open, which it holds to), and whether they were found escaped after it. The reading
+    adds to it and passes over each, so a command inside one costs no second reading of what it holds, even where the
+    substitutions no longer close: where `keyed`, only each it comes to in the same state, and on in the state after
+    it, so a command inside one reads as it reads alone; else each, as the reading that read it found it."""
     i, n = start, len(text) if stop is None else stop
     known = {} if known is None else known
-    stack, opened, escaped = [], [], None  # the shell's open contexts, where each opened, whether quotes come escaped
+    # The shell's open contexts, where and in which state each opened, and the state: whether quotes come escaped
+    stack, opened, escaped = [], [], None
     inside, subs, held = [], [], 0  # held: how many of the open contexts are substitutions
 
     def enter(kind, at, after):  # where the reading goes on once `kind` opens at `at`: after it, or past all it holds
-        nonlocal held
-        end = known.get(at) if kind in ("$(", "`") else None
-        if end is not None and end <= n:
+        nonlocal held, escaped
+        read = known.get((at, escaped) if keyed else at) if kind in ("$(", "`") else None
+        end = None
+        if read is not None:
+            closed, to, then = read
+            if closed and to <= n:  # it closes by `n`
+                end = to
+                if keyed:  # and the reading goes on as the one before went on past it
+                    escaped = then
+            elif not closed and n <= to:  # still open where a reading before ended: it holds to `n`
+                end = n
+        if end is not None:
             if not held:
                 subs.append((at, end))
             if not stack:
                 inside.append((at, end))
             return end
         stack.append(kind)
-        opened.append(at)
+        opened.append((at, escaped))
         held += kind in ("$(", "`")
         return after
 
@@ -1113,11 +1165,15 @@ def _command_line(text, start, stop=None, known=None):
 
     def close(at, closed=True):
         nonlocal held
-        kind, began = stack.pop(), opened.pop()
+        kind, (began, state) = stack.pop(), opened.pop()
         if kind in ("$(", "`"):
             held -= 1
+            key = (began, state) if keyed else began
+            read = known.get(key)
             if closed:
-                known[began] = at
+                known[key] = (True, at, escaped)
+            elif not (read and read[0]):
+                known[key] = (False, max(at, read[1] if read else at), None)
             if not held:
                 subs.append((began, at))
         if not stack:
@@ -1171,6 +1227,8 @@ def _command_line(text, start, stop=None, known=None):
             continue
         if c in "'\"`" or substitution:
             i = enter("$(" if substitution else c, here, i + substitution)
+        elif c == "(" and here > start and text[here - 1] in "<>":
+            i = enter("$(", here - 1, i)
         elif c in "|;()":
             return ended(here)
         elif c == "&" and not (here > start and text[here - 1] in "<>" or text[i:i + 1] == ">"):
@@ -1289,12 +1347,36 @@ def _flag_matches(text, flag, start, end):
 
 
 def _command_password_edits(text, line_pattern, flag, always, unseen=False):
+    """Each password one row of COMMAND_FLAGS finds, as edits that mask it, in order (_read_password_edits). Where the
+    text names the row's command a way main does not spell it (_MAIN_SPELLING: "az.exe login"), the row reads it with
+    main's spelling too, and masks what either reading finds: read as a command, a name main does not read can hold
+    another command main reads as one in an argument of its line ('az.exe login failed with "mongosh $(echo "") -p
+    ..."'), which then shows nothing main hides."""
+    edits = _read_password_edits(text, line_pattern, flag, always, unseen)
+    narrower = _MAIN_SPELLING.get(line_pattern)
+    if narrower is not None and any(not narrower.match(text, m.start()) for m in line_pattern.finditer(text)):
+        edits = _in_order(edits + _read_password_edits(text, narrower, flag, always, unseen))
+    return edits
+
+
+def _read_password_edits(text, line_pattern, flag, always, unseen=False):
+    """Each password one row of COMMAND_FLAGS finds, as an edit that masks it (_read_lines). With `unseen`, the text
+    is read twice, and what either reading finds is masked: once with each substitution read passed on only to a
+    reading that comes to it in the same state, so each command reads as it reads alone, and once with it passed on to
+    any, as the reading before found it, where the quotes and backslashes in it mean what they meant there."""
+    if not unseen:
+        return _read_lines(text, line_pattern, flag, always, unseen, True)
+    return _in_order(_read_lines(text, line_pattern, flag, always, unseen, True)
+                     + _read_lines(text, line_pattern, flag, always, unseen, False))
+
+
+def _read_lines(text, line_pattern, flag, always, unseen, keyed):
     """Each password one row of COMMAND_FLAGS finds, as an edit that masks it. A command's line is read once from its
     first word, and a command in a substitution once from its own, so a line that names the command again and again
     costs time in proportion to its length. With `unseen`, as the rows main's own lack are read, the line is read as
     the shell reads it (_command_line), past a quote that closes the command's quoted name, and a value is judged
     without the characters a reader does not see, so a coloured "$STOREPASS" is a variable and a coloured "--quiet"
-    the next option."""
+    the next option, and the substitutions read are passed on as _command_line passes them with `keyed`."""
     edits, reading, known = [], [], {}  # reading: the lines read that hold the text so far, innermost last
     read_to = 0  # where the lines read before the text so far end
     for line in line_pattern.finditer(text):
@@ -1308,12 +1390,16 @@ def _command_password_edits(text, line_pattern, flag, always, unseen=False):
             end = _plain_line_end(text, line.end())
         elif unseen:  # a command inside the substitution of a line read is read as a line of its own, to its end
             begin = _past_closing_quote(text, max(read_to, held[0] if held else 0), line.start(), line.end())
-            end, inside, subs = _command_line(text, begin, held and held[1], known)
+            end, inside, subs = _command_line(text, begin, held and held[1], known, keyed)
         else:
             end = line.end()
         reading.append((end, subs))
         starts = [a for a, _ in inside]
+        # Every flag from the start of a stretch that holds to the line's end is inside it: none is read past there.
+        last = inside[-1][0] if inside and inside[-1][1] >= end else end
         for m in _flag_matches(text, flag, line.start(), end):
+            if m.start() >= last:
+                break
             k = bisect.bisect_right(starts, m.start()) - 1
             if k >= 0 and m.start() < inside[k][1]:
                 continue  # a flag inside a quoted argument or a substitution is another program's
@@ -1326,7 +1412,223 @@ def _command_password_edits(text, line_pattern, flag, always, unseen=False):
                 continue
             if _flag_value_counts(m, always, unseen):
                 edits.append((m.start(2), m.end(2), "[masked]"))
+    return _in_order(edits)
+
+
+def _todays_command_line(text, start, stop=None, known=None):
+    """Main 33c82f6's _command_line, as main reads a line today (_todays_password_edits): (where a command's line from
+    `start` ends, by `stop` if given, the stretches of it inside quotes or a substitution at its top level, in order,
+    the command substitutions in it that no other holds, in order), as the shell reads it. The shell's contexts are kept
+    on a stack: single quotes, which hold everything to the next one; double quotes, which hold a substitution or a
+    backtick; and "$(", "(" and backticks, which hold quotes and brackets of their own, so arithmetic's "$((...))"
+    closes as it opens. At the top level the line ends at what ends a command or starts another (a pipe, ";", "&" but in
+    a redirection such as "2>&1", a bracket), at a comment (a "#" that starts a word), and at a JSON string's end (a '"'
+    that opens no quote, before ",", ":", "}" or "]"); anywhere at a line break, plain, or escaped but inside quotes of
+    plain text, where quotes still open hold to the line's end, as a script over several lines in quotes holds its own
+    flags. A line whose first double quote outside single quotes comes escaped ('\\"'), as JSON holds a command, is read
+    unescaped: its escaped quotes are the shell's quotes, an escaped backslash escapes the shell character after it, and
+    a bare '"' ends the JSON string. `known` maps where each substitution read before starts to where it ends, which the
+    reading adds to and passes over, so a command inside one costs no second reading of what it holds."""
+    i, n = start, len(text) if stop is None else stop
+    known = {} if known is None else known
+    stack, opened, escaped = [], [], None  # the shell's open contexts, where each opened, whether quotes come escaped
+    inside, subs, held = [], [], 0  # held: how many of the open contexts are substitutions
+
+    def enter(kind, at, after):  # where the reading goes on once `kind` opens at `at`: after it, or past all it holds
+        nonlocal held
+        end = known.get(at) if kind in ("$(", "`") else None
+        if end is not None and end <= n:
+            if not held:
+                subs.append((at, end))
+            if not stack:
+                inside.append((at, end))
+            return end
+        stack.append(kind)
+        opened.append(at)
+        held += kind in ("$(", "`")
+        return after
+
+    def ended(at):  # the line ends at `at`, inside what is still open there, which holds to it
+        while stack:
+            close(at, closed=False)
+        return at, inside, subs
+
+    def close(at, closed=True):
+        nonlocal held
+        kind, began = stack.pop(), opened.pop()
+        if kind in ("$(", "`"):
+            held -= 1
+            if closed:
+                known[began] = at
+            if not held:
+                subs.append((began, at))
+        if not stack:
+            inside.append((began, at))
+
+    while i < n:
+        here, c = i, text[i]
+        top = stack[-1] if stack else ""
+        if top == "'":  # nothing is special inside single quotes but the closing one
+            if c in "\n\r" or c == '"' and escaped:
+                return ended(here)
+            i += 1
+            if c == "'":
+                close(i)
+            continue
+        if c == "\\":
+            following = text[i + 1:i + 2]
+            if following in ("n", "r"):
+                if top == '"' and not escaped:
+                    i += 2  # a backslash and a letter inside double quotes of plain text: part of the argument
+                    continue
+                return ended(here)
+            if following == '"' and escaped is not False:
+                escaped, c, i = True, following, i + 2
+            else:  # the shell's own backslash, and the character it escapes
+                i += 2
+                if escaped and following == "\\":
+                    i += 2 if text[i:i + 1] == "\\" else 1
+                continue
+        else:
+            if c in "\n\r" or c == '"' and escaped:
+                return ended(here)
+            if c == '"' and not stack and _JSON_STRING_END.match(text, i + 1):
+                return ended(here)
+            if c == '"' and escaped is None:
+                escaped = False
+            i += 1
+        substitution = c == "$" and text[i:i + 1] == "("
+        if top == '"':
+            if c == '"':
+                close(i)
+            elif substitution or c == "`":
+                i = enter("$(" if substitution else "`", here, i + substitution)
+            continue
+        if top == "`" and c == "`" or top in ("$(", "(") and c == ")":
+            close(i)
+            continue
+        if top:  # inside a substitution: its own quotes and brackets
+            if c in "'\"`(" or substitution:
+                i = enter("$(" if substitution else c, here, i + substitution)
+            continue
+        if c in "'\"`" or substitution:
+            i = enter("$(" if substitution else c, here, i + substitution)
+        elif c in "|;()":
+            return ended(here)
+        elif c == "&" and not (here > start and text[here - 1] in "<>" or text[i:i + 1] == ">"):
+            return ended(here)
+        elif c == "#" and (here == start or text[here - 1] in " \t"):
+            return ended(here)
+    return ended(n)
+
+
+def _todays_password_edits(text, line_pattern, flag, always, unseen=False):
+    """Main 33c82f6's _command_password_edits, kept as main reads each row of COMMAND_FLAGS today, so the mask hides all
+    main hides (_TODAYS_RULES): each password one row finds, as an edit that masks it. A command's line is read once
+    from its first word, and a command in a substitution once from its own, so a line that names the command again and
+    again costs time in proportion to its length. With `unseen`, as the rows main's own lack are read, the line is read
+    as the shell reads it (_command_line), past a quote that closes the command's quoted name, and a value is judged
+    without the characters a reader does not see, so a coloured "$STOREPASS" is a variable and a coloured "--quiet" the
+    next option."""
+    edits, reading, known = [], [], {}  # reading: the lines read that hold the text so far, innermost last
+    read_to = 0  # where the lines read before the text so far end
+    for line in line_pattern.finditer(text):
+        while reading and reading[-1][0] <= line.start():
+            read_to = max(read_to, reading.pop()[0])
+        held = _holding(reading[-1][1], line.start()) if reading else None
+        if reading and not held:
+            continue  # the command named again inside a line already read, not as a command of its own
+        inside, subs = [], []
+        if always == "field":
+            end = _plain_line_end(text, line.end())
+        elif unseen:  # a command inside the substitution of a line read is read as a line of its own, to its end
+            begin = _past_closing_quote(text, max(read_to, held[0] if held else 0), line.start(), line.end())
+            end, inside, subs = _todays_command_line(text, begin, held and held[1], known)
+        else:
+            end = line.end()
+        reading.append((end, subs))
+        starts = [a for a, _ in inside]
+        for m in _flag_matches(text, flag, line.start(), end):
+            k = bisect.bisect_right(starts, m.start()) - 1
+            if k >= 0 and m.start() < inside[k][1]:
+                continue  # a flag inside a quoted argument or a substitution is another program's
+
+            value = _TODAYS_INVISIBLE.sub("", m.group(2)) if unseen else m.group(2)
+            if always == "field":  # a .netrc line's password, which nothing expands: any value but a placeholder
+                if _netrc_password(value) and _NETRC_AFTER_VALUE.match(text, m.end(2)) \
+                        and not _netrc_prose(text[line.start():end], value):
+                    edits.append((m.start(2), m.end(2), "[masked]"))
+                continue
+            if unseen and (value.startswith("-") and (always != "dash" or value[1:].lower() in _JAVA_OPTIONS
+                                                      or value.startswith("-J"))
+                           or _ABOUT_A_PASSWORD.search(m.group(1).strip(" \t'\"\\"))):
+                continue  # the next option, or a setting about a secret ("aws configure set token_expiration 3600")
+            if always is True or _looks_secret("password", m.group(1), value):
+                edits.append((m.start(2), m.end(2), "[masked]"))
     return edits
+
+
+def _in_order(edits):
+    """One row's edits in order, as _edit and _moves read them, those that overlap made one: a row reads a command of
+    its own inside a substitution of a line it read after that line ("mongosh $(echo az login -p ...) -p ..."), so its
+    edit comes after the line's."""
+    out = []
+    for start, end, insert in sorted(edits):
+        if out and start < out[-1][1]:
+            out[-1] = (out[-1][0], max(out[-1][1], end), out[-1][2])
+        else:
+            out.append((start, end, insert))
+    return out
+
+
+def _moves(edits):
+    """Where one row's ordered edits (start, end, insert) begin and end, and how far each, with those before it, moves
+    the text after it: what _carried reads."""
+    shift, shifts = 0, []
+    for start, end, insert in edits:
+        shift += len(insert) - (end - start)
+        shifts.append(shift)
+    return [start for start, _, _ in edits], [end for _, end, _ in edits], shifts
+
+
+def _carried(moves, at):
+    """Where the character at `at` is once the rows' edits (`moves`, each _moves of one row's, in turn) are made, or
+    None where one of them masked it."""
+    for starts, ends, shifts in moves:
+        i = bisect.bisect_right(starts, at) - 1
+        if i >= 0 and at < ends[i]:
+            return None
+        at += shifts[i] if i >= 0 else 0
+    return at
+
+
+def _before_edits(before, rows, moves):
+    """The rows of COMMAND_FLAGS read in turn (`rows`, with `moves`, each row's edits as _moves gives them) each read
+    the text the rows before them left, where a value a row before masked can change the line: a command named there
+    has no name left to read its flags after ('az.exe login -p "keytool" -storepass ...', "mysql -paws configure set
+    ..."), and a value read inside backticks is masked with the closing one, so the line runs on past it and a later
+    flag is inside it ("keytool $(mongosh `az.cmd login -p ...` -p ...) -storepass ..."). Each of this PR's rows (from
+    _MAIN_COMMANDS on) after a row that masked anything reads `before`, the text as it was before any row masked,
+    again, and each password it finds there is masked in the text the rows left, over the characters no row masked, so
+    the text loses nothing a row reading it alone hides: one edit for each run, those of two rows that meet made one.
+    Returns the edits, and the first row whose reading of `before` masked more."""
+    spans, first = [], None
+    for k in range(_MAIN_COMMANDS, len(rows)):
+        line, flag, always = rows[k]
+        if not any(starts for starts, _, _ in moves[:k]):
+            continue  # no row before it masked anything
+        spans += [(start, end, k) for start, end, _ in _command_password_edits(before, line, flag, always, True)]
+    out = []
+    for start, end, k in sorted(spans):
+        kept = [at for at in (_carried(moves, at) for at in range(start, end)) if at is not None]
+        if not kept:
+            continue
+        first = first or rows[k]
+        if out and kept[0] <= out[-1][1]:
+            out[-1] = (out[-1][0], max(out[-1][1], kept[-1] + 1))
+        else:
+            out.append((kept[0], kept[-1] + 1))
+    return [(start, end, "[masked]") for start, end in out], first
 
 
 def _flag_value_counts(m, always, unseen):
@@ -1513,11 +1815,13 @@ def _masked_parts(decoded, masked):
     return parts
 
 
-# A run of digits long enough that str-to-int is slow on Python 3.9 (no digit limit there), or that no real value
-# holds: a span with one is left for the fallback, not parsed. A number written in hexadecimal, octal or binary parses
-# in time in proportion, so its value is held to the same bound once parsed (_LONG_NUMBER): past it, printing it beside
-# its field's name, as mask_all does, raises ValueError past Python's digit limit.
-_DIGIT_RUN = re.compile(r"[0-9]{1000,}")
+# A run of digits, with single underscores between them as Python allows ("9_999" is 9999), long enough that
+# str-to-int is slow on Python 3.9 (no digit limit there), or that no real value holds: a span with one is left for
+# the fallback, not parsed. It is looked for only where a run starts, so each run is read once. A number written in
+# hexadecimal, octal or binary parses in time in proportion, so its value is held to the same bound once parsed
+# (_LONG_NUMBER): past it, printing it beside its field's name, as mask_all does, raises ValueError past Python's
+# digit limit.
+_DIGIT_RUN = re.compile(r"(?<![0-9])(?<![0-9]_)[0-9](?:_?[0-9]){999,}")
 _LONG_NUMBER = 10 ** 999
 # A span longer than 1 MiB, the bar's item size, or nested past _CONTAINER_DEPTH, is left for the fallback.
 _CONTAINER_MAX = 1 << 20
@@ -1642,7 +1946,8 @@ def _containers(text, i=0, n=None, brackets=None):
 def _parse_container(source):
     """`source`, a bracketed span, parsed as a list, dict or tuple by json.loads or, failing that, Python's
     ast.literal_eval, or None where it does not parse to one of those or holds a number of 1,000 digits or more in any
-    base (_long_number). The size, depth and digit guards run before this, and every parser error falls back to None:
+    base (_long_number), or more than 64 keys of one dict or members of one set that share one hash (_literal_eval).
+    The size, depth and digit guards run before this, and every parser error falls back to None:
     TypeError too, which ast.literal_eval raises for a key or a set member that is a list or a dict ({[]: "keytool"}),
     and OverflowError, which it raises adding an integer too large for a float to an imaginary number (9...9+1j)."""
     for parse in (json.loads, _literal_eval):
@@ -1671,10 +1976,43 @@ def _long_number(value):
     return False
 
 
+# Keys of one dict, or members of one set, that may share one hash in a literal read whole (_literal_eval).
+_SHARED_HASH = 64
+
+
 def _literal_eval(source):
+    """`source`, a bracketed span, as ast.literal_eval reads it, parsed once; refused (ValueError) where more than
+    _SHARED_HASH keys of one dict or members of one set share one hash, as multiples of sys.hash_info.modulus or
+    tuples of them do: Python builds such a dict or set, and each reading of it, in time in the square of their
+    number. A string's hash is drawn afresh in each process, so no text can choose one."""
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
-        return ast.literal_eval(source)
+        tree = ast.parse(source, mode="eval")
+        for node in ast.walk(tree):
+            items = node.keys if isinstance(node, ast.Dict) else node.elts if isinstance(node, ast.Set) else ()
+            if len(items) > _SHARED_HASH:
+                shared = {}
+                for item in items:
+                    if item is None or not _hashable(item):
+                        raise TypeError("a key or a member no literal can hash")  # as ast.literal_eval raises
+                    key = hash(ast.literal_eval(item))  # of a number, a string, bytes or a tuple of them
+                    shared[key] = shared.get(key, 0) + 1
+                    if shared[key] > _SHARED_HASH:
+                        raise ValueError("more keys sharing one hash than a literal read whole may hold")
+        return ast.literal_eval(tree)
+
+
+def _hashable(node):
+    """Whether a literal's node can be a dict's key or a set's member: no list, dict or set, at any depth of the tuples
+    it is in, so the check reads no part of the literal more than once."""
+    todo = [node]
+    while todo:
+        node = todo.pop()
+        if isinstance(node, ast.Tuple):
+            todo += node.elts
+        elif isinstance(node, (ast.List, ast.Dict, ast.Set, ast.Call)):
+            return False
+    return True
 
 
 def _as_text(value):
@@ -1924,8 +2262,7 @@ def _short_name_secret(value):
     """Whether a value after "pass" or "pwd" alone is a secret: a credential's shape, and no path, read without the
     characters a reader does not see, such as a colour code. Either word alone names much else, a working directory or
     a compiler's pass."""
-    value = INVISIBLE.sub("", value)
-    return not _PATH_VALUE.match(value) and _password_shaped(value)
+    return any(not _PATH_VALUE.match(seen) and _password_shaped(seen) for seen in _seen_views(value))
 
 
 def _short_password_span(m):
@@ -2053,16 +2390,18 @@ def _app_password_span(m):
     """_password_span for an app password's four groups, but where three or four are common words ("password: this
     will work fine", "password: read from smtp logs"), read as main reads them: a random app password's groups hold
     three such words about once in a million times."""
-    groups = INVISIBLE.sub("", m.group(3)).split()
-    return None if sum(group in _COMMON_WORDS for group in groups) >= 3 else _password_span(m)
+    if all(sum(group in _COMMON_WORDS for group in seen.split()) >= 3 for seen in _seen_views(m.group(3))):
+        return None
+    return _password_span(m)
 
 
 def _xml_span(m):
     """Where an XML element's secret is: _keyed_span, but for an element about a password (_ABOUT_A_PASSWORD), and for
     one not named for a password, a value without a credential's shape: an element named "token" or "secret" holds a
     word as often as a secret ("<tokens><token>internationalization</token></tokens>")."""
-    name, value = m.group(1), INVISIBLE.sub("", m.group(3))
-    if _ABOUT_A_PASSWORD.search(name) or not _XML_PASSWORD.search(name) and not _password_shaped(value):
+    name = m.group(1)
+    if _ABOUT_A_PASSWORD.search(name) or not _XML_PASSWORD.search(name) and \
+            not any(map(_password_shaped, _seen_views(m.group(3)))):
         return None
     return _keyed_span(m)
 
@@ -2240,13 +2579,22 @@ def _password_shaped(word):
     return _credential_shaped(word) and not _identifier_shaped(word.rstrip(".,;:!?)"))
 
 
+def _seen_views(value):
+    """`value` without the characters a reader does not see, as this branch reads them (INVISIBLE) and as main 032391d
+    does (_TODAYS_INVISIBLE), once each where they differ. A reading that judges a value by its shape asks each, and a
+    value either finds a secret is one: this branch's INVISIBLE also removes a surrogate pair or a colour code escaped
+    twice, so "ZD\\\\udb40\\\\udc01VVVX", a random token to main, alone would read as ZDVVVX, a name in capitals."""
+    return dict.fromkeys((INVISIBLE.sub("", value), _TODAYS_INVISIBLE.sub("", value)))
+
+
 def _bare_credential(word):
     """The credential-shaped token a header's value starts with, up to an escaped line break or a placeholder, and
     without a closing mark after it; or "". Judged by its shape alone, as a reader sees it, without the characters a
     reader does not see, so base64 that starts with "/" counts and "RFC7235-compli<SHY>ant" does not."""
     head = _CREDENTIAL_END.split(word, 1)[0].rstrip(".,;:!?)")
-    # As this view reads it, and as main's own does, without its own invisible characters only.
-    shaped = _credential_shaped(INVISIBLE.sub("", head)) or _credential_shaped(_MAIN_INVISIBLE_RUN.sub("", head))
+    # As this view reads it, as main 032391d does, and as main's own view does, without its own invisible characters
+    # only.
+    shaped = any(map(_credential_shaped, (*_seen_views(head), _MAIN_INVISIBLE_RUN.sub("", head))))
     return head if shaped else ""
 
 
@@ -2919,11 +3267,16 @@ _MAIN_RULES = ([p for p in SECRET_PATTERNS if p is not ENCODED_PRIVATE_KEY],
                tuple((_main_reading(p), _keyed_span) for p in (JSON_SECRET, KEYED_SECRET, ENV_KEY_SECRET, FLAG_SECRET))
                + ((AUTH_SECRET, _authorization_span),), "main")
 # The readings of text main's own lack, read by name.
-_NEW_READINGS = frozenset([p for p, _ in _WHOLE_VALUES] + [SHORT_PASSWORD])
+_NEW_READINGS = frozenset([p for p, _ in _WHOLE_VALUES] + [SHORT_PASSWORD, _TODAYS_APP_PASSWORD, _TODAYS_APP_PASSWORD_LINE])
 _TEXT_RULES = (SECRET_PATTERNS, ((JSON_SECRET, _keyed_span), *_WHOLE_VALUES, (KEYED_SECRET, _keyed_span),
                                  (ENV_KEY_SECRET, _keyed_span), (SHORT_PASSWORD, _short_password_span),
                                  (FLAG_SECRET, _keyed_span), (AUTH_SECRET, _authorization_span)), "named")
 _ID_RULES = (_ID_PATTERNS, ((KEYED_ID, _keyed_span), (ENV_KEY_ID, _keyed_span)), "plain")
+# Main's text readings as main 032391d reads them: these, with its own app password (_TODAYS_APP_PASSWORD), every row
+# of COMMAND_FLAGS read as it reads them (_todays_password_edits), no wrappings, and no row reading the text as it was
+# before the rows masked.
+_TODAYS_RULES = (SECRET_PATTERNS, tuple(({APP_PASSWORD: _TODAYS_APP_PASSWORD, APP_PASSWORD_LINE: _TODAYS_APP_PASSWORD_LINE}
+                                         .get(pattern, pattern), span_of) for pattern, span_of in _TEXT_RULES[1]), "today")
 
 
 def _edit(text, origin, edits):
@@ -2945,20 +3298,22 @@ def _edit(text, origin, edits):
     return "".join(out), kept
 
 
-def _run(text, rules, origin=None, named=None, fired=None):
+def _run(text, rules, origin=None, named=None, fired=None, look=False):
     """One pass of every pattern, as (the text masked, where each of its characters came from): the secrets known by
     their shape, then an older kb's leftovers, links, cookies and commands, then the patterns that read a value by its
     name. With `origin` None, nothing is tracked and the second is None. With `named` a list, each named value masked
     is added to it as (name start, name end, masked start, masked end) in the first text, which needs `origin`. With
     `fired` a list, something is added to it when a reading main's own readings (_MAIN_RULES) lack masks anything:
-    with none, this pass masks as theirs does."""
+    with none, this pass masks as theirs does. With `look` too, it is added to also where, with nothing added before,
+    this reading's rows main's own lack find nothing but main 33c82f6's (_TODAYS_COMMANDS) find a password: only while
+    the passes so far masked as main's do, as main's rows then read the text main's own pass reads."""
     patterns, keyed, reading = rules
     size = len(text)
     note = fired.append if fired is not None else (lambda _: None)
     # gitleaks' rules read the text the pass was given too, before any pattern here cuts a token: GitLab's own shape
     # takes a routable token's first part and leaves ".aa1234567", and a link's reading a webhook's start. Each token
     # found so is hidden whole at the end.
-    whole = _gitleaks_spans(text) if reading == "named" else []
+    whole = _gitleaks_spans(text) if reading in ("named", "today") else []
     untracked = whole and origin is None
     if untracked:
         origin = list(range(size))
@@ -2977,21 +3332,41 @@ def _run(text, rules, origin=None, named=None, fired=None):
         if pattern is not main and any(not main.fullmatch(text, m.start(), m.end()) for m in found):
             note(pattern)  # a link with no user name
         text, origin = _edit(text, origin, [(m.end(1), m.end(), "[masked]") for m in found])
-    if reading != "main" and _WRAPPINGS.get():
+    if reading not in ("main", "today") and _WRAPPINGS.get():
         edits = _wrapping_edits(text)
         if edits:
             note(_WRAPPINGS)  # which _masked looks for: it then hides what the mask without this reading hides too
         text, origin = _edit(text, origin, edits)
-    if _ANY_COMMAND.search(text):
-        for n, command in enumerate(_COMMANDS[:_MAIN_COMMANDS] if reading == "main" else _COMMANDS):
+    if _ANY_COMMAND.search(text) and reading == "today":  # every row as main reads it today
+        for n, command in enumerate(_TODAYS_COMMANDS):
+            edits = _todays_password_edits(text, *command, n >= _MAIN_COMMANDS)
+            if edits and n >= _MAIN_COMMANDS:
+                note(command)
+            text, origin = _edit(text, origin, edits)
+    elif _ANY_COMMAND.search(text):
+        rows = _COMMANDS[:_MAIN_COMMANDS] if reading == "main" else _COMMANDS
+        before, moves, mains = text, [], None
+        for n, command in enumerate(rows):
+            if n == _MAIN_COMMANDS:
+                mains = text  # what main's rows from here on read today, the rows before it alike
             edits = _command_password_edits(text, *command, n >= _MAIN_COMMANDS)
             if edits and n >= _MAIN_COMMANDS:
                 note(command)
+                mains = None
+            moves.append(_moves(edits))
+            text, origin = _edit(text, origin, edits)
+        if look and mains is not None and fired is not None and not fired \
+                and any(_todays_password_edits(mains, *row, True) for row in _TODAYS_COMMANDS[_MAIN_COMMANDS:]):
+            note(_TODAYS_COMMANDS)  # main reads a password with one of these rows where this reading found none
+        if reading != "main":  # where a row before masked, each row reads the text as it was before too
+            edits, row = _before_edits(before, rows, moves)
+            if edits:
+                note(row)
             text, origin = _edit(text, origin, edits)
     if reading == "named" and _SUBSCRIPTION_KEY.search(text):
         note(_SUBSCRIPTION_KEY)  # a name main's own do not read, which moves where their searches go on
     for pattern, span_of in keyed:
-        found = list(_named(pattern, span_of, text, reading, note))
+        found = list(_named(pattern, span_of, text, "named" if reading == "today" else reading, note))
         if found and pattern in _NEW_READINGS:
             note(pattern)
         if named is not None:
@@ -3001,7 +3376,7 @@ def _run(text, rules, origin=None, named=None, fired=None):
         text, origin = _edit(text, origin, [(start, end, "[masked]") for _, (start, end) in found])
     # gitleaks' rules last, so a named value holding a provider's token is read whole first; and in text only, as an
     # id is read more narrowly (secret_in_id), and an id one took for a token would drop its item.
-    if reading == "named":
+    if reading in ("named", "today"):
         for step in (_name_value_edits, _typed_code_edits, _gitleaks_edits):
             edits = step(text)  # read from the text the step before left
             if edits:
@@ -3095,7 +3470,7 @@ def _token_shapes(patterns, after_a_break=False):
 
 
 _TOKENS = {id(rules): (_token_shapes(rules[0]), _token_shapes(rules[0], after_a_break=True))
-           for rules in (_TEXT_RULES, _ID_RULES, _MAIN_RULES)}
+           for rules in (_TEXT_RULES, _ID_RULES, _MAIN_RULES, _TODAYS_RULES)}
 
 
 def _scoped(source):
@@ -3122,11 +3497,17 @@ def _reading_starts(keyed, env, flag, prefixed, commands):
 
 
 _READING_START = _reading_starts(KEYED_SECRET, ENV_KEY_SECRET, FLAG_SECRET, PREFIXED_SECRETS[0], COMMAND_FLAGS)
+# Main 032391d's own, where its rows spell a command as it does: "az" and "aws" alone, with no ".exe" or ".cmd".
+_TODAYS_READING_START = _reading_starts(KEYED_SECRET, ENV_KEY_SECRET, FLAG_SECRET, PREFIXED_SECRETS[0], [
+    (command.replace(_WINDOWS_FILE, ""), flag, always) for command, flag, always in COMMAND_FLAGS])
+_WINDOWS_SPELLING = re.compile(r"(?i)\.(?:exe|cmd)")  # all _TODAYS_READING_START lacks
+_ESCAPED_PRINTABLE = re.compile(r"\\u00[2-7][0-9a-fA-F]")  # a printable character as JSON escapes it, as "\u006c"
 _MAIN_READING_START = _reading_starts(*map(_main_reading, (KEYED_SECRET, ENV_KEY_SECRET, FLAG_SECRET)),
                                       _MAIN_PREFIXED[0], COMMAND_FLAGS[:_MAIN_COMMANDS])  # main's own
 # Where one could start: a letter, a digit or "-" after anything but a letter or digit, as "7token is" starts a name.
 _MAY_START = re.compile(r"(?<![A-Za-z0-9])(?=[A-Za-z0-9-])")
 _INVISIBLE_RUN = re.compile(f"(?:{INVISIBLE.pattern})+")
+_TODAYS_INVISIBLE_RUN = re.compile(f"(?:{_TODAYS_INVISIBLE.pattern})+")  # main 032391d's own (_split_secrets)
 # How far a token that starts right after a letter, where an invisible character stood, is read before it counts as a
 # longer one: each such start is read once, so repeated starts cost time in proportion to the text.
 _GLUED_START_WINDOW = 512
@@ -3164,10 +3545,10 @@ def _read(text, rules, origin=None, novel=None):
     """The text as written read (_run), and as main's own readings read it (_MAIN_RULES), each character either hides
     hidden: no reading added since can show what main's readings hide by reading a part of it first. An id reads as
     _run reads it."""
-    if rules is not _TEXT_RULES:
+    if rules[2] not in ("named", "today"):
         return _run(text, rules, origin)
     fired = []
-    masked, came = _run(text, rules, list(range(len(text))), fired=fired)
+    masked, came = _run(text, rules, list(range(len(text))), fired=fired, look=novel is not None and not novel)
     if fired and novel is not None:
         novel.append(fired)
     if not fired:  # no reading main's lack masked anything, so theirs mask just as this did
@@ -3209,17 +3590,49 @@ def _split_secrets(text, rules):
     stood, as after a space, so one before a key glued to a word reads it ("budget<ZWSP>s<ZWSP>k-..."). A run of them
     just before where a secret's reading starts stays in the view, as a break. A split token ends before the last of
     them ahead of any reading the text as written starts inside it, such as a link's scheme in the token's tail, and a
-    split value ends where such a reading starts: the pass over the text as given reads those."""
+    split value ends where such a reading starts: the pass over the text as given reads those. The text is also read
+    as main 032391d reads it, with its own copy of every table this branch widened that this reading uses: its
+    invisible characters (_TODAYS_INVISIBLE), where its readings start (_TODAYS_READING_START, "az.exe login" none),
+    its app password (_TODAYS_RULES) and its commands' rows, and what either reading hides is hidden: a token this
+    branch keeps apart from a word, main may read glued to it."""
     # All main's own view hides, the text without its invisible characters only (_main_split_spans): where removing a
     # colour code, DEL or a C1 control too glues a token to a word, or a name to a placeholder, main's still reads it.
     seen_by_main = _main_split_spans(text, rules)
-    v = _Split(text, _INVISIBLE_RUN)
+    spans = _split_secrets_seen(text, rules, _INVISIBLE_RUN, _READING_START, seen_by_main)
+    if not _todays_view_differs(text):
+        return spans
+    todays = _TODAYS_RULES if rules[2] in ("named", "today") else rules
+    merged = []
+    for start, end in sorted(spans + _split_secrets_seen(text, todays, _TODAYS_INVISIBLE_RUN, _TODAYS_READING_START, [])):
+        if merged and start < merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+        else:
+            merged.append((start, end))
+    return merged
+
+
+def _todays_view_differs(text):
+    """Whether main 032391d's reading of `text` in _split_secrets can differ from this branch's: where its invisible
+    characters make other runs, as a surrogate pair, a JSON backspace or anything escaped twice does, and with it its
+    app password; where the text spells a program as only this branch reads it, as "az.exe" (_WINDOWS_FILE), and with it
+    where a reading starts; or where its rows of a command, which it reads as main does, or this branch's wrappings may
+    read a command's name, in the text read without its invisible characters or in a JSON string it holds escaped."""
+    return ([m.span() for m in _INVISIBLE_RUN.finditer(text)] != [m.span() for m in _TODAYS_INVISIBLE_RUN.finditer(text)]
+            or _WINDOWS_SPELLING.search(text) or _ANY_COMMAND.search(_INVISIBLE_RUN.sub("", text))
+            or _ESCAPED_PRINTABLE.search(text))
+
+
+def _split_secrets_seen(text, rules, run, starts, seen_by_main):
+    """_split_secrets in the view without the characters `run` finds, a run before where `starts` finds a reading
+    starting kept, with what main's own view hides (`seen_by_main`), as merged (start, end) spans of the text as
+    written."""
+    v = _Split(text, run, starts)
     gone, view, places, where, removed = v.gone, v.view, v.places, v.where, v.removed
     if not gone:
         return seen_by_main
     tokens, after_a_break = _TOKENS[id(rules)]
     found = [(m.start(), m.end()) for m in tokens.finditer(view) if m.end() > m.start() and not _scheme_words(m)]
-    text_only = rules is _TEXT_RULES  # an id is read without gitleaks' rules, as _run reads it
+    text_only = rules[2] in ("named", "today")  # an id is read without gitleaks' rules, as _run reads it
     found = sorted(found + (_gitleaks_spans(view) if text_only else []))
     lower = view.lower()
     vendored = [rule for rule in _GITLEAKS_AFTER_A_BREAK
@@ -3289,7 +3702,7 @@ def _main_split_spans(text, rules=_TEXT_RULES):
     """Where main's own pass hides what `text` holds only across main's invisible characters: its view, its token
     shapes, an older kb's leftovers and its own named values, as main's _split_secrets reads them; for text by main's
     own readings (_MAIN_RULES), for an id by its own."""
-    rules = _MAIN_RULES if rules is _TEXT_RULES else rules
+    rules = _MAIN_RULES if rules[2] in ("named", "today") else rules
     v = _Split(text, _MAIN_INVISIBLE_RUN, _MAIN_READING_START)
     if not v.gone:
         return []
@@ -3330,10 +3743,32 @@ def _passes(text, step):
 
 
 def _main_hidden(text):
-    """What main's own mask hides of `text`, a mark at each character none of its result came from. Where it still
-    changes after MAX_PASSES, its mask() masks whole all between what the text and the last pass share at both ends,
-    and all that is marked too."""
-    masked, origin, still = _passes(text, _main_once)
+    """What main's own mask hides of `text`, a mark at each character none of its result came from, and, for a text
+    that names a command, all main 33c82f6's mask hides of it too (_todays_hidden), which reads #29's rows of
+    COMMAND_FLAGS as this mask does not. Where it still changes after MAX_PASSES, its mask() masks whole all between
+    what the text and the last pass share at both ends, and all that is marked too."""
+    hidden = _hidden(text, *_passes(text, _main_once))
+    return _todays_hidden(text, hidden) if _ANY_COMMAND.search(text) else hidden
+
+
+def _todays_hidden(text, mains):
+    """What main 33c82f6's mask hides of `text`, marked as _main_hidden marks it, given what main's own mask hides of
+    it (`mains`): its passes (_TODAYS_RULES, each with what main's own readings hide of it hidden too, as its _read
+    hides them), then, as its _masked does, all `mains` marks hidden and the passes made again. That holds all
+    `mains` marks."""
+    step = lambda t, o: _once(t, _TODAYS_RULES, o, [])
+    masked, origin, still = _passes(text, step)
+    if not still and any(c >= 0 and mains[c] for c in origin):
+        joined, came = _hide(masked, origin, mains)
+        masked, after, still = _passes(joined, step)
+        origin = [came[c] if c >= 0 else -1 for c in after]
+    hidden = _hidden(text, masked, origin, still)
+    return bytes(a | b for a, b in zip(hidden, mains))
+
+
+def _hidden(text, masked, origin, still):
+    """A mark at each character of `text` none of `masked` came from (`origin`), and where the passes `still` changed,
+    all between what `text` and `masked` share at both ends."""
     hidden = bytearray(b"\x01") * len(text)
     for c in origin:
         if c >= 0:
@@ -3351,7 +3786,7 @@ def _named_spans(view, rules):
     the one before, so a value ends at a token's placeholder as main ends it. As _read reads the text as written, where
     a reading main's own lack masked anything, theirs read the view too, so none can take a split name first."""
     spans, fired = [], []
-    _run(view, rules, list(range(len(view))), spans, fired if rules is _TEXT_RULES else None)
+    _run(view, rules, list(range(len(view))), spans, fired if rules[2] in ("named", "today") else None)
     if fired:
         _run(view, _MAIN_RULES, list(range(len(view))), spans)
     return spans
@@ -3413,7 +3848,8 @@ class _Split:
         for name_start, name_end, start, end in named:
             if not self.split(name_start, name_end + 1) or start >= end:
                 continue
-            if self.starts is _READING_START and _NEW_INVISIBLE.search(self.text, *self.raw(name_start, name_end + 1)):
+            parted = {_READING_START: _NEW_INVISIBLE, _TODAYS_READING_START: _TODAYS_NEW_INVISIBLE}.get(self.starts)
+            if parted and parted.search(self.text, *self.raw(name_start, name_end + 1)):
                 # Parted by a colour code, DEL or a C1 control, which main sees, as grep's colour parts the word it
                 # found: read strictly, only a name that ends in a secret's word and is about none
                 # ("password_ESC[31mpolicy", "x-authESC[31m-flow" are not), and but for a password's, only a value
@@ -3614,7 +4050,7 @@ def secret_in_id(text, names=()):
     name = names[0] if names else None
     if isinstance(name, str) and name and text.startswith(f"{name}:") and not text.startswith("//", len(name) + 1):
         return secret_in_id(name) or secret_in_id(text[len(name) + 1:], names[1:])
-    if any(_basic_credential(m.group(1)) for view in (INVISIBLE.sub("", text), _MAIN_INVISIBLE_RUN.sub("", text))
+    if any(_basic_credential(m.group(1)) for view in (*_seen_views(text), _MAIN_INVISIBLE_RUN.sub("", text))
            for m in _BASIC_VALUE.finditer(view)):
         return True
     return _mask_once(text, _ID_RULES) != text or bool(_encoded_key_spans(text))
@@ -3640,8 +4076,13 @@ def _pair_secret(name, value, listed=False):
     """Whether a value held apart from its name is a secret by that name: under a header's (_HEADER_NAMES), when the
     header read in text hides any of it, or under a secret's field name, when the field's rule says so (mask_all).
     `listed` for a list of the two, which may be two words, as tags are: then the value holds the header's own
-    content, a cookie's "name=" or a credential, or is shaped like a credential under a secret's name."""
-    name, value = name.strip(), INVISIBLE.sub("", value).strip()
+    content, a cookie's "name=" or a credential, or is shaped like a credential under a secret's name. The value is
+    judged as each view sees it (_seen_views)."""
+    return any(_pair_secret_seen(name.strip(), seen.strip(), listed) for seen in _seen_views(value))
+
+
+def _pair_secret_seen(name, value, listed):
+    """_pair_secret for a value without the characters a reader does not see, as one view reads it."""
     lowered = name.lower()
     if lowered in _HEADER_NAMES:
         if listed and not (_COOKIE_CONTENT.search(value) if "cookie" in lowered else
@@ -4046,7 +4487,7 @@ def typed_secrets(name, args):
         for key in _TYPED_KEYS:
             value = item.get(key)
             if isinstance(value, (str, int)) and not isinstance(value, bool) and str(value) and (
-                    secret or not labels and _password_shaped(INVISIBLE.sub("", str(value)))):
+                    secret or not labels and any(map(_password_shaped, _seen_views(str(value))))):
                 out[key] = "[masked]"
         return out
 
@@ -4348,7 +4789,7 @@ def _labels_ask_for_a_secret(labels):
 def _typed_values(text, labels, typed):
     secret = _labels_ask_for_a_secret(tuple(labels))
     return [(a, b, "[masked]") for a, b in typed
-            if b > a and (secret or not labels and _password_shaped(INVISIBLE.sub("", text[a:b])))]
+            if b > a and (secret or not labels and any(map(_password_shaped, _seen_views(text[a:b]))))]
 
 
 # A regex literal where a value starts inside a locator's brackets: first, or after ",", ":" or "=".
@@ -4575,8 +5016,8 @@ def _typed_code_edits(text):
             continue  # a value from a variable, or a call on no page and no locator
         if not labels:  # only typing into the focused field (page.keyboard.type) is read, by the value's shape
             a, b = _code_text(text, strings[0])
-            if "keyboard" in names and b > a and not _built_at_run_time(text, strings[0]) and _password_shaped(
-                    INVISIBLE.sub("", text[a:b])):
+            if "keyboard" in names and b > a and not _built_at_run_time(text, strings[0]) and any(
+                    map(_password_shaped, _seen_views(text[a:b]))):
                 edits.append((a, b, "[masked]"))
             continue
         # any one string that asks for a secret on its own names the field so: no other string, a container's, a
