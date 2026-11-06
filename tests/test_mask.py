@@ -512,7 +512,9 @@ class OtherKeyFormatTest(unittest.TestCase):
                     # too, and masked text masks to itself. A certificate whole stays, and so does a JSON field.
                     shown = "" if after is public else f"{after}\n"
                     once = mask(f"{k}\n{after}\nnext steps")
-                    self.assertEqual(once, f"[masked]\n{shown}next steps")
+                    # a public key cut short is a key's rest with no "=", so its next first token goes with it
+                    # (coordinator's ruling, Nov 6); the words after it stay
+                    self.assertEqual(once, "[masked] steps" if after is public else f"[masked]\n{shown}next steps")
                     self.assertEqual(mask(once), once)
                     self.assertEqual(mask(json.dumps({"k": k, "c": after})), json.dumps({"k": "[masked]", "c": after}))
 
@@ -553,7 +555,9 @@ class OtherKeyFormatTest(unittest.TestCase):
                     self.assertEqual(mask(text), text)
             cut = base64.b64encode(der[:len(der) * 2 // 3]).decode()
             with self.subTest(cut_short=name):
-                self.assertEqual(mask(f"[masked]\n{cut}\nnext steps"), "[masked]\nnext steps")
+                # a cut with no "=" can run on: its next first token goes with it (coordinator's ruling, Nov 6)
+                self.assertEqual(mask(f"[masked]\n{cut}\nnext steps"),
+                                 "[masked]\nnext steps" if cut.endswith("=") else "[masked] steps")
         noise = base64.b64encode(bytes(r.randrange(256) for _ in range(200))).decode()
         for name, lines in (("random", noise), ("random, starting as a body does", "MIIE" + noise),
                             ("random, wrapped", "\n".join(textwrap.wrap(noise, 64)))):
@@ -583,7 +587,10 @@ class OtherKeyFormatTest(unittest.TestCase):
                     self.assertEqual([joined[i:i + 12] for i in range(0, len(joined) - 12, 12)
                                       if joined[i:i + 12] in readable], [])
                     self.assertEqual([line for line in first if line in masked], [])
-                    self.assertTrue(masked.startswith("[masked]") and masked.endswith("\nnext steps"), masked)
+                    # the first half's last line can run on, so the next first token goes with it (coordinator's
+                    # ruling, Nov 6); the words after it stay
+                    self.assertTrue(masked.startswith("[masked]")
+                                    and masked.endswith(" steps" if name == "first half" else "\nnext steps"), masked)
             with self.subTest(part=name, form="JSON"):
                 masked = mask(json.dumps({"k": f"[masked]\n{part}", "note": "next steps"}))
                 self.assertEqual([line for line in lines if line in masked], [])
