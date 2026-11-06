@@ -10,7 +10,6 @@ import sqlite3
 import sys
 import time
 import traceback
-import webbrowser
 from datetime import datetime, timezone
 
 from kb import NAME, __version__, ai, check, config as config_mod, ids, ingest, search, store, summarize
@@ -319,15 +318,21 @@ def cmd_dashboard(paths, config, args):
         raise Fail(f"cannot listen on port {args.port}: {exc.strerror or exc}")
     # The address holds this run's key, which masking would take for a secret and mangle; it is made here, not read.
     shown = getattr(sys.stdout, "_stream", sys.stdout)
-    print(f"The Superhistory dashboard is at {dashboard.url}\nOnly this address opens it: it carries a key for this run. "
+    print(f"The Superhistory dashboard is at {dashboard.url}\n"
+          "Open it once: the address carries a key for this run, good for one visit. "
           "It reads your knowledge base and changes nothing. Press Ctrl-C to stop.", file=shown, flush=True)
-    if not args.no_open:
-        webbrowser.open(dashboard.url)
+    handoff = None
     try:
+        if not args.no_open:
+            handoff = server.Handoff(dashboard)
+            if not handoff.open():
+                print("No browser was found to open it. Open the address above.", flush=True)
         dashboard.serve_forever()
     except KeyboardInterrupt:
         print("\nStopped.")
     finally:
+        if handoff:
+            handoff.remove()
         dashboard.server_close()
     return 0
 

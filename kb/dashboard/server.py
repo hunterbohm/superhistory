@@ -2,21 +2,29 @@
 
 It binds a loopback address only, answers only GET and HEAD, opens the store read-only, and loads nothing from
 outside: every font, script and style is served from this folder, and a content-security policy keeps it that way.
-Loopback is open to every account on the computer, so a request must also carry this run's key: the address the
-command prints holds it once, the first visit turns it into an HttpOnly, SameSite=Strict cookie and a redirect to the
-same address without it, and any other request is refused.
+
+Loopback is open to every account on the computer, so the data is behind a key made for each run. The address the
+command prints holds it as `?access=KEY`, good for one visit: that visit's page carries the key in a meta tag, the
+page's script keeps it in sessionStorage and removes it from the address, and every request for data then sends it in
+the X-Superhistory-Key header. The key is in no cookie, so a program listening on another port of this computer, which
+a cookie would reach, never receives it; a second `?access=KEY` is refused, so a key copied from a process list or a
+browser's history after the first visit is worthless. The page and its static files hold no data and need no key.
 """
 import hmac
+import html
 import ipaddress
 import json
 import os
+import pathlib
 import secrets
+import shutil
 import sqlite3
 import sys
+import tempfile
 import threading
 import traceback
+import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from http.cookies import SimpleCookie
 from urllib.parse import parse_qs, urlparse
 
 from kb import store
@@ -30,6 +38,12 @@ TYPES = {".js": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf
 PAGES = ("projects", "people", "project", "person", "source", "search", "item")
 POLICY = ("default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self'; "
           "img-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'")
+
+
+KEY_HEADER = "X-Superhistory-Key"
+NEEDS_KEY = "This page needs this run's key. Open the address that `superhistory dashboard` printed."
+USED = ("That address has been used. Its key is good for one visit; run `superhistory dashboard` again for a new one, "
+        "or reload the tab that opened it.")
 
 
 class NotLoopback(ValueError):
@@ -136,37 +150,31 @@ class Handler(BaseHTTPRequestHandler):
     def _json(self, code, data, head=False):
         self._send(code, json.dumps(data).encode(), "application/json", head)
 
-    def _redirect(self, location, cookie, head):
-        self.send_response(303)
-        self.send_header("Location", location)
-        self.send_header("Set-Cookie", cookie)
-        self.send_header("Content-Length", "0")
-        self.send_header("Cache-Control", "no-store")
-        self.send_header("Referrer-Policy", "no-referrer")
-        self.end_headers()
-
     def _has_key(self):
-        jar = SimpleCookie()
-        try:
-            jar.load(self.headers.get("Cookie", ""))
-        except Exception:
-            return False
-        morsel = jar.get(self.server.cookie_name)
-        return morsel is not None and self.server.is_key(morsel.value)
+        return self.server.is_key(self.headers.get(KEY_HEADER, ""))
+
+    def _page(self, key, head):
+        """The page. With a key to hand over, a meta tag carries it to the page's script."""
+        with open(os.path.join(STATIC, "index.html"), "rb") as fh:
+            body = fh.read()
+        if key:
+            body = body.replace(b'<meta charset="utf-8">', b'<meta charset="utf-8">\n<meta name="superhistory-key" '
+                                b'content="' + key.encode("ascii") + b'">', 1)
+        return self._send(200, body, TYPES[".html"], head)
 
     def do_GET(self, head=False):
         host = self.headers.get("Host", "")
         if host not in self.server.allowed_hosts:
             return self._send(403, b"This address is not served.", "text/plain; charset=utf-8", head)
         url = urlparse(self.path)
-        sent = (parse_qs(url.query).get("access") or [""])[0]
-        if sent and self.server.is_key(sent):
-            cookie = f"{self.server.cookie_name}={sent}; HttpOnly; SameSite=Strict; Path=/"
-            return self._redirect("/", cookie, head)
-        if not self._has_key():
-            return self._send(403, b"Open the address that `superhistory dashboard` printed; it carries this run's key.",
-                              "text/plain; charset=utf-8", head)
+        query = parse_qs(url.query)
         parts = [p for p in url.path.split("/") if p]
+        if "access" in query:
+            if not head and (not parts or parts[0] in PAGES) and self.server.spend((query["access"] or [""])[0]):
+                return self._page(self.server.key, head)
+            return self._send(403, USED.encode(), "text/plain; charset=utf-8", head)
+        if parts[:1] == ["api"] and not self._has_key():
+            return self._json(403, {"error": NEEDS_KEY}, head)
         try:
             if parts[:1] == ["api"] and len(parts) == 2:
                 data = self.server.dashboard.api(parts[1], parse_qs(url.query))
@@ -180,8 +188,7 @@ class Handler(BaseHTTPRequestHandler):
                         return self._send(200, fh.read(), TYPES[ext], head)
                 return self._send(404, b"Not found", "text/plain; charset=utf-8", head)
             if not parts or parts[0] in PAGES:
-                with open(os.path.join(STATIC, "index.html"), "rb") as fh:
-                    return self._send(200, fh.read(), TYPES[".html"], head)
+                return self._page(None, head)
             return self._send(404, b"Not found", "text/plain; charset=utf-8", head)
         except LookupError:
             return self._json(404, {"error": "not found"}, head)
@@ -212,18 +219,54 @@ class Server(ThreadingHTTPServer):
         port = self.server_address[1]
         self.allowed_hosts = {f"127.0.0.1:{port}", f"localhost:{port}"}
         self.key = secrets.token_hex(16)
-        # Cookies are not kept apart by port, so a second dashboard on this computer must not share a name.
-        self.cookie_name = f"superhistory-{port}"
+        self.spent = threading.Event()
+        self._lock = threading.Lock()
 
     def is_key(self, value):
         return hmac.compare_digest(str(value).encode(), self.key.encode())
 
+    def spend(self, value):
+        """True for the first visit with the key, and only that one."""
+        with self._lock:
+            if self.spent.is_set() or not self.is_key(value):
+                return False
+            self.spent.set()
+            return True
+
     @property
     def url(self):
-        """The address to open: it holds this run's key, which the first visit swaps for a cookie."""
+        """The address to open: it holds this run's key, good for one visit."""
         return f"http://127.0.0.1:{self.server_address[1]}/?access={self.key}"
 
 
 def make_server(paths, config, port=0, host="127.0.0.1"):
     """A dashboard server bound to a loopback address, on `port` or a free one, not yet serving."""
     return Server((check_host(host), port), Dashboard(paths, config))
+
+
+class Handoff:
+    """Points a browser at the dashboard without putting its key in the browser's command line, where any account on
+    the computer can read it. The browser is given a file only this user can read, in a folder only this user can
+    enter, that redirects to the address. The file is removed as soon as the address has been used, since its key is
+    then spent, and in any case when the dashboard stops."""
+
+    def __init__(self, dashboard):
+        self.dashboard = dashboard
+        self.folder = tempfile.mkdtemp(prefix="superhistory-")  # mode 0700
+        self.path = os.path.join(self.folder, "open.html")
+        address = html.escape(dashboard.url, quote=True)
+        fd = os.open(self.path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(f'<!doctype html><meta charset="utf-8"><meta http-equiv="refresh" content="0;url={address}">'
+                     f'<title>Superhistory</title><p><a href="{address}">Open the Superhistory dashboard</a>\n')
+        threading.Thread(target=self._remove_when_spent, daemon=True).start()
+
+    def open(self):
+        return webbrowser.open(pathlib.Path(self.path).as_uri())
+
+    def _remove_when_spent(self):
+        self.dashboard.spent.wait()
+        self.remove()
+
+    def remove(self):
+        shutil.rmtree(self.folder, ignore_errors=True)

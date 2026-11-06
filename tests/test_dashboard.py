@@ -4,14 +4,17 @@ import io
 import json
 import os
 import re
+import stat
 import tempfile
 import threading
+import time
 import unittest
 import urllib.error
 import urllib.request
 from collections import Counter
 from pathlib import Path
 from unittest import mock
+from urllib.parse import urlparse
 
 from kb import cli, config as config_mod, store, trial
 from kb.dashboard import catalog, server, views
@@ -49,13 +52,13 @@ class Served(unittest.TestCase):
         self.srv = srv
         return srv
 
-    def cookie(self):
-        return {"Cookie": f"{self.srv.cookie_name}={self.srv.key}"}
+    def keyed(self):
+        return {server.KEY_HEADER: self.srv.key}
 
     def get(self, path, headers=None, key=True):
-        """GET as a browser that opened the printed address would, unless `key` is False."""
+        """GET as the page's script would, sending the run's key in its header, unless `key` is False."""
         request = urllib.request.Request(self.srv.url.split("?")[0].rstrip("/") + path,
-                                         headers={**(self.cookie() if key else {}), **(headers or {})})
+                                         headers={**(self.keyed() if key else {}), **(headers or {})})
         try:
             with urllib.request.urlopen(request) as res:
                 return res.status, res.read(), res.headers
@@ -352,12 +355,12 @@ class SafetyTest(Served):
         for method in ("POST", "PUT", "DELETE", "PATCH", "OPTIONS"):
             request = urllib.request.Request(self.srv.url.split("?")[0] + "api/overview",
                                              data=b"x" if method != "OPTIONS" else None, method=method,
-                                             headers=self.cookie())
+                                             headers=self.keyed())
             with self.assertRaises(urllib.error.HTTPError) as caught:
                 urllib.request.urlopen(request)
             self.assertEqual(caught.exception.code, 405, method)
             self.assertEqual(caught.exception.headers["Allow"], "GET, HEAD")
-        head = urllib.request.Request(self.srv.url.split("?")[0] + "api/overview", method="HEAD", headers=self.cookie())
+        head = urllib.request.Request(self.srv.url.split("?")[0] + "api/overview", method="HEAD", headers=self.keyed())
         with urllib.request.urlopen(head) as res:
             self.assertEqual((res.status, res.read()), (200, b""))
 
@@ -367,35 +370,54 @@ class SafetyTest(Served):
             db.execute("DELETE FROM docs")
         db.close()
 
-    def test_a_request_without_this_runs_key_is_refused_whatever_it_asks_for(self):
-        for path in ("/", "/api/overview", "/api/item?id=1", "/static/app.js", "/projects"):
+    def test_data_needs_this_runs_key_in_its_header_and_a_cookie_never_stands_in_for_it(self):
+        for path in ("/api/overview", "/api/item?id=1", "/api/projects", "/api/search?q=body"):
             self.assertEqual(self.get(path, key=False)[0], 403, path)
-        wrong = {"Cookie": f"{self.srv.cookie_name}={'0' * 32}"}
-        self.assertEqual(self.get("/api/overview", wrong, key=False)[0], 403)
-        self.assertEqual(self.get("/api/overview", {"Cookie": "junk;;="}, key=False)[0], 403)
-        self.assertEqual(self.get("/?access=" + "0" * 32, key=False)[0], 403)
+            wrong = {server.KEY_HEADER: "0" * 32}
+            self.assertEqual(self.get(path, wrong, key=False)[0], 403, path)
+            for jar in (f"superhistory-{self.srv.server_address[1]}={self.srv.key}", f"{server.KEY_HEADER}={self.srv.key}",
+                        f"access={self.srv.key}", "junk;;="):
+                self.assertEqual(self.get(path, {"Cookie": jar}, key=False)[0], 403, (path, jar))
+            self.assertEqual(self.get(path)[0], 200, path)
+        self.assertEqual(self.get("/api/overview?access=" + self.srv.key, key=False)[0], 403)
+        self.assertEqual(self.get("/api/overview?key=" + self.srv.key, key=False)[0], 403)
 
-    def test_the_printed_address_trades_its_key_for_a_cookie_and_a_clean_address(self):
-        import http.client
+    def test_the_page_and_its_files_hold_no_data_and_need_no_key(self):
+        for path in ("/", "/projects", "/item/1", "/static/app.js", "/static/app.css"):
+            status, body, headers = self.get(path, key=False)
+            self.assertEqual(status, 200, path)
+            self.assertNotIn(self.srv.key.encode(), body)
+            self.assertIsNone(headers["Set-Cookie"])
+
+    def test_the_printed_address_is_good_for_one_visit_and_hands_its_key_to_the_page(self):
         self.assertRegex(self.srv.url, r"^http://127\.0\.0\.1:\d+/\?access=[0-9a-f]{32}$")
-        conn = http.client.HTTPConnection("127.0.0.1", self.srv.server_address[1])
-        conn.request("GET", "/?access=" + self.srv.key)
-        res = conn.getresponse()
-        res.read()
-        self.assertEqual((res.status, res.getheader("Location")), (303, "/"))
-        cookie = res.getheader("Set-Cookie")
-        self.assertIn("HttpOnly", cookie)
-        self.assertIn("SameSite=Strict", cookie)
-        self.assertTrue(cookie.startswith(f"{self.srv.cookie_name}={self.srv.key}"))
-        conn.request("GET", "/api/overview", headers={"Cookie": cookie.split(";")[0]})
-        res = conn.getresponse()
-        body = res.read()
-        self.assertEqual(res.status, 200)
-        self.assertNotIn(self.srv.key.encode(), body)
-        conn.close()
-        other = server.make_server(self.paths, config_mod.Config())
-        self.addCleanup(other.server_close)
-        self.assertNotEqual((other.cookie_name, other.key), (self.srv.cookie_name, self.srv.key))
+        address = self.srv.url
+        self.assertEqual(self.get("/?access=" + "0" * 32, key=False)[0], 403)
+        head = urllib.request.Request(address, method="HEAD")
+        with self.assertRaises(urllib.error.HTTPError) as caught:
+            urllib.request.urlopen(head)
+        self.assertEqual(caught.exception.code, 403, "a HEAD request must not spend the key")
+        self.assertFalse(self.srv.spent.is_set())
+        with urllib.request.urlopen(address) as res:
+            body = res.read().decode()
+            self.assertEqual(res.status, 200)
+            self.assertIsNone(res.headers["Set-Cookie"])
+        self.assertIn(f'<meta name="superhistory-key" content="{self.srv.key}">', body)
+        self.assertTrue(self.srv.spent.is_set())
+        for again in (address, address.replace("/?", "/projects?"), self.srv.url.split("?")[0] + "api/overview?access="
+                      + self.srv.key):
+            with self.assertRaises(urllib.error.HTTPError) as caught:
+                urllib.request.urlopen(urllib.request.Request(again, headers=self.keyed()))
+            self.assertEqual(caught.exception.code, 403, again)
+        status, data, _ = self.get("/api/overview")
+        self.assertEqual(status, 200, "the header still works after the address is spent")
+        self.assertNotIn(self.srv.key.encode(), data)
+
+    def test_the_script_keeps_the_key_in_the_tab_and_never_in_a_cookie(self):
+        script = (Path(server.STATIC) / "app.js").read_text(encoding="utf-8")
+        self.assertIn("sessionStorage", script)
+        self.assertIn("X-Superhistory-Key", script)
+        self.assertNotIn("document.cookie", script)
 
     def test_a_request_for_another_host_name_is_refused(self):
         self.assertEqual(self.get("/api/overview", {"Host": "evil.example"})[0], 403)
@@ -488,9 +510,7 @@ class CommandTest(unittest.TestCase):
     def test_it_prints_its_address_and_stops_cleanly_on_ctrl_c(self):
         def run(home, args):
             paths = Paths.under(home)
-            db = store.connect(paths.db)
-            trial.load(db, MONTH)
-            db.close()
+            store.connect(paths.db).close()
             with mock.patch.object(server.Server, "serve_forever", side_effect=KeyboardInterrupt), \
                     mock.patch("webbrowser.open") as opened:
                 code = cli.main(list(args))
@@ -501,16 +521,80 @@ class CommandTest(unittest.TestCase):
         self.assertRegex(out, r"http://127\.0\.0\.1:\d+/\?access=[0-9a-f]{32}\n")
         self.assertIn("Stopped.", out)
 
-    def test_it_opens_the_browser_unless_told_not_to(self):
+    def run_opening(self, during):
+        """The command with a browser to open, serve_forever replaced by during(server, seen), and the browser's
+        opener recorded in seen["opened"]."""
+        seen = {}
+
         def run(home, args):
-            paths = Paths.under(home)
-            store.connect(paths.db).close()
+            store.connect(Paths.under(home).db).close()
+
+            def serving(srv):
+                seen["server"] = srv
+                during(srv, seen)
+                raise KeyboardInterrupt
+            with mock.patch.object(server.Server, "serve_forever", autospec=True, side_effect=serving), \
+                    mock.patch("webbrowser.open", return_value=True) as opened:
+                seen["opened"] = opened
+                return cli.main(list(args))
+        code, out, err = self.run_cli("dashboard", env=run)
+        return code, out, seen
+
+    @staticmethod
+    def handoff_path(seen):
+        (argument,), kwargs = seen["opened"].call_args
+        assert not kwargs
+        return argument, urllib.request.url2pathname(urlparse(argument).path)
+
+    def test_the_browser_gets_a_private_file_and_never_the_key(self):
+        def during(srv, seen):
+            self.assertEqual(seen["opened"].call_count, 1)
+            argument, path = self.handoff_path(seen)
+            self.assertTrue(argument.startswith("file://"), argument)
+            self.assertNotIn(srv.key, repr(seen["opened"].call_args))
+            self.assertNotIn(srv.key, argument)
+            folder = os.path.dirname(path)
+            if os.name == "posix":
+                self.assertEqual(stat.S_IMODE(os.stat(path).st_mode), 0o600)
+                self.assertEqual(stat.S_IMODE(os.stat(folder).st_mode), 0o700)
+            text = Path(path).read_text(encoding="utf-8")
+            self.assertIn('http-equiv="refresh"', text)
+            self.assertIn(srv.url, text)
+            seen["path"] = path
+
+        code, out, seen = self.run_opening(during)
+        self.assertEqual(code, 0)
+        self.assertRegex(out, r"http://127\.0\.0\.1:\d+/\?access=[0-9a-f]{32}\n")
+        self.assertFalse(os.path.exists(os.path.dirname(seen["path"])), "removed when the dashboard stops")
+
+    def test_the_file_is_removed_once_the_address_has_been_used(self):
+        def during(srv, seen):
+            _, path = self.handoff_path(seen)
+            self.assertTrue(os.path.exists(path))
+            self.assertTrue(srv.spend(srv.key))
+            for _ in range(100):
+                if not os.path.exists(os.path.dirname(path)):
+                    break
+                time.sleep(0.05)
+            seen["gone"] = not os.path.exists(os.path.dirname(path))
+        code, _, seen = self.run_opening(during)
+        self.assertEqual(code, 0)
+        self.assertTrue(seen["gone"], "the file outlived the key it holds")
+
+    def test_no_browser_found_leaves_the_printed_address_and_still_cleans_up(self):
+        seen = {}
+
+        def run(home, args):
+            store.connect(Paths.under(home).db).close()
             with mock.patch.object(server.Server, "serve_forever", side_effect=KeyboardInterrupt), \
-                    mock.patch("webbrowser.open") as opened:
+                    mock.patch("webbrowser.open", return_value=False) as opened:
                 code = cli.main(list(args))
-            self.assertEqual(opened.call_count, 1)
+            seen["path"] = opened.call_args[0][0]
             return code
-        self.assertEqual(self.run_cli("dashboard", env=run)[0], 0)
+        code, out, _ = self.run_cli("dashboard", env=run)
+        self.assertEqual(code, 0)
+        self.assertIn("No browser was found", out)
+        self.assertFalse(os.path.exists(os.path.dirname(urllib.request.url2pathname(urlparse(seen["path"]).path))))
 
     def test_a_port_in_use_is_reported(self):
         def run(home, args):

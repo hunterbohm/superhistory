@@ -41,12 +41,6 @@ class BrowserTest(unittest.TestCase):
         store.store_item(db, "notes", "demo:hostile.md", "2026-09-30T00:00:00Z", HOSTILE, f"{HOSTILE}\n\nneedleword", {"path": "/n"})
         db.commit()
         db.close()
-        cls.srv = server.make_server(cls.paths, config_mod.Config())
-        thread = threading.Thread(target=cls.srv.serve_forever, daemon=True)
-        thread.start()
-        cls.addClassCleanup(thread.join)
-        cls.addClassCleanup(cls.srv.server_close)
-        cls.addClassCleanup(cls.srv.shutdown)
         cls.playwright = sync_playwright().start()
         cls.addClassCleanup(cls.playwright.stop)
         try:
@@ -54,6 +48,15 @@ class BrowserTest(unittest.TestCase):
         except Exception as exc:
             raise unittest.SkipTest(f"no Chromium: {exc}")
         cls.addClassCleanup(cls.browser.close)
+
+    def setUp(self):
+        # The printed address is good for one visit, so each test starts a server of its own.
+        self.srv = server.make_server(self.paths, config_mod.Config())
+        thread = threading.Thread(target=self.srv.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(thread.join)
+        self.addCleanup(self.srv.server_close)
+        self.addCleanup(self.srv.shutdown)
 
     @property
     def base(self):
@@ -122,12 +125,21 @@ class BrowserTest(unittest.TestCase):
         page.close()
         self.assertEqual(fingerprint(self.paths.db), before)
 
-    def test_the_address_without_its_key_shows_nothing(self):
-        page = self.browser.new_page()
-        response = page.goto(self.base)
-        self.assertEqual(response.status, 403)
-        self.assertNotIn("Superhistory dashboard", page.inner_text("body"))
-        page.close()
+    def test_the_address_is_good_for_one_visit_and_a_tab_without_the_key_shows_no_data(self):
+        first = self.browser.new_page()
+        first.goto(self.srv.url)
+        first.wait_for_selector("#headline")
+        self.assertNotIn("access=", first.url, "the key is taken out of the address")
+        self.assertEqual(first.evaluate("document.cookie"), "", "the key is in no cookie")
+        first.reload()
+        first.wait_for_selector("#headline")
+        second = self.browser.new_page()
+        self.assertEqual(second.goto(self.srv.url).status, 403)
+        second.goto(self.base)
+        second.wait_for_selector("text=This tab has no key")
+        self.assertNotIn("Things in your history", second.inner_text("body"))
+        first.close()
+        second.close()
 
     def test_the_page_reads_on_a_phone(self):
         page = self.browser.new_page(viewport={"width": 390, "height": 800})

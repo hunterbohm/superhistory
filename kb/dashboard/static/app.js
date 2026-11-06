@@ -65,8 +65,22 @@ const link = (kind, key, name) => `<a href="${href(kind, key)}">${esc(name)}</a>
 const famDot = f => `<span class="fam" style="background:var(${fam(f).v})"></span>`;
 const safeHref = u => /^(https?:\/\/|obsidian:\/\/|imessage:\/\/|sms:)/.test(u || "") ? u : null;
 
+// The run's key arrives once, in a meta tag on the page the printed address opens. It is kept for this tab only, taken
+// out of the address, and sent in a header with every request for data. It is in no cookie.
+const KEY = (() => {
+  const meta = document.querySelector('meta[name="superhistory-key"]');
+  if (meta) {
+    const k = meta.content;
+    meta.remove();
+    try { sessionStorage.setItem("superhistory-key", k); } catch (e) { /* kept in memory only */ }
+    history.replaceState(null, "", location.pathname + location.hash);
+    return k;
+  }
+  try { return sessionStorage.getItem("superhistory-key") || ""; } catch (e) { return ""; }
+})();
+
 async function api(path) {
-  const res = await fetch("/api/" + path, { headers: { Accept: "application/json" } });
+  const res = await fetch("/api/" + path, { headers: { Accept: "application/json", "X-Superhistory-Key": KEY } });
   let data = null;
   try { data = await res.json(); } catch (e) { /* not JSON */ }
   if (!res.ok) { const err = new Error((data && data.error) || `The dashboard answered ${res.status}.`); err.status = res.status; throw err; }
@@ -117,6 +131,7 @@ async function render() {
   } catch (err) {
     if (my !== token) return;
     const missing = err.status === 404;
+    if (err.status === 403) { app.innerHTML = `<div class="card err-note"><b>This tab has no key</b>${esc(err.message)}</div>`; document.title = "No key · Superhistory"; return; }
     app.innerHTML = `<div class="card err-note"><b>${missing ? "Not found" : "The dashboard could not read your history"}</b>${esc(missing ? "That record is not in your history, or it was replaced when its source refreshed." : err.message)}<div style="margin-top:12px"><a class="btn" href="/">Back to the overview</a></div></div>`;
     document.title = (missing ? "Not found" : "Problem") + " · Superhistory";
   }
