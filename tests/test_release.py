@@ -1,5 +1,6 @@
 import hashlib
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -10,6 +11,11 @@ import unittest
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ASSETS = ["SHA256SUMS", "install.sh", "superhistory.tar.gz"]
 LATEST = "https://github.com/hunterbohm/superhistory/releases/latest/download/superhistory.tar.gz"
+TAGGED = "https://github.com/hunterbohm/superhistory/releases/download/v0.1.0/superhistory.tar.gz"
+# What install.sh and the installed command run, found once; a test's PATH holds these and its own fakes, never a real
+# gh or curl, so a machine's own gh (a CI runner has one) can't answer for the fake.
+SYSTEM_TOOLS = ["sh", "mktemp", "rm", "mkdir", "mv", "cp", "cat", "ls", "find", "head", "tar", "gzip", "chmod",
+                "dirname", "basename", "uname", "sed", "tr", "grep", "env"]
 GIT = ["git", "-c", "user.name=t", "-c", "user.email=t@example.invalid"]
 
 
@@ -38,6 +44,14 @@ class ReleaseTest(unittest.TestCase):
         os.symlink(sys.executable, os.path.join(self.bin, "python3"))
         self.home = os.path.join(self.tmp, "home")
         os.makedirs(self.home)
+        self.tools = os.path.join(self.tmp, "tools")
+        os.makedirs(self.tools)
+        for name in SYSTEM_TOOLS:
+            found = shutil.which(name, path="/usr/bin:/bin")
+            if found:
+                os.symlink(found, os.path.join(self.tools, name))
+        self.fake = os.path.join(self.tmp, "fake")
+        os.makedirs(self.fake)
 
     def copy(self, path):
         target = os.path.join(self.repo, path)
@@ -133,18 +147,154 @@ class ReleaseTest(unittest.TestCase):
 
     def test_the_download_address_defaults_to_the_latest_release(self):
         self.assertEqual(self.release().returncode, 0)
-        fake = os.path.join(self.tmp, "fake")
-        os.makedirs(fake)
-        log = os.path.join(self.tmp, "curl.log")
-        with open(os.path.join(fake, "curl"), "w") as fh:
-            fh.write(f'#!/bin/sh\necho "$@" >> {log}\nexit 22\n')
-        os.chmod(os.path.join(fake, "curl"), 0o755)
-        env = {"HOME": self.home, "PATH": os.pathsep.join([fake, self.bin, "/usr/bin", "/bin"])}
-        result = subprocess.run(["sh", os.path.join(self.out, "install.sh")], env=env, capture_output=True, text=True,
-                                timeout=60)
+        self.fake_curl(works=False)
+        result = self.install_from_release()
         self.assertNotEqual(result.returncode, 0)
+        self.assertIn(LATEST, self.calls(self.curl_log)[0])
+
+    def fake_tool(self, name, body):
+        path = os.path.join(self.fake, name)
+        with open(path, "w") as fh:
+            fh.write("#!/bin/sh\n" + body)
+        os.chmod(path, 0o755)
+
+    def fake_curl(self, works):
+        # logs each call; a working curl copies the asset the URL names from the built folder, as GitHub would serve it
+        self.curl_log = os.path.join(self.tmp, "curl.log")
+        copy = (f'while [ $# -gt 0 ]; do case "$1" in -o) out="$2"; shift 2 ;; *) url="$1"; shift ;; esac; done\n'
+                f'cp "{self.out}/${{url##*/}}" "$out"\n')
+        self.fake_tool("curl", f'echo "$@" >> "{self.curl_log}"\n' + (copy if works else
+                       'echo "curl: (22) The requested URL returned error: 404" >&2\nexit 22\n'))
+
+    def fake_gh(self, served=None, fails=False):
+        # logs its arguments and writes the release's assets into --dir, from its own copy of the built folder
+        self.gh_log = os.path.join(self.tmp, "gh.log")
+        served = served or self.out
+        body = f'echo "$@" >> "{self.gh_log}"\n'
+        if fails:
+            body += 'echo "HTTP 404: Not Found" >&2\nexit 1\n'
+        else:
+            body += ('while [ $# -gt 0 ]; do case "$1" in --dir) dir="$2"; shift 2 ;; *) shift ;; esac; done\n'
+                     f'cp "{served}/superhistory.tar.gz" "{served}/SHA256SUMS" "$dir/"\n')
+        self.fake_tool("gh", body)
+
+    def install_from_release(self, *args, url=None):
+        env = {"HOME": self.home, "PATH": os.pathsep.join([self.fake, self.bin, self.tools])}
+        if url:
+            env["SUPERHISTORY_ARCHIVE_URL"] = url
+        return subprocess.run(["sh", os.path.join(self.out, "install.sh"), *args], env=env, capture_output=True,
+                              text=True, timeout=120)
+
+    def calls(self, log):
+        if not os.path.exists(log):
+            return []
         with open(log) as fh:
-            self.assertIn(LATEST, fh.read())
+            return fh.read().splitlines()
+
+    def assert_nothing_installed(self):
+        self.assertFalse(os.path.exists(os.path.join(self.home, ".local")))
+
+    def test_a_failed_download_falls_back_to_the_collaborators_own_gh_login(self):
+        self.assertEqual(self.release().returncode, 0)
+        self.fake_curl(works=False)
+        self.fake_gh()
+        result = self.install_from_release("--tag", "v0.1.0")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(TAGGED, self.calls(self.curl_log)[0])
+        [call] = self.calls(self.gh_log)
+        self.assertRegex(call, r"^release download v0\.1\.0 --repo github.com/hunterbohm/superhistory --pattern "
+                               r"superhistory\.tar\.gz --pattern SHA256SUMS --dir /\S+$")
+        self.assertIn("your own gh login", result.stderr)
+        version = subprocess.run([self.command(), "--version"], capture_output=True, text=True, timeout=60,
+                                 env={"HOME": self.home, "PATH": "/usr/bin:/bin"})
+        self.assertEqual(version.returncode, 0, version.stderr)
+
+    def test_with_no_tag_both_downloads_ask_for_the_latest_release(self):
+        self.assertEqual(self.release().returncode, 0)
+        self.fake_curl(works=False)
+        self.fake_gh()
+        result = self.install_from_release()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(LATEST, self.calls(self.curl_log)[0])
+        [call] = self.calls(self.gh_log)
+        self.assertTrue(call.startswith("release download --repo github.com/hunterbohm/superhistory --pattern "), call)
+
+    def test_a_tampered_archive_from_gh_installs_nothing(self):
+        self.assertEqual(self.release().returncode, 0)
+        served = os.path.join(self.tmp, "served")
+        shutil.copytree(self.out, served)
+        with open(os.path.join(served, "superhistory.tar.gz"), "ab") as fh:
+            fh.write(b"tampered")
+        self.fake_curl(works=False)
+        self.fake_gh(served)
+        result = self.install_from_release("--tag", "v0.1.0")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("does not match superhistory.tar.gz in SHA256SUMS", result.stderr)
+        self.assertIn("Nothing was installed", result.stderr)
+        self.assert_nothing_installed()
+
+    def test_with_no_gh_the_failure_says_how_to_sign_in_and_installs_nothing(self):
+        self.assertEqual(self.release().returncode, 0)
+        self.fake_curl(works=False)
+        result = self.install_from_release("--tag", "v0.1.0")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("gh auth login", result.stderr)
+        self.assertIn("Nothing was installed", result.stderr)
+        self.assert_nothing_installed()
+
+    def test_when_gh_fails_too_it_says_so_and_installs_nothing(self):
+        self.assertEqual(self.release().returncode, 0)
+        self.fake_curl(works=False)
+        self.fake_gh(fails=True)
+        result = self.install_from_release("--tag", "v0.1.0")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("HTTP 404", result.stderr)
+        self.assertIn("gh auth login", result.stderr)
+        self.assertIn("Nothing was installed", result.stderr)
+        self.assert_nothing_installed()
+
+    def test_a_working_public_download_never_calls_gh(self):
+        self.assertEqual(self.release().returncode, 0)
+        self.fake_curl(works=True)
+        self.fake_gh()
+        result = self.install_from_release("--tag", "v0.1.0")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(len(self.calls(self.curl_log)), 2)
+        self.assertEqual(self.calls(self.gh_log), [])
+
+    def test_an_address_given_by_hand_never_falls_back_to_gh(self):
+        self.assertEqual(self.release().returncode, 0)
+        self.fake_gh()
+        os.symlink(shutil.which("curl"), os.path.join(self.fake, "curl"))
+        result = self.install_from_release(url=f"file://{self.tmp}/missing/superhistory.tar.gz")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("Nothing was installed", result.stderr)
+        self.assertEqual(self.calls(self.gh_log), [])
+        self.assert_nothing_installed()
+
+    def test_a_tag_that_is_not_a_release_tag_is_refused_before_any_download(self):
+        self.assertEqual(self.release().returncode, 0)
+        self.fake_curl(works=True)
+        self.fake_gh()
+        for args in (["--tag"], ["--tag", ""], ["--tag", "../x"], ["--tag=v1 x"], ["--tag", "main"],
+                     ["--tag", "-v1"]):
+            result = self.install_from_release(*args)
+            self.assertEqual(result.returncode, 2, args)
+            self.assertIn("--tag", result.stderr)
+        self.assertEqual(self.calls(self.curl_log), [])
+        self.assertEqual(self.calls(self.gh_log), [])
+        self.assert_nothing_installed()
+
+    def test_the_tag_jobs_run_nothing_in_a_private_repo(self):
+        # a private release is made by hand (tools/release.sh, then gh release create), so its tag must bill no job
+        with open(os.path.join(REPO, ".github", "workflows", "release.yml"), encoding="utf-8") as fh:
+            text = fh.read()
+        guards = dict(re.findall(r"^  (\w+):\n(?:    #.*\n)*    if: (.+)$", text, re.M))
+        self.assertEqual(guards, {
+            "build": "github.event_name == 'pull_request'",
+            "test": "github.event_name == 'push' && !github.event.repository.private",
+            "release": "github.event_name == 'push' && !github.event.repository.private",
+        })
 
 
 class ScanTest(unittest.TestCase):
