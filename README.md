@@ -1,10 +1,10 @@
 # Superhistory
 
-The knowledge base your agents check first. The command is `kb`.
+The knowledge base your agents check first. The command is `superhistory`.
 
 Superhistory collects what already happened on your computer: your Claude Code, Codex and Hermes sessions, your email
 and texts, your notes, your commits and GitHub threads. It keeps them in one SQLite file. When you send a prompt to an
-agent, a hook asks `kb` for anything that fits. A small model writes a search, a second pass keeps only the records
+agent, a hook asks `superhistory` for anything that fits. A small model writes a search, a second pass keeps only the records
 about what you asked, and the agent gets those few records, or nothing.
 
 Memory tools save notes while an agent works, and the agent decides what to remember. Superhistory saves nothing on an
@@ -17,48 +17,45 @@ You need a Mac or Linux and Python 3.9 or newer. A Mac's `python3` from the Comm
 installer needs no root, pip or virtual environment.
 
 ```sh
-git clone <this repository> kb-source
-sh kb-source/install.sh --from kb-source
+git clone <this repository> superhistory-source
+sh superhistory-source/install.sh --from superhistory-source
 ```
 
-It copies kb into your data folder and writes the `kb` command to `~/.local/bin`. If that folder is not on your
-`PATH`, the installer prints the line to add. If another program named `kb` comes first on your `PATH` (the
-`kb-manager` package installs one), the installer says so.
+It copies Superhistory into your data folder and writes the `superhistory` command to `~/.local/bin`. If that folder is not on your
+`PATH`, the installer prints the line to add. If another program named `superhistory` comes first on your `PATH`, the
+installer says so.
 
-You can also install with `pipx install ./kb-source` or `uv tool install ./kb-source`. The package is named
-`superhistory`; the command stays `kb`.
+You can also install with `pipx install ./superhistory-source` or `uv tool install ./superhistory-source`. The package and the command are both named
+`superhistory`.
 
 Superhistory is free and open source to self-host, plus Sync at $10 a month.
-
-If you installed it when it was called Varve, nothing changes: kb keeps using your existing config, data and log
-folders, and `kb schedule on` replaces the old scheduled job with one under the new name.
 
 ## Try it before you connect anything
 
 ```sh
-kb try
+superhistory try
 ```
 
 This loads a made-up month (sessions, mail, texts, notes, commits) into a database of its own and asks two sample
 questions. For a question the month can answer, you see what search finds and the records the check keeps. For a
-question nothing fits, you see the check add nothing. Without an AI plug-in, `kb try` shows the search and stops
-before the pick. Run `kb --try search "words"` to search the made-up month yourself. Your own data is never touched.
+question nothing fits, you see the check add nothing. Without an AI plug-in, `superhistory try` shows the search and stops
+before the pick. Run `superhistory --try search "words"` to search the made-up month yourself. Your own data is never touched.
 
 ## Set it up
 
 ```sh
-kb setup
+superhistory setup
 ```
 
-`kb setup` finds the sources on your computer and asks which to add, then which AI plug-in to use. It writes the
+`superhistory setup` finds the sources on your computer and asks which to add, then which AI plug-in to use. It writes the
 config file, offers to install the hooks, offers to read your sources every 15 minutes, and offers to read them now.
-Every choice is in one file you can edit later. Run `kb paths` to see where it is.
+Every choice is in one file you can edit later. Run `superhistory paths` to see where it is.
 
 ```toml
 machine = "studio"          # this computer's name in stored ids; set it once
 
 [ai]
-plugin = "chatgpt"          # kb ai list shows the choices
+plugin = "chatgpt"          # superhistory ai list shows the choices
 
 [sources.notes]
 path = "~/Notes"
@@ -74,16 +71,16 @@ roots = ["~/code"]
 
 | Command | What it does |
 | --- | --- |
-| `kb search "words"` | Searches everything. `--source`, `--after` and `--limit` narrow it. |
-| `kb get ID` | Prints the stored text of a search hit, a page at a time. |
-| `kb ingest` | Reads every source now, then summarizes new long items. |
-| `kb stats` | Shows how many records each source has and which sources failed. |
-| `kb rebuild` | Reads every source into a fresh knowledge base and puts it in place of this one once it checks out. |
-| `kb schedule on`, `off`, `status` | Reads your sources in the background, with launchd on a Mac or a systemd user timer on Linux. |
-| `kb hooks install`, `uninstall`, `status` | Adds or removes the hook in each agent found here. |
-| `kb ai list`, `kb ai test` | Lists the AI plug-ins, or makes one tiny call and says which plug-in answered. |
-| `kb setup`, `kb try` | Sets kb up, or shows it on a made-up month. |
-| `kb login NAME` | Signs a Gmail source in with your own Google OAuth client. |
+| `superhistory search "words"` | Searches everything. `--source`, `--after` and `--limit` narrow it. |
+| `superhistory get ID` | Prints the stored text of a search hit, a page at a time. |
+| `superhistory ingest` | Reads every source now, then summarizes new long items. |
+| `superhistory stats` | Shows how many records each source has and which sources failed. |
+| `superhistory rebuild` | Reads every source into a fresh knowledge base and puts it in place of this one once it checks out. |
+| `superhistory schedule on`, `off`, `status` | Reads your sources in the background, with launchd on a Mac or a systemd user timer on Linux. |
+| `superhistory hooks install`, `uninstall`, `status` | Adds or removes the hook in each agent found here. |
+| `superhistory ai list`, `superhistory ai test` | Lists the AI plug-ins, or makes one tiny call and says which plug-in answered. |
+| `superhistory setup`, `superhistory try` | Sets Superhistory up, or shows it on a made-up month. |
+| `superhistory login NAME` | Signs a Gmail source in with your own Google OAuth client. |
 
 ## Sources
 
@@ -99,12 +96,12 @@ roots = ["~/code"]
 | `github` | Issues and pull requests you are involved in, through `gh` | `owner/repo` |
 
 Add as many sources of one type as you like, each in its own `[sources.NAME]` table with `type = "..."`. The table's
-name is what `kb search --source` takes.
+name is what `superhistory search --source` takes.
 
 Every source only reads. Mail and texts drop 2FA codes and password resets one message at a time, and every record
 passes through a mask that replaces API keys, tokens and passwords with `[masked]` before it is stored.
 
-To read another computer, name it and list it in a source's `hosts`. That computer needs only Python 3.9 and SSH. kb
+To read another computer, name it and list it in a source's `hosts`. That computer needs only Python 3.9 and SSH. Superhistory
 sends itself over `ssh <host> python3 -`, and nothing is installed or left there.
 
 ```toml
@@ -115,11 +112,11 @@ ssh = "sam@laptop.local"
 hosts = ["studio", "laptop"]
 ```
 
-iMessage needs Full Disk Access for the Python that runs kb. The installer prints which one.
+iMessage needs Full Disk Access for the Python that runs Superhistory. The installer prints which one.
 
-Gmail needs an app password, which needs 2-Step Verification on your Google account. `kb setup` saves the password
+Gmail needs an app password, which needs 2-Step Verification on your Google account. `superhistory setup` saves the password
 in a file only you can read. To use your own Google OAuth client instead, set `auth = "oauth"`, `client_id` and
-`client_secret`, then run `kb login NAME`.
+`client_secret`, then run `superhistory login NAME`.
 
 ## AI plug-ins
 
@@ -134,41 +131,41 @@ The check, the summarizer and the Gmail sorter use one AI plug-in, the one in `[
 | `anthropic`, `openai`, `openrouter`, `opencode-go`, `google` | the service's API with your key | `key = "env:NAME"`, `"file:PATH"` or `"cmd:COMMAND"` |
 | `anthropic-compatible`, `openai-compatible` | any server that speaks one of those APIs, at `base_url` | |
 
-A CLI plug-in runs the program you already signed in to. kb never reads, relays or stores that login. Each call runs
+A CLI plug-in runs the program you already signed in to. Superhistory never reads, relays or stores that login. Each call runs
 in a throwaway folder with no tools and no saved session, without the variables that could send it to a paid key.
-API plug-ins read their key only from the place the config names, never from whatever environment kb runs in.
+API plug-ins read their key only from the place the config names, never from whatever environment Superhistory runs in.
 
 A CLI starts a process for every call, so with a CLI plug-in the check waits up to 20 seconds instead of 10. An API
 key is the fast path.
 
 ## Agent hooks
 
-`kb hooks install` adds the hook to each agent it finds.
+`superhistory hooks install` adds the hook to each agent it finds.
 
 | Agent | How |
 | --- | --- |
 | Claude Code | a `UserPromptSubmit` hook in `~/.claude/settings.json` |
 | Codex | a `UserPromptSubmit` hook in `~/.codex/hooks.json`, trusted in `~/.codex/config.toml` |
-| Hermes | a `pre_llm_call` plugin in `~/.hermes/plugins/kb-context` |
+| Hermes | a `pre_llm_call` plugin in `~/.hermes/plugins/superhistory` |
 | OpenCode | a `chat.message` plugin in `~/.config/opencode/plugins` |
 | GitHub Copilot CLI | a `userPromptSubmitted` hook in `~/.copilot/config.json`, built from the format Copilot CLI 1.0.79 is reported to use and not yet run on a live install |
 
 Cursor's documented prompt hook cannot add context, and Grok drops what a prompt hook prints, so neither gets a hook.
-Grok runs Claude Code's hooks too, and kb's hook stays quiet there.
+Grok runs Claude Code's hooks too, and Superhistory's hook stays quiet there.
 
 Each hook waits at most 30 seconds. When the check finds nothing that fits, or fails, the agent gets nothing.
 
-These files are yours, so kb edits them carefully. Before it writes, it works out the new file and checks that the
-file still reads back and that nothing but kb's own entry changed. If anything else would change, it writes nothing and
+These files are yours, so Superhistory edits them carefully. Before it writes, it works out the new file and checks that the
+file still reads back and that nothing but Superhistory's own entry changed. If anything else would change, it writes nothing and
 tells you how to make the change by hand. Every edit keeps a backup beside the file. In `~/.codex/config.toml` the check
 also makes sure every comment on a line of its own survives. A comment at the end of one of your settings lines is kept
-because kb never edits that line, but the check itself does not look at it.
+because Superhistory never edits that line, but the check itself does not look at it.
 
 ## Privacy
 
 Everything stays in one file on your computer. The only thing that leaves it is the AI call you chose: the plug-in
 gets your message, the two turns before it, and the start of a few candidate records, and the summarizer sends long
-items to it. With no plug-in, kb still searches but adds nothing to your prompts and writes no summaries.
+items to it. With no plug-in, Superhistory still searches but adds nothing to your prompts and writes no summaries.
 
 Known limits:
 
@@ -179,7 +176,7 @@ Known limits:
   is not masked, so "Use the --password flag" stays readable. With a digit or a symbol, or after "=" or ":", it is
   masked.
 - In JSON written inside other JSON text, a password with an escaped quote in it is masked only up to that quote, and
-  not at all when fewer than four characters come before it. In plain JSON, and in a tool's input that kb writes as
+  not at all when fewer than four characters come before it. In plain JSON, and in a tool's input that Superhistory writes as
   JSON itself, the whole value is masked.
 - After "Authorization:" or "Proxy-Authorization:", the credential is the word after a scheme such as Bearer, Token or
   AWS4-HMAC-SHA256. With no scheme, header style (the name at a line's start, after a space, a quote or an opening
@@ -196,14 +193,14 @@ Known limits:
   tab, a form feed or the separators from 0x1c, which part words as a line break does. A key split by one of those is
   not masked whole.
 - A private key written as base64 (as a Kubernetes secret holds one) is not masked.
-- Provider tokens kb does not know by itself are masked by rules taken from gitleaks (kb/gitleaks.py, gitleaks v8.30.1,
+- Provider tokens Superhistory does not know by itself are masked by rules taken from gitleaks (kb/gitleaks.py, gitleaks v8.30.1,
   MIT licence), where gitleaks finds one in text, as a word of its own. An Airtable token is masked alone too, where
   gitleaks needs the provider's name near it; a Facebook token only with "facebook" in the text, as gitleaks reads it,
   since alone its shape is also a pipe-separated record's (a timestamp and a trace id). So with "facebook" anywhere in
   the text, such a record of 16 digits, "|" and 32 hex digits is masked too. An item's id is read more narrowly,
   without these rules.
   gitleaks reads Netlify's "nfp_" tokens only by the word "netlify" near a value and has no rule for Resend's "re_"
-  tokens, so kb does not mask them by themselves.
+  tokens, so Superhistory does not mask them by themselves.
 - A .netrc line is read where it starts a line or a quoted string. One with no host after "machine" (or "default"),
   whose login and password are both words of letters, reads as a sentence and is shown: "default login page password
   requirements" stays, and so does "default login deploy password sunshine". With a host, or a digit or a symbol in
@@ -220,19 +217,19 @@ Known limits:
   field, with comments and keyword arguments read past. With no label, only typing into the focused field
   (keyboard.type) is read, by the value's shape. A value typed from a variable, or built at run time (joined,
   templated), stays, and other ways of writing such code are not read.
-- kb reads a secret that one colour code or one invisible character splits, or glues to a word, and still hides all
-  that kb's earlier mask hid. Shapes built from more than that are not all read: a secret split by two kinds of
-  invisible character at once ("pass<soft hyphen>word=..." with a link inside the value), what an older kb left
+- Superhistory reads a secret that one colour code or one invisible character splits, or glues to a word, and still hides all
+  that Superhistory's earlier mask hid. Shapes built from more than that are not all read: a secret split by two kinds of
+  invisible character at once ("pass<soft hyphen>word=..." with a link inside the value), what an older Superhistory left
   glued to a placeholder ("[masked]<zero-width space>rest"), letters glued onto a key after a colour code
   ("AKIA...<ESC>[0mSuffix"), or a secret's name a colour code splits ("DB_<ESC>[31mPASS<ESC>[0mWORD=..."). Where
-  kb's earlier mask hid such a secret, this one does too.
-- Where kb reads a value by its shape alone (after "pass" or "pwd" next to a user's name, in an XML element not named
+  Superhistory's earlier mask hid such a secret, this one does too.
+- Where Superhistory reads a value by its shape alone (after "pass" or "pwd" next to a user's name, in an XML element not named
   for a password, under a secret's name in a two-item list, in a field with no label, or after a name a colour code
   splits), a code identifier ("ConvertBF16ToF32", "OAuth2AuthorizationCode") is no credential. So a password made of
   words and numbers ("Summer2024Garden") reads as an identifier there and stays, and an identifier with a digit run
   into small letters ("Utf8to16Codec") reads as a password and is masked.
-- Masking costs time in proportion to the text, but a text in which kb's newer readings fire is masked a second time
-  beside kb's earlier mask, so a long run of built shapes is slow: 4,000 soft-hyphen-split passwords with a link
+- Masking costs time in proportion to the text, but a text in which Superhistory's newer readings fire is masked a second time
+  beside Superhistory's earlier mask, so a long run of built shapes is slow: 4,000 soft-hyphen-split passwords with a link
   inside each (160 KB) take about 10 s, 30,000 command lines with a password each (900 KB) about 14 s, and 256 KB of
   nothing but Playwright fill calls with a password each about 8 s.
 - Where a later pass cuts into a placeholder, a bracket can be left beside it ("[masked]]"), or two placeholders stand
@@ -251,11 +248,11 @@ Known limits:
 - A private key is masked by its structure: from its header through its footer, or, if the footer is missing, through
   the end of its paragraph. So whatever follows a key cut off before its footer, up to the next blank line, is masked
   with it, and so is the paragraph before a footer with no header.
-- A knowledge base that an older kb wrote, before each row recorded how it was masked, does not open: an older kb's
-  masking can leave a secret that no pattern finds afterwards. kb says so and names `kb rebuild`, which reads your
+- A knowledge base that an older Superhistory wrote, before each row recorded how it was masked, does not open: an older Superhistory's
+  masking can leave a secret that no pattern finds afterwards. Superhistory says so and names `superhistory rebuild`, which reads your
   sources into a fresh one, each as far back as its oldest item in the old one. When a source no longer has some of
   the old one's items, such as sessions an agent has since deleted, the rebuild stops, keeps the old one and says how
-  many each source would lose; `kb rebuild --accept-loss` replaces it anyway and loses them for good.
+  many each source would lose; `superhistory rebuild --accept-loss` replaces it anyway and loses them for good.
 - A YAML list of secrets under a secret's name (`tokens:` followed by `- value` lines) is masked only where an item
   holds a provider's token shape.
 
@@ -265,7 +262,7 @@ On a set of real messages from the author's own use, adding embeddings to the se
 year of summaries) moved the share of messages handled right from 90.5% to 91.2%. That gap is inside run-to-run noise:
 three runs of the embeddings version scored 89.5%, 90.5% and 93.5%. Embeddings found no more useful records, so they
 were dropped (October 2026). What moved the number was the second pass that adds nothing when nothing fits. A version
-without it handled 51% of messages right, and with it 90%. So kb searches with SQLite's full-text index and spends the
+without it handled 51% of messages right, and with it 90%. So Superhistory searches with SQLite's full-text index and spends the
 model call on judging, not on vectors.
 
 ## Develop
@@ -274,7 +271,7 @@ model call on judging, not on vectors.
 python3 -m unittest discover -s tests -t .
 ```
 
-The tests use temp folders only. `KB_HOME=/some/folder` puts the config, database, logs and cache in one folder.
+The tests use temp folders only. `SUPERHISTORY_HOME=/some/folder` puts the config, database, logs and cache in one folder.
 `docs/architecture.md` maps the modules.
 
 ## License

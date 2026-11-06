@@ -3,7 +3,7 @@
 | Superhistory locomo10-with-summaries-dev-noise2 | J | 90.2% | 91.6% | 90.8% | 92.3% | 67.4% |
 |  | F1 | 65.9 | 70.8 | 56.1 | 70.6 | 35.2 |
 
-| Run | rows | stores | empty stores | items summarized | summary failures | check searched | check made no search | lookup errors | lookup added records | searched, added nothing | answers that ran kb tools | empty replies asked again | empty answers | evidence in lookup | evidence in lookup or tools | lookup p50 s |
+| Run | rows | stores | empty stores | items summarized | summary failures | check searched | check made no search | lookup errors | lookup added records | searched, added nothing | answers that ran superhistory tools | empty replies asked again | empty answers | evidence in lookup | evidence in lookup or tools | lookup p50 s |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
 | locomo10-with-summaries-dev-noise2 | 762 | 5 | 0 | 28 | 1 | 733 | 25 | 4 | 616 | 117 | 761 | 22 | 0 | 56.4% | 96.7% | 3.7 |
 

@@ -2,7 +2,7 @@
 |---|---|---|---|---|---|---|---|---|---|---|
 | Superhistory s-without-summaries-dev-k2v3 | 250 | 90.8% | 92.7% | 100.0% | 100.0% | 93.3% | 82.1% | 89.7% | 90.9% | 86.7% |
 
-| Run | rows | stores | empty stores | items summarized | summary failures | check searched | check made no search | lookup errors | lookup added records | searched, added nothing | answers that ran kb tools | empty replies asked again | empty answers | evidence in lookup | evidence in lookup or tools | lookup p50 s |
+| Run | rows | stores | empty stores | items summarized | summary failures | check searched | check made no search | lookup errors | lookup added records | searched, added nothing | answers that ran superhistory tools | empty replies asked again | empty answers | evidence in lookup | evidence in lookup or tools | lookup p50 s |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
 | s-without-summaries-dev-k2v3 | 250 | 250 | 0 | 0 | 0 | 221 | 29 | 0 | 180 | 41 | 215 | 3 | 0 | 70.8% | 100.0% | 3.4 |
 

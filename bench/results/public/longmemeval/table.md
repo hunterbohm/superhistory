@@ -4,7 +4,7 @@
 | Superhistory s-with-summaries-sample50-seed0 | 50 | 84.0% | 91.4% | 87.5% | 100.0% | 100.0% | 61.1% | 100.0% | 100.0% | 85.7% |
 | Superhistory s-without-summaries | 500 | 92.6% | 93.6% | 100.0% | 100.0% | 90.0% | 85.0% | 93.6% | 93.2% | 83.3% |
 
-| Run | rows | stores | empty stores | items summarized | summary failures | check searched | check made no search | lookup errors | lookup added records | searched, added nothing | answers that ran kb tools | empty replies asked again | empty answers | evidence in lookup | evidence in lookup or tools | lookup p50 s |
+| Run | rows | stores | empty stores | items summarized | summary failures | check searched | check made no search | lookup errors | lookup added records | searched, added nothing | answers that ran superhistory tools | empty replies asked again | empty answers | evidence in lookup | evidence in lookup or tools | lookup p50 s |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
 | oracle-with-summaries | 500 | 500 | 0 | 925 | 0 | 489 | 11 | 0 | 382 | 107 | 500 | 0 | 0 | 76.4% | 99.8% | 2.7 |
 | s-with-summaries-sample50-seed0 | 50 | 50 | 0 | 2045 | 1 | 47 | 3 | 0 | 40 | 7 | 50 | 0 | 0 | 78.0% | 100.0% | 3.0 |

@@ -36,11 +36,11 @@ PARALLEL = 2
 CONFIG = Config()
 
 AGENT_TOOLS = (
-    {"name": "kb_search",
+    {"name": "superhistory_search",
      "description": "Run `superhistory search QUERY`: a keyword search over the user's knowledge base (email, texts, notes, "
                     "commits, GitHub threads and earlier agent sessions). Prints up to 10 hits, each with its id.",
      "input_schema": {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]}},
-    {"name": "kb_get",
+    {"name": "superhistory_get",
      "description": "Run `superhistory get ID`: print the stored text of the item a hit belongs to, 20,000 characters a "
                     "page. Pass `offset` for later pages.",
      "input_schema": {"type": "object", "properties": {"id": {"type": "integer"}, "offset": {"type": "integer"}},
@@ -274,9 +274,9 @@ class Store:
 
     def call(self, name, args):
         """Run `superhistory search` or `superhistory get` against this store. Returns the printed text and the source_ids shown."""
-        if name == "kb_search":
+        if name == "superhistory_search":
             argv = ["search", "--", str(args.get("query", ""))]
-        elif name == "kb_get":
+        elif name == "superhistory_get":
             offset = args.get("offset")
             argv = ["get", str(int(args.get("id", 0)))] + ([] if offset is None else ["--offset", str(int(offset))])
         else:
@@ -294,7 +294,7 @@ class Store:
     def _shown(self, name, args, printed):
         db = store.connect(self.paths.db, readonly=True)
         try:
-            ids = [int(args["id"])] if name == "kb_get" else [
+            ids = [int(args["id"])] if name == "superhistory_get" else [
                 int(word[1:]) for word in printed.split() if word.startswith("#") and word[1:].isdigit()]
             return [row[0] for rid in ids
                     for row in db.execute("SELECT source_id FROM docs WHERE id = ?", (rid,)).fetchall()]

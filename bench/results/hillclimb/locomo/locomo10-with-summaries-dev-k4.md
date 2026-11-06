@@ -3,7 +3,7 @@
 | Superhistory locomo10-with-summaries-dev-k4 | J | 91.1% | 93.5% | 88.7% | 91.7% | 73.9% |
 |  | F1 | 67.4 | 70.3 | 59.1 | 74.6 | 42.0 |
 
-| Run | rows | stores | empty stores | items summarized | summary failures | check searched | check made no search | lookup errors | lookup added records | searched, added nothing | answers that ran kb tools | empty replies asked again | empty answers | evidence in lookup | evidence in lookup or tools | lookup p50 s |
+| Run | rows | stores | empty stores | items summarized | summary failures | check searched | check made no search | lookup errors | lookup added records | searched, added nothing | answers that ran superhistory tools | empty replies asked again | empty answers | evidence in lookup | evidence in lookup or tools | lookup p50 s |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
 | locomo10-with-summaries-dev-k4 | 762 | 5 | 0 | 27 | 2 | 732 | 29 | 1 | 688 | 44 | 672 | 18 | 0 | 80.7% | 97.8% | 3.2 |
 
