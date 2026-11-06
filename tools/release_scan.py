@@ -5,12 +5,14 @@
 
 PATTERNS_FILE is read as `grep -i -E -f` reads it. It stays outside the repo, because it names what must not ship.
 tools/release_exceptions.tsv in COMMIT lists what may match, one row per line, tab-separated: the file's path, the exact
-text, and the reason. Blank lines and lines starting with # are skipped. A row whose text is itself private, such as an
-ordinary word a pattern names, goes in PRIVATE_FILE instead, in the same form and outside the repo beside the patterns
-file, so that no tracked file holds it. An exception removes its text from that file's
-lines before they are matched again, so a line passes only when nothing else on it matches. The list is scanned like any
-file, with every row's text removed from it. A file name is never excepted, and a binary file is not read. The files that bench/DATASET_ROWS.txt lists, which hold
-other people's datasets and which bench/README.md says the public tree leaves out, are not read.
+text, and the reason. Blank lines and lines starting with # are skipped. PRIVATE_FILE has the same form and stays
+outside the repo beside the patterns file. The tracked list holds every exception that may be named in public, such as
+the made-up phone numbers and the repo's own address, and PRIVATE_FILE holds only a text that should not be named in
+public, such as an ordinary word a pattern names, so that no tracked file holds it. An exception removes its text from
+that file's lines before they are matched again, so a line passes only when nothing else on it matches. The list is
+scanned like any file, with every row's text removed from it. A file name is never excepted, and a binary file is not
+read. The files that bench/DATASET_ROWS.txt lists, which hold other people's datasets and which bench/README.md says the
+public tree leaves out, are not read.
 
 Prints each remaining hit as path:line and the start of the line. The exit code is 0 when there is none and 1 when
 there is any.
