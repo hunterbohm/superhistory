@@ -18,6 +18,18 @@ curl -fsSL https://github.com/hunterbohm/superhistory/releases/latest/download/i
 superhistory --version
 ```
 
+While the repo is private, that download is a 404, even for someone invited to it. Then install with the person's own GitHub login:
+
+1. Run `gh auth status`. If `gh` is missing, ask before installing it from https://cli.github.com. If it is not signed in, signing in is the person's step: they run `gh auth login` with the GitHub account that was invited and accept the invitation. Stop until they say it is done.
+2. Ask the person for the release tag they were given, such as `v0.1.0`, and use it in both places:
+
+```sh
+gh release download v0.1.0 --repo github.com/hunterbohm/superhistory --pattern install.sh --output - | sh -s -- --tag v0.1.0
+superhistory --version
+```
+
+The installer then fetches the release through `gh` and checks it the same way. If `gh` or the installer prints an error, nothing was installed: show it to the person.
+
 The installer checks the download against the release's `SHA256SUMS`. If `superhistory` is not found, the installer printed an `export PATH=...` line. Tell the person to add it to their shell startup file, and until then put `PATH="$HOME/.local/bin:$PATH"` in front of every command below, since the hooks and the schedule record the path they find.
 
 ## 2. Choose the sources

@@ -2,7 +2,8 @@ name: release
 
 # A pushed tag v* tests the tag, builds the three assets that `releases/latest/download/<name>` serves, and creates the
 # release with them. A pull request that touches the release or the installer builds the same assets and installs from
-# them once, on ubuntu-latest only: the repo is private, so each runner minute is billed.
+# them once, on ubuntu-latest only: the repo is private, so each runner minute is billed. For the same reason a tag runs
+# no job while the repo is private; a private release is built with tools/release.sh and created with gh release create.
 on:
   push:
     tags: ["v*"]
@@ -42,7 +43,7 @@ jobs:
 
   test:
     # The tag's check: the whole suite, on the oldest and the newest Python the product supports.
-    if: github.event_name == 'push'
+    if: github.event_name == 'push' && !github.event.repository.private
     runs-on: ubuntu-latest
     timeout-minutes: 90
     strategy:
@@ -58,7 +59,7 @@ jobs:
 
   release:
     # Builds the assets from the tag, installs from them once, and creates the release. This step is what a tag gates.
-    if: github.event_name == 'push'
+    if: github.event_name == 'push' && !github.event.repository.private
     needs: test
     runs-on: ubuntu-latest
     timeout-minutes: 15

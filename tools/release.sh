@@ -10,6 +10,13 @@
 #   SHA256SUMS            both files' sha256, as `sha256sum -c` reads them
 #
 # The release workflow runs this on a pushed tag, so these names are the ones `releases/latest/download/<name>` serves.
+# While the repo is private a tag runs no job, so a private release is built from its tag and created by hand:
+#
+#   sh tools/release.sh --patterns FILE --exceptions FILE OUT_DIR TAG
+#   gh release create TAG --verify-tag --title TAG OUT_DIR/superhistory.tar.gz OUT_DIR/SHA256SUMS OUT_DIR/install.sh
+#
+# Someone invited to the private repo installs it with `gh release download TAG ... | sh -s -- --tag TAG`, as the
+# README says.
 # To try the install against the files, with no network:
 #
 #   SUPERHISTORY_ARCHIVE_URL=file://OUT_DIR/superhistory.tar.gz sh OUT_DIR/install.sh

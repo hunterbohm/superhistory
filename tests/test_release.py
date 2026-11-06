@@ -233,6 +233,19 @@ class ReleaseTest(unittest.TestCase):
         self.assertIn("Nothing was installed", result.stderr)
         self.assert_nothing_installed()
 
+    def test_a_release_whose_sums_gh_cannot_find_installs_nothing(self):
+        self.assertEqual(self.release().returncode, 0)
+        served = os.path.join(self.tmp, "served")
+        os.makedirs(served)
+        shutil.copy2(os.path.join(self.out, "superhistory.tar.gz"), served)
+        self.fake_curl(works=False)
+        self.fake_tool("gh", 'while [ $# -gt 0 ]; do case "$1" in --dir) dir="$2"; shift 2 ;; *) shift ;; esac; done\n'
+                             f'cp "{served}/superhistory.tar.gz" "$dir/"\n')
+        result = self.install_from_release("--tag", "v0.1.0")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("Nothing was installed", result.stderr)
+        self.assert_nothing_installed()
+
     def test_with_no_gh_the_failure_says_how_to_sign_in_and_installs_nothing(self):
         self.assertEqual(self.release().returncode, 0)
         self.fake_curl(works=False)
@@ -277,7 +290,7 @@ class ReleaseTest(unittest.TestCase):
         self.fake_curl(works=True)
         self.fake_gh()
         for args in (["--tag"], ["--tag", ""], ["--tag", "../x"], ["--tag=v1 x"], ["--tag", "main"],
-                     ["--tag", "-v1"]):
+                     ["--tag", "-v1"], ["--tag", "v"], ["--tag", "v1/../x"], ["--tag", "v1;x"]):
             result = self.install_from_release(*args)
             self.assertEqual(result.returncode, 2, args)
             self.assertIn("--tag", result.stderr)
