@@ -2316,6 +2316,57 @@ class SplitValueTest(unittest.TestCase):
         self.assertEqual(mask_all({"api_key": self.ESCAPED}), {"api_key": "[masked]"})
 
 
+class ReviewTwentyFiveTest(unittest.TestCase):
+    """Round 25: the split view keeps an invisible character just before where a reading starts, and this branch
+    reads "az.exe login" and "az.cmd login" as a command where main reads none. So a token main reads glued across a
+    once-escaped invisible character to "az" ("ghp_...\\u200baz.exe login") stayed readable. Each view main shares
+    now also reads the text with main 032391d's own copy of every table this branch widened that the view uses, and
+    what either reading hides is hidden."""
+
+    TOKEN = "ghp_Ab3dE6gH9jK2mN5pQ8"  # glued to "az", a token to main
+    TOKENS = (TOKEN, "sk-ant-api03-" + "Qx7Lm2Np9Rt4Vw8Yz3Bc6Df1Gh5Jk0" * 2, "xoxb-2048-1188-Qx7Lm2Np9Rt4Vw8Yz3Bc6Df1",
+              "glpat-Qx7Lm2Np9Rt4Vw8Yz3Bc", "npm_Qx7Lm2Np9Rt4Vw8Yz3Bc6Df1Gh5Jk0Lm2Np9")
+    INVISIBLE = (r"\u200b", r"\u00ad", "\x7f", "\u200b", "\u00ad")
+    COMMANDS = ("az.exe login", "az.cmd login", "AZ.EXE login -u ci", "az.Cmd login -p",
+                "aws.exe configure set aws_secret_access_key", "AWS.CMD configure set aws_secret_access_key")
+    PLACES = ("{}", "run {} done", '"{}"', "ok\n{}", r"ok\n{}")
+
+    def test_a_token_main_reads_glued_to_a_command_name_is_masked_as_main_masks_it(self):
+        for invisible in self.INVISIBLE[:2]:
+            for command in self.COMMANDS[:4]:
+                for place in self.PLACES:
+                    text = place.format(self.TOKEN + invisible + command)
+                    with self.subTest(text=text):
+                        self.assertEqual(mask(text), text.replace(self.TOKEN + invisible + "az", "[masked]", 1)
+                                         .replace(self.TOKEN + invisible + "AZ", "[masked]", 1))
+
+    def test_every_character_main_hides_stays_hidden(self):
+        from tests.test_mask_against_today import hidden, main as today
+        for token in self.TOKENS:
+            for invisible in self.INVISIBLE:
+                for command in self.COMMANDS:
+                    for place in self.PLACES:
+                        text = place.format(token + invisible + command)
+                        for depth, form in enumerate((text, json.dumps(text), json.dumps(json.dumps(text)))):
+                            with self.subTest(text=text, depth=depth):
+                                self.assertLessEqual(hidden(today, form), hidden(masking, form))
+
+    def test_each_copy_of_a_widened_table_is_mains(self):
+        # main 032391d's copy of each table this branch widened that a view main shares reads, against main's own as
+        # tests/fixtures/main_mask_68506d9.py has it (none of them changed after 68506d9)
+        from tests.test_mask_against_today import main as today
+        for ours, mains in (("_TODAYS_INVISIBLE", "INVISIBLE"), ("_TODAYS_INVISIBLE_RUN", "_INVISIBLE_RUN"),
+                            ("_TODAYS_NEW_INVISIBLE", "_NEW_INVISIBLE"), ("_TODAYS_READING_START", "_READING_START"),
+                            ("_TODAYS_APP_PASSWORD", "APP_PASSWORD"),
+                            ("_TODAYS_APP_PASSWORD_LINE", "APP_PASSWORD_LINE")):
+            with self.subTest(table=ours):
+                pattern, main_pattern = getattr(masking, ours), getattr(today, mains)
+                self.assertEqual((pattern.pattern, pattern.flags), (main_pattern.pattern, main_pattern.flags))
+        self.assertEqual(masking._TODAYS_UNSEEN, today._UNSEEN)
+        self.assertEqual([(pattern.pattern, span_of.__name__) for pattern, span_of in masking._TODAYS_RULES[1]],
+                         [(pattern.pattern, span_of.__name__) for pattern, span_of in today._TEXT_RULES[1]])
+
+
 class RevisionTest(unittest.TestCase):
     def test_stored_rows_are_masked_again(self):
         self.assertEqual(masking.REVISION, 20)
