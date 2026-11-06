@@ -126,6 +126,47 @@ class NumberShapedSecretTest(unittest.TestCase):
                         self.assertEqual(mask(text), older.mask(text))
 
 
+# After "Authorization:" with no scheme word, a credential made only of digits and ":.+TZ-", with a T or a Z in it:
+# main 2ec4d8c read each as a number, a date or a time, as it reads any such run in a lone token, and showed it. A date
+# in ISO 8601's basic form ("20261101T100000Z") is no date there, as under a key's name.
+AUTHORIZATION_SHAPES = ("20261101T100000Z1234", "2026-11-01T10:00:00Z1234", "1234-5678T9012Z3456", "T1234567890Z12345",
+                        "2026-13-01T10:00:00Z", "2026-11-01T10:00:00.1234567890Z", "20261101T100000Z")
+AUTHORIZATION_DATES = ("2026-11-01T10:00:00Z", "2026-11-01T23:59:59.123Z", "2026-11-01T10:00:00.123456789+05:30",
+                       "2024-02-29T10:00:00Z", "2026-11-01T10:00", "2026-11-01")
+
+
+def header_forms(value):
+    """An Authorization header with no scheme as a line, in a request, as a curl argument in either quotes, as a JSON
+    field, escaped in JSON once and twice, as Proxy-Authorization, and as a value typed into the focused field."""
+    line = f"Authorization: {value}"
+    return {"line": line, "request": f"GET /v1 HTTP/1.1\nHost: api.example.com\n{line}\nAccept: */*",
+            "curl": f'curl -H "{line}" https://api.example.com/v1', "curl single": f"curl -H '{line}' https://x/v1",
+            "json": json.dumps({"Authorization": value}), "json once": json.dumps(line)[1:-1],
+            "json twice": json.dumps(json.dumps(line))[1:-1], "proxy": f"Proxy-Authorization: {value}",
+            "typed": f'await page.keyboard.type("{value}")'}
+
+
+class AuthorizationNumberShapedTest(unittest.TestCase):
+    def test_a_credential_of_digits_and_t_or_z_after_authorization_is_masked(self):
+        for value in AUTHORIZATION_SHAPES:
+            for form, text in header_forms(value).items():
+                with self.subTest(value=value, form=form):
+                    self.assertNotIn(value, mask(text))
+            with self.subTest(value=value, form="mask_all"):
+                self.assertEqual(mask_all(["curl", "-H", f"Authorization: {value}", "https://x/v1"]),
+                                 ["curl", "-H", "Authorization: [masked]", "https://x/v1"])
+                self.assertEqual(mask_all({"headers": {"Authorization": value}}), {"headers": {"Authorization": "[masked]"}})
+        self.assertEqual(mask("Authorization: 20261101T100000Z1234"), "Authorization: [masked]")
+
+    def test_a_real_date_after_authorization_is_shown_as_on_main(self):
+        for value in AUTHORIZATION_DATES:
+            for form, text in header_forms(value).items():
+                with self.subTest(value=value, form=form):
+                    self.assertEqual(mask(text), text)
+            with self.subTest(value=value, form="mask_all"):
+                self.assertEqual(mask_all({"headers": {"Authorization": value}}), {"headers": {"Authorization": value}})
+
+
 class StoredRowTest(unittest.TestCase):
     """A row main 68506d9 masked, which showed these values, is masked again."""
     MAIN = "ed98bfebca16cee4"  # the version main 68506d9 records on its rows
@@ -147,7 +188,23 @@ class StoredRowTest(unittest.TestCase):
             self.assertNotIn(value, content)
         self.assertIn("expires_at: 2026-11-01T10:00:00Z", content)
         self.assertEqual(version, store.VERSION)
-        self.assertEqual(masking.REVISION, 11)
+        self.assertEqual(masking.REVISION, 12)
+
+    def test_a_row_main_2ec4d8c_stored_with_an_authorization_of_digits_is_masked_again(self):
+        text = "Authorization: 20261101T100000Z1234\nAuthorization: 2026-11-01T10:00:00Z\n"
+        with tempfile.TemporaryDirectory() as tmp:
+            db = store.connect(os.path.join(tmp, "kb.sqlite"))
+            try:
+                db.execute("INSERT INTO docs(kind,source,source_id,ts,title,content,metadata,masked) "
+                           "VALUES(?,?,?,?,?,?,?,?)", ("doc", "notes", "notes:plan.md", "2026-11-01", "Plan", text, "{}",
+                                                      "6d34023992abc2fa"))  # the version main 2ec4d8c records
+                db.commit()
+                store.remask(db)
+                content, version = db.execute("SELECT content, masked FROM docs").fetchone()
+            finally:
+                db.close()
+        self.assertEqual(content, "Authorization: [masked]\nAuthorization: 2026-11-01T10:00:00Z\n")
+        self.assertEqual(version, store.VERSION)
 
 
 if __name__ == "__main__":
