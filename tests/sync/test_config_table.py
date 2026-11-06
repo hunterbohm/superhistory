@@ -9,7 +9,7 @@ from kb.paths import Paths
 from .network import Network, run_cli
 
 LOGIN = ("sync", "login", "--app", "https://app.test", "--relay", "https://relay.test", "--label", "computer 1")
-BROKEN = '[sources.github]\ntoken_env = "GH"\n'  # a GitHub source with no account is a config error once [sync] is there
+BROKEN = '[sources.github]\ninvolves = "@me"\n'  # valid alone; with [sync] on, a GitHub source must name its account
 
 
 class ConfigTableTest(unittest.TestCase):

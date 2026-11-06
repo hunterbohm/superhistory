@@ -12,7 +12,7 @@ import time
 import traceback
 from datetime import datetime, timezone
 
-from kb import NAME, __version__, ai, check, config as config_mod, ids, ingest, search, store, summarize
+from kb import NAME, __version__, ai, check, config as config_mod, ids, ingest, search, store, summarize, sync
 from kb.ai import AIError
 from kb.mask import MaskFilter, MaskedStream, mask, masked_log
 from kb.paths import Paths
@@ -741,6 +741,7 @@ def parser():
     sp.add_argument("new_id", type=int, nargs="?")
     sp.add_argument("--clear", action="store_true", help="remove the mark instead")
     sp.set_defaults(fn=cmd_supersede)
+    sync.register(sub)
     return p
 
 

@@ -272,6 +272,11 @@ def _ids_hold_secret(rec):
     return holds_secret(rec.source, target[0]) or id_holds_secret(rec.source_id, _host(rec)) or id_holds_secret(target[1])
 
 
+def _kb_refuses(db, source, source_id):
+    """Whether kb's own store would refuse this item's id, read with the names its stored rows record."""
+    return store.secret_id(source, source_id, store.item_names(db, source, source_id))
+
+
 def item_hash(title, text):
     """kb's hash of an item: the first 64 bits of SHA-1 over its title and text."""
     return hashlib.sha1(f"{title}\0{text}".encode()).hexdigest()[:16]
@@ -296,7 +301,7 @@ def outgoing_record(rec, db):
     of text before masking lets whoever reads it test guesses at what was masked. A stored hash that does not match its
     text for any other reason, such as a whitespace tail an older kb's chunker dropped, covers nothing secret. A
     summary's `of_hash` names the item it summarizes the same way, read from `db`; one for an older text leaves empty. The rows' `host`, and a supersede's target, leave as they are, since the id rule above has read them."""
-    if _ids_hold_secret(rec):
+    if _ids_hold_secret(rec) or _kb_refuses(db, rec.source, rec.source_id):
         return None
     if rec.kind == "summary":
         return dataclasses.replace(rec, body=_of_hash(egress.clean(rec.body), rec, db))
@@ -382,19 +387,20 @@ def _own_digests(db, own):
                                     "json_extract(metadata, '$.host') FROM docs "
                                     f"WHERE kind IN ('doc','raw') AND {OWNED} GROUP BY source, source_id",
                                     owned_args(own)):
-        if not holds_secret(s) and not id_holds_secret(i, host):
+        if not holds_secret(s) and not id_holds_secret(i, host) and not _kb_refuses(db, s, i):
             out[("item", s, i, "")] = h
     grouped = {}
     for s, i, *row in db.execute("SELECT source, source_id, kind, ts, title, content, metadata FROM docs "
                                  f"WHERE kind IN ('segment','atom') AND {OWNED} ORDER BY id", owned_args(own)):
         grouped.setdefault((s, i), []).append(row)
     for (s, i), rows in grouped.items():
-        if not holds_secret(s) and not id_holds_secret(i):
+        if not holds_secret(s) and not id_holds_secret(i) and not _kb_refuses(db, s, i):
             out[("summary", s, i, "")] = summary_digest(_summary_rows(rows))
     for s, i, ns, ni, at in db.execute("SELECT source, source_id, new_source, new_source_id, at FROM supersedes "
                                        "WHERE marked_by=?", (own,)):
         # Every receiver refuses a record about an item no install owns, and would stall on it.
-        if has_owner(i) and not holds_secret(s, ns) and not id_holds_secret(i) and not id_holds_secret(ni):
+        if (has_owner(i) and not holds_secret(s, ns) and not id_holds_secret(i) and not id_holds_secret(ni)
+                and not _kb_refuses(db, s, i)):
             out[("supersede", s, i, own)] = mark_digest([ns, ni] if ns is not None else None, at)
     return out
 

@@ -1,9 +1,13 @@
 import getpass
+import os
 import re
 import sys
+import traceback
 
 from . import keys, login, relay
-from .client import SYNC_LOCK_WAIT, missing_notice
+from .client import HOOK_LOCK_WAIT, SYNC_LOCK_WAIT, SyncClient, SyncError, missing_notice
+from .. import config as config_mod, store
+from ..agents import write as write_file
 
 # What a sync says when the relay refuses a pack for a storage limit. The pack stays in the outbox, so nothing is lost.
 QUOTA_DAY = ("Your Superhistory Sync storage allowance for today is used up. Nothing is lost: your changes stay on this "
@@ -188,3 +192,81 @@ def cmd_doctor(client, args):
 
 SYNC = {"init": cmd_init, "add-device": cmd_add_device, "join": cmd_join, "status": cmd_status, "compact": cmd_compact,
         "remove": cmd_remove, "recover": cmd_recover, "recovery-code": cmd_recovery_code, "doctor": cmd_doctor}
+# The actions after which this computer is in a sync group, so kb syncs it after every ingest.
+JOINS = ("init", "join", "recover")
+
+
+def ensure_sync_table(paths):
+    """Adds an empty [sync] table to the config when it has none, which is what makes kb sync after every ingest, and
+    says so. Written as `kb setup` writes the config. A config that would no longer load with it, such as one with a
+    GitHub source that does not name its account, is left as it is, and the problem is shown."""
+    try:
+        with open(paths.config_file, encoding="utf-8") as fh:
+            text = fh.read()
+    except FileNotFoundError:
+        text = ""
+    if "sync" in config_mod.parse(text).extra:
+        return
+    text = text + ("" if not text or text.endswith("\n") else "\n") + ("\n" if text else "") + "[sync]\n"
+    try:
+        config_mod.parse(text)
+    except config_mod.ConfigError as exc:
+        print(f"Sync is set up, but {paths.config_file} would have problems with a [sync] table, so it is unchanged:")
+        for problem in exc.problems:
+            print(f"  {problem}")
+        print("Fix those, then add a line `[sync]` to the file, so `superhistory ingest` syncs too.")
+        return
+    write_file(str(paths.config_file), text)
+    print(f"Added [sync] to {paths.config_file}, so `superhistory ingest` syncs too.")
+
+
+def run(paths, config, args):
+    try:
+        if args.action == "login":
+            return cmd_login(paths, args) or 0
+        client = SyncClient.load(paths)
+        try:
+            done = SYNC.get(args.action, cmd_sync)(client, args) or 0
+        finally:
+            client.close()
+        if not done and args.action in JOINS:
+            ensure_sync_table(paths)
+        return done
+    except relay.RelayError as exc:
+        said = f"The relay said {exc.status} {exc.code}." if exc.code else f"The relay said {exc.status}."
+        message = {"revoked": "This computer was removed from sync.", "no_plan": "This account has no Sync plan.",
+                   "unauthorized": "Sign in again with `superhistory sync login`.",
+                   "quota_day": QUOTA_DAY}.get(exc.code, said)
+        if exc.code == "quota_total":
+            message = quota_total(paths)
+        if exc.status == 429:
+            message = f"The relay is busy. Try again in {exc.retry_after} seconds."
+        print(message, file=sys.stderr)
+    except store.NeedsRebuild as exc:
+        print(str(exc), file=sys.stderr)
+    except (SyncError, keys.Refused, keys.ToolError, keys.Unaccepted, relay.TransportError, TimeoutError) as exc:
+        print(str(exc), file=sys.stderr)  # each of these carries only text written here
+    except OSError as exc:  # its own text can quote a file's name, so only the system's words for what went wrong
+        print(f"A file could not be read or written: {exc.strerror or type(exc).__name__}.", file=sys.stderr)
+    except KeyboardInterrupt:
+        print("Stopped.", file=sys.stderr)
+    except Exception as exc:  # its text can quote an item, so name only the kind and the line
+        where = traceback.extract_tb(exc.__traceback__)[-1]
+        print(f"Stopped by an unexpected {type(exc).__name__} at {os.path.basename(where.filename)} line {where.lineno}.",
+              file=sys.stderr)
+    return 1
+
+
+def after_ingest(paths, config, db, log):
+    """One sync after an ingest. Raises SyncError, with a message for a person, when this computer is not signed in or
+    not in a sync group, or when the sync stopped; kb records that as the `sync` health unit. Another sync running on
+    this store is not a failure: this run leaves the work to the next."""
+    client = SyncClient.load(paths)
+    try:
+        report = client.run_once(wait=HOOK_LOCK_WAIT)
+    finally:
+        client.close()
+    if report.stalled:
+        raise SyncError(f"Sync stopped at {report.stalled}.")
+    log.info("sync: received %d packs, sent %d records%s", report.received, report.sent,
+             ", skipped %d" % report.skipped if report.skipped else "")
