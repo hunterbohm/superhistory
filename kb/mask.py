@@ -536,7 +536,7 @@ _HORIZONTAL = frozenset("\t\x1f \xa0   　" + "".join(map(chr, range(0x200
 _QUOTES = "\"'`"
 
 
-_BACKSLASHES = ("\\", 1, None)
+_BACKSLASH_PLACE = ("\\", 1, None)
 
 
 def _literal(characters):
@@ -547,7 +547,7 @@ def _literal(characters):
 def _escaped(character):
     """The places of `character`'s escape as JSON writes it, behind any number of backslashes: a "u" and four hex
     digits, in either case."""
-    return (_BACKSLASHES, ("u", 1, 1)) + tuple((d + d.upper() if d.isalpha() else d, 1, 1)
+    return (_BACKSLASH_PLACE, ("u", 1, 1)) + tuple((d + d.upper() if d.isalpha() else d, 1, 1)
                                                for d in f"{ord(character):04x}")
 
 
@@ -558,7 +558,7 @@ def _escaped(character):
 # Horizontal space: each character, written; a tab as "\\t"; each escaped. A quote: written behind any number of
 # backslashes, escaped, or as a web page's entity, as main reads one (_QUOTE), and a backtick; not percent-encoded, as a
 # link writes one: there base64's own "+", "/" and "=" are encoded too, and the digits of "%22" would read as the run's.
-_SPACE_TOKENS = (tuple(_literal(c) for c in sorted(_HORIZONTAL)) + ((_BACKSLASHES, ("t", 1, 1)),)
+_SPACE_TOKENS = (tuple(_literal(c) for c in sorted(_HORIZONTAL)) + ((_BACKSLASH_PLACE, ("t", 1, 1)),)
                  + tuple(_escaped(c) for c in sorted(_HORIZONTAL)))
 _QUOTE_TOKENS = (tuple((("\\", 0, None), (q, 1, 1)) for q in _QUOTES) + tuple(_escaped(q) for q in _QUOTES)
                  + tuple(_literal(f"&{name};") for name in ("quot", "apos", "grave"))
@@ -567,9 +567,9 @@ _QUOTE_TOKENS = (tuple((("\\", 0, None), (q, 1, 1)) for q in _QUOTES) + tuple(_e
                          for code in ("22", "27", "60")))
 _LEAD_TOKENS = _SPACE_TOKENS + _QUOTE_TOKENS
 # A line break: each written, "\\n", "\\r" and "\\f", and each escaped; a carriage return and a line feed as one.
-_BREAK_TOKENS = ((_literal("\r\n"), (_BACKSLASHES, ("r", 1, 1), _BACKSLASHES, ("n", 1, 1)),
+_BREAK_TOKENS = ((_literal("\r\n"), (_BACKSLASH_PLACE, ("r", 1, 1), _BACKSLASH_PLACE, ("n", 1, 1)),
                   _escaped("\r") + _escaped("\n"))
-                 + tuple(_literal(c) for c in _BREAK_CHARACTERS) + tuple((_BACKSLASHES, (c, 1, 1)) for c in "nrf")
+                 + tuple(_literal(c) for c in _BREAK_CHARACTERS) + tuple((_BACKSLASH_PLACE, (c, 1, 1)) for c in "nrf")
                  + tuple(_escaped(c) for c in _BREAK_CHARACTERS))
 
 
