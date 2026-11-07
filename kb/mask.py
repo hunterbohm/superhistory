@@ -915,21 +915,51 @@ class _Frames:
         return end is not None and end < stop
 
 
-def _key_text_between(joined, start, end, lead):
-    """Whether what a joined base64 block decodes to, from the line after a header whose first byte's group starts at
-    `start` up to the byte `lead` bytes into the group at `end`, is no prose, as a key's lines between its header and a
-    header written into it are: it holds a control character, a run a key's body could be (_token_like), as a body's
-    line does, an armour header's line ("Comment: ...", "Proc-Type: ..."), another header's or footer's text, or no
-    word at all. What does not decode in the groups of one stream is none either."""
-    decoded = _base64_decoded(joined, start, end + 4) if (end - start) % 4 == 0 else None
-    if decoded is None:
-        return True
-    decoded = decoded[:(end - start) // 4 * 3 + lead]
-    brk = _LINE_BREAK_BYTE.search(decoded)
-    rest = decoded[brk.end():] if brk else b""
-    words = rest.decode("utf-8", "replace")
-    return (not _reads_as_text(rest) or _holds_token(words, 0, len(words)) or not _LETTER.search(words)
-            or bool(_ARMOUR_HEADER_LINE.search(rest) or _KEY_FRAME.search(rest)))
+class _Below:
+    """What a joined base64 block decodes to below a held header's line, its first byte's group starting at `start`
+    (_key_spans): whether, up to a place, it is no prose (no_prose). Its whole lines are decoded and read once, however
+    many headers below ask, so a block's time stays in proportion to its length."""
+
+    def __init__(self, joined, start):
+        self.joined, self.start, self.at = joined, start, start  # `at`: where decoding goes on
+        self.tail, self.base = b"", 0  # the bytes decoded past the last whole line read, from this decoded offset
+        self.past = False  # whether the held header's own line break is read
+        self.key_text = self.letter = False  # what the whole lines read hold
+
+    def no_prose(self, end, lead):
+        """Whether what lies from the held header's next line up to the byte `lead` bytes into the group at `end` is
+        no prose, as a key's lines between its header and a header written into it are: it holds a control character,
+        a run a key's body could be (_token_like), as a body's line does, an armour header's line ("Comment: ...",
+        "Proc-Type: ..."), another header's or footer's text, or no word at all. What does not decode in the groups of
+        one stream is none either."""
+        if self.key_text or (end - self.start) % 4:
+            return True
+        if end + 4 > self.at:
+            more = _base64_decoded(self.joined, self.at, end + 4)
+            if more is None:
+                self.key_text = True
+                return True
+            self.tail, self.at = self.tail + more, end + 4
+        cut = max((end - self.start) // 4 * 3 + lead - self.base, 0)
+        if not self.past:
+            brk = _LINE_BREAK_BYTE.search(self.tail, 0, cut)
+            if brk is None:
+                return True
+            self.past, self.tail, self.base, cut = True, self.tail[brk.end():], self.base + brk.end(), cut - brk.end()
+        whole = max(self.tail.rfind(b"\n", 0, cut), self.tail.rfind(b"\r", 0, cut)) + 1  # past the last line break
+        if whole:
+            key_text, letter = self._holds(self.tail[:whole])
+            self.key_text, self.letter = key_text, self.letter or letter
+            self.tail, self.base, cut = self.tail[whole:], self.base + whole, cut - whole
+        key_text, letter = self._holds(self.tail[:cut])  # the line the place is on, read up to it
+        return self.key_text or key_text or not (self.letter or letter)
+
+    @staticmethod
+    def _holds(lines):
+        """Whether whole lines, or a line up to a place, hold what a key's lines hold, and whether a letter."""
+        words = lines.decode("utf-8", "replace")
+        return (not _reads_as_text(lines) or _holds_token(words, 0, len(words))
+                or bool(_ARMOUR_HEADER_LINE.search(lines) or _KEY_FRAME.search(lines))), bool(_LETTER.search(words))
 
 
 _LINE_BREAK_BYTE = re.compile(rb"[\r\n]")
@@ -943,7 +973,7 @@ def _key_range(joined, starts, ends, found, floor, frames, stream_end, held=None
     header's first byte. For a footer under a header that starts no key alone, after text on its decoded line (`held`:
     its line, whether it starts a stream of its own, and where its first group starts; _key_spans), it starts there,
     whatever its bytes between: its armour comment may hold a control character. So it does for a header below it,
-    where that one starts a stream of its own or what is between them is no prose (_key_text_between): a header
+    where that one starts a stream of its own or what is between them is no prose (_Below): a header
     written into its armour comments or its body starts no other key, where one under a document that quotes a header
     in a sentence above it starts its own.
     With none, as when the block starts inside the key, a line above is the key's while the base64
@@ -970,8 +1000,8 @@ def _key_range(joined, starts, ends, found, floor, frames, stream_end, held=None
     down = lambda p: p - (p - phase) % 4  # the group boundary at or before p
     up = lambda p: p + (phase - p) % 4  # the group boundary at or after p
     top = bisect.bisect_right(ends, bits)  # its first byte's first bits: the line above can end inside its group
-    if held is not None and floor <= held[0] < top and (kind == b"END" or held[1] or _key_text_between(
-            joined, held[2], first, bits - first)):
+    if held is not None and floor <= held[0] < top and (kind == b"END" or held[1] or held[2].no_prose(
+            first, bits - first)):
         top = held[0]  # a header written between them, into its armour comments or its body, starts no other key
     while kind == b"END" and held is None and top > floor and up(starts[top - 1]) < down(starts[top]):
         above = _base64_decoded(joined, up(starts[top - 1]), down(starts[top]))
@@ -1087,13 +1117,13 @@ def _key_spans(text, lines):
             # widths alone read that line as the last of the stream above.
             lead = _base64_decoded(joined, starts[line], frame[1]) if frame[1] - starts[line] in (0, 4) else None
             at_start = bool(line) and lead in (b"", _BYTE_ORDER_MARK)
-            # One that starts its line below another, past prose (_key_text_between), takes its place, as a key file's
+            # One that starts its line below another, past prose (_Below), takes its place, as a key file's
             # header does under a document that quotes one, unless the first starts a stream of its own.
-            if held is not None and (held[1] or not at_start or _key_text_between(
-                    joined, held[2], frame[1], frame[2] - frame[1])):
+            if held is not None and (held[1] or not at_start or held[2].no_prose(frame[1], frame[2] - frame[1])):
                 continue
             own = at_start and not _wrapping_break(starts, line, len(joined))
-            held, held_end = (line, own, frame[1]), _stream_end(widths, padded, line) if own else stream_end[line]
+            held, held_end = (line, own, _Below(joined, frame[1])), _stream_end(widths, padded, line) if own else (
+                stream_end[line])
     return spans
 
 
