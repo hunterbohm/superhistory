@@ -46,7 +46,8 @@ class Store(unittest.TestCase):
     def setUp(self):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
-        self.db = store.connect(os.path.join(tmp.name, "kb.sqlite"))
+        self.path = os.path.join(tmp.name, "kb.sqlite")
+        self.db = store.connect(self.path)
         self.addCleanup(self.db.close)
 
     def session(self, sid, ts, decided, text="USER: carry on\n\nASSISTANT: done", source="claude_code"):
@@ -150,6 +151,49 @@ class DecisionTest(Store):
                      text="USER: composio is turned off for app accounts\n\nASSISTANT: ok")
         self.run_pass(Model(judge))
         self.assertNotIn("Composio CLI is the default for connected app accounts.", self.ids("Composio app accounts"))
+
+    def test_a_reject_that_lands_while_the_check_runs_still_stops_the_mark(self):
+        self.session("old", "2026-06-12T10:00:00Z", ["Composio CLI is the default for connected app accounts."])
+        self.session("new", "2026-10-24T10:00:00Z", ["Composio switched off; Executor replaces it for app accounts."])
+
+        def verify(old, new):  # the owner rejects NEW from another process while the check runs
+            other = store.connect(self.path)
+            try:
+                rid = other.execute("SELECT id FROM docs WHERE content LIKE 'Composio switched off%'").fetchone()[0]
+                decisions.answer(other, rid, "rejected")
+            finally:
+                other.close()
+            return True
+
+        model = Model(lambda text, older, _: answer(replaces=older if "switched" in text else ()), verify)
+        self.assertEqual(self.run_pass(model).replaced, 0)
+        self.assertIn("Composio CLI is the default for connected app accounts.", self.ids("Composio app accounts"))
+
+    def test_the_owners_own_replacement_outlasts_a_later_agent_report(self):
+        said = {"old": "composio cli is the default for app accounts", "own": "composio is off for app accounts"}
+        for sid, ts, text in (("old", "2026-06-12", "Composio CLI is the default for connected app accounts."),
+                              ("own", "2026-10-24", "Composio is off for app accounts; Executor replaces it."),
+                              ("agent", "2026-10-26", "Composio switched off; app accounts moved to Executor.")):
+            self.session(sid, ts + "T10:00:00Z", [text], text=f"USER: {said.get(sid, 'carry on')}\n\nASSISTANT: ok")
+
+        def judge(text, older, passages):
+            if "CLI is the default" in text:
+                return answer("owner", said["old"])
+            mine = "Composio is off" in text
+            return answer("owner" if mine else "agent", said["own"] if mine else "",
+                          replaces=[i for i, t in older.items() if "CLI is the default" in t])
+
+        self.run_pass(Model(judge))
+        self.assertNotIn("Composio CLI is the default for connected app accounts.", self.ids("Composio app accounts"))
+
+    def test_a_hidden_decision_does_not_take_a_current_one_from_its_item_out_of_search(self):
+        self.session("old", "2026-06-12T10:00:00Z", ["Composio CLI is the default for connected app accounts.",
+                                                     "Composio audit logs stay on for app accounts."])
+        self.session("new", "2026-10-24T10:00:00Z", ["Executor replaces it: Composio CLI is off for accounts."])
+        self.run_pass(Model(lambda text, older, _: answer(
+            replaces=[i for i, t in older.items() if "CLI is the default" in t] if "Executor" in text else ())))
+        self.assertIn("Composio audit logs stay on for app accounts.",
+                      self.ids("Composio CLI default connected app accounts audit", limit=5))
 
     def test_review_on_a_store_the_pass_never_ran_on_is_empty(self):
         self.assertEqual(decisions.review(self.db), [])

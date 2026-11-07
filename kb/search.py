@@ -85,6 +85,30 @@ def _grouped(db, rows, rows_arg, kinds, after, sources, n, before):
     return [rid for (rid,) in db.execute(sql, (*args, n))]
 
 
+def _stand_ins(db, match, lost, fused, after, before):
+    """For each hidden decision that was its item's best row, the item's best other matching row that is not hidden,
+    in the same rank, so a hidden decision does not take a current one from the same item out of the results."""
+    found = []
+    for rid, kind, src, sid, *_ in lost:
+        kinds = ("doc",) + SUMMARY_KINDS if kind != "raw" else ("raw",)
+        sql = (f"SELECT id FROM docs WHERE source=? AND source_id=? AND kind IN ({','.join('?' * len(kinds))})"
+               + (" AND ts >= ?" if after else "") + (" AND ts < ?" if before else ""))
+        ids = [i for (i,) in db.execute(sql, (src, sid, *kinds, *[t for t in (after, before) if t]))
+               if i not in fused]
+        if not ids:
+            continue
+        rows = db.execute(
+            f"SELECT d.id, d.kind, d.source, d.source_id, d.ts, d.title, d.content, d.metadata FROM docs_fts "
+            f"JOIN docs d ON d.id = docs_fts.rowid WHERE docs_fts MATCH ? AND docs_fts.rowid IN "
+            f"({','.join('?' * len(ids))}) ORDER BY bm25(docs_fts, 4.0, 1.0), d.id LIMIT 8", (match, *ids)).fetchall()
+        out = decisions.hidden(db, [(r[0], r[2], r[3], r[1], r[6]) for r in rows])
+        row = next((r for r in rows if r[0] not in out), None)
+        if row:
+            fused[row[0]] = fused[rid]
+            found.append(row)
+    return found
+
+
 def _coverage(db, terms, ids):
     if len(terms) < 2:
         return dict.fromkeys(ids, 1.0)
@@ -132,7 +156,11 @@ def search(db, query, after=None, sources=(), limit=10, before=None, keep=None, 
         f"WHERE id IN ({','.join('?' * len(fused))})", list(fused)).fetchall()
     out = decisions.hidden(db, [(r[0], r[2], r[3], r[1], r[6]) for r in rows])
     if not history:
+        lost = [r for r in rows if r[0] in out]
         rows = [r for r in rows if r[0] not in out]
+        for row in _stand_ins(db, match, lost, fused, after, before):
+            rows.append(row)
+            coverage.update(_coverage(db, terms, [row[0]]))
     marks = store.superseded(db, {(r[2], r[3]) for r in rows})
     best, total = {}, {}
     for row in rows:

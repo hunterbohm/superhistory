@@ -347,16 +347,29 @@ def record(db, d, j, at):
 
 
 def mark_replaced(db, old, new, why, at):
-    """Marks `old` replaced by `new`, unless a newer decision already replaces it."""
+    """Marks `old` replaced by `new`, unless the owner rejected `new` or a decision that outranks it already replaces
+    `old`: one in his own words or confirmed by him outranks one that is not, then the newer wins."""
+    if _backed(db, new.ref) is None:
+        return False
     row = db.execute("SELECT new_source, new_source_id, new_key FROM decisions WHERE source=? AND source_id=? AND key=?",
                      old.ref).fetchone()
-    if row and row[0] is not None and _ts_of(db, row) > new.ts:
-        return False
+    if row and row[0] is not None:
+        held = _backed(db, tuple(row))
+        if held is not None and (held, _ts_of(db, row)) > (_backed(db, new.ref), new.ts):
+            return False
     db.execute("INSERT INTO decisions(source, source_id, key, new_source, new_source_id, new_key, why, at) "
                "VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(source, source_id, key) DO UPDATE SET "
                "new_source=excluded.new_source, new_source_id=excluded.new_source_id, new_key=excluded.new_key, "
                "why=excluded.why", (*old.ref, *new.ref, mask(why), at))
     return True
+
+
+def _backed(db, ref):
+    """True when the decision is in the owner's own words or he confirmed it, None when he rejected it."""
+    row = db.execute("SELECT author, answer FROM decisions WHERE source=? AND source_id=? AND key=?", ref).fetchone()
+    if row and row[1] == "rejected":
+        return None
+    return bool(row) and (row[0] == "owner" or row[1] == "confirmed")
 
 
 def _ts_of(db, ref):
