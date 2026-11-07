@@ -3898,6 +3898,238 @@ class Base64ReviewTwentyFourthTest(unittest.TestCase):
                 self.assertLess(took[1 << 20], 8 * max(took[1 << 18], 0.05), took)
 
 
+class Base64ReviewTwentyFifthTest(unittest.TestCase):
+    """#34's twenty-fifth review: a web page's quote entity, after a footer's spaces, that the edge of the window
+    decoded around the footer cut was read as no token, so a key whose footer line ends in spaces and an entity showed
+    from there; and a quote entity padded with zeros past 8 characters, cut where a window reading a line's lead back
+    starts, was read as text before the lead, so a lone footer's line ran on through a public key below it. Each
+    window's test of a token its edge cuts was a second list, kept by hand, of the tokens the readers accept; each now
+    comes from the readers' own table, and a test generated from that table cuts every token at every place. Made-up
+    keys only."""
+
+    ENTITIES = ("&quot;", "&apos;", "&grave;", "&#34;", "&#39;", "&#96;", "&#x22;", "&#X27;", "&#x60;", "&#0000000034;",
+                "&#x00000000022;")
+    PADDED = ("&quot;", "&#0000000034;", "&#x00000000022;", "&#x0000000000000000000027;")
+
+    def test_a_quote_entity_after_a_footers_space_ends_its_key_wherever_the_window_cuts_it(self):
+        gnupg = Base64ReviewNineteenFindingsTest.fixture("gnupg_control_comment")
+        written, encoded, i = Base64ReviewNineteenFindingsTest.written, Base64ReviewSeventeenTest.encoded, 0
+        for entity in self.ENTITIES:
+            for n in range(90):  # the entity across the first two edges of the window decoded past the footer
+                for brk in (b"\n", b"\r\n"):
+                    file = gnupg.replace(b"\n", brk)
+                    end = file.rindex(b"-----") + 5
+                    data = file[:end] + b" " * n + entity.encode() + file[end:]
+                    width, depth, i = (64, 76)[i % 2], i % 3, i + 1
+                    with self.subTest(entity=entity, n=n, brk=brk, width=width, depth=depth):
+                        masked = mask(written("notes\n" + encoded(data, width) + "\n\nnext paragraph", depth))
+                        self.assertEqual([k for k in Base64ReviewTwentyFourthTest.lines_within(data, width, 0, end)
+                                          if k in masked], [])
+                        self.assertIn("next paragraph", masked)
+
+    def test_a_lines_lead_of_a_quote_entity_padded_with_zeros_starts_its_line_wherever_the_window_cuts_it(self):
+        import base64
+        import random
+        r = random.Random(2502)
+        encoded = Base64ReviewSeventeenTest.encoded
+        line = base64.b64encode(bytes(r.randrange(256) for _ in range(48)))
+        publics = {"certificate": (made_up_certificate(r), 52), "rsa": (made_up_public_key(r), 56)}
+        i = 0
+        for name, (public, width) in publics.items():
+            kept = encoded(public, width)
+            whole = encoded(b"-----BEGIN PRIVATE KEY-----\n" + line + b"\n" + line + b"\n-----END PRIVATE KEY-----\n",
+                            width)
+            body = "\n".join([encoded(b"\n-----END PRIVATE KEY-----\n", width), kept, whole]) + "\n\nnext paragraph"
+            for entity in self.PADDED:
+                for n in range(140):  # the entity across the first two edges of the window reading the lead back
+                    depth, i = i % 3, i + 1
+                    with self.subTest(public=name, entity=entity, n=n, depth=depth):
+                        masked = mask(Base64ReviewNineteenFindingsTest.written(entity + " " * n + body, depth))
+                        self.assertEqual([k for k in kept.splitlines() if k not in masked], [])
+                        self.assertEqual([k for k in whole.splitlines()[1:-1] if k in masked], [])
+
+    def test_a_header_after_a_cut_quote_entity_starts_its_key_and_a_lone_footer_after_one_masks_no_public_key(self):
+        import base64
+        import random
+        import textwrap
+        r = random.Random(2503)
+        line = base64.b64encode(bytes(r.randrange(256) for _ in range(48)))
+        key = b"-----BEGIN PRIVATE KEY-----\n" + line + b"\n" + line[::-1] + b"\n-----END PRIVATE KEY-----\n"
+        certificate = made_up_certificate(r)
+        footer = base64.b64encode(b"-----END PRIVATE KEY-----\n").decode()
+        for entity in self.PADDED:
+            for n in range(80):
+                data = b"notes " + entity.encode() + b" " * n + key
+                start, end = data.index(b"-----BEGIN"), data.rindex(b"-----") + 5
+                for width in (64, 76):
+                    with self.subTest(entity=entity, n=n, width=width):
+                        masked = mask("intro\n" + "\n".join(textwrap.wrap(base64.b64encode(data).decode(), width))
+                                      + "\n\nnext paragraph")
+                        self.assertEqual([k for k in Base64ReviewTwentyFourthTest.lines_within(
+                            data, width, start, end) if k in masked], [])
+                kept = textwrap.wrap(base64.b64encode(certificate).decode(), 52)
+                for depth in (0, 1):
+                    with self.subTest(entity=entity, n=n, depth=depth):
+                        text = "intro\n" + entity + " " * n + footer + "\n" + "\n".join(kept) + "\n\nnext paragraph"
+                        masked = mask(Base64ReviewNineteenFindingsTest.written(text, depth))
+                        self.assertEqual([k for k in kept if k not in masked], [])
+
+    def test_a_megabyte_of_zeros_in_a_quote_entity_around_a_header_or_footer_costs_time_in_proportion(self):
+        import random
+        import time
+        from kb import mask as masking
+        key = Base64ReviewTwentyFourthTest.pem(random.Random(2504))
+        for place in ("after its footer", "before its header"):
+            took = {}
+            for size in (1 << 18, 1 << 20):
+                padded = b"&#x" + b"0" * size + b"22;"
+                data = (key[:-1] + b"  " + padded + b"\n" if place == "after its footer"
+                        else b"notes\n" + padded + b"  " + key)
+                start, end = data.index(b"-----BEGIN"), data.rindex(b"-----") + 5
+                text = Base64ReviewSeventeenTest.encoded(data, 76) + "\n\nnext paragraph"
+                started = time.process_time()
+                masked = mask(text)
+                took[size] = time.process_time() - started
+                with self.subTest(place=place, size=size):
+                    self.assertEqual([k for k in Base64ReviewTwentyFourthTest.lines_within(data, 76, start, end)
+                                      if k in masked], [])
+            with self.subTest(place=place):
+                # four times the text
+                self.assertLess(took[1 << 20], 8 * max(took[1 << 18], 0.05), took)
+        for kind in (str, bytes):  # a line's lead, read back
+            took = {}
+            for size in (1 << 18, 1 << 20):
+                text = "x&#x" + "0" * size + "22;  A"
+                text = text if kind is str else text.encode()
+                started = time.process_time()
+                lead = masking._lead_start(text, len(text) - 1)
+                took[size] = time.process_time() - started
+                with self.subTest(kind=kind.__name__, size=size):
+                    self.assertEqual(lead, 1)
+            with self.subTest(kind=kind.__name__):
+                self.assertLess(took[1 << 20], 8 * max(took[1 << 18], 0.01), took)
+
+    @staticmethod
+    def instances(tokens, kind):
+        """Each of `tokens`, as kb/mask.py's table writes one (its places: the characters each may hold, and how many in
+        a row, at least and at most), written out: each place at its least with its first character, and a run of any
+        length 12 long with its last; then as JSON writes those, once and twice. In bytes, as UTF-8 writes them."""
+        out = set()
+        for token in tokens:
+            for padded in (False, True):
+                one = "".join(chars[-1 if padded else 0] * (12 if padded and most is None else max(least, padded))
+                              for chars, least, most in token)
+                if kind is bytes:
+                    out.add(one.encode("latin-1"))  # the table's bytes: each a Latin-1 character
+                    continue
+                for depth in range(3):
+                    out.add(one)
+                    one = json.dumps(one)[1:-1]
+        return sorted(out, key=lambda t: (len(t), t))
+
+    def kinds(self):
+        """The tokens of a line's lead and of its line break, written out (instances), in a str and in bytes: the bytes
+        table's, and the str's as UTF-8 writes them."""
+        from kb import mask as masking
+        lead = self.instances(masking._LEAD_TOKENS, str)
+        breaks = self.instances(masking._BREAK_TOKENS, str)
+        lead_bytes = sorted({t.encode() for t in lead} | set(self.instances(masking._LEAD_TOKENS_BYTES, bytes)),
+                            key=lambda t: (len(t), t))
+        breaks_bytes = sorted({t.encode() for t in breaks} | set(self.instances(masking._BREAK_TOKENS_BYTES, bytes)),
+                              key=lambda t: (len(t), t))
+        return lead, breaks, lead_bytes, breaks_bytes
+
+    def test_every_token_the_readers_accept_is_one_token_of_them(self):
+        import re
+        from kb import mask as masking
+        lead, breaks, lead_bytes, breaks_bytes = self.kinds()
+        self.assertEqual([t for t in lead if not re.fullmatch(f"{masking._SPACING}|{masking._QUOTE_MARK}", t)], [])
+        self.assertEqual([t for t in breaks if not re.fullmatch(masking._BREAK, t)], [])
+        self.assertEqual([t for t in lead_bytes if not masking._SPACE_OR_QUOTE_BYTES.fullmatch(t)], [])
+        self.assertEqual([t for t in breaks_bytes if not masking._BREAK_BYTES.fullmatch(t)], [])
+        self.assertGreater(min(len(lead), len(breaks), len(lead_bytes), len(breaks_bytes)), 50)
+
+    def test_every_token_of_a_lines_lead_cut_at_every_place_reads_as_uncut(self):
+        from kb import mask as masking
+        lead, breaks, lead_bytes, breaks_bytes = self.kinds()
+        for kind, tokens, line_breaks in ((str, lead, breaks), (bytes, lead_bytes, breaks_bytes)):
+            x, space, a = ("x", " ", "A") if kind is str else (b"x", b" ", b"A")
+            missed, lines = [], []
+            for token in tokens:
+                for n in range(144 + len(token)):  # the token across each place of the first two windows' edges
+                    text = x + token + space * n + a
+                    if masking._lead_start(text, len(text) - 1) != 1:
+                        missed.append((token, n))
+                if kind is str:
+                    for n in (0, 70, 140):
+                        text = x + "\n" + token + space * n + a
+                        if not masking._starts_its_line(text, len(text) - 1):
+                            lines.append((token, n))
+                        plain = x + token + space * n + a
+                        if masking._starts_its_line(plain, len(plain) - 1):
+                            lines.append((token, n, "no break"))
+            if kind is str:
+                for brk in line_breaks:
+                    for n in (0, 70, 140):
+                        text = x + brk + space * n + a
+                        if not masking._starts_its_line(text, len(text) - 1):
+                            lines.append((brk, n))
+            with self.subTest(kind=kind.__name__):
+                self.assertEqual(missed[:20], [], len(missed))
+                self.assertEqual(lines[:20], [], len(lines))
+
+    @staticmethod
+    def frame_read(data):
+        """What _frame reads at the first key word in `data`'s base64, read whole."""
+        import base64
+        from kb import mask as masking
+        joined = base64.b64encode(data).decode()
+        return masking._frame(joined, [0], masking._ENCODED_KEY.search(joined))
+
+    @staticmethod
+    def uncut(data, frame):
+        """What _frame reads of `frame` in `data`, a header or footer on a line of its own, wherever its windows' edges
+        fall: the kind, where the group holding its first byte starts and the character that holds that byte's first
+        bits, the character holding its last byte's last bits, and where the group after its last byte starts."""
+        start = data.index(frame)
+        end = start + len(frame)
+        kind = b"BEGIN" if b"BEGIN" in frame else b"END"
+        return kind, start // 3 * 4, start // 3 * 4 + start % 3, (8 * end - 1) // 6, (end + 2) // 3 * 4
+
+    def test_every_token_around_a_header_or_footer_cut_at_every_place_reads_as_uncut(self):
+        lead, breaks, lead_bytes, breaks_bytes = self.kinds()
+        header, footer = b"-----BEGIN PRIVATE KEY-----", b"-----END PRIVATE KEY-----"
+        ahead = [(token, b"\n") for token in lead_bytes] + [(b"", brk) for brk in breaks_bytes]
+        back = [(b"\n", token) for token in lead_bytes] + [(brk, b"") for brk in breaks_bytes]
+        missed = {"ahead": [], "back": []}
+        for token, brk in ahead:
+            for n in range(120 + len(token + brk)):  # across each place of the first two edges past the footer
+                data = b"notes\n" + footer + b" " * n + token + brk + b"more\n"
+                if self.frame_read(data) != self.uncut(data, footer):
+                    missed["ahead"].append((token, brk, n))
+        for brk, token in back:
+            for n in range(200 + len(token + brk)):  # across each place of the first two edges before the header
+                data = b"notes" + brk + token + b" " * n + header + b"\nMIIB\n"
+                if self.frame_read(data) != self.uncut(data, header):
+                    missed["back"].append((brk, token, n))
+        for side, cases in missed.items():
+            with self.subTest(side=side):
+                self.assertEqual(cases[:20], [], len(cases))
+
+    def test_a_label_cut_at_every_place_reads_as_uncut(self):
+        from kb import mask as masking
+        letters = masking._LABEL_CHARACTERS * 8
+        missed = []
+        for size in range(201):  # the label across each place of the first three windows' back edges
+            label = letters[:size]
+            for opening, closing in ((b"-----BEGIN ", b"PRIVATE KEY-----"), (b"---- BEGIN SSH2 ", b"PRIVATE KEY ----")):
+                for lead in (b"", b"  "):
+                    data = b"notes\n" + lead + opening + label + closing + b"\nMIIB\n"
+                    if self.frame_read(data) != self.uncut(data, opening + label + closing):
+                        missed.append((opening, size, lead))
+        self.assertEqual(missed[:20], [], len(missed))
+
+
 class HeadlessKeyTest(unittest.TestCase):
     """A key's body without its header, as an older kb's row-by-row remask leaves the chunk after the header's."""
     LINE = "MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7"
