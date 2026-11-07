@@ -60,6 +60,7 @@ CANDIDATES = 8
 # A decision that reaches the store after newer ones were judged (an old item summarized late) is put to the check
 # against this many of them: they were judged before it existed, so none of them could name it as replaced.
 LATE_CANDIDATES = 3
+LATE = "(waits for the judge: it was judged before this older decision reached the store)"
 PASSAGES = 3
 PASSAGE_CHARS = 500
 TEXT_CHARS = 500
@@ -504,7 +505,8 @@ def check_proposals(db, ask, owner, current, log, workers=WORKERS):
         db.executemany("DELETE FROM decision_proposals WHERE source=? AND source_id=? AND key=? AND new_source=? "
                        "AND new_source_id=? AND new_key=?",
                        [r[:6] for r in rows if r[:3] not in by_ref or r[3:6] not in by_ref])
-    pending = [(by_ref[r[:3]], by_ref[r[3:6]], r[6]) for r in rows if r[:3] in by_ref and r[3:6] in by_ref]
+    pending = [(by_ref[r[:3]], by_ref[r[3:6]], r[6]) for r in rows
+               if r[:3] in by_ref and r[3:6] in by_ref and r[6] != LATE]
     batches = [pending[i:i + CHECK_BATCH] for i in range(0, len(pending), CHECK_BATCH)]
     marked = 0
     with ThreadPoolExecutor(max(1, workers)) as pool:
@@ -523,6 +525,43 @@ def check_proposals(db, ask, owner, current, log, workers=WORKERS):
                     db.execute("DELETE FROM decision_proposals WHERE source=? AND source_id=? AND key=? AND "
                                "new_source=? AND new_source_id=? AND new_key=?", (*old.ref, *new.ref))
     return len(batches), marked
+
+
+def propose_late(db, ask, owner, kind_of, index, current, log, workers=WORKERS):
+    """Puts each waiting late pair to the judge: the newer decision is judged again with the late older ones as its
+    only candidates, so a pair reaches the check only when the judge names it, as for any other pair. A pair the judge
+    turns down is dropped; one whose call failed waits for the next run. Returns (calls, proposed)."""
+    by_ref = {d.ref: d for d in current}
+    waiting = {}
+    for r in db.execute("SELECT source, source_id, key, new_source, new_source_id, new_key FROM decision_proposals "
+                        "WHERE why=?", (LATE,)):
+        old, new = by_ref.get(tuple(r[:3])), by_ref.get(tuple(r[3:6]))
+        if old and new:
+            waiting.setdefault(new.ref, (new, []))[1].append(old)
+    if not waiting:
+        return 0, 0
+    work = [(n, waiting[n.ref][1], *rest) for n, _, *rest in
+            prepare(db, [n for n, _ in waiting.values()], index, owner, kind_of)]
+    batches = [work[i:i + BATCH] for i in range(0, len(work), BATCH)]
+    proposed = 0
+    with ThreadPoolExecutor(max(1, workers)) as pool:
+        for batch, found in zip(batches, pool.map(lambda b: _judge(ask, owner[0], b, log), batches)):
+            if found is None:
+                continue
+            with db:
+                for pos, (new, olds, *_) in enumerate(batch):
+                    if pos not in found:
+                        continue
+                    for old in olds:
+                        if old.row in found[pos].replaces:
+                            proposed += 1
+                            db.execute("UPDATE decision_proposals SET why=? WHERE source=? AND source_id=? AND key=? "
+                                       "AND new_source=? AND new_source_id=? AND new_key=?",
+                                       (mask(found[pos].why) or "late", *old.ref, *new.ref))
+                        else:
+                            db.execute("DELETE FROM decision_proposals WHERE source=? AND source_id=? AND key=? "
+                                       "AND new_source=? AND new_source_id=? AND new_key=?", (*old.ref, *new.ref))
+    return len(batches), proposed
 
 
 def _out_of_view(db):
@@ -578,11 +617,12 @@ def run(db, ask, owner, kind_of, log, limit=None, workers=WORKERS):
                             db.execute("INSERT OR IGNORE INTO decision_proposals VALUES (?,?,?,?,?,?,?)",
                                        (*old.ref, *d.ref, mask(found[pos].why)))
                     for new in index.newer(d, judged):
-                        proposed += 1
                         db.execute("INSERT OR IGNORE INTO decision_proposals VALUES (?,?,?,?,?,?,?)",
-                                   (*d.ref, *new.ref, "judged before this older decision reached the store"))
+                                   (*d.ref, *new.ref, LATE))
+    late_calls, late_proposed = propose_late(db, ask, owner, kind_of, index, current, log, workers)
+    proposed += late_proposed
     checks, replaced = check_proposals(db, ask, owner[0], current, log, workers)
-    calls = len(batches) + checks
+    calls = len(batches) + late_calls + checks
     with db:
         store.set_watermark(db, *LAST_RUN, now_iso())
     stats = Stats(done, proposed, replaced, authors, calls, failed)
