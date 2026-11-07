@@ -1499,7 +1499,10 @@ class Base64ReviewFifteenTest(unittest.TestCase):
                     for k in (key, "\n".join(textwrap.wrap(key, 76))):
                         with self.subTest(public=public[:6], lines=after.count("\n"), words=words, wrapped="\n" in k):
                             once = mask(f"{k}\n{after}\n{words}")
-                            self.assertEqual(once, f"[masked]\n{after}\n{words}")
+                            # ruling (c), round 27: past the material, a line main's reading of a key's rest takes (a
+                            # token: "8080", "HTTP", "20261104", "RFC5280") is masked as main masks it
+                            shown = "\nnext steps" if words == "next steps" else ""
+                            self.assertEqual(once, f"[masked]\n{after}{shown}")
                             self.assertEqual(mask(once), once)
 
     def test_a_chain_of_certificates_and_a_line_of_words_after_a_key_are_kept(self):
@@ -1517,7 +1520,15 @@ class Base64ReviewFifteenTest(unittest.TestCase):
                 for words in ("deploy on port 8080", "next steps"):
                     with self.subTest(lines=after.count("\n"), words=words, streams=len(parts)):
                         once = mask(f"{key}\n{after}\n{words}")
-                        self.assertEqual(once, f"[masked]\n{after}\n{words}")
+                        # ruling (c), round 27: past the material, "8080" is a token main's reading of a rest takes;
+                        # where the chain's last line runs on into "next steps", main's reading takes "next" as a
+                        # body's last line, so the chain goes with it, as on main
+                        if words != "next steps":
+                            self.assertEqual(once, f"[masked]\n{after}")
+                        elif after == "\n".join(parts):
+                            self.assertEqual(once, "[masked] steps")
+                        else:
+                            self.assertEqual(once, f"[masked]\n{after}\n{words}")
                         self.assertEqual(mask(once), once)
 
     def test_after_a_placeholder_a_certificate_then_a_private_keys_lines_stay_masked(self):
@@ -1705,7 +1716,8 @@ class Base64ReviewFifteenTest(unittest.TestCase):
                 for n, text in enumerate(texts):
                     kept = "".join(c for (c,) in db.execute(
                         "SELECT content FROM docs WHERE source_id = ? ORDER BY id", (f"r15-{n}",)))
-                    self.assertEqual(kept, text.replace(key, "[masked]"))
+                    # ruling (c), round 27: past the certificate, "8080" is a token main's reading of a rest takes
+                    self.assertEqual(kept, text.replace(key, "[masked]").replace("\ndeploy on port 8080", ""))
             finally:
                 db.close()
 
@@ -1766,9 +1778,18 @@ class Base64ReviewSixteenTest(unittest.TestCase):
                               f"next steps\n{second}\nnotes", f"see\n{second}\nnext steps"):
                     with self.subTest(kind=kind, width=width, after=after[:12]):
                         once = mask(f"{key}\n{first}\n{after}")
-                        self.assertEqual(once, f"[masked]\n{first}\n{after}")
+                        # ruling (c), round 27: a word alone past the material is masked as main's reading of a rest
+                        # takes it; another certificate past words holds runs a key's could be, so the material goes
+                        # with the rest, as on main (its line run on into "next steps" takes "next", as main's does)
+                        if second not in after:
+                            expected = f"[masked]\n{first}"
+                        elif after.endswith("next steps"):
+                            expected = "[masked] steps" if width is None else "[masked]\nnext steps"
+                        else:
+                            expected = "[masked]"
+                        self.assertEqual(once, expected)
                         self.assertEqual(mask(once), once)
-                        self.assertEqual(mask(f"[masked]\n{first}\n{after}"), f"[masked]\n{first}\n{after}")
+                        self.assertEqual(mask(f"[masked]\n{first}\n{after}"), expected)
 
     def test_past_a_certificate_a_line_that_could_be_a_keys_stays_masked(self):
         # where the word past the material could be a key's fragment (_token_like), it is read with the key, as before
@@ -1824,11 +1845,19 @@ class Base64ReviewSixteenTest(unittest.TestCase):
             for lead in (f"{key}\n{request}\n", f"[masked]\n{request}\n", ""):
                 text = f"{lead}[masked]{certificate}\nnext steps"
                 kept = text.replace(key, "[masked]")
+                if lead:
+                    # ruling (c), round 27: past the request, all main's reading of a rest takes is masked, the glued
+                    # certificate with it, and the request too, as on main: the certificate's lines hold runs of 16 a
+                    # key's could be, or, 12 wide, run on into "next steps", whose "next" main's reading takes
+                    kept = "[masked] steps" if width in (None, 12) else "[masked]\nnext steps"
                 for depth, written in enumerate((text, json.dumps(text), json.dumps(json.dumps(text)))):
                     with self.subTest(width=width, lead=len(lead), depth=depth):
                         masked = mask(written)
                         self.assertEqual([line for line in kept.split("\n") if line not in masked], [])
                         self.assertNotIn(key[64:128], masked)
+                        if lead:  # the request holds some of the certificate's 12-character lines ("hkiG9w0BAQsF")
+                            self.assertEqual([line for line in certificate.split("\n")
+                                              if line in masked and line not in request], [])
                 with self.subTest(width=width, lead=len(lead), older=True):
                     with mask_module.stored_row("0123456789abcdef"):
                         self.assertEqual(mask(text), kept)
@@ -4247,12 +4276,6 @@ class Base64ReviewTwentySixthTest(unittest.TestCase):
         yield "_base64_lines", "[masked]" + nl + cert + nl + "notes deploy today", lambda text: [
             line for line, _, _ in masking._base64_lines(text, len("[masked]"), len(text))]
         yield "_public_rest", cert, lambda text: masking._public_rest(text)
-
-        def past(text):
-            first = text.index("notes")
-            return masking._runs_past(text)(first, len(text))
-        yield "_runs_past", "[masked]" + nl + cert + nl + "notes" + nl + cert + nl + "more" + nl + nl + "next", past
-        yield ("_runs_past", "[masked]" + nl + cert + nl + "notes " + self.FRAGMENT + nl + nl + "next", past)
         body = self.body()
 
         def cut(text):
@@ -4360,7 +4383,7 @@ class Base64ReviewTwentySixthTest(unittest.TestCase):
         from kb import mask as masking
         nl = chr(10)
         for slash in ("\\/", "\\u002f"):
-            took, viewed, joined = {}, {}, {}
+            took, viewed = {}, {}
             for size in (1 << 18, 1 << 20):
                 words = ("notes deploy Tavlemor" + slash + "q today ") * (size // 30)
                 text = "[masked]" + nl + "MIIE" + "A" * 60 + nl + words + nl + nl + "next paragraph"
@@ -4370,22 +4393,18 @@ class Base64ReviewTwentySixthTest(unittest.TestCase):
                 started = time.process_time()
                 masking._fragment_view(text)
                 viewed[size] = time.process_time() - started
-                started = time.process_time()
-                masking._rest_view(text, joined=True)
-                joined[size] = time.process_time() - started
                 with self.subTest(slash=slash, size=size):
                     self.assertNotIn("Tavlemor", masked)
             with self.subTest(slash=slash):
                 # four times the text
                 self.assertLess(took[1 << 20], 8 * max(took[1 << 18], 0.05), took)
                 self.assertLess(viewed[1 << 20], 8 * max(viewed[1 << 18], 0.01), viewed)
-                self.assertLess(joined[1 << 20], 8 * max(joined[1 << 18], 0.01), joined)
 
-    # A fresh review of this round's fix, before it was pushed, found the check of a run past public material
-    # (_runs_past) reading the one view, where an escape of no base64 character reads as a space: a key's piece that
-    # such an escape splits read as two runs too short to be one, past a certificate after a placeholder, and showed,
-    # where main and 369b575 hide it. That check fails closed, so it reads the view joined: an escape of no base64
-    # character, a quote's entity and a backslash read as nothing there.
+    # A fresh review of this round's fix, before it was pushed, found the check of a run past public material reading
+    # the one view, where an escape of no base64 character reads as a space: a key's piece that such an escape splits
+    # read as two runs too short to be one, past a certificate after a placeholder, and showed, where main and
+    # 369b575 hide it. By the coordinator's ruling (c) there is no such check now: past public material, all main's
+    # reading of the rest takes is masked, whatever it holds.
     SPLITS = tuple(s.replace("@", chr(92)) for s in (
         "@t", "@r", "@u00e9", "@u0020", "@u00a0", "@@@u200b", "@@@@u200b", "&quot;", "&#34;", "@"))
     # characters written as themselves that JSON escapes: at depths 1 and 2 they are escapes
@@ -4405,19 +4424,6 @@ class Base64ReviewTwentySixthTest(unittest.TestCase):
             yield between, range(3)
         for between in self.ESCAPED_BY_JSON:
             yield between, range(1, 3)
-
-    def test_the_check_of_a_run_past_public_material_reads_an_escape_entity_or_backslash_as_nothing(self):
-        from kb import mask as masking
-        for between, depths in self.splits():
-            for depth in depths:
-                with self.subTest(between=between, depth=depth):
-                    text = self.split_written("Qw7Zk3PmXa" + chr(0xE001) + "Rt5Hv9LbNe", between, depth)
-                    self.assertEqual(masking._rest_view(text, joined=True), "Qw7Zk3PmXaRt5Hv9LbNe")
-        for slash in self.SLASHES:  # an escape of a base64 character reads as that character, joined too
-            for depth in range(3):
-                with self.subTest(slash=slash, depth=depth):
-                    text = self.written("Qw7Zk3PmXa/Rt5Hv9LbNe", depth, slash)
-                    self.assertEqual(masking._rest_view(text, joined=True), "Qw7Zk3PmXa/Rt5Hv9LbNe")
 
     def test_a_keys_piece_an_escape_splits_past_a_certificate_stays_masked(self):
         nl = chr(10)
@@ -4449,6 +4455,10 @@ class Base64ReviewTwentySixthTest(unittest.TestCase):
                 for older in (False, True):
                     with self.subTest(between=between, depth=depth, older=older):
                         masked = Base64ReviewEighteenTest.masks(written, older)
+                        # ruling (c), round 27: the certificate stays, and holds a piece of the key's
+                        # ("BgkqhkiG9w0B", the DER prefix of RSA's identifier), so its lines are read out first
+                        for line in self.certificate():
+                            masked = masked.replace(self.split_written(line, "", depth), "")
                         self.assertEqual([p for p in pieces if len(p) >= 8 and p in masked], [])
                         self.assertIn("next paragraph", masked)
 
@@ -4519,51 +4529,6 @@ class Base64ReviewTwentySixthTest(unittest.TestCase):
                             self.assertEqual([p for p in pieces if text.count(p) == 1 and p in masked], [])
                             self.assertIn("next paragraph", masked)
 
-    def test_ordinary_words_after_a_key_encoded_whole_and_a_certificate_stay_as_on_main(self):
-        # A second fresh review: a key encoded whole, which main leaves readable and this branch masks, then a
-        # certificate: what follows reads as that placeholder's rest, so a chain of names in camel case or a link's
-        # path ("iPhone, GitHub, macOS", "example.com/Docs/Index") masked words main keeps. A piece that reads as words
-        # is no key's. (A run of 16 or more of both cases, as in a longer path, is masked there as before: listed.)
-        import random
-        nl = chr(10)
-        key = Base64ReviewSeventeenTest.encoded(Base64ReviewTwentyFourthTest.pem(random.Random(2713)))
-        cert = nl.join(self.certificate())
-        words = ["We use iPhone, GitHub, macOS and YouTube today", "Visit https://example.com/Docs/Index for more",
-                 "PostgreSQL JavaScript TypeScript OAuth2 WebSocket", "Kubernetes, OpenShift, DigitalOcean, LinkedIn, PayPal",
-                 "AbortController, useEffect, useState and setTimeout",
-                 "request id 123e4567-e89b-12d3-a456-426614174000 at 2026-11-07T12:00Z",
-                 "uses SHA256 with abc123 and IPv6 for Win11", "the iOS17 and macOS14 builds of XcodeKit",
-                 "deploy on port 8080 with HTTP/2 and TCP/IP, build 20261104, v1.2.3"]
-        for line in words:
-            for depth in range(3):
-                text = self.split_written("notes" + nl + key + nl + cert + nl + line + nl + nl + "next paragraph", "",
-                                          depth)
-                for older in (False, True):
-                    with self.subTest(line=line, depth=depth, older=older):
-                        masked = Base64ReviewEighteenTest.masks(text, older)
-                        self.assertIn(self.split_written(line, "", depth), masked)
-
-    def test_ids_hashes_and_dates_after_a_key_encoded_whole_and_a_certificate_stay_as_on_main(self):
-        # The comparison texts read past such a key and a certificate: a hash or an id in one case (hex, a chat's
-        # channel id, a ULID) and a date's digits read as a key's pieces with a piece of the other case near them, so
-        # lines main keeps were masked. A key's piece of 8 characters or more holds both cases (but about 3 in 100);
-        # its digits alone, about 1 in 1,700 of 4.
-        import random
-        nl = chr(10)
-        key = Base64ReviewSeventeenTest.encoded(Base64ReviewTwentyFourthTest.pem(random.Random(2713)))
-        cert = nl.join(self.certificate())
-        lines = ["vpc-04e33e4a378dfd251 2026-11-02T13:27:00Z INFO took 76ms",
-                 "channel C0HXMYO0FF user U0TOM6TJ3U, 0179d4b9a7fb95b24e87d1db08e56f9ae63dc298 dist",
-                 "ULID 01SKMVR4M7C957VR8SY1BYQGGF sha256:60be6050f7dfb2e31d951afbaa7982f1"]
-        for line in lines:
-            for depth in range(3):
-                text = self.split_written("notes" + nl + key + nl + cert + nl + line + nl + nl + "next paragraph", "",
-                                          depth)
-                for older in (False, True):
-                    with self.subTest(line=line, depth=depth, older=older):
-                        masked = Base64ReviewEighteenTest.masks(text, older)
-                        self.assertIn(self.split_written(line, "", depth), masked)
-
     def test_a_keys_pieces_joined_by_short_words_or_written_as_a_tags_name_past_a_certificate_stay_masked(self):
         # A fresh review of 0e26db3: a short word between pieces ended a row, so pieces of uneven width joined by
         # " and ", or by a short word and another separator in turn, showed; and a piece written as a tag's or an
@@ -4592,23 +4557,39 @@ class Base64ReviewTwentySixthTest(unittest.TestCase):
                         self.assertEqual([p for p in named if p in masked], [])
                         self.assertIn("next paragraph", masked)
 
-    def test_past_a_key_encoded_whole_and_a_certificate_the_listed_words_are_masked_to_the_paragraphs_end(self):
-        # The coordinator's listed limit: past a key encoded whole as base64 (main leaves it readable; this branch
-        # masks it) and a certificate, what follows is that placeholder's rest, read failing closed, so words with a
-        # number, short hashes, ids of one width and camel case with a capital vowel read as a key's pieces and are
-        # masked, where main and 369b575 keep them. It only masks, and only to where the rest ends: the paragraph's
-        # end, so a next paragraph, even one holding such words, stays. In JSON inside JSON a blank line ends no rest,
-        # on main too, so there the rest runs on to its last line holding such words. Words with none stay.
+    def test_past_a_key_encoded_whole_and_a_certificate_what_mains_reading_of_a_rest_takes_is_masked(self):
+        # The coordinator's listed limit, read by ruling (c): past a key encoded whole as base64 (main leaves it
+        # readable; this branch masks it) and a certificate, what follows is that key's rest, and all main's reading of
+        # a rest takes is masked, as after a placeholder: its lines up to a line of ordinary words, and on through the
+        # last line of the paragraph that holds a token (_token_tail), where main keeps them. Lines the five guards
+        # this round's prep added for the piece rule kept (names in camel case, links, ids, hashes, dates, hex
+        # constants, acronyms' plurals, words with a number) are masked now. Ordinary words with no token, and the
+        # next paragraph, stay; in JSON inside JSON a blank line ends no rest, on main too, so there the rest runs on
+        # to its last line holding a token.
         import random
         nl = chr(10)
         key = Base64ReviewSeventeenTest.encoded(Base64ReviewTwentyFourthTest.pem(random.Random(2713)))
         cert = nl.join(self.certificate())
-        listed = ["java -Xmx512m -jar app.jar opt0 opt1 opt2 opt3", "Merge: ebe75d1 1fe02a3 by Walrus1687",
-                  "The address is an IPv4Network or IPv6Network object.", "const asyncId = triggerAsyncId(resourceArn)",
-                  "Sign in with LinkedIn, OAuth, DevOps"]
-        kept = "We use iPhone, GitHub, macOS and YouTube today"
+        masked_lines = [
+            "We use iPhone, GitHub, macOS and YouTube today", "Visit https://example.com/Docs/Index for more",
+            "PostgreSQL JavaScript TypeScript OAuth2 WebSocket",
+            "Kubernetes, OpenShift, DigitalOcean, LinkedIn, PayPal",
+            "AbortController, useEffect, useState and setTimeout",
+            "request id 123e4567-e89b-12d3-a456-426614174000 at 2026-11-07T12:00Z",
+            "uses SHA256 with abc123 and IPv6 for Win11", "the iOS17 and macOS14 builds of XcodeKit",
+            "deploy on port 8080 with HTTP/2 and TCP/IP, build 20261104, v1.2.3",
+            "vpc-04e33e4a378dfd251 2026-11-02T13:27:00Z INFO took 76ms",
+            "channel C0HXMYO0FF user U0TOM6TJ3U, 0179d4b9a7fb95b24e87d1db08e56f9ae63dc298 dist",
+            "ULID 01SKMVR4M7C957VR8SY1BYQGGF sha256:60be6050f7dfb2e31d951afbaa7982f1",
+            "oid = bytes([0x2A, 0x86, 0x48, 0xCE, 0x3D, 0x03, 0x01, 0x07])",
+            "flags = 0xDEADBEEF | 0x7fffffff, mask 0xFFFF0000",
+            "We expose APIs, URLs, PDFs, IDEs", "Supports APIs, SDKs and URLs, PDFs, IDs",
+            "java -Xmx512m -jar app.jar opt0 opt1 opt2 opt3", "Merge: ebe75d1 1fe02a3 by Walrus1687",
+            "The address is an IPv4Network or IPv6Network object.", "const asyncId = triggerAsyncId(resourceArn)",
+            "Sign in with LinkedIn, OAuth, DevOps", "use HTTP for health checks"]
+        kept_lines = ["next steps", "deploy today", "Thanks, see you tomorrow.", "See the README for details"]
         such = "Merge: d61f60d 62547c8 by Facebook880"
-        for line in listed + [kept]:
+        for line in masked_lines + kept_lines:
             for after in ("deploy today", such):
                 for depth in range(3):
                     raw = "notes" + nl + key + nl + cert + nl + line + nl + nl + "next paragraph" + nl + after
@@ -4618,53 +4599,39 @@ class Base64ReviewTwentySixthTest(unittest.TestCase):
                         with self.subTest(line=line, after=after, depth=depth, older=older):
                             masked = Base64ReviewEighteenTest.masks(text, older)
                             self.assertNotIn(key.split(nl)[1], masked)
-                            if line == kept and not runs_on:
+                            self.assertEqual([c for c in cert.split(nl) if c not in masked], [])
+                            if line in kept_lines and not runs_on:
                                 self.assertIn(self.split_written(line, "", depth), masked)
                             else:
                                 self.assertNotIn(self.split_written(line, "", depth), masked)
-                            second = self.split_written("next paragraph" + nl + after, "", depth)
                             if runs_on:
                                 self.assertNotIn(self.split_written(such, "", depth), masked)
                             else:
-                                self.assertIn(second, masked)
+                                self.assertIn(self.split_written("next paragraph" + nl + after, "", depth), masked)
 
-    def test_hex_constants_after_a_key_encoded_whole_and_a_certificate_stay_as_on_main(self):
-        # The comparison texts' code read past such a key and a certificate: hex constants written "0x2A" are of both
-        # cases ("x" and "A"), so a list of them read as a key's pieces; main keeps it. A key's piece of four
-        # characters is one in about 35,000.
-        import random
+    def test_past_a_certificate_after_a_placeholder_a_keys_pieces_are_masked_as_main_masks_them(self):
+        # The coordinator's ruling (c), round 27: past a certificate after a placeholder, what main's reading of the
+        # key's rest takes is masked as main masks it, and only the public material the rest starts with stays. A
+        # key's run cut into short pieces, or into pieces with one that reads as a word or is in one case, showed past
+        # the certificate where main masks it; main masks all three. Made up.
         nl = chr(10)
-        key = Base64ReviewSeventeenTest.encoded(Base64ReviewTwentyFourthTest.pem(random.Random(2713)))
-        cert = nl.join(self.certificate())
-        for line in ("oid = bytes([0x2A, 0x86, 0x48, 0xCE, 0x3D, 0x03, 0x01, 0x07])",
-                     "flags = 0xDEADBEEF | 0x7fffffff, mask 0xFFFF0000"):
+        lines = self.certificate()
+        cert = nl.join(lines)
+        for line, pieces in (("Qw7 Zk3 PmX aRt 5Hv 9Lb", ["Qw7", "Zk3", "PmX", "aRt", "5Hv", "9Lb"]),
+                             ("notes deploy Qw7Zk3Pm Rexa Lt5Hv9Lb today", ["Qw7Zk3Pm", "Rexa", "Lt5Hv9Lb"]),
+                             ("qw7zk3pmxa Rt5Hv9Lb", ["qw7zk3pmxa", "Rt5Hv9Lb"])):
             for depth in range(3):
-                text = self.split_written("notes" + nl + key + nl + cert + nl + line + nl + nl + "next paragraph", "",
-                                          depth)
+                text = self.split_written("[masked]" + nl + cert + nl + line + nl + nl + "next paragraph", "", depth)
                 for older in (False, True):
                     with self.subTest(line=line, depth=depth, older=older):
                         masked = Base64ReviewEighteenTest.masks(text, older)
-                        self.assertIn(self.split_written(line, "", depth), masked)
-
-    def test_acronyms_plurals_after_a_key_encoded_whole_and_a_certificate_stay_as_on_main(self):
-        # The same review: an acronym's plural ("APIs", "URLs") read as a key's piece of both cases, so a list of them
-        # past a key encoded whole and a certificate was masked; main keeps it.
-        import random
-        nl = chr(10)
-        key = Base64ReviewSeventeenTest.encoded(Base64ReviewTwentyFourthTest.pem(random.Random(2713)))
-        cert = nl.join(self.certificate())
-        for line in ("We expose APIs, URLs, PDFs, IDEs", "Supports APIs, SDKs and URLs, PDFs, IDs"):
-            for depth in range(3):
-                text = self.split_written("notes" + nl + key + nl + cert + nl + line + nl + nl + "next paragraph", "",
-                                          depth)
-                for older in (False, True):
-                    with self.subTest(line=line, depth=depth, older=older):
-                        masked = Base64ReviewEighteenTest.masks(text, older)
-                        self.assertIn(self.split_written(line, "", depth), masked)
+                        self.assertEqual([p for p in pieces if p in masked], [])
+                        self.assertEqual([c for c in lines if c not in masked], [])
+                        self.assertIn("next paragraph", masked)
 
     def test_a_keys_pieces_of_letters_alone_or_in_a_tags_attributes_past_a_certificate_stay_masked(self):
         # An automated review of eb1f4ab: a row of a key's pieces had to hold a digit, "+" or "/", which a fragment of
-        # letters alone (about 1 in 28 of 16 characters) lacks, though _MIXED_RUN masks one run on its cases alone;
+        # letters alone (about 1 in 28 of 16 characters) lacks, though one run of 16 was masked on its cases alone;
         # and a tag's attributes read as part of the separator, so a piece in one ("title") was passed over.
         nl, mark = chr(10), chr(0xE001)
         cert = nl.join(self.certificate())
@@ -4692,9 +4659,9 @@ class Base64ReviewTwentySixthTest(unittest.TestCase):
                         self.assertEqual([p for p in ("Qw7Z", "Rt5H9LbN", "Pq2R", "Xy8kMn3B") if p in masked], [])
                         self.assertIn("next paragraph", masked)
 
-    def test_ordinary_words_with_numbers_and_acronyms_past_a_certificate_stay(self):
-        # the exception's own: past public material, words with a port, a version, a date, acronyms, paths and a
-        # request id in small letters are no key's pieces
+    def test_words_with_numbers_and_acronyms_past_a_certificate_are_masked_as_main_masks_them(self):
+        # ruling (c), round 27: past public material after a placeholder, words with a port, a version, a date,
+        # acronyms, paths and a request id, which the piece rule kept, are masked as main's reading of a rest takes them
         nl = chr(10)
         words = ["deploy on port 8080 with HTTP/2 and TCP/IP, build 20261104, v1.2.3",
                  "request id 123e4567-e89b-12d3-a456-426614174000 at 2026-11-07T12:00Z",
@@ -4705,35 +4672,31 @@ class Base64ReviewTwentySixthTest(unittest.TestCase):
             for older in (False, True):
                 with self.subTest(depth=depth, older=older):
                     masked = Base64ReviewEighteenTest.masks(written, older)
-                    self.assertEqual([line for line in words if self.split_written(line, "", depth) not in masked], [])
+                    self.assertEqual([line for line in words if self.split_written(line, "", depth) in masked], [])
+                    self.assertIn("next paragraph", masked)
 
     def test_a_megabyte_of_short_pieces_past_a_certificate_costs_time_in_proportion(self):
         import time
-        from kb import mask as masking
         nl = chr(10)
         cert = nl.join(self.certificate())
         # pieces a key's could be that never make 16 characters between words, pieces in small letters only, and pieces
         # between an escaped tag and a name in camel case
         for unit in ("Qw7Z notes deploy ", "ab12 cd34 ef56 ", "Qw7Z&lt;br&gt;GitHub "):
-            took, read = {}, {}
+            took = {}
             for size in (1 << 18, 1 << 20):
                 text = "[masked]" + nl + cert + nl + unit * (size // len(unit)) + nl + nl + "next paragraph"
                 started = time.process_time()
                 mask(text)
                 took[size] = time.process_time() - started
-                started = time.process_time()
-                masking._joined_pieces(text)
-                read[size] = time.process_time() - started
             with self.subTest(unit=unit):
                 # four times the text
                 self.assertLess(took[1 << 20], 8 * max(took[1 << 18], 0.05), took)
-                self.assertLess(read[1 << 20], 8 * max(read[1 << 18], 0.01), read)
 
     def test_a_long_run_of_letters_after_a_placeholder_costs_time_in_proportion(self):
         # A check of this round's: a capital, small letters and a digit glued to a placeholder or on the next line
         # ("[masked]Baaa...a1") were read against a word in time that grows with the square of their length
-        # (_token_like), 5 seconds for 32,000 characters on 369b575, where main takes 0.05. The same runs, and runs
-        # of letters read against words in camel case (_reads_as_words), past a certificate.
+        # (_token_like), 5 seconds for 32,000 characters on 369b575, where main takes 0.05. The same runs past a
+        # certificate.
         import time
         from kb import mask as masking
         nl = chr(10)
@@ -4742,18 +4705,14 @@ class Base64ReviewTwentySixthTest(unittest.TestCase):
         shapes = {"glued": "[masked]@", "next line": "[masked]" + nl + "@",
                   "words past a certificate": "[masked]" + nl + nl.join(self.certificate()) + nl + "notes @ today"}
         for name, run in runs.items():
-            read, joined = {}, {}
+            read = {}
             for size in (1 << 13, 1 << 15):
                 started = time.process_time()
                 masking._token_like(run(size))
                 read[size] = time.process_time() - started
-                started = time.process_time()
-                masking._joined_pieces("notes " + run(size) + " today")
-                joined[size] = time.process_time() - started
             with self.subTest(run=name):
                 # four times the run
                 self.assertLess(read[1 << 15], 8 * max(read[1 << 13], 0.01), read)
-                self.assertLess(joined[1 << 15], 8 * max(joined[1 << 13], 0.01), joined)
             for shape, around in shapes.items():
                 for older in (False, True):
                     took = {}
