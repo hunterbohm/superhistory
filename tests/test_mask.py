@@ -3685,6 +3685,119 @@ class Base64ReviewTwentyFourthTest(unittest.TestCase):
                     masked = mask(Base64ReviewNineteenFindingsTest.written(text, depth))
                     self.assertEqual([k for k in lines[1:] if k in masked], [])
 
+    def test_a_key_whose_lines_break_at_any_line_break_python_reads_is_masked(self):
+        import random
+        r = random.Random(2409)
+        body = Base64ReviewSeventeenTest.encoded(made_up_private_key(r)).encode().split(b"\n")
+        certificate = self.certificate(r)
+        written, encoded, i = Base64ReviewNineteenFindingsTest.written, Base64ReviewSeventeenTest.encoded, 0
+        for brk in ("\x0b", "\x0c", "\x1c", "\x1d", "\x1e", "\x85", "\u2028", "\u2029", "\\n", "\\r\\n", "\\u000a",
+                    "\\f", "\\\\n"):
+            b = brk.encode()
+            for shape in ("whole", "no footer", "no header"):
+                lines = [b"-----BEGIN PRIVATE KEY-----"] + body + [b"-----END PRIVATE KEY-----"]
+                lines = lines[:-1] if shape == "no footer" else lines[1:] if shape == "no header" else lines
+                key = b.join(lines) + b
+                data = (b"Notes from today.\n\n" if shape == "no header" else b"") + key + (
+                    b"\n" + certificate if shape == "whole" else b"")
+                start = data.index(body[0])
+                end = data.index(body[-1]) + len(body[-1])
+                for width in (64, 76):
+                    depth, i = i % 3, i + 1
+                    with self.subTest(brk=brk, shape=shape, width=width, depth=depth):
+                        text = written(encoded(data, width) + "\n\nnext paragraph", depth)
+                        self.assertEqual([k for k in self.lines_within(data, width, start, end) if k in mask(text)], [])
+                        if shape == "whole":
+                            self.assertEqual(self.in_key_spans(text, self.lines_within(
+                                data, width, len(data) - len(certificate) + 4, len(data))), [])
+
+    def test_a_quote_written_as_a_web_page_writes_it_leads_and_ends_a_line(self):
+        import base64
+        import random
+        r = random.Random(2410)
+        encoded = Base64ReviewSeventeenTest.encoded
+        line = base64.b64encode(bytes(r.randrange(256) for _ in range(48)))
+        public = made_up_certificate(r)
+        kept = encoded(public, 52)
+        whole = encoded(b"-----BEGIN PRIVATE KEY-----\n" + line + b"\n" + line + b"\n-----END PRIVATE KEY-----\n", 52)
+        body = "\n".join([encoded(b"\n-----END PRIVATE KEY-----\n", 52), kept, whole]) + "\n\nnext paragraph"
+        quotes = ("&quot;", "&#34;", "&#034;", "&apos;", "&#39;", "&#x27;", "&#X22;", "&grave;", "&#96;", "&#x60;")
+        for quote in quotes:
+            with self.subTest(lead=quote):
+                masked = mask(quote + body)
+                self.assertEqual([k for k in kept.splitlines() if k not in masked], [])
+                self.assertEqual([k for k in whole.splitlines()[1:-1] if k in masked], [])
+        # and after a key's short last line: a key cut before its footer, whose last line is the block's only where
+        # its end is read as one
+        der = base64.b64encode(made_up_private_key(r))
+        cut = next(k for k in range(600, 700) if 4 <= len(base64.b64encode(b"-----BEGIN PRIVATE KEY-----\n" + der[:k]))
+                   % 76 <= 12)
+        lines = encoded(b"-----BEGIN PRIVATE KEY-----\n" + der[:cut], 76).splitlines()
+        for quote in quotes:
+            with self.subTest(end=quote):
+                masked = mask("<div data-key=" + quote + "\n".join(lines) + quote + ">next paragraph</div>")
+                self.assertEqual([k for k in lines[1:] if k in masked], [])
+
+    def test_a_body_cut_into_words_keeps_none_of_its_characters_whatever_leads_its_lines_or_escapes_its_slashes(self):
+        # The tail rule read a body's last line only after spaces, tabs, quotes and "#>*-", and its base64 only
+        # without JSON's escaped slash ("\/", as PHP writes JSON), so its short last line glued to words showed.
+        import textwrap
+        from kb import mask as masking
+        for kind, (body, width) in Base64KeyCutBeforeWordsTest.bodies().items():
+            for full in (1, 3):
+                lines = textwrap.wrap(body, width)[:full]
+                for lead in ("", "> ", "| ", "+ ", ", ", "; ", "] ", "\t", "<br>", "\xa0", "　"):
+                    for q in ("", "> ", "- "):
+                        text = ("intro notes\n" + q + "[masked]\n" + "\n".join(lead + line for line in lines)
+                                + "\n" + q + "ei walrus moved today\n\nnext paragraph")
+                        writings = {"plain": text}
+                        if "/" not in lines[0][:40]:  # where main starts a rest: past 40 characters of base64
+                            writings["slashes escaped"] = text.replace("/", "\\/")
+                            if lead.isascii():  # and past no escaped wide space
+                                writings["json, slashes escaped"] = json.dumps(text).replace("/", "\\/")
+                                writings["json in json, slashes escaped"] = json.dumps(
+                                    writings["json, slashes escaped"]).replace("/", "\\/")
+                        for writing, written in writings.items():
+                            for older in (False, True):
+                                with self.subTest(kind=kind, full=full, lead=lead, q=q, writing=writing, older=older):
+                                    if older:
+                                        with masking.stored_row(None):
+                                            masked = mask(written)
+                                    else:
+                                        masked = mask(written)
+                                    self.assertNotIn("ei walrus", masked)
+                                    self.assertEqual([line[i:i + 8] for line in lines for i in range(0, len(line) - 8)
+                                                      if "/" not in line[i:i + 8] and line[i:i + 8] in masked], [])
+                                    self.assertIn("intro notes", masked)
+
+    def test_a_long_lead_on_a_bodys_last_line_before_words_costs_time_in_proportion(self):
+        import time
+        line = "MIICbgIBADANBgkqhkiG9w0BAQEFAASCAlgwggJUAgEAAoGBAMN4aZbeK6nVJu1j"
+        for unit in ("\\", "\\/", "+ ", "[", "<", "[masked]"):
+            took = {}
+            for size in (1 << 16, 1 << 18):
+                text = (f"notes\n[masked]\n{line}\n" + unit * (size // len(unit)) + line
+                        + "\nei walrus moved today\n\nnext paragraph")
+                started = time.process_time()
+                mask(text)
+                took[size] = time.process_time() - started
+            with self.subTest(unit=unit):
+                # four times the text
+                self.assertLess(took[1 << 18], 8 * max(took[1 << 16], 0.05), took)
+
+    @unittest.expectedFailure
+    def test_a_keys_lines_each_after_one_quote_or_comment_mark_are_masked(self):
+        # The listed limit, as on main: lines that each start with the same mark ("> ", "# ", "// ", "-- ", "; ", "* ",
+        # "| ", a quote) read as no block, so a key encoded in them shows.
+        import random
+        data = self.pem(random.Random(9))
+        start, end = data.index(b"\n") + 1, data.rindex(b"\n-----END")
+        lines = Base64ReviewSeventeenTest.encoded(data, 64).splitlines()
+        for prefix in ("> ", "# ", "// ", "-- ", "; ", "* ", "| ", '"', "'", "`"):
+            with self.subTest(prefix=prefix):
+                masked = mask("Notes:\n" + "\n".join(prefix + line for line in lines) + "\n\nnext paragraph")
+                self.assertEqual([k for k in self.lines_within(data, 64, start, end) if k in masked], [])
+
     def test_horizontal_space_and_line_breaks_are_every_one_python_reads(self):
         import re
         from kb import mask as masking
