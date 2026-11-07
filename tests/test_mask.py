@@ -3814,6 +3814,25 @@ class Base64ReviewTwentyFourthTest(unittest.TestCase):
                 # four times the text
                 self.assertLess(took[1 << 16], 8 * max(took[1 << 14], 0.05), took)
 
+    def test_a_key_written_plain_with_a_label_of_any_length_is_masked(self):
+        # the 200-byte bound on a label is the base64 frame reader's alone: main's patterns read a plain key's label
+        # however long
+        import base64
+        import random
+        import textwrap
+        body = "\n".join(textwrap.wrap(base64.b64encode(made_up_private_key(random.Random(2414))).decode(), 64))
+        for size in (201, 1000, 1 << 16):
+            label = ("ENCRYPTED " * (size // 10 + 1))[:size].rstrip() + " "
+            for name, text in {
+                    "pem": f"-----BEGIN {label}PRIVATE KEY-----\n{body}\n-----END {label}PRIVATE KEY-----",
+                    "no footer": f"-----BEGIN {label}PRIVATE KEY-----\n{body}",
+                    "ssh2": f"---- BEGIN SSH2 {label}PRIVATE KEY ----\n{body}\n---- END SSH2 {label}PRIVATE KEY ----",
+            }.items():
+                with self.subTest(size=size, form=name):
+                    masked = mask("notes\n" + text + "\n\nnext paragraph")
+                    self.assertEqual([line for line in body.split("\n") if line in masked], [])
+                    self.assertIn("next paragraph", masked)
+
     def test_a_long_lead_on_a_bodys_last_line_before_words_costs_time_in_proportion(self):
         import time
         line = "MIICbgIBADANBgkqhkiG9w0BAQEFAASCAlgwggJUAgEAAoGBAMN4aZbeK6nVJu1j"
