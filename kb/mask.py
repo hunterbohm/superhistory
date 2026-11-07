@@ -3116,9 +3116,31 @@ def stored_row(*versions):
         _STORED_ROW.reset(marker)
 
 
-_OPENSSH_PUBLIC = frozenset((b"ssh-rsa", b"ssh-dss", b"ssh-ed25519", b"ssh-ed448", b"ecdsa-sha2-nistp256",
-                             b"ecdsa-sha2-nistp384", b"ecdsa-sha2-nistp521", b"sk-ssh-ed25519@openssh.com",
-                             b"sk-ecdsa-sha2-nistp256@openssh.com"))
+# OpenSSH's public key types, a closed list, each with how many strings its key holds, each after its length, its
+# type's name first. A certificate's types (...-cert-v01@openssh.com) are none.
+_OPENSSH_PUBLIC = {b"ssh-ed25519": 2, b"ssh-rsa": 3, b"ssh-dss": 5, b"ecdsa-sha2-nistp256": 3,
+                   b"ecdsa-sha2-nistp384": 3, b"ecdsa-sha2-nistp521": 3, b"sk-ssh-ed25519@openssh.com": 3,
+                   b"sk-ecdsa-sha2-nistp256@openssh.com": 4}
+
+
+def _openssh_end(data, at):
+    """Where the OpenSSH public key at data[at] ends, its type's strings, each after its length, as many as the type
+    holds (_OPENSSH_PUBLIC); None while `data` is too short to say, or -1 when none starts there."""
+    count = None
+    while count != 0:
+        if at + 4 > len(data):
+            return None
+        size, at = int.from_bytes(data[at:at + 4], "big"), at + 4
+        if count is None:
+            if size > 64:  # no type's name is so long
+                return -1
+            if at + size > len(data):
+                return None
+            count = _OPENSSH_PUBLIC.get(bytes(data[at:at + size]))
+            if count is None:
+                return -1
+        at, count = at + size, count - 1
+    return at
 
 
 def _element(der, at, end):
@@ -3185,15 +3207,11 @@ def _public_material(data, bundles=True):
     """Whether bytes decoded from base64 are, whole, public material: an X.509 certificate or a certificate request
     (what is signed, how, and the signature, the first starting with a version or a serial number), a public key
     (SubjectPublicKeyInfo: an algorithm and the key), a PKCS#7 bundle of certificates (_certificate_bundle; with
-    `bundles` false, not one), or an OpenSSH public key (strings, each after its length, the first naming a public key's type). No private key's DER
-    has any of these shapes, and one cut short has none."""
-    at, strings = 0, []
-    while at + 4 <= len(data) and len(strings) < 16:
-        size = int.from_bytes(data[at:at + 4], "big")
-        strings.append(data[at + 4:at + 4 + size])
-        at += 4 + size
-    if at == len(data) and strings and strings[0] in _OPENSSH_PUBLIC:
-        return True
+    `bundles` false, not one), or an OpenSSH public key (_openssh_end: its type's strings, as many as the type holds,
+    and no byte after them). No private key's DER has any of these shapes, and one cut short has none; nor has an
+    OpenSSH private key's blob ("openssh-key-v1")."""
+    if data[:1] != b"\x30":
+        return _openssh_end(data, 0) == len(data)
     top = _element(data, 0, len(data))
     parts = _elements(data, top[1], top[2]) if top and top[0] == 0x30 and top[2] == len(data) else None
     if not parts:
@@ -3416,7 +3434,8 @@ def _element_end(data, at):
 
 def _public_prefix(lines):
     """How many of `lines` (each a line's base64), from the first, are whole public material: the most after which one
-    element of it (_public_material), or the last of a run of them as a chain of certificates is, ends, each stream
+    element of it (_public_material: DER, or an OpenSSH public key, _openssh_end), or the last of a run of them as a
+    chain of certificates is, ends, each stream
     decoded alone (one ends at base64's padding, as each element encoded alone does), where the line after is no base64
     a key's could be (_token_like: a word alone, "notes") or there is none; 0 when none. Decoded as read, and read no
     further than an element that is none."""
@@ -3436,9 +3455,8 @@ def _public_prefix(lines):
         if not pending:
             whole[len(data)] = k + 1  # the data is whole groups through this line
         while at < len(data):
-            if data[at] != 0x30:  # public material is a DER sequence
-                return most
-            stop = _element_end(data, at)
+            # public material is a DER sequence, or an OpenSSH public key, which is strings, each after its length
+            stop = _element_end(data, at) if data[at] == 0x30 else _openssh_end(data, at)
             if stop is None or stop > len(data):
                 break
             if stop < 0 or not _public_material(bytes(data[at:stop])):
