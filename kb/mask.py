@@ -1062,16 +1062,24 @@ def _key_range(joined, starts, ends, found, floor, frames, stream_end, held=None
     return max(top, floor), bottom, at
 
 
-def _stream_end(widths, padded, k):
+# A block's first line that starts its line: after the text's start or a line break, written or escaped, with only
+# spaces, tabs and quotes between, as JSON writes a string that starts with it.
+_LINE_LEAD = re.compile(rf"(?:\A|{_BREAK})(?:{_SPACING}|\\*[\"'])*\Z")
+
+
+def _stream_end(widths, padded, k, cut=False):
     """The last line of the stream that starts at line `k` of a base64 block (`widths`, each line's width; `padded`,
     whether it holds "="). A stream's lines are as wide as its widest so far but its last, which holds its "=" or is
     shorter, so a line of either ends it (a blank line, or one that is not base64, ends the block). But a shorter line
     as wide as the next, with no "=", starts a narrower stream, as a key file wrapped narrower below a stream does, and
-    a line wider than two or more of one width starts a wider one: there the stream ended on the line before."""
+    a line wider than those above starts a wider one, as one below a footer encoded alone on a line of its own does:
+    there the stream ended on the line before. Where its first line is `cut`, the block's first after text on its
+    line, as narrow as what that left of it, a wider line starts one only past two or more of one width."""
     width, run = 0, 0  # the stream's width, and how many of its lines are read
     for j in range(k, len(widths)):
         w = widths[j]
-        if width and (w > width and run >= 2 or w < width and not padded[j] and widths[j + 1:j + 2] == [w]):
+        wider = w > width and (run >= 2 or not cut)
+        if width and (wider or w < width and not padded[j] and widths[j + 1:j + 2] == [w]):
             return j - 1
         if padded[j] or w < width:
             return j
@@ -1088,8 +1096,9 @@ def _key_spans(text, lines):
     widths = [b - a for a, b in lines]
     padded = ["=" in joined[starts[k]:ends[k]] for k in range(len(lines))]
     stream_end, k = [], 0  # stream_end[k]: the last line of the stream that holds line k (_stream_end)
+    cut = not _LINE_LEAD.search(text, max(lines[0][0] - 64, 0), lines[0][0])
     while k < len(lines):
-        last = _stream_end(widths, padded, k)
+        last = _stream_end(widths, padded, k, cut and not k)
         stream_end += [last] * (last + 1 - k)
         k = last + 1
     spans, floor, done, held, held_end, frames = [], 0, 0, None, None, _Frames(joined, starts)
