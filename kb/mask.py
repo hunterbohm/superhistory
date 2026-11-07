@@ -1137,7 +1137,12 @@ def _written_key_spans(text):
     for m in _WRAPPED_BASE64.finditer(text):
         escape = _ESCAPE_LETTER.match(text, m.start())
         lines = _wrapped_lines(text, escape.end() if escape else m.start(), m.end())
-        if block and _UNWRAP.fullmatch(text, block[-1][1], lines[0][0]):
+        # a run led by an escape's letter whose line break comes right after it: a blank line escaped ("\\n\\n"),
+        # which ends the block above, as one written plain does
+        blank = escape and len(lines) > 1 and lines[0][0] == lines[0][1]
+        if blank:
+            lines = lines[1:]
+        if block and not blank and _UNWRAP.fullmatch(text, block[-1][1], lines[0][0]):
             block += lines
             continue
         spans += _key_spans(text, block) if block else []
