@@ -2,12 +2,16 @@ import json
 import os
 import stat
 import tempfile
+import threading
 import unittest
 from unittest import mock
 
 from kb import agents, check
 from kb.agents import Change, _turns
 from kb.ai.cli import NESTED_ENV
+
+CLAUDE_TOOL = {"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "toolu_1", "name": "Bash",
+                                                            "input": {}}], "stop_reason": "tool_use"}}
 
 KB = "'/opt/kb tools/kb' hook claude-code"
 
@@ -97,31 +101,71 @@ class RunTest(unittest.TestCase):
         self.assertEqual((paths, config, session), ("paths", "config", "s1"))
         self.assertEqual(json.loads(request), {"message": "what did she say", "before": []})
 
-    def deliver(self, written_during_check):
-        with tempfile.TemporaryDirectory() as tmp:
+    def deliver(self, written_during_check, later=None, prompt_before=None):
+        """The hook's output when the agent writes written_during_check (one line or a list) during the check and
+        `later` while the hook waits for a model request that reads its records."""
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(_turns, "WAIT_SECONDS", 1):
             transcript = os.path.join(tmp, "session.jsonl")
             with open(transcript, "w") as fh:
-                fh.write(json.dumps({"type": "assistant", "message": {"stop_reason": "end_turn"}}) + "\n")
+                for line in prompt_before or [{"type": "assistant", "message": {"stop_reason": "end_turn"}}]:
+                    fh.write(json.dumps(line) + "\n")
+
+            def write(lines):
+                with open(transcript, "a") as fh:
+                    for line in lines if isinstance(lines, list) else [lines]:
+                        fh.write(json.dumps(line) + "\n")
 
             def check_while_the_agent_works(*args, still_wanted=None):
-                with open(transcript, "a") as fh:
-                    fh.write(json.dumps(written_during_check) + "\n")
-                return "" if still_wanted and not still_wanted() else "RECORDS"
+                write(written_during_check)
+                if later:
+                    threading.Timer(0.3, write, [later]).start()
+                return "RECORDS" if still_wanted and still_wanted() else ""
 
             self.answer.side_effect = check_while_the_agent_works
             event = {"prompt": "what did she say", "session_id": "s", "transcript_path": transcript}
             return self.run_hook(json.dumps(event))
 
-    def test_records_reach_a_turn_still_running(self):
+    def delivered(self, out):
+        return json.loads(out)["hookSpecificOutput"]["additionalContext"]
+
+    def test_records_go_out_while_a_tool_call_runs(self):
         for name, line in {
-            "the prompt itself": {"type": "user", "message": {"content": "what did she say"}},
-            "a tool call": {"type": "assistant", "message": {"stop_reason": "tool_use"}},
+            "claude tool call": CLAUDE_TOOL,
+            "codex tool call": {"type": "response_item", "payload": {"type": "custom_tool_call", "call_id": "c1"}},
+            "codex function call": {"type": "response_item", "payload": {"type": "function_call", "call_id": "c2"}},
+        }.items():
+            with self.subTest(name):
+                self.assertEqual(self.delivered(self.deliver(line)), "RECORDS")
+
+    def test_records_wait_for_the_next_tool_call(self):
+        out = self.deliver({"type": "user", "message": {"content": "what did she say"}}, later=CLAUDE_TOOL)
+        self.assertEqual(self.delivered(out), "RECORDS")
+
+    def test_records_no_tool_call_would_read_are_dropped(self):
+        for name, line in {
+            "the prompt alone": {"type": "user", "message": {"content": "what did she say"}},
+            "a tool call that finished": [CLAUDE_TOOL, {"type": "user", "message": {"content": [
+                {"type": "tool_result", "tool_use_id": "toolu_1", "content": "ok"}]}}],
+            "a codex call that finished": [
+                {"type": "response_item", "payload": {"type": "custom_tool_call", "call_id": "c1"}},
+                {"type": "response_item", "payload": {"type": "custom_tool_call_output", "call_id": "c1"}}],
+            "a subagent's tool call": {**CLAUDE_TOOL, "isSidechain": True},
             "a subagent's answer": {"type": "assistant", "isSidechain": True, "message": {"stop_reason": "end_turn"}},
             "a tool result naming end_turn": {"type": "user", "message": {"content": [
                 {"type": "tool_result", "content": '"stop_reason":"end_turn" task_complete'}]}},
         }.items():
             with self.subTest(name):
-                self.assertEqual(json.loads(self.deliver(line))["hookSpecificOutput"]["additionalContext"], "RECORDS")
+                self.assertEqual(self.deliver(line), "")
+
+    def test_a_repeat_of_the_prompt_does_not_reopen_its_turn(self):
+        ended = [{"type": "user", "message": {"content": "what did she say"}},
+                 {"type": "assistant", "message": {"stop_reason": "end_turn"}}]
+        self.assertEqual(self.deliver({"type": "user", "message": {"content": "what did she say"}},
+                                      later=CLAUDE_TOOL, prompt_before=ended), "")
+
+    def test_a_background_hook_without_a_transcript_gets_nothing(self):
+        self.answer.side_effect = lambda *args, still_wanted=None: "RECORDS" if still_wanted() else ""
+        self.assertEqual(self.run_hook(json.dumps({"prompt": "what did she say", "session_id": "s"})), "")
 
     def test_records_for_a_turn_that_ended_are_dropped(self):
         for name, line in {

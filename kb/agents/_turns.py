@@ -1,12 +1,15 @@
 import json
 import os
 import re
+import time
 
 from kb.mask import mask
 
 TAIL_BYTES = 1_000_000
 # How far back from the hook's start to look for the prompt's own transcript line.
 PROMPT_BYTES = 200_000
+# How long, from the hook's start, records may wait for a model request that reads them. Below the hook timeout.
+WAIT_SECONDS = 50
 BEFORE_CHARS = {"assistant": 1500, "user": 600}
 INJECTED = re.compile(r"^\s*(<task-notification>|<system-reminder>|<command-|<local-command|# AGENTS\.md instructions"
                       r"|<environment_context>|<user_instructions>|<skill>|Caveat:|\[Request interrupted)")
@@ -83,33 +86,65 @@ def _ends_turn(entry):
     return False
 
 
-def turn_ended(transcript_path, prompt, offset):
-    """Whether the turn this prompt started is over: an end line after the prompt's own line, or after `offset`
-    (the transcript's size when the hook began) if the prompt's line is not found. An unreadable transcript counts
-    as over, since nothing shows the turn still runs."""
+def _calls(entry):
+    """(tool calls opened, tool calls closed) by one transcript line, as ids."""
+    if entry.get("isSidechain"):
+        return (), ()
+    if entry.get("type") in ("assistant", "user"):
+        content = (entry.get("message") or {}).get("content")
+        parts = [p for p in content if isinstance(p, dict)] if isinstance(content, list) else []
+        return ([p.get("id") for p in parts if p.get("type") == "tool_use"],
+                [p.get("tool_use_id") for p in parts if p.get("type") == "tool_result"])
+    payload = entry.get("payload") or {}
+    if entry.get("type") == "response_item" and payload.get("call_id"):
+        kind = str(payload.get("type"))
+        return ([payload["call_id"]], ()) if kind.endswith("_call") else \
+            ((), [payload["call_id"]]) if kind.endswith("_call_output") else ((), ())
+    return (), ()
+
+
+def turn_state(transcript_path, prompt, offset):
+    """Where the turn this prompt started stands: "ended" (an end line after the prompt's own line), "ready" (a
+    tool call is still running, so the agent makes another model request, which reads the records) or "busy"
+    (the model is mid-request and may end the turn with it). The prompt's line is the last one matching it before
+    `offset` (the transcript's size when the hook began), else the first after it, else `offset` itself. An
+    unreadable transcript counts as ended, since nothing shows the turn still runs."""
     start = max(0, offset - PROMPT_BYTES)
     try:
         with open(transcript_path, "rb") as fh:
             fh.seek(start)
             data = fh.read()
-    except OSError:
-        return True
-    lines, at, after = [], start, offset - 1
+    except (OSError, TypeError):
+        return "ended"
+    entries, at = [], start
     for raw in data.split(b"\n"):
-        lines.append((at, raw))
+        try:
+            entry = json.loads(raw)
+            if isinstance(entry, dict):
+                entries.append((at, entry))
+        except ValueError:
+            pass
         at += len(raw) + 1
-    for at, raw in lines:
-        try:
-            if _turn(json.loads(raw)) == ("user", prompt.strip()):
-                after = at
-        except (ValueError, AttributeError):
+    prompts = [at for at, entry in entries if _turn(entry) == ("user", prompt.strip())]
+    before = [at for at in prompts if at < offset]
+    anchor = before[-1] if before else prompts[0] if prompts else offset - 1
+    running = set()
+    for at, entry in entries:
+        if at <= anchor:
             continue
-    for at, raw in lines:
-        if at <= after:
-            continue
-        try:
-            if _ends_turn(json.loads(raw)):
-                return True
-        except (ValueError, AttributeError):
-            continue
-    return False
+        if _ends_turn(entry):
+            return "ended"
+        opened, closed = _calls(entry)
+        running.update(opened)
+        running.difference_update(closed)
+    return "ready" if running else "busy"
+
+
+def await_reader(transcript_path, prompt, offset, deadline, poll=0.25):
+    """True once a later model request in the prompt's turn is sure to read records printed now; False when the
+    turn ends first or `deadline` (time.monotonic) passes."""
+    while True:
+        state = turn_state(transcript_path, prompt, offset)
+        if state != "busy" or time.monotonic() >= deadline:
+            return state == "ready"
+        time.sleep(poll)

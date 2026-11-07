@@ -33,6 +33,8 @@ from kb.ai.cli import NESTED_ENV
 
 # A few seconds above the check's longest budget, so the agent never cuts the check off.
 HOOK_TIMEOUT = int(MAX_CHECK_BUDGET) + 5
+# A hook run in the background also waits for a model request that reads its records (_turns.WAIT_SECONDS).
+BACKGROUND_HOOK_TIMEOUT = 60
 # Grok runs the hooks in Claude Code's settings file too, but drops what a prompt hook prints.
 GROK_ENV = "GROK_HOOK_EVENT"
 
@@ -51,6 +53,8 @@ class Agent(NamedTuple):
     uninstall: Callable[[str], List[Change]]
     request: Callable[[dict], Optional[tuple]]
     reply: Callable[[str], str]
+    # The agent runs the hook without waiting and gives its records to the next model request (see run).
+    background: bool = False
 
 
 def names():
@@ -86,12 +90,16 @@ def run(paths, config, name, stdin_text):
     if not found:
         return ""
     message, before, session = found
+    started = time.monotonic()
     event = json.loads(stdin_text)
     transcript = event.get("transcript_path") if isinstance(event, dict) else None
     offset = _turns.size(transcript) or 0
-    # A hook run in the background can finish after the agent's turn; its records would then come with the next
-    # message, which is about something else.
-    wanted = (lambda: not _turns.turn_ended(transcript, message, offset)) if transcript else None
+    wanted = None
+    if load(name).background:
+        # Printed while the model writes its last answer, records would come with the next message, which is about
+        # something else. They go out only while a tool call runs, since the request after it reads them.
+        def wanted():
+            return _turns.await_reader(transcript, message, offset, started + _turns.WAIT_SECONDS)
     text = check.answer(paths, config, json.dumps({"message": message, "before": before}), session or "",
                         still_wanted=wanted)
     return load(name).reply(text) if text else ""
@@ -233,7 +241,7 @@ def json_hook_added(text, path, event, name, kb_command, background=False):
     groups = data.setdefault("hooks", {}).setdefault(event, [])
     found = next(((gi, hi, handler) for gi, group in enumerate(groups) for hi, handler in enumerate(group.get("hooks") or [])
                   if is_kb_command(handler.get("command", ""), name)), None)
-    wanted = {"type": "command", "command": kb_command, "timeout": HOOK_TIMEOUT}
+    wanted = {"type": "command", "command": kb_command, "timeout": BACKGROUND_HOOK_TIMEOUT if background else HOOK_TIMEOUT}
     if background:
         wanted["async"] = True
     if found and all(found[2].get(k) == v for k, v in wanted.items()):

@@ -40,4 +40,4 @@ def reply(text):
     return json.dumps({"hookSpecificOutput": {"hookEventName": EVENT, "additionalContext": text}})
 
 
-AGENT = Agent("Claude Code", detect, installed, install, uninstall, request, reply)
+AGENT = Agent("Claude Code", detect, installed, install, uninstall, request, reply, background=True)

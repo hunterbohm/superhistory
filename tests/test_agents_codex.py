@@ -10,7 +10,7 @@ from kb.agents import Change, codex
 
 AGENT = codex.AGENT
 COMMAND = "'/opt/kb tools/kb' hook codex"
-TIMEOUT = agents.HOOK_TIMEOUT
+TIMEOUT = agents.BACKGROUND_HOOK_TIMEOUT
 
 HOOKS = {"hooks": {"SessionStart": [{"hooks": [
     {"command": "bash '/home/user/.codex/agent-state.sh' session", "timeout": 10, "type": "command"}]}]}}
