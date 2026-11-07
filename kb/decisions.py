@@ -219,7 +219,11 @@ def own_passages(kind, text, owner):
     owner's texts, his emails, and his lines in a transcript."""
     names = "|".join(re.escape(n) for n in owner if n)
     if kind in SESSION_TYPES:
-        return [m.group(0) for m in re.finditer(r"(?ms)^USER: .*?(?=^(?:USER|ASSISTANT|TOOL|RESULT|ERROR)\b|\Z)", text)]
+        # Sources put a blank line between turns, so a "USER:" line inside a tool's output, such as a session an
+        # agent printed, does not start one.
+        turn = r"(?:\A|(?<=\n\n))"
+        return [m.group(0).rstrip("\n") for m in
+                re.finditer(rf"(?s){turn}USER: .*?(?=\n\n(?:USER|ASSISTANT|TOOL|RESULT|ERROR)\b|\Z)", text)]
     if not names:
         return []
     if kind == "gmail":

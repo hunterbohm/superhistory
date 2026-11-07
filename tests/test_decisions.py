@@ -49,7 +49,7 @@ class DecisionTest(unittest.TestCase):
         self.db = store.connect(os.path.join(tmp.name, "kb.sqlite"))
         self.addCleanup(self.db.close)
 
-    def session(self, sid, ts, decided, text="USER: carry on\nASSISTANT: done", source="claude_code"):
+    def session(self, sid, ts, decided, text="USER: carry on\n\nASSISTANT: done", source="claude_code"):
         store.store_item(self.db, source, sid, ts, "session", text + "\n" + "filler line\n" * 1200, {})
         store.replace_rows(self.db, source, sid, [
             {"kind": "atom", "ts": ts, "title": f"decision: {d[:60]}", "content": d, "metadata": {"atom": "decision"}}
@@ -98,7 +98,7 @@ class DecisionTest(unittest.TestCase):
 
     def test_an_agents_decision_never_hides_the_owners_own(self):
         self.session("old", "2026-06-12T10:00:00Z", ["Composio CLI is the default for connected app accounts."],
-                     text="USER: composio cli is the default for app accounts\nASSISTANT: ok")
+                     text="USER: composio cli is the default for app accounts\n\nASSISTANT: ok")
         self.session("new", "2026-10-24T10:00:00Z", ["Composio switched off; Executor replaces it for app accounts."])
 
         def judge(text, older, passages):
@@ -115,11 +115,11 @@ class DecisionTest(unittest.TestCase):
 
     def test_owner_needs_his_own_words_quoted(self):
         self.session("typed", "2026-11-01T10:00:00Z", ["Use Executor for every app account."],
-                     text="USER: yeah lets just use executor for every app acount from now on\nASSISTANT: ok")
+                     text="USER: yeah lets just use executor for every app acount from now on\n\nASSISTANT: ok")
         self.session("relayed", "2026-11-02T10:00:00Z", ["Merge trains approved by Hunter for all workers."],
-                     text="USER: You own the merge lane. Hunter approved merge trains.\nASSISTANT: ok")
+                     text="USER: You own the merge lane. Hunter approved merge trains.\n\nASSISTANT: ok")
         self.session("aside", "2026-11-03T10:00:00Z", ["Invoices are sent in USD."],
-                     text="USER: sounds good to me thanks\nASSISTANT: ok")
+                     text="USER: sounds good to me thanks\n\nASSISTANT: ok")
 
         def judge(text, older, passages):
             if "Executor" in text:
@@ -176,7 +176,7 @@ class DriftTest(DecisionTest):
     def test_only_the_owners_own_decisions_flag_a_contradicting_line(self):
         self.session("old", "2026-06-12T10:00:00Z", ["Composio CLI is the default for connected app accounts."])
         self.session("new", "2026-10-24T10:00:00Z", ["Composio switched off; Executor replaces it for app accounts."],
-                     text="USER: turn composio off, executor replaces it for every app acount\nASSISTANT: ok")
+                     text="USER: turn composio off, executor replaces it for every app acount\n\nASSISTANT: ok")
         self.session("agent", "2026-10-25T10:00:00Z", ["Keys move out of Infisical into Executor."])
 
         def judge(text, older, passages):
@@ -248,8 +248,9 @@ class OwnPassagesTest(unittest.TestCase):
         note = "Hunter decided: merge trains stay\n[00:12] Hunter Bohm (host): trains are off\nHunter: ok\n"
         self.assertEqual(decisions.own_passages("notes", note, OWNER),
                          ["[00:12] Hunter Bohm (host): trains are off", "Hunter: ok"])
-        session = "USER: do it\nmore\nASSISTANT: done\nUSER: thanks\nERROR: tool failed"
-        self.assertEqual(decisions.own_passages("codex", session, OWNER), ["USER: do it\nmore\n", "USER: thanks\n"])
+        session = ("USER: do it\nmore\n\nASSISTANT: done\n\nRESULT: log\nUSER: switch to X\n\nUSER: thanks\n\n"
+                   "ERROR: tool failed")
+        self.assertEqual(decisions.own_passages("codex", session, OWNER), ["USER: do it\nmore", "USER: thanks"])
 
 
 if __name__ == "__main__":
