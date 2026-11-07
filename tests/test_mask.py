@@ -3481,6 +3481,247 @@ class Base64ReviewTwentyThirdTest(unittest.TestCase):
                 # eight times the text
                 self.assertLess(took[2000], 24 * max(took[250], 0.05), took)
 
+class Base64ReviewTwentyFourthTest(unittest.TestCase):
+    """#34's twenty-fourth review and the audit after it, of each window and each list of characters in the key
+    readers. A footer was read as a line of its own only within 40 characters past its word, so eight spaces or more
+    before its line break hid it and a key whose armour comment holds a control byte showed from there; a line's lead
+    was read as spaces, tabs and quotes, plain or as "\\t", so a JSON string that starts with "\\u0020" read its first
+    line as cut, and a footer encoded alone on a narrower line ran on through a public key below it. The audit: a header
+    or footer was read only right after a written line break, so a key file indented in a document, or in a JSON or .env
+    file, encoded whole, showed; a block's lines were joined past spaces and tabs only, so a key whose lines are indented
+    with no-break spaces showed; a backtick ended no line and led none; and SSH2's frames were not read. Made-up keys
+    only."""
+
+    @staticmethod
+    def lines_within(data, width, start, end):
+        """The lines of `data`'s base64 wrapped at `width` whose bits all come from data[start:end]."""
+        import base64
+        encoded = base64.b64encode(data).decode()
+        # character i holds bits 6i to 6i + 5: of bytes 6i // 8 to (6i + 5) // 8
+        return [encoded[at:at + width] for at in range(0, len(encoded), width)
+                if start <= 6 * at // 8 and (6 * min(at + width, len(encoded)) - 1) // 8 < end]
+
+    @staticmethod
+    def in_key_spans(text, lines):
+        """Which of `lines` lie inside a key's span (_encoded_key_spans) in `text`: what follows a key in its paragraph
+        may be masked with it (a placeholder's rest, the granted limit), so whether a key runs on is read there. Each
+        line read once in the text, and 16 characters or more, so where it lies is known."""
+        from kb import mask as masking
+        spans = masking._encoded_key_spans(text)
+        return [line for line in lines if len(line) >= 16 and text.count(line) == 1
+                and any(a < text.find(line) + len(line) and text.find(line) < b for a, b in spans)]
+
+    @staticmethod
+    def pem(r):
+        return (b"-----BEGIN PRIVATE KEY-----\n" + Base64ReviewSeventeenTest.encoded(made_up_private_key(r)).encode()
+                + b"\n-----END PRIVATE KEY-----\n")
+
+    @staticmethod
+    def certificate(r):
+        return (b"-----BEGIN CERTIFICATE-----\n" + Base64ReviewSeventeenTest.encoded(made_up_certificate(r)).encode()
+                + b"\n-----END CERTIFICATE-----\n")
+
+    def test_a_footer_with_any_run_of_space_before_its_line_break_ends_its_key(self):
+        import random
+        r = random.Random(2401)
+        keys = {"gnupg": Base64ReviewNineteenFindingsTest.fixture("gnupg_control_comment"), "pem": self.pem(r)}
+        certificate = self.certificate(r)
+        forms = {"space": b" ", "tab": b"\t", "escaped tab": b"\\t", "escaped space": b"\\u0020",
+                 "no-break space": " ".encode(), "Latin-1 no-break space": b"\xa0",
+                 "ideographic space": "　".encode(), "mixed": " \t  ".encode()}
+        written, encoded, i = Base64ReviewNineteenFindingsTest.written, Base64ReviewSeventeenTest.encoded, 0
+        for name, key in keys.items():
+            for size in (8, 40, 64, 200):
+                for form, space in forms.items():
+                    for brk in (b"\n", b"\r\n"):
+                        file = key.replace(b"\n", brk)
+                        end = file.rindex(b"-----") + 5
+                        public = certificate.replace(b"\n", brk)
+                        data = file[:end] + space * size + file[end:] + public
+                        for width in (64, 76):
+                            depth, i = i % 3, i + 1
+                            with self.subTest(key=name, size=size, form=form, brk=brk, width=width, depth=depth):
+                                text = written(encoded(data, width) + "\n\nnext paragraph", depth)
+                                masked = mask(text)
+                                self.assertEqual([k for k in self.lines_within(data, width, 0, end) if k in masked], [])
+                                self.assertEqual(self.in_key_spans(text, self.lines_within(
+                                    data, width, len(data) - len(public) + 4, len(data))), [])
+                                self.assertIn("next paragraph", masked)
+
+    def test_a_lines_lead_of_any_space_or_quote_written_or_escaped_starts_its_line(self):
+        import base64
+        import random
+        r = random.Random(2402)
+        encoded = Base64ReviewSeventeenTest.encoded
+        line = base64.b64encode(bytes(r.randrange(256) for _ in range(48)))
+        publics = {"certificate": (made_up_certificate(r), 52), "rsa": (made_up_public_key(r), 56)}
+        escapes = ["\\u0020", "\\u0020" * 4, "\\u0020" * 11, "\\u0009", "\\u0009" * 12, "\\u0022", "\\u0027",
+                   "\\u0060", "\\u00a0", "\\u00A0", "\\u3000", "\\u2003\\u0020", "\\u001f", "\\\\u0020", "\\t\\u0020\\\""]
+        written = []
+        for name, (public, width) in publics.items():
+            kept = encoded(public, width)
+            whole = encoded(b"-----BEGIN PRIVATE KEY-----\n" + line + b"\n" + line + b"\n-----END PRIVATE KEY-----\n",
+                            width)
+            body = "\n".join([encoded(b"\n-----END PRIVATE KEY-----\n", width), kept, whole]) + "\n\nnext paragraph"
+            for lead in escapes:  # at the start of a JSON string, and of JSON in JSON
+                once = '"' + lead + json.dumps(body)[1:]
+                written += [(name, kept, whole, lead, 1, once), (name, kept, whole, lead, 2, json.dumps(once))]
+            for lead in (" ", " " * 70, "　", "  \t", "\x1f", "`", "   "):
+                for depth in range(3):
+                    text = Base64ReviewNineteenFindingsTest.written(lead + body, depth)
+                    written.append((name, kept, whole, lead, depth, text))
+        for name, kept, whole, lead, depth, text in written:
+            with self.subTest(public=name, lead=lead, depth=depth):
+                masked = mask(text)
+                self.assertEqual([k for k in kept.splitlines() if k not in masked], [])
+                self.assertEqual([k for k in whole.splitlines()[1:-1] if k in masked], [])
+
+    def test_a_key_file_indented_in_a_document_and_encoded_whole_is_masked(self):
+        import random
+        r = random.Random(2403)
+        keys = {"pem": self.pem(r), "gnupg": Base64ReviewNineteenFindingsTest.fixture("gnupg_control_comment")}
+        indents = {"2 spaces": b"  ", "4 spaces": b"    ", "tab": b"\t", "20 spaces": b" " * 20,
+                   "no-break spaces": "  ".encode(), "Latin-1 no-break spaces": b"\xa0\xa0",
+                   "ideographic space": "　".encode()}
+        written, encoded, i = Base64ReviewNineteenFindingsTest.written, Base64ReviewSeventeenTest.encoded, 0
+        for name, key in keys.items():
+            for indent_name, indent in indents.items():
+                block = b"".join(indent + line + b"\n" for line in key[:-1].split(b"\n"))
+                for doc, data in (("yaml", b"tls:\n  key: |\n" + block + b"  verify: true\n"), ("indented", block)):
+                    for brk in (b"\n", b"\r\n"):
+                        file = data.replace(b"\n", brk)
+                        start, end = file.index(b"-----BEGIN"), file.rindex(b"-----") + 5
+                        for width in (64, 76):
+                            depth, i = i % 3, i + 1
+                            with self.subTest(key=name, indent=indent_name, doc=doc, brk=brk, width=width,
+                                              depth=depth):
+                                masked = mask(written(encoded(file, width) + "\n\nnext paragraph", depth))
+                                self.assertEqual([k for k in self.lines_within(file, width, start, end)
+                                                  if k in masked], [])
+                                self.assertIn("next paragraph", masked)
+
+    def test_a_key_in_a_json_or_env_file_encoded_whole_is_masked(self):
+        import base64
+        import random
+        r = random.Random(2404)
+        pem = self.pem(r).decode()
+        account = {"type": "service_account", "project_id": "walrus-ledger", "private_key_id": "0123456789abcdef" * 2,
+                   "private_key": pem, "client_email": "ledger@walrus-ledger.example"}
+        files = {"json": json.dumps(account), "json, indented": json.dumps(account, indent=2),
+                 "json, escaped as \\u000a": json.dumps(account).replace("\\n", "\\u000a"),
+                 "json in json": json.dumps({"config": json.dumps(account)}),
+                 "json, CRLF": json.dumps(dict(account, private_key=pem.replace("\n", "\r\n"))),
+                 ".env": 'PRIVATE_KEY="' + pem.replace("\n", "\\n") + '"\nNEXT_STEP=deploy\n'}
+        written, encoded, i = Base64ReviewNineteenFindingsTest.written, Base64ReviewSeventeenTest.encoded, 0
+        for name, file in files.items():
+            data = file.encode()
+            start, end = data.index(b"-----BEGIN"), data.rindex(b"-----") + 5
+            for width in (0, 64, 76):
+                depth, i = i % 3, i + 1
+                with self.subTest(file=name, width=width, depth=depth):
+                    if width:
+                        masked = mask(written(encoded(data, width) + "\n\nnext paragraph", depth))
+                        shown = [k for k in self.lines_within(data, width, start, end) if k in masked]
+                    else:  # on one line
+                        whole = base64.b64encode(data).decode()
+                        masked = mask(written(whole + "\n\nnext paragraph", depth))
+                        key = whole[-(-start // 3) * 4:end // 3 * 4]
+                        shown = [key[k:k + 16] for k in range(0, len(key) - 16, 16) if key[k:k + 16] in masked]
+                    self.assertEqual(shown, [])
+                    self.assertIn("next paragraph", masked)
+
+    def test_an_ssh2_key_file_encoded_is_masked(self):
+        import base64
+        import random
+        import textwrap
+        r = random.Random(2405)
+        body = "\n".join(textwrap.wrap(base64.b64encode(bytes(r.randrange(256) for _ in range(600))).decode(), 70))
+        certificate = self.certificate(r)
+        written, encoded, i = Base64ReviewNineteenFindingsTest.written, Base64ReviewSeventeenTest.encoded, 0
+        for label in (b"SSH2 ENCRYPTED PRIVATE KEY", b"SSH2 PRIVATE KEY"):
+            key = (b"---- BEGIN " + label + b" ----\nComment: \"walrus ledger key\"\n" + body.encode()
+                   + b"\n---- END " + label + b" ----\n")
+            for brk in (b"\n", b"\r\n"):
+                data = (key + certificate).replace(b"\n", brk)
+                end = data.index(b" ----", data.index(b"---- END")) + 5
+                for width in (64, 76):
+                    depth, i = i % 3, i + 1
+                    with self.subTest(label=label, brk=brk, width=width, depth=depth):
+                        text = written(encoded(data, width) + "\n\nnext paragraph", depth)
+                        self.assertEqual([k for k in self.lines_within(data, width, 0, end) if k in mask(text)], [])
+                        self.assertEqual(self.in_key_spans(text, self.lines_within(
+                            data, width, end + len(brk) + 4, len(data))), [])
+
+    def test_a_keys_lines_indented_with_any_space_read_as_one_block(self):
+        import random
+        r = random.Random(2407)
+        lines = Base64ReviewSeventeenTest.encoded(self.pem(r)).splitlines()
+        forms = []
+        for indent in (" " * 2, "　", "  ", " ", "\x1f", "  \t"):
+            text = "\n".join(indent + line for line in lines) + "\n\nnext paragraph"
+            forms += [(indent, depth, Base64ReviewNineteenFindingsTest.written(text, depth)) for depth in range(3)]
+        for indent in ("\\u0020" * 4, "\\u00a0\\u00a0", "\\t\\u0020"):  # escapes as JSON may write them
+            once = '"' + "\\n".join(indent + line for line in lines) + '\\n\\nnext paragraph"'
+            forms += [(indent, 1, once), (indent, 2, json.dumps(once))]
+        for indent, depth, text in forms:
+            with self.subTest(indent=indent, depth=depth):
+                masked = mask(text)
+                self.assertEqual([k for k in lines[1:-1] if k in masked], [])
+                self.assertIn("next paragraph", masked)
+
+    def test_a_key_in_a_template_literal_or_a_code_span_is_masked(self):
+        import base64
+        import random
+        r = random.Random(2408)
+        # a key cut before its footer, whose base64's short last line is the block's only where its end is read as one
+        der = base64.b64encode(made_up_private_key(r))
+        cut = next(k for k in range(600, 700) if 4 <= len(base64.b64encode(b"-----BEGIN PRIVATE KEY-----\n" + der[:k]))
+                   % 76 <= 12)
+        lines = Base64ReviewSeventeenTest.encoded(b"-----BEGIN PRIVATE KEY-----\n" + der[:cut], 76).splitlines()
+        for text in ("const key = `" + "\n".join(lines) + "`;\nnext paragraph",
+                     "`\n" + "\n".join(lines) + "\n`\n\nnext paragraph", "`" + "\n".join(lines) + "`\n\nnext paragraph"):
+            for depth in range(3):
+                with self.subTest(text=text[:16], depth=depth):
+                    masked = mask(Base64ReviewNineteenFindingsTest.written(text, depth))
+                    self.assertEqual([k for k in lines[1:] if k in masked], [])
+
+    def test_horizontal_space_and_line_breaks_are_every_one_python_reads(self):
+        import re
+        from kb import mask as masking
+        every = [chr(c) for c in range(0x110000)]
+        breaks = {c for c in every if len(("a" + c + "b").splitlines()) == 2}
+        spaces = {c for c in every if c.isspace()} - breaks
+        self.assertEqual({c for c in every if re.fullmatch(masking._BREAK, c)}, breaks)
+        self.assertEqual({c for c in every if re.fullmatch(masking._SPACING, c)}, spaces)
+        # in what a key's base64 decodes to: as UTF-8 writes each, and as JSON escapes it, once or more
+        for c in spaces | {'"', "'", "`"}:
+            for form in (c.encode(), b"\\u%04x" % ord(c), b"\\u%04X" % ord(c), b"\\\\u%04x" % ord(c)):
+                self.assertTrue(masking._SPACE_OR_QUOTE_BYTES.fullmatch(form), form)
+        for c in breaks:
+            for form in (c.encode(), b"\\u%04x" % ord(c), b"\\u%04X" % ord(c), b"\\\\u%04x" % ord(c)):
+                self.assertTrue(masking._BREAK_BYTES.fullmatch(form), form)
+
+    def test_a_megabyte_of_space_around_a_header_or_footer_costs_time_in_proportion(self):
+        import random
+        import time
+        r = random.Random(2406)
+        key = self.pem(r)
+        for place in ("after its footer", "before its header"):
+            took = {}
+            for size in (1 << 18, 1 << 20):
+                data = key[:-1] + b" " * size + b"\n" if place == "after its footer" else b"notes\n" + b" " * size + key
+                start, end = data.index(b"-----BEGIN"), data.rindex(b"-----") + 5
+                text = Base64ReviewSeventeenTest.encoded(data, 76) + "\n\nnext paragraph"
+                started = time.process_time()
+                masked = mask(text)
+                took[size] = time.process_time() - started
+                with self.subTest(place=place, size=size):
+                    self.assertEqual([k for k in self.lines_within(data, 76, start, end) if k in masked], [])
+            with self.subTest(place=place):
+                # four times the text
+                self.assertLess(took[1 << 20], 8 * max(took[1 << 18], 0.05), took)
+
+
 class HeadlessKeyTest(unittest.TestCase):
     """A key's body without its header, as an older kb's row-by-row remask leaves the chunk after the header's."""
     LINE = "MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7"
