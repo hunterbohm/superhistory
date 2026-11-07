@@ -3770,6 +3770,50 @@ class Base64ReviewTwentyFourthTest(unittest.TestCase):
                                                       if "/" not in line[i:i + 8] and line[i:i + 8] in masked], [])
                                     self.assertIn("intro notes", masked)
 
+    def test_a_run_split_by_jsons_escaped_slash_after_a_placeholder_reads_whole(self):
+        # A run that JSON's escaped slash ("\/", as PHP writes JSON) splits read as two, each too short to be a key's
+        # fragment: on a line a rest passes over, and past public material, where main's rest takes it.
+        import base64
+        import random
+        import textwrap
+        body, words = KeyRestPastWordsWholeLineTest.parts()
+        texts = {}
+        for name, fragment in {"a key's line": body[2][:20], "the review's": "ABCDEFGHabcdefgh"}.items():
+            half = len(fragment) // 2
+            for slash in ("\\/", "\\\\/"):
+                for form in ("\nnext steps {}", "\n{}", "\nThanks\t{}"):
+                    split = fragment[:half] + slash + fragment[half:]
+                    texts[(name, slash, form[1:7])] = ("[masked]\n" + words + form.format(split) + "\n\nnext paragraph",
+                                                        [fragment[:half], fragment[half:]])
+        cert = "\n".join(textwrap.wrap(base64.b64encode(made_up_certificate(random.Random(2413))).decode(), 64))
+        pieces = ["Abcdefghijk", "Lmnopqrstuv", "Wxyzabcdefg", "Hijklmnopqr", "Stuvwxyzabc"]
+        for slash in ("\\/", "\\\\/"):
+            texts[("past public material", slash, "")] = (
+                "notes\n[masked]\n" + cert + "\n" + slash.join(pieces) + "\n\nnext paragraph", pieces)
+        for (name, slash, form), (text, parts) in texts.items():
+            for older in (False, True):
+                with self.subTest(fragment=name, slash=slash, form=form, older=older):
+                    masked = Base64ReviewEighteenTest.masks(text, older)
+                    self.assertEqual([part for part in parts if part in masked], [])
+                    self.assertIn("next paragraph", masked)
+
+    def test_long_runs_of_a_keys_label_words_cost_time_in_proportion(self):
+        # each key word read its label back to where it starts, so words in one long run took time in its square
+        import time
+        for place in ("words", "one label", "one SSH2 label"):
+            took = {}
+            for size in (1 << 14, 1 << 16):
+                words = b"PRIVATE KEY " * (size // 12)
+                data = {"words": words, "one label": b"-----BEGIN " + words + b"PRIVATE KEY-----\n",
+                        "one SSH2 label": b"---- BEGIN SSH2 " + words + b"PRIVATE KEY ----\n"}[place]
+                text = Base64ReviewSeventeenTest.encoded(data, 76) + "\n\nnext paragraph"
+                started = time.process_time()
+                mask(text)
+                took[size] = time.process_time() - started
+            with self.subTest(place=place):
+                # four times the text
+                self.assertLess(took[1 << 16], 8 * max(took[1 << 14], 0.05), took)
+
     def test_a_long_lead_on_a_bodys_last_line_before_words_costs_time_in_proportion(self):
         import time
         line = "MIICbgIBADANBgkqhkiG9w0BAQEFAASCAlgwggJUAgEAAoGBAMN4aZbeK6nVJu1j"
