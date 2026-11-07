@@ -3047,14 +3047,14 @@ _KEY_ESCAPE = re.compile(r"(?<!\\)\\+(?:[nrt]|u[0-9A-Fa-f]{4})")
 _ESCAPED_BASE64 = r"(?<!\\)\\+(?:/|u00(?:2[bBfF]|3[0-9dD]|4[1-9a-fA-F]|5[0-9aA]|6[1-9a-fA-F]|7[0-9aA]))"
 # What every reader of a key's fragment reads as another character (_fragment_view): an escaped character of base64's
 # as that character; any other escape of a space, a line break or a character (_KEY_ESCAPE), and a quote written as a
-# web page's entity (_QUOTE_ENTITY), as a space.
+# web page's entity (_QUOTE_ENTITY), as a space, or as nothing where the view is read joined (_rest_view).
 _FRAGMENT_READS = re.compile(rf"({_ESCAPED_BASE64})|(?:{_KEY_ESCAPE.pattern})|(?:{_QUOTE_ENTITY.pattern})")
 
 
-def _fragment_read(m):
-    """What a match of _FRAGMENT_READS reads as."""
+def _fragment_read(m, apart=" "):
+    """What a match of _FRAGMENT_READS reads as: an escape of no base64 character, or an entity, as `apart`."""
     escape = m.group(1)
-    return " " if escape is None else "/" if escape[-1] == "/" else chr(int(escape[-2:], 16))
+    return apart if escape is None else "/" if escape[-1] == "/" else chr(int(escape[-2:], 16))
 
 
 def _fragment_view(text):
@@ -3062,7 +3062,8 @@ def _fragment_view(text):
     then `len(text)`): without the characters a reader does not see, at any depth of escaping (_unseen_view), and with
     each escape _FRAGMENT_READS reads as another character read so. One view for every such reader (_rest_view,
     _holds_token, _token_tail, _encoded_words, _base64_lines, _runs_past, _public_rest, _cut_body_end), so a run one
-    reads whole none reads as parted. Read once, in proportion."""
+    reads whole none reads as parted; the check of a run past public material reads it joined (_rest_view). Read once,
+    in proportion."""
     unseen, kept = _unseen_view(text)
     pieces, at, last = [], [], 0
     for m in _FRAGMENT_READS.finditer(unseen):
@@ -3078,9 +3079,14 @@ def _fragment_view(text):
     return "".join(pieces), at
 
 
-def _rest_view(line):
-    """A line as a key's rest is read: _fragment_view's text, without its map."""
-    return _FRAGMENT_READS.sub(_fragment_read, _unseen_view(line)[0])
+def _rest_view(line, joined=False):
+    """A line as a key's rest is read: _fragment_view's text, without its map. Joined, as the check of a run past public
+    material reads it (_runs_past), which fails closed: an escape of no base64 character, a quote's entity and a
+    backslash left read as nothing, so a key's piece that one splits reads whole, as main hides it."""
+    view = _unseen_view(line)[0]
+    if not joined:
+        return _FRAGMENT_READS.sub(_fragment_read, view)
+    return _FRAGMENT_READS.sub(lambda m: _fragment_read(m, ""), view).replace("\\", "")
 
 
 def _headless_key_edits(text):
@@ -3389,7 +3395,7 @@ def _public_prefix(lines):
 def _runs_past(text):
     """For the rests of keys in `text`, past the public material each starts with (_public_first): whether
     text[last:end] holds no run of base64 of both cases (_MIXED_RUN) outside lines that are public material of their
-    own, read without the characters a reader does not see, so a certificate after a line of words ("next steps") is
+    own, read as _rest_view reads it joined, failing closed, so a certificate after a line of words ("next steps") is
     no key's fragment. Such lines are whole public material that a block of lines of base64 starts with
     (_public_prefix), or a run of its lines between words alone ("notes"), all public material; a line that starts
     with a placeholder starts a block past it. The text's lines are read once, from the first rest on, and each end is
@@ -3459,7 +3465,7 @@ def _runs_past(text):
             pieces.append(text[at:max(at, public[i][0])])
             at, i = max(at, public[i][1]), i + 1
         pieces.append(text[at:end])
-        if _MIXED_RUN.search(_rest_view(" ".join(pieces))):
+        if _MIXED_RUN.search(_rest_view(" ".join(pieces), joined=True)):
             return False
         clean[end] = min(clean.get(end, last), last)
         return True
