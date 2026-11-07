@@ -89,6 +89,13 @@ class RunTest(unittest.TestCase):
         answer = mock.patch.object(check, "answer", return_value="RECORDS")
         self.answer = answer.start()
         self.addCleanup(answer.stop)
+        # The installed entry runs in the background, as `kb hooks install` writes it.
+        self.background = True
+        real_load = agents.load
+        load = mock.patch.object(agents, "load", side_effect=lambda name: real_load(name)._replace(
+            in_background=lambda home: self.background))
+        load.start()
+        self.addCleanup(load.stop)
 
     def run_hook(self, stdin, name="claude-code"):
         return agents.run("paths", "config", name, stdin)
@@ -167,6 +174,12 @@ class RunTest(unittest.TestCase):
         self.assertEqual(self.deliver([{"type": "assistant", "message": {"stop_reason": "end_turn"}},
                                        {"type": "user", "message": {"content": "what did she say"}},
                                        CLAUDE_TOOL]), "")
+
+    def test_an_entry_from_before_background_hooks_gets_its_records_at_once(self):
+        self.background = False
+        self.answer.side_effect = lambda *args, still_wanted=None: "RECORDS" if still_wanted is None else ""
+        out = self.run_hook(json.dumps({"prompt": "what did she say", "session_id": "s", "transcript_path": "/x"}))
+        self.assertEqual(self.delivered(out), "RECORDS")
 
     def test_a_background_hook_without_a_transcript_gets_nothing(self):
         self.answer.side_effect = lambda *args, still_wanted=None: "RECORDS" if still_wanted() else ""

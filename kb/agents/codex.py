@@ -252,6 +252,14 @@ def _find(hooks_json):
                  if agents.is_kb_command(handler.get("command", ""), "codex")), None)
 
 
+def in_background(home):
+    try:
+        found = _find(_hooks_json(home))
+    except (ValueError, OSError):
+        return False
+    return bool(found) and found[2].get("async") is True
+
+
 def installed(home):
     try:
         found = _find(_hooks_json(home))
@@ -332,4 +340,4 @@ def uninstall(home):
     return [agents.Change(hooks_json, action), agents.Change(config, "removed" if removed else "unchanged", note)]
 
 
-AGENT = Agent("Codex", detect, installed, install, uninstall, request, reply, background=True)
+AGENT = Agent("Codex", detect, installed, install, uninstall, request, reply, in_background)

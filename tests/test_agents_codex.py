@@ -363,6 +363,14 @@ class DetectTest(Home):
         AGENT.uninstall(self.home)
         self.assertFalse(AGENT.installed(self.home))
 
+    def test_only_the_current_entry_runs_in_the_background(self):
+        os.makedirs(os.path.dirname(self.hooks_json))
+        old = {k: v for k, v in self.handler().items() if k != "async"}
+        self.put(self.hooks_json, {"hooks": {"UserPromptSubmit": [{"hooks": [old]}]}})
+        self.assertFalse(AGENT.in_background(self.home), "an entry from before background hooks makes Codex wait")
+        AGENT.install(self.home, COMMAND)
+        self.assertTrue(AGENT.in_background(self.home))
+
     def test_a_changed_hook_is_no_longer_trusted(self):
         AGENT.install(self.home, COMMAND)
         self.put(self.hooks_json, {"hooks": {"UserPromptSubmit": [{"hooks": [self.handler("/elsewhere/kb hook codex")]}]}})

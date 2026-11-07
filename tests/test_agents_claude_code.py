@@ -145,6 +145,14 @@ class DetectTest(Home):
         AGENT.uninstall(self.home)
         self.assertFalse(AGENT.installed(self.home))
 
+    def test_only_the_current_entry_runs_in_the_background(self):
+        os.makedirs(os.path.dirname(self.settings))
+        self.put({"hooks": {"UserPromptSubmit": [{"hooks": [{"type": "command", "command": COMMAND, "timeout": 30}]}]}})
+        self.assertTrue(AGENT.installed(self.home))
+        self.assertFalse(AGENT.in_background(self.home), "an entry from before background hooks makes Claude wait")
+        AGENT.install(self.home, COMMAND)
+        self.assertTrue(AGENT.in_background(self.home))
+
     def test_the_agent_is_found_by_name(self):
         self.assertIs(agents.load("claude-code"), AGENT)
         self.assertEqual(AGENT.label, "Claude Code")

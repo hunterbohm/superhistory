@@ -53,8 +53,9 @@ class Agent(NamedTuple):
     uninstall: Callable[[str], List[Change]]
     request: Callable[[dict], Optional[tuple]]
     reply: Callable[[str], str]
-    # The agent runs the hook without waiting and gives its records to the next model request (see run).
-    background: bool = False
+    # in_background(home): whether the installed hook runs without the agent waiting for it ("async"), giving its
+    # records to the next model request (see run). None for agents that always wait.
+    in_background: Optional[Callable[[str], bool]] = None
 
 
 def names():
@@ -95,7 +96,10 @@ def run(paths, config, name, stdin_text):
     transcript = event.get("transcript_path") if isinstance(event, dict) else None
     offset = _turns.size(transcript) or 0
     wanted = None
-    if load(name).background:
+    agent = load(name)
+    # Asked of the installed entry, not assumed: an entry from before background hooks still makes the agent wait,
+    # and waiting there for a tool call would hold every message up.
+    if agent.in_background and agent.in_background(os.path.expanduser("~")):
         # Printed while the model writes its last answer, records would come with the next message, which is about
         # something else. They go out only while a tool call runs, since the request after it reads them.
         def wanted():
@@ -256,12 +260,14 @@ def json_hook_added(text, path, event, name, kb_command, background=False):
     return (_dump(data, text), *found, action)
 
 
-def has_json_hook(path, event, name):
+def has_json_hook(path, event, name, background=False):
+    """Whether the file holds kb's hook; with background, one the agent runs without waiting ("async")."""
     try:
         groups = (_load(path)[1].get("hooks") or {}).get(event) or []
     except Unreadable:
         return False
-    return any(is_kb_command(h.get("command", ""), name) for group in groups for h in group.get("hooks") or [])
+    return any(is_kb_command(h.get("command", ""), name) and (not background or h.get("async") is True)
+               for group in groups for h in group.get("hooks") or [])
 
 
 def remove_json_hook(path, event, name):
