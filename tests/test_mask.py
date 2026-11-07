@@ -1778,15 +1778,17 @@ class Base64ReviewSixteenTest(unittest.TestCase):
                               f"next steps\n{second}\nnotes", f"see\n{second}\nnext steps"):
                     with self.subTest(kind=kind, width=width, after=after[:12]):
                         once = mask(f"{key}\n{first}\n{after}")
-                        # ruling (c), round 27: a word alone past the material is masked as main's reading of a rest
-                        # takes it; another certificate past words holds runs a key's could be, so the material goes
-                        # with the rest, as on main (its line run on into "next steps" takes "next", as main's does)
+                        # ruling (c), round 27: past the material, all main's reading of a rest takes is masked, as
+                        # main masks it, but for lines that are public material of their own, which stay as the
+                        # material does: a word alone goes, and so do the words before another certificate. Where
+                        # main's reading ends inside a line of words (a wide certificate's line run on into "next
+                        # steps", whose "next" it takes), the material goes with the rest, as on main.
                         if second not in after:
                             expected = f"[masked]\n{first}"
                         elif after.endswith("next steps"):
-                            expected = "[masked] steps" if width is None else "[masked]\nnext steps"
+                            expected = "[masked] steps" if width is None else f"[masked]\n{first}\n{second}\nnext steps"
                         else:
-                            expected = "[masked]"
+                            expected = f"[masked]\n{first}\n{second}"
                         self.assertEqual(once, expected)
                         self.assertEqual(mask(once), once)
                         self.assertEqual(mask(f"[masked]\n{first}\n{after}"), expected)
@@ -1845,17 +1847,18 @@ class Base64ReviewSixteenTest(unittest.TestCase):
             for lead in (f"{key}\n{request}\n", f"[masked]\n{request}\n", ""):
                 text = f"{lead}[masked]{certificate}\nnext steps"
                 kept = text.replace(key, "[masked]")
-                if lead:
-                    # ruling (c), round 27: past the request, all main's reading of a rest takes is masked, the glued
-                    # certificate with it, and the request too, as on main: the certificate's lines hold runs of 16 a
-                    # key's could be, or, 12 wide, run on into "next steps", whose "next" main's reading takes
-                    kept = "[masked] steps" if width in (None, 12) else "[masked]\nnext steps"
+                cut = lead and width in (None, 12)
+                if cut:
+                    # ruling (c), round 27: one wide line or 12-character lines run on into "next steps", whose "next"
+                    # main's reading of the rest takes, so past the request all of it is masked, the glued
+                    # certificate with it, and the request too, as on main
+                    kept = "[masked] steps"
                 for depth, written in enumerate((text, json.dumps(text), json.dumps(json.dumps(text)))):
                     with self.subTest(width=width, lead=len(lead), depth=depth):
                         masked = mask(written)
                         self.assertEqual([line for line in kept.split("\n") if line not in masked], [])
                         self.assertNotIn(key[64:128], masked)
-                        if lead:  # the request holds some of the certificate's 12-character lines ("hkiG9w0BAQsF")
+                        if cut:  # the request holds some of the certificate's 12-character lines ("hkiG9w0BAQsF")
                             self.assertEqual([line for line in certificate.split("\n")
                                               if line in masked and line not in request], [])
                 with self.subTest(width=width, lead=len(lead), older=True):
@@ -4628,6 +4631,36 @@ class Base64ReviewTwentySixthTest(unittest.TestCase):
                         self.assertEqual([p for p in pieces if p in masked], [])
                         self.assertEqual([c for c in lines if c not in masked], [])
                         self.assertIn("next paragraph", masked)
+
+    def test_public_material_past_a_key_stays_where_another_key_and_public_material_follow(self):
+        # Round 27's generators: a key encoded whole (or its header or its footer alone), a certificate or a public
+        # key, another key encoded whole and a certificate, in one paragraph. The check of a run past the first
+        # material read the second certificate's runs, past the next placeholder, as a key's, and masked the first
+        # material, which main and 369b575 keep. Lines that are public material of their own hold no key's fragment.
+        # Made up.
+        import random
+        nl = chr(10)
+        r = random.Random(2715)
+        encoded = Base64ReviewSeventeenTest.encoded
+        key = encoded(Base64ReviewSeventeenTest.pem(r))
+        leads = {"a key": key, "its header alone": encoded(b"-----BEGIN PRIVATE KEY-----\n"),
+                 "its footer alone": encoded(b"notes\n-----END PRIVATE KEY-----\n")}
+        publics = {"a certificate": encoded(made_up_certificate(r)), "a public key": encoded(made_up_public_key(r))}
+        after = nl.join((encoded(Base64ReviewSeventeenTest.pem(r)), encoded(made_up_certificate(r))))
+        for lead, first in leads.items():
+            for kind, material in publics.items():
+                lines = [line for line in material.split(nl) if len(line) >= 16]
+                text = nl.join((first, material, after)) + nl + nl + "next paragraph"
+                for depth in range(3):
+                    written = text
+                    for _ in range(depth):
+                        written = json.dumps(written)
+                    for older in (False, True):
+                        with self.subTest(lead=lead, material=kind, depth=depth, older=older):
+                            masked = Base64ReviewEighteenTest.masks(written, older)
+                            self.assertEqual([line for line in lines if line not in masked], [])
+                            self.assertNotIn(after.split(nl)[1], masked)
+                            self.assertIn("next paragraph", masked)
 
     def test_a_keys_pieces_of_letters_alone_or_in_a_tags_attributes_past_a_certificate_stay_masked(self):
         # An automated review of eb1f4ab: a row of a key's pieces had to hold a digit, "+" or "/", which a fragment of
