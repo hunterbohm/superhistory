@@ -128,6 +128,17 @@ class RunTest(unittest.TestCase):
             "claude answered": {"type": "assistant", "message": {"stop_reason": "end_turn"}},
             "claude interrupted": {"type": "user", "message": {"content": "[Request interrupted by user]"}},
             "codex finished": {"type": "event_msg", "payload": {"type": "task_complete"}},
+            # Shapes as Claude Code and Codex write them, with the text and ids taken out.
+            "claude answered, as written": {
+                "parentUuid": "u1", "isSidechain": False, "type": "assistant", "uuid": "u2",
+                "timestamp": "2026-11-06T20:01:02.000Z", "message": {
+                    "model": "claude-opus-5-5", "id": "m1", "type": "message", "role": "assistant",
+                    "content": [{"type": "thinking", "thinking": "", "signature": "s"}], "stop_reason": "end_turn",
+                    "stop_sequence": None, "usage": {"input_tokens": 2, "output_tokens": 861}}},
+            "codex finished, as written": {
+                "timestamp": "2026-11-06T20:01:02.000Z", "type": "event_msg", "payload": {
+                    "type": "task_complete", "turn_id": "t1", "last_agent_message": "done",
+                    "completed_at": 1794027990, "duration_ms": 64369}},
             "codex aborted": {"type": "event_msg", "payload": {"type": "turn_aborted"}},
         }.items():
             with self.subTest(name):
