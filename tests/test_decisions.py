@@ -51,10 +51,13 @@ class Store(unittest.TestCase):
         self.db = store.connect(self.path)
         self.addCleanup(self.db.close)
 
-    def session(self, sid, ts, decided, text="USER: carry on\n\nASSISTANT: done", source="claude_code"):
+    def session(self, sid, ts, decided, text="USER: carry on\n\nASSISTANT: done", source="claude_code", project=None):
         store.store_item(self.db, source, sid, ts, "session", text + "\n" + "filler line\n" * 1200, {})
+        meta = {"atom": "decision"}
+        if project:
+            meta["path"] = f"/Users/me/.claude/projects/-Users-me-{project}/{sid}.jsonl"
         store.replace_rows(self.db, source, sid, [
-            {"kind": "atom", "ts": ts, "title": f"decision: {d[:60]}", "content": d, "metadata": {"atom": "decision"}}
+            {"kind": "atom", "ts": ts, "title": f"decision: {d[:60]}", "content": d, "metadata": meta}
             for d in decided], store.SUMMARY_KINDS)
         self.db.commit()
 
@@ -259,11 +262,42 @@ class DecisionTest(Store):
 
     def test_a_copy_of_the_replaced_text_in_another_item_is_marked_too(self):
         for sid in ("old1", "old2"):
-            self.session(sid, "2026-06-12T10:00:00Z", ["Composio CLI is the default for connected app accounts."])
-        self.session("new", "2026-10-24T10:00:00Z", ["Composio switched off; Executor replaces it for app accounts."])
+            self.session(sid, "2026-06-12T10:00:00Z", ["Composio CLI is the default for connected app accounts."],
+                         project="code-hq")
+        self.session("new", "2026-10-24T10:00:00Z", ["Composio switched off; Executor replaces it for app accounts."],
+                     project="code-hq")
         self.assertEqual(self.run_pass(Model(lambda text, older, _: answer(
             replaces=older if "switched" in text else ()))).replaced, 2)
         self.assertEqual(self.ids("Composio app accounts"),
+                         ["Composio switched off; Executor replaces it for app accounts."])
+
+    def test_a_copy_in_another_project_or_none_is_left_for_its_own_check(self):
+        text = "Use PostgreSQL for the app database."
+        self.session("a-old", "2026-06-12T10:00:00Z", [text], project="code-alpha")
+        self.session("b-old", "2026-06-13T10:00:00Z", [text], project="code-beta")
+        self.session("c-old", "2026-06-14T10:00:00Z", [text])
+        self.session("a-new", "2026-10-24T10:00:00Z", ["SQLite replaces PostgreSQL for the app database."],
+                     project="code-alpha")
+        shown, item = [], dict(self.db.execute("SELECT id, source_id FROM docs WHERE kind='atom'"))
+
+        def judge(new, older, _):
+            if "SQLite" not in new:
+                return answer()
+            items = {i: item[i] for i in older}
+            shown.append(sorted(items.values()))
+            return answer(replaces=[i for i, sid in items.items() if sid == "a-old"])
+        self.assertEqual(self.run_pass(Model(judge)).replaced, 1)
+        self.assertEqual(shown, [["a-old", "b-old", "c-old"]])
+        left = [h["source_id"] for h in search.search(self.db, "PostgreSQL app database") if h["kind"] == "atom"
+                and h["content"] == text]
+        self.assertEqual(sorted(left), ["b-old", "c-old"])
+
+    def test_every_copy_of_a_replaced_decision_in_one_item_is_hidden(self):
+        old = "Composio CLI is the default for connected app accounts."
+        self.session("old", "2026-06-12T10:00:00Z", [old, old, old])
+        self.session("new", "2026-10-24T10:00:00Z", ["Composio switched off; Executor replaces it for app accounts."])
+        self.run_pass(Model(lambda text, older, _: answer(replaces=older if "switched" in text else ())))
+        self.assertEqual(self.ids("Composio CLI default connected app accounts"),
                          ["Composio switched off; Executor replaces it for app accounts."])
 
     def test_the_note_does_not_depend_on_which_row_of_the_item_search_picked(self):
