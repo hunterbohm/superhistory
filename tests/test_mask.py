@@ -4662,6 +4662,53 @@ class Base64ReviewTwentySixthTest(unittest.TestCase):
                             self.assertNotIn(after.split(nl)[1], masked)
                             self.assertIn("next paragraph", masked)
 
+    def test_on_a_line_of_public_material_of_its_own_only_what_decodes_as_public_material_stays(self):
+        # The coordinator, round 27: past public material after a placeholder, a line that is public material of its
+        # own stays, but only what decodes as public material. A key's run of 16, or a whole cut body, in an OpenSSH
+        # public key's comment, past the base64 on a certificate's line, or glued right before or after one, straight
+        # or through a placeholder, is masked as main masks it. Through a placeholder, the line was read from its start
+        # though only its part past the placeholder decodes. Where main shows such a run (an OpenSSH key's comment
+        # right after the placeholder, a run past a certificate's first line), the reading follows main. Made up.
+        import base64
+        import random
+        import struct
+        import textwrap
+        nl = chr(10)
+        r = random.Random(2716)
+
+        def string(b):
+            return struct.pack(">I", len(b)) + b
+        blob = base64.b64encode(string(b"ssh-ed25519") + string(bytes(r.randrange(256) for _ in range(32)))).decode()
+        lines = self.certificate()
+        cert, second = nl.join(lines), nl.join(textwrap.wrap(base64.b64encode(made_up_certificate(r)).decode(), 64))
+        public = nl.join(textwrap.wrap(base64.b64encode(made_up_public_key(r)).decode(), 64))
+        body = textwrap.wrap(base64.b64encode(made_up_private_key(r)).decode(), 64)
+        later = cert + nl + "notes" + nl
+        spots = {"an OpenSSH key's comment": (cert + nl + blob + " ", ""),
+                 "its comment, typed": (cert + nl + "ssh-ed25519 " + blob + " ", ""),
+                 "a later OpenSSH key's comment": (later + blob + " ", ""),
+                 "past a certificate's last line": (cert + " ", ""),
+                 "past an unseen character": (cert + chr(0x200B), ""),
+                 "past a later one's last line": (later + second + chr(9), ""),
+                 "past a public key's last line": (later + public + ", ", ""),
+                 "glued after a certificate": (cert, ""), "glued before a later one": (later, second),
+                 "glued before a placeholder and a later one": (later, "[masked]" + second),
+                 "glued before a placeholder and a certificate": (cert + nl, "[masked]" + second),
+                 "glued after a certificate and a placeholder": (cert + "[masked]", "")}
+        for run in (body[3][5:21], "".join(body)):
+            for spot, (before, after) in spots.items():
+                for lead, olders in (("[masked]" + nl, (False, True)),
+                                     (Base64ReviewFourteenTest.key64() + nl, (False,))):
+                    text = lead + before + run + after + nl + nl + "next paragraph"
+                    for depth in range(3):
+                        written = self.split_written(text, "", depth)
+                        for older in olders:
+                            with self.subTest(run=len(run), spot=spot, lead=lead[:8], depth=depth, older=older):
+                                masked = Base64ReviewEighteenTest.masks(written, older)
+                                self.assertEqual([run[i:i + 16] for i in range(len(run) - 15)
+                                                  if run[i:i + 16] in masked], [])
+                                self.assertIn("next paragraph", masked)
+
     def test_a_keys_pieces_of_letters_alone_or_in_a_tags_attributes_past_a_certificate_stay_masked(self):
         # An automated review of eb1f4ab: a row of a key's pieces had to hold a digit, "+" or "/", which a fragment of
         # letters alone (about 1 in 28 of 16 characters) lacks, though one run of 16 was masked on its cases alone;
