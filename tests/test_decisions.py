@@ -260,7 +260,7 @@ class DecisionTest(Store):
         self.run_pass(judge)
         self.assertEqual(len(self.ids("Composio app accounts")), 2)
 
-    def test_a_copy_of_the_replaced_text_in_another_item_is_marked_too(self):
+    def test_each_copy_of_the_replaced_text_in_another_item_is_shown_and_checked(self):
         for sid in ("old1", "old2"):
             self.session(sid, "2026-06-12T10:00:00Z", ["Composio CLI is the default for connected app accounts."],
                          project="code-hq")
@@ -271,10 +271,10 @@ class DecisionTest(Store):
         self.assertEqual(self.ids("Composio app accounts"),
                          ["Composio switched off; Executor replaces it for app accounts."])
 
-    def test_a_copy_in_another_project_or_none_is_left_for_its_own_check(self):
+    def test_a_copy_of_the_same_words_is_marked_only_by_its_own_check(self):
         text = "Use PostgreSQL for the app database."
         self.session("a-old", "2026-06-12T10:00:00Z", [text], project="code-alpha")
-        self.session("b-old", "2026-06-13T10:00:00Z", [text], project="code-beta")
+        self.session("b-old", "2026-06-13T10:00:00Z", [text], project="code-alpha")  # another client, same folder
         self.session("c-old", "2026-06-14T10:00:00Z", [text])
         self.session("a-new", "2026-10-24T10:00:00Z", ["SQLite replaces PostgreSQL for the app database."],
                      project="code-alpha")
@@ -291,6 +291,24 @@ class DecisionTest(Store):
         left = [h["source_id"] for h in search.search(self.db, "PostgreSQL app database") if h["kind"] == "atom"
                 and h["content"] == text]
         self.assertEqual(sorted(left), ["b-old", "c-old"])
+
+    def test_another_record_from_the_item_of_a_replaced_decision_carries_the_note(self):
+        store.store_item(self.db, "claude_code", "old", "2026-06-12T10:00:00Z", "session",
+                         "USER: carry on\n\nASSISTANT: done\n" + "filler line\n" * 1200, {})
+        store.replace_rows(self.db, "claude_code", "old", [
+            {"kind": "atom", "ts": "2026-06-12T10:00:00Z", "title": "decision: Composio CLI is the default",
+             "content": "Composio CLI is the default for connected app accounts.", "metadata": {"atom": "decision"}},
+            {"kind": "atom", "ts": "2026-06-12T10:00:00Z", "title": "command: composio connect",
+             "content": "Run composio connect gmail to add connected app accounts.", "metadata": {"atom": "command"}}],
+            store.SUMMARY_KINDS)
+        self.db.commit()
+        self.session("new", "2026-10-24T10:00:00Z", ["Composio switched off; Executor replaces it for app accounts."])
+        self.run_pass(Model(lambda text, older, _: answer(replaces=older if "switched" in text else ())))
+        new = self.db.execute("SELECT id FROM docs WHERE content LIKE 'Composio switched off%'").fetchone()[0]
+        hits = [h for h in search.search(self.db, "composio connected app accounts") if h["source_id"] == "old"]
+        self.assertEqual([(h["content"][:21], h.get("replaced_in_item")) for h in hits],
+                         [("Run composio connect ", [new])])
+        self.assertTrue(hits[0]["snippet"].startswith("[A decision here was replaced later"))
 
     def test_every_copy_of_a_replaced_decision_in_one_item_is_hidden(self):
         old = "Composio CLI is the default for connected app accounts."

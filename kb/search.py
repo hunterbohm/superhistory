@@ -210,7 +210,7 @@ def search(db, query, after=None, sources=(), limit=10, before=None, keep=None, 
     hits = sorted((h for h in allowed if keep is None or keep(h)), key=lambda h: -h["score"])[:limit]
     stale = {}
     if not history and decisions.has_table(db):
-        stale = _stale_items(db, match, {(h["source"], h["source_id"]) for h in hits if h["kind"] != "atom"})
+        stale = _stale_items(db, match, {(h["source"], h["source_id"]) for h in hits})
     for hit in hits:
         if hit["id"] in fresh:
             own = hit["content"]
@@ -224,7 +224,7 @@ def search(db, query, after=None, sources=(), limit=10, before=None, keep=None, 
             snip, marked = _snippets(hit["title"], own, match)
         hit["snippet"] = re.sub(r"\s+", " ", snip if "[" in snip else own[:SNIPPET_CHARS]).strip()
         hit["excerpt"] = excerpt(marked if MARK in marked else own)
-        newer = stale.get((hit["source"], hit["source_id"])) if hit["kind"] != "atom" else None
+        newer = stale.get((hit["source"], hit["source_id"]))
         if newer:
             hit["replaced_in_item"] = newer
             note = STALE_NOTE.format(", ".join(f"#{n}" for n in newer))

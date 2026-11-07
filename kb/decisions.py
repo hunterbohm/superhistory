@@ -123,7 +123,6 @@ class Decision(NamedTuple):
     ts: str
     text: str
     where: str = ""  # the project folder or title of its item, so a check can tell two projects' rules apart
-    project: str = ""  # an agent session's project folder; empty when the item has none
 
     @property
     def ref(self):
@@ -162,24 +161,17 @@ def has_table(db):
 
 def decisions(db):
     """Every decision record, oldest first."""
-    return [Decision(rid, src, sid, key_of(text), ts, text, where(path, title), project(path))
+    return [Decision(rid, src, sid, key_of(text), ts, text, where(path, title))
             for rid, src, sid, ts, text, path, title in db.execute("SELECT a.id, a.source, a.source_id, a.ts, a.content, json_extract(a.metadata, '$.path'), "
                           "(SELECT i.title FROM docs i WHERE i.source=a.source AND i.source_id=a.source_id "
                           "AND i.kind IN ('doc', 'raw') LIMIT 1) FROM docs a WHERE a.kind='atom' "
                           "AND json_extract(a.metadata, '$.atom') = 'decision' ORDER BY a.ts, a.id")]
 
 
-PROJECT_DIR = re.compile(r"/\.claude/projects/-(?:Users|home)-[^-/]+-([^/]+)/")
-
-
-def project(path):
-    found = PROJECT_DIR.search(path or "")
-    return found.group(1) if found else ""
-
-
 def where(path, title):
     """A short name for where a decision was made: an agent session's project folder, else its item's title."""
-    name = f"{project(path)}: {title or ''}" if project(path) else (title or "")
+    found = re.search(r"/\.claude/projects/-(?:Users|home)-[^-/]+-([^/]+)/", path or "")
+    name = f"{found.group(1)}: {title or ''}" if found else (title or "")
     return re.sub(r"[()\s]+", " ", name).strip()[:90]
 
 
@@ -205,9 +197,9 @@ class Index:
             self.db.execute("INSERT INTO d(rowid, text) VALUES (?, ?)", (i, d.text))
 
     def older(self, d, k=CANDIDATES):
-        """Up to k decisions older than d, from other items, that share its words, best first, one per text and project:
-        a copy of the same text in another item of that project is marked with the one shown (check_proposals), and a
-        copy anywhere else, or with no project, is shown on its own."""
+        """Up to k decisions older than d, from other items, that share its words, best first, one per text in each item.
+        The same words in another item are shown on their own: they may be another client's or site's rule, and only a
+        check of that pair can mark them."""
         words = terms(d.text)[:30]
         if not words:
             return []
@@ -216,7 +208,7 @@ class Index:
         # Read on past newer and repeated matches until k qualify, however far down they rank.
         for (i,) in self.db.execute("SELECT rowid FROM d WHERE d MATCH ? ORDER BY bm25(d), rowid", (match,)):
             c = self.items[i]
-            same = (c.key, c.project or c.ref)
+            same = c.ref
             if c.ts >= d.ts or (c.source, c.source_id) == (d.source, d.source_id) or same in seen:
                 continue
             seen.add(same)
@@ -504,9 +496,6 @@ def check_proposals(db, ask, owner, current, log, workers=WORKERS):
                        "AND new_source_id=? AND new_key=?",
                        [r[:6] for r in rows if r[:3] not in by_ref or r[3:6] not in by_ref])
     pending = [(by_ref[r[:3]], by_ref[r[3:6]], r[6]) for r in rows if r[:3] in by_ref and r[3:6] in by_ref]
-    copies = {}
-    for d in current:
-        copies.setdefault(d.key, []).append(d)
     batches = [pending[i:i + CHECK_BATCH] for i in range(0, len(pending), CHECK_BATCH)]
     marked = 0
     with ThreadPoolExecutor(max(1, workers)) as pool:
@@ -521,12 +510,7 @@ def check_proposals(db, ask, owner, current, log, workers=WORKERS):
                     log.debug("decisions: #%d replaces #%d? the check says %s", new.row, old.row,
                               "yes" if yes[n] else "no")
                     if yes[n]:
-                        # The same words in another item of the same project are the same rule; in another project,
-                        # or where no project is known, they may still hold, and only their own check can say.
-                        for same in [old] + [c for c in copies.get(old.key, ()) if c.ref != old.ref and c.ts < new.ts
-                                             and c.source_id != new.source_id and c.project
-                                             and c.project == old.project]:
-                            marked += mark_replaced(db, same, new, why, at)
+                        marked += mark_replaced(db, old, new, why, at)
                     db.execute("DELETE FROM decision_proposals WHERE source=? AND source_id=? AND key=? AND "
                                "new_source=? AND new_source_id=? AND new_key=?", (*old.ref, *new.ref))
     return len(batches), marked
