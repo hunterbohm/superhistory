@@ -280,6 +280,8 @@ Known limits:
   sentence that quotes it is read from the few dozen bytes before it: a byte no text holds there starts a key where
   the words alone would quote it, and a space further back is not seen, so a header after a long word starts its key.
   This masks more.
+  A header or footer whose words before "PRIVATE KEY" run past 200 bytes, far past any a key tool writes, is read as
+  none, so a key encoded with one shows, as on main.
 - A piece of a private key's base64 with neither its header nor its footer shows, as on main, unless a key's rest
   after a placeholder, as one where a key was masked, takes it. A rest starts with base64 glued to the placeholder, or
   with a line right after it of base64 alone, 40 characters or more, starting as a key's body does ("MIIE..."); in a
