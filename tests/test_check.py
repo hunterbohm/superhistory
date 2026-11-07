@@ -252,8 +252,22 @@ class CheckTest(unittest.TestCase):
     def test_checks_side_by_side_keep_each_others_records(self):
         seen = check.Seen(self.paths.seen_dir)
         seen.add("sess-1", {("gmail", "a")})
-        seen.add("sess-1", {("gmail", "b")})
+        self.assertEqual(seen.add("sess-1", {("gmail", "a"), ("gmail", "b")}), {("gmail", "b")})
         self.assertEqual(seen.load("sess-1"), {("gmail", "a"), ("gmail", "b")})
+
+    def test_a_record_another_check_showed_meanwhile_is_not_shown_twice(self):
+        self.add("gmail", "test:a", "Dana on the Connect launch date")
+        self.add("gmail", "test:b", "Dana moved the Connect launch again")
+        seen = check.Seen(self.paths.seen_dir)
+
+        def other_check_shows_a():
+            seen.add("sess-1", {("gmail", "test:a")})
+            return True
+        out = check.answer(self.paths, self.config, json.dumps({"message": ASK, "before": []}), "sess-1",
+                           plan_and_pick("Dana Connect launch"), still_wanted=other_check_shows_a)
+        self.assertIn("/archive/test:b", out)
+        self.assertNotIn("/archive/test:a", out)
+        self.assertEqual(len(self.log_entries()[-1]["shown"]), 1)
 
     def test_record_shown_earlier_in_the_session_is_not_repeated(self):
         self.add("gmail", "test:a", "Dana on the Connect launch date")

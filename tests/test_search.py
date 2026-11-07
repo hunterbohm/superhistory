@@ -463,6 +463,20 @@ class SearchTest(TempDB):
                     with mock.patch.object(search, "TOP_ROWS", top):
                         self.assertEqual([h["id"] for h in search.search(self.db, query, **kw)], full)
 
+    def test_the_top_rows_alone_answer_a_search_whose_lists_fill(self):
+        for i in range(20):
+            self.add(f"long{i}", f"deploy step {i}. " + "deploy rollback notes " * (300 + 40 * i), title=f"long{i}")
+            self.add(f"short{i}", f"deploy rollback {i} " + "deploy " * i, title=f"short{i}")
+        with mock.patch.object(search, "CANDIDATES", 4):
+            with mock.patch.object(search, "TOP_ROWS", 10 ** 9):
+                full = [h["id"] for h in search.search(self.db, "deploy rollback")]
+            with mock.patch.object(search, "TOP_ROWS", 90), \
+                    mock.patch.object(search, "_grouped", wraps=search._grouped) as grouped:
+                self.assertEqual([h["id"] for h in search.search(self.db, "deploy rollback")], full)
+        self.assertEqual(grouped.call_count, 2, "one pass per list, no fallback to every row")
+        self.assertEqual(dict(self.db.execute("SELECT kind, count(*) FROM docs GROUP BY kind")), {"doc": 20, "raw": 84},
+                         "104 matching rows, more than the 90 kept, so the cut is real; the summaries rank below every raw row")
+
     def test_a_tie_across_the_cut_is_not_cut(self):
         for i in range(12):
             self.add(f"same{i}", "zebra", title=f"same{i}", source="a")

@@ -5,6 +5,7 @@
 "before" holds the conversation turns just ahead of the message, oldest first; hooks send the last two.
 Every failure prints nothing. One JSON line per call goes to the check log, never with the message text.
 """
+import fcntl
 import hashlib
 import json
 import os
@@ -186,12 +187,23 @@ class Seen:
             return set()
 
     def add(self, session, pairs):
-        """Adds pairs to the session's file, read again just before the write so a check running alongside keeps
-        its own."""
+        """Adds pairs to the session's file and returns the ones it did not already hold. A lock and a fresh read
+        keep checks running side by side from dropping each other's records or showing one record twice."""
         if not session:
-            return
-        seen = self.load(session) | set(pairs)
+            return set(pairs)
         os.makedirs(self.folder, exist_ok=True)
+        with open(self._path(session) + ".lock", "w") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            seen = self.load(session)
+            added = set(pairs) - seen
+            self._prune()
+            fd, tmp = tempfile.mkstemp(dir=self.folder, suffix=".tmp")
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                json.dump(sorted(seen | added), fh)
+            os.replace(tmp, self._path(session))
+        return added
+
+    def _prune(self):
         cutoff = time.time() - SEEN_DAYS * 86400
         for name in os.listdir(self.folder):
             path = os.path.join(self.folder, name)
@@ -200,10 +212,6 @@ class Seen:
                     os.remove(path)
             except OSError:
                 pass
-        fd, tmp = tempfile.mkstemp(dir=self.folder, suffix=".tmp")
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            json.dump(sorted(seen), fh)
-        os.replace(tmp, self._path(session))
 
 
 def write_log(path, entry):
@@ -242,9 +250,11 @@ def answer(paths, config, text, session, model=None, still_wanted=None):
             if found.hits and still_wanted and not still_wanted():
                 entry["late"] = True
             elif found.hits:
-                seen.add(session, {(h["source"], h["source_id"]) for h in found.hits})
-                entry["shown"] = [h["id"] for h in found.hits]
-                output = render(found.hits, config.machine)
+                added = seen.add(session, {(h["source"], h["source_id"]) for h in found.hits})
+                # Another check in this session may have shown some of them while this one ran.
+                hits = [h for h in found.hits if (h["source"], h["source_id"]) in added]
+                entry["shown"] = [h["id"] for h in hits]
+                output = render(hits, config.machine)
     except Exception as exc:
         output = ""
         entry["error"] = type(exc).__name__
