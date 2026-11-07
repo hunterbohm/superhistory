@@ -247,7 +247,11 @@ Known limits:
   the end of its paragraph. So whatever follows a key cut off before its footer, up to the next blank line, is masked
   with it, and so is the paragraph before a footer with no header.
 - A private key written as base64 (as a Kubernetes secret holds one) is masked from the line with its header's first
-  byte through the line with its footer's. A footer ends it only as a whole line with no other footer later in the
+  byte through the line with its footer's. Its header and footer are each read as a line of their own past any
+  horizontal space and quotes around them, written, escaped as JSON escapes them or as a web page writes a quote
+  ("&quot;"), and up to any line break Python reads, so a key file indented in a document, or held in a JSON or .env
+  file, encoded whole, is masked, and so is an SSH2 key file.
+  A footer ends it only as a whole line with no other footer later in the
   same encoded stream, so text between a key's footer and a stray footer later in that stream is masked with the key,
   prose holding a control character included, and so is text between two whole keys in one stream. A footer encoded on
   its own in a later stream ends no key of an earlier stream's, so a public key between them stays. A footer encoded
@@ -271,6 +275,11 @@ Known limits:
   placeholder, a key's body on the placeholder's own line followed by words ("[masked] MC4C... notes deploy") shows,
   and so does a fragment that is itself a plain word inside a line of words after a key. In a row an older kb stored,
   an OpenSSH private key's private section, re-encoded alone after a placeholder, reads as public material and shows.
+  Lines that each start with the same quote or comment mark ("> ", "# ", "// ", "-- ", "; ", "* ", "| ", a quote
+  character, written or escaped) are read as no block, so a key encoded in them shows, as on main. Whether the words before a header on its decoded line make a
+  sentence that quotes it is read from the few dozen bytes before it: a byte no text holds there starts a key where
+  the words alone would quote it, and a space further back is not seen, so a header after a long word starts its key.
+  This masks more.
 - A piece of a private key's base64 with neither its header nor its footer shows, as on main, unless a key's rest
   after a placeholder, as one where a key was masked, takes it. A rest starts with base64 glued to the placeholder, or
   with a line right after it of base64 alone, 40 characters or more, starting as a key's body does ("MIIE..."); in a
@@ -283,7 +292,9 @@ Known limits:
   line counts: a piece of 34 characters after "[masked] ", or of lines 16 wide after another key's footer, shows, even
   with a longer line further down. A rest that starts right at its placeholder runs on past lines of words to the last
   line of its paragraph holding a token, as main's does; one that starts past lines that decode to words, where main
-  reads none, ends where its lines of base64 end, so a piece further down shows.
+  reads none, ends where its lines of base64 end, so a piece further down shows. As on main, a rest starts only past
+  what main reads before a key's body: after a no-break or other wide space escaped in JSON, a backtick or "- ", or
+  with JSON's escaped slash ("\/") in the first 40 characters of its first line, a body after a placeholder shows.
 - After a placeholder where a key was masked, public material (a certificate, a public key) and lines of words in the
   same paragraph are masked with it where a line of base64 past them reads as a possible fragment of a key, base64 of
   words included ("bm90ZXMg..."); in JSON inside JSON, a blank line does not end that paragraph. Main keeps them only
