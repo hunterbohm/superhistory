@@ -1,0 +1,79 @@
+{
+ "date": "2026-11-05T11:10:46Z",
+ "month": "a (dev)",
+ "answer_model": "claude-sonnet-5-5",
+ "judge_model": "gpt-6.1-sol",
+ "summary_model": "claude-haiku-5-5",
+ "workers": 1,
+ "slots": 2,
+ "check_commit": "68506d92ad1d8bd9b528cfcf0a170bc3a684bbd3+uncommitted",
+ "arms": [
+  {
+   "tool": "push-pull",
+   "load": {
+    "arm": "push-pull",
+    "tool_definition_tokens": 543
+   },
+   "ran": 171,
+   "failed": 0,
+   "arm": "push-pull",
+   "tool_definition_tokens": 543
+  },
+  {
+   "tool": "pull",
+   "load": {
+    "arm": "pull",
+    "tool_definition_tokens": 614
+   },
+   "ran": 171,
+   "failed": 0,
+   "arm": "pull",
+   "tool_definition_tokens": 614
+  },
+  {
+   "tool": "pull-lookup",
+   "load": {
+    "arm": "pull-lookup",
+    "tool_definition_tokens": 772
+   },
+   "ran": 171,
+   "failed": 0,
+   "arm": "pull-lookup",
+   "tool_definition_tokens": 772
+  },
+  {
+   "tool": "push",
+   "load": {
+    "arm": "push",
+    "tool_definition_tokens": 0
+   },
+   "ran": 171,
+   "failed": 0,
+   "arm": "push",
+   "tool_definition_tokens": 0
+  }
+ ],
+ "shared_store": {
+  "model": "claude-haiku-5-5",
+  "items": 471,
+  "long_items_summarized": 41,
+  "summary_failures": 1,
+  "seconds": 108.6,
+  "tokens": {
+   "calls": 42,
+   "input": 144334,
+   "output": 38392,
+   "thinking": 0,
+   "total": 182726,
+   "models": [
+    "claude-haiku-5-5"
+   ]
+  },
+  "rows": {
+   "atom": 293,
+   "doc": 429,
+   "raw": 95,
+   "segment": 124
+  }
+ }
+}
