@@ -381,13 +381,16 @@ class DriftTest(Store):
             return json.dumps({"results": [{"passage": i, "contradicts": True,
                                             "fix": "- Use Executor for every connected app account."} for i in ids]})
 
-        found = decisions.drift(self.db, model, OWNER, [("AGENTS.md", self.FILE)], "2026-10-01", LOG, workers=1)
+        found = decisions.drift(self.db, model, OWNER, [("AGENTS.md", self.FILE, "2026-10-20")], "2026-10-01", LOG,
+                                workers=1)
         self.assertEqual([(f["path"], f["line"], f["passage"], f["fix"]) for f in found],
                          [("AGENTS.md", 3, "- Use Composio for every connected app account.",
                            "- Use Executor for every connected app account.")])
         self.assertEqual(len(asked), 1)
         self.assertNotIn("Infisical into Executor", asked[0])
         self.assertIn("REPLACED: Composio CLI is the default", asked[0])
+        self.assertIn("(2026-10-24, in session): Composio switched off", asked[0])
+        self.assertIn("(AGENTS.md, line 3, file changed 2026-10-20)", asked[0])
         self.assertEqual(decisions.drift(self.db, model, OWNER, [("AGENTS.md", self.FILE)], "2026-11-01", LOG), [])
 
     def test_passages_are_paragraphs_and_list_items_without_headings_or_code(self):
@@ -404,7 +407,8 @@ class ReadFilesTest(unittest.TestCase):
                     fh.write(data)
             os.symlink(os.path.join(tmp, "a.md"), os.path.join(tmp, "link.md"))
             got = decisions.read_files([os.path.join(tmp, "*.md"), os.path.join(tmp, "a.md")], limit=10)
-            self.assertEqual(got, [(os.path.join(tmp, "a.md"), "rule")])
+            self.assertEqual([g[:2] for g in got], [(os.path.join(tmp, "a.md"), "rule")])
+            self.assertRegex(got[0][2], r"^\d{4}-\d\d-\d\d$")
 
 class ParseTest(unittest.TestCase):
     def test_an_id_written_as_text_counts(self):
