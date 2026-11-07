@@ -3562,6 +3562,27 @@ def _ends_inside_words(text, start, end):
     return brk is not None and bool(_WORDS_LINE_AT.match(text, brk.start()))
 
 
+def _main_rest_stops(text):
+    """Where main's reading of a key's rest (main's _KEY_REST) from a place ends, and whether at a footer: at the first
+    footer, which it takes, blank line or header past the place. Read once for the text: each place then costs a
+    lookup. Its `before_footer(begin, end)` is `end`, or the start of the first footer inside begin..end."""
+    stops = sorted([(m.start(), m.end(), True) for m in _KEY_END_TEXT.finditer(text)]
+                   + [(m.start(), m.start(), False) for m in _BLANK_LINE.finditer(text)]
+                   + [(m.start(), m.start(), False) for m in _PEM_HEADER.finditer(text)])
+    starts = [s[0] for s in stops]
+    footers = [s[0] for s in stops if s[2]]
+
+    def stop(at):
+        i = bisect.bisect_left(starts, at)
+        return (stops[i][1], stops[i][2]) if i < len(stops) else (len(text), False)
+
+    def before_footer(begin, end):
+        i = bisect.bisect_left(footers, begin)
+        return footers[i] if i < len(footers) and footers[i] < end else end
+    stop.before_footer = before_footer
+    return stop
+
+
 def _key_rests(text, starts=_REST_START):
     """Each key's rest after an older kb's placeholder (`starts`, _REST) that main's reading would remove, in order, as
     (where it starts, where it ends, whether it stays): where it starts with public material (_public_end) and no run
@@ -3578,7 +3599,7 @@ def _key_rests(text, starts=_REST_START):
     own at any length starts one too (_REST_PAST_WORDS), as a stream's short last line is, past any word alone on its
     line, and runs on as main's does. Each placeholder outside the core of the rest before it is read once, and each
     core runs once to its end, so a paragraph of many costs time in proportion."""
-    core, covered, tail, mixed, spans, ends = 0, 0, None, None, None, _rest_ends(text)
+    core, covered, tail, mixed, spans, ends, main_stop = 0, 0, None, None, None, _rest_ends(text), None
     start = _ID_REST_START if starts is _REST_START and not _STORED_ROW.get() else starts
     for at in _PLACEHOLDER.finditer(text):
         if at.start() < core:
@@ -3629,6 +3650,16 @@ def _key_rests(text, starts=_REST_START):
         # a placeholder past the core, in the tail, still reads its own rest; past lines of words, main reads none,
         # but for a rest started where main's runs on, which runs on as main's does
         end = tail(reach) if begin == at.end() or as_main else reach
+        # A footer goes with a rest only where main's rest from the placeholder takes it: there the rest runs on to it,
+        # as main's does, so the paragraph above stays; elsewhere it stays out, and the paragraph's footer with no
+        # header is read as main reads it (_headless_key_edits), from the paragraph's start
+        if main_stop is None:
+            main_stop = _main_rest_stops(text)
+        stop, footer = main_stop(at.end())
+        if footer and _ID_REST_START.match(text, at.end()):
+            end = max(end, stop)
+        else:
+            end = main_stop.before_footer(begin, end)
         if end <= covered:  # which ends inside one already masked, read before the public material past it, which
             core = reach if rest else core  # reads on to `end`: many such in one tail took time in its square
             continue
