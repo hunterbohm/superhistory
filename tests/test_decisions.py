@@ -42,7 +42,7 @@ def answer(author="agent", quote="", lasting=True, matters=False, replaces=(), w
             "why": why}
 
 
-class DecisionTest(unittest.TestCase):
+class Store(unittest.TestCase):
     def setUp(self):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
@@ -62,6 +62,8 @@ class DecisionTest(unittest.TestCase):
     def ids(self, query, **kw):
         return [h["content"] for h in search.search(self.db, query, **kw) if h["kind"] == "atom"]
 
+
+class DecisionTest(Store):
     def test_a_replaced_decision_leaves_search_and_comes_back_with_history(self):
         self.session("old", "2026-06-12T10:00:00Z", ["Composio CLI is the default for connected app accounts."])
         self.session("new", "2026-10-24T10:00:00Z", ["Composio switched off; Executor replaces it for app accounts."])
@@ -112,6 +114,45 @@ class DecisionTest(unittest.TestCase):
         decisions.answer(self.db, new, "confirmed")
         self.assertEqual(self.ids("Composio app accounts"),
                          ["Composio switched off; Executor replaces it for app accounts."])
+
+    def test_a_mark_whose_replacing_decision_is_gone_hides_nothing_even_before_the_next_pass(self):
+        self.session("old", "2026-06-12T10:00:00Z", ["Composio CLI is the default for connected app accounts."])
+        self.session("new", "2026-10-24T10:00:00Z", ["Composio switched off; Executor replaces it for app accounts."])
+        self.run_pass(Model(lambda text, older, _: answer(replaces=older if "switched" in text else ())))
+        self.session("new", "2026-10-24T10:00:00Z", ["Executor holds the app logins now."])
+        self.assertIn("Composio CLI is the default for connected app accounts.", self.ids("Composio app accounts"))
+
+    def test_rejecting_a_decision_drops_the_replacements_it_still_had_waiting(self):
+        self.session("old", "2026-06-12T10:00:00Z", ["Composio CLI is the default for connected app accounts."])
+        self.session("new", "2026-10-24T10:00:00Z", ["Composio switched off; Executor replaces it for app accounts."])
+        judge = Model(lambda text, older, _: answer(replaces=older if "switched" in text else ()))
+        flaky = lambda prompt: "garbled" if prompt.system.startswith("You check") else judge(prompt)
+        decisions.run(self.db, flaky, OWNER, kind_of, LOG, workers=1)
+        new = self.db.execute("SELECT id FROM docs WHERE content LIKE 'Composio switched off%'").fetchone()[0]
+        decisions.answer(self.db, new, "rejected")
+        self.assertEqual(self.run_pass(Model(lambda *a: answer())).replaced, 0)
+        self.assertIn("Composio CLI is the default for connected app accounts.", self.ids("Composio app accounts"))
+
+    def test_the_owners_decision_an_agent_replaced_can_still_be_replaced_by_his_own(self):
+        self.session("old", "2026-06-12T10:00:00Z", ["Composio CLI is the default for connected app accounts."],
+                     text="USER: composio cli is the default for app accounts\n\nASSISTANT: ok")
+        self.session("agent", "2026-10-24T10:00:00Z", ["Composio switched off; Executor replaces it for app accounts."])
+
+        def judge(text, older, passages):
+            if "Composio CLI" in text:
+                return answer("owner", "composio cli is the default for app accounts")
+            if "turned off" in text:
+                return answer("owner", "composio is turned off for app accounts", replaces=older)
+            return answer(replaces=older)
+
+        self.run_pass(Model(judge))
+        self.session("own", "2026-10-25T10:00:00Z", ["Composio is turned off for app accounts for good."],
+                     text="USER: composio is turned off for app accounts\n\nASSISTANT: ok")
+        self.run_pass(Model(judge))
+        self.assertNotIn("Composio CLI is the default for connected app accounts.", self.ids("Composio app accounts"))
+
+    def test_review_on_a_store_the_pass_never_ran_on_is_empty(self):
+        self.assertEqual(decisions.review(self.db), [])
 
     def test_owner_needs_his_own_words_quoted(self):
         self.session("typed", "2026-11-01T10:00:00Z", ["Use Executor for every app account."],
@@ -169,7 +210,7 @@ class DecisionTest(unittest.TestCase):
                          ["Merge trains approved by Hunter: one worker merges all green PRs."])
 
 
-class DriftTest(DecisionTest):
+class DriftTest(Store):
     FILE = ("# Accounts\n\n- Use Composio for every connected app account.\n- Keep keys in Infisical.\n\n"
             "```\ncomposio run x\n```\n")
 

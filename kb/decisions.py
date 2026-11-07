@@ -386,6 +386,14 @@ def reconcile(db, current):
     return len(stale)
 
 
+# The marks that take a decision out of view: the owner rejected it, or a newer decision replaced it and either it is
+# not in his own words (nor confirmed by him) or the newer one is.
+HIDING = ("SELECT d.source, d.source_id, d.key, d.new_source, d.new_source_id, d.new_key, d.answer FROM decisions d "
+          "LEFT JOIN decisions n ON n.source=d.new_source AND n.source_id=d.new_source_id AND n.key=d.new_key "
+          "WHERE (d.answer='rejected' OR (d.new_key IS NOT NULL AND (coalesce(n.author='owner' OR "
+          "n.answer='confirmed', 0) OR NOT coalesce(d.author='owner' OR d.answer='confirmed', 0))))")
+
+
 def hidden(db, rows):
     """Of `rows`, (id, source, source_id, kind, content) tuples, {id: the replacing decision's (source, source_id,
     key), or "rejected"} for the decisions search leaves out by default. A decision in the owner's own words, or one he
@@ -393,21 +401,21 @@ def hidden(db, rows):
     if not _has_table(db):
         return {}
     keys = {(src, sid, key_of(content)): rid for rid, src, sid, kind, content in rows if kind == "atom"}
-    out = {}
+    out, alive = {}, {}
     items = list(keys)
     for i in range(0, len(items), 300):
         batch = items[i:i + 300]
         where = " OR ".join("(d.source=? AND d.source_id=? AND d.key=?)" for _ in batch)
-        for src, sid, key, ns, nsid, nkey, answer, own, new_own in db.execute(
-                "SELECT d.source, d.source_id, d.key, d.new_source, d.new_source_id, d.new_key, d.answer, "
-                "d.author='owner' OR d.answer='confirmed', coalesce(n.author='owner' OR n.answer='confirmed', 0) "
-                "FROM decisions d LEFT JOIN decisions n ON n.source=d.new_source AND n.source_id=d.new_source_id "
-                f"AND n.key=d.new_key WHERE (d.new_key IS NOT NULL OR d.answer='rejected') AND ({where})",
-                [v for t in batch for v in t]):
+        for src, sid, key, ns, nsid, nkey, answer in db.execute(f"{HIDING} AND ({where})",
+                                                                [v for t in batch for v in t]):
             if answer == "rejected":
                 out[keys[(src, sid, key)]] = "rejected"
-            elif new_own or not own:
-                out[keys[(src, sid, key)]] = (ns, nsid, nkey)
+                continue
+            by = (ns, nsid, nkey)
+            if by not in alive:  # a refresh can drop the replacing decision before the next pass clears the mark
+                alive[by] = _find(db, by) is not None
+            if alive[by]:
+                out[keys[(src, sid, key)]] = by
     return out
 
 
@@ -485,8 +493,7 @@ def check_proposals(db, ask, owner, current, log, workers=WORKERS):
 def _out_of_view(db):
     if not _has_table(db):
         return set()
-    return {tuple(r) for r in db.execute("SELECT source, source_id, key FROM decisions "
-                                         "WHERE new_key IS NOT NULL OR answer='rejected'")}
+    return {tuple(r[:3]) for r in db.execute(HIDING)}
 
 
 def due(db, every_hours):
@@ -548,6 +555,8 @@ def run(db, ask, owner, kind_of, log, limit=None, workers=WORKERS):
 def review(db, limit=10, since=None):
     """The agent-reported decisions that matter and that the owner has not answered, newest first, one per wording
     that differs, the ones that claim his approval first."""
+    if not _has_table(db):
+        return []
     rows = db.execute("SELECT source, source_id, key FROM decisions WHERE author='agent' AND matters=1 "
                       "AND answer IS NULL AND new_key IS NULL").fetchall()
     found = [d for d in (_find(db, tuple(r)) for r in rows) if d and (since is None or d.ts >= since)]
@@ -578,6 +587,7 @@ def answer(db, rid, verdict):
         if verdict == "rejected":
             db.execute("UPDATE decisions SET new_source=NULL, new_source_id=NULL, new_key=NULL, why=NULL "
                        "WHERE new_source=? AND new_source_id=? AND new_key=?", ref)
+            db.execute("DELETE FROM decision_proposals WHERE new_source=? AND new_source_id=? AND new_key=?", ref)
     return ref
 
 
@@ -659,11 +669,11 @@ def owned(db, since):
     each with the texts of the decisions it replaced and the quote that backs it."""
     if not _has_table(db):
         return []
-    found = []
+    found, out = [], _out_of_view(db)
     for src, sid, key, quote, answer in db.execute(
-            "SELECT source, source_id, key, quote, answer FROM decisions WHERE new_key IS NULL AND lasting=1 "
-            "AND (author='owner' OR answer='confirmed') AND coalesce(answer, '') != 'rejected'"):
-        d = _find(db, (src, sid, key))
+            "SELECT source, source_id, key, quote, answer FROM decisions WHERE lasting=1 "
+            "AND (author='owner' OR answer='confirmed')"):
+        d = None if (src, sid, key) in out else _find(db, (src, sid, key))
         if d and d.ts >= since:
             ended = [_find(db, tuple(r)) for r in db.execute(
                 "SELECT source, source_id, key FROM decisions WHERE new_source=? AND new_source_id=? AND new_key=?",
