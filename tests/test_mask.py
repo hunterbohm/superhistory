@@ -3400,6 +3400,35 @@ class Base64ReviewTwentySecondTest(unittest.TestCase):
                         self.assertEqual([k for k in words.splitlines() if k not in masked], [])
                         self.assertEqual([k for k in top.splitlines()[1:] if len(k) >= 16 and k in masked], [])
 
+    def test_a_narrower_line_of_its_own_ends_its_stream_above_a_public_key_that_fills_whole_lines(self):
+        # Found by round 23's cross-stream generator: a footer encoded alone on one line of its own, narrower than the
+        # lines below it, was read as the first line of the stream below, a public key whose lines fill the width (no
+        # short last line, no "=") and a whole key after it, so with that key's footer later in its stream, the lone
+        # footer's key ran on to it through the public key. Main keeps the public key.
+        import base64
+        import random
+        r = random.Random(2205)
+        encoded = Base64ReviewSeventeenTest.encoded
+        line = base64.b64encode(bytes(r.randrange(256) for _ in range(48)))
+        publics = {"certificate": (made_up_certificate(r), (52, 72)), "rsa": (made_up_public_key(r), (49, 56))}
+        for name, (public, widths) in publics.items():
+            for width in widths:
+                kept = encoded(public, width)
+                whole = encoded(b"-----BEGIN PRIVATE KEY-----\n" + line + b"\n" + line + b"\n-----END PRIVATE KEY-----\n",
+                                width)
+                for footer in (b"\n-----END PRIVATE KEY-----\n", b"-----END RSA PRIVATE KEY-----\n"):
+                    # at the block's start, below a line of words, and below a stream that ends with its "="
+                    for above in ("", "Notes from today:\n", encoded(b"notes on the harbor ledger", width) + "\n"):
+                        text = above + "\n".join([encoded(footer, width), kept, whole]) + "\n\nnext paragraph"
+                        for brk in ("\n", "\r\n"):
+                            for depth in range(3):
+                                written = Base64ReviewNineteenFindingsTest.written(text.replace("\n", brk), depth)
+                                with self.subTest(public=name, width=width, footer=footer[:6], above=above[:6],
+                                                  brk=brk, depth=depth):
+                                    masked = mask(written)
+                                    self.assertEqual([k for k in kept.splitlines() if k not in masked], [])
+                                    self.assertEqual([k for k in whole.splitlines()[1:-1] if k in masked], [])
+
 
 class HeadlessKeyTest(unittest.TestCase):
     """A key's body without its header, as an older kb's row-by-row remask leaves the chunk after the header's."""
