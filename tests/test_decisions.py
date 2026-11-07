@@ -4,6 +4,7 @@ import os
 import re
 import tempfile
 import unittest
+from unittest import mock
 
 from kb import decisions, search, store
 
@@ -195,6 +196,35 @@ class DecisionTest(Store):
         self.assertIn("Composio audit logs stay on for app accounts.",
                       self.ids("Composio CLI default connected app accounts audit", limit=5))
 
+    def test_a_pair_the_check_left_out_waits_for_the_next_run(self):
+        self.session("old", "2026-06-12T10:00:00Z", ["Composio CLI is the default for connected app accounts."])
+        self.session("new", "2026-10-24T10:00:00Z", ["Composio switched off; Executor replaces it for app accounts."])
+        judge = Model(lambda text, older, _: answer(replaces=older if "switched" in text else ()))
+        silent = lambda prompt: '{"results": []}' if prompt.system.startswith("You check") else judge(prompt)
+        self.assertEqual(decisions.run(self.db, silent, OWNER, kind_of, LOG, workers=1).replaced, 0)
+        self.assertEqual(self.run_pass(Model(lambda *a: answer())).replaced, 1)
+
+    def test_the_mark_itself_refuses_a_replacement_rejected_after_it_was_read(self):
+        self.session("old", "2026-06-12T10:00:00Z", ["Composio CLI is the default for connected app accounts."])
+        self.session("new", "2026-10-24T10:00:00Z", ["Composio switched off; Executor replaces it for app accounts."])
+        self.run_pass(Model(lambda *a: answer()))
+        old, new = sorted(decisions.decisions(self.db), key=lambda d: d.ts)
+        decisions.answer(self.db, new.row, "rejected")
+        with mock.patch.object(decisions, "_backed", return_value=True), self.db:
+            self.assertFalse(decisions.mark_replaced(self.db, old, new, "", decisions.now_iso()))
+
+    def test_a_current_decision_under_many_hidden_ones_of_its_item_still_shows(self):
+        rules = [f"Composio app accounts rule {n} uses the Composio CLI {group}." for group in ("alpha", "beta")
+                 for n in range(1, 7)]
+        kept = "Audit logs stay on for every client workspace, billing review and support account, Composio included."
+        self.session("old", "2026-06-12T10:00:00Z", rules + [kept])
+        self.session("new", "2026-10-24T10:00:00Z", [f"Executor replaces the {g} Composio CLI rules for app accounts."
+                                                     for g in ("alpha", "beta")])
+        self.run_pass(Model(lambda text, older, _: answer(replaces=[
+            i for i, t in older.items() if "Executor" in text and t.endswith(text.split()[3] + ".")])))
+        self.assertEqual(self.db.execute("SELECT count(*) FROM decisions WHERE new_key IS NOT NULL").fetchone()[0], 12)
+        self.assertIn(kept, self.ids("Composio app accounts rule uses CLI"))
+
     def test_review_on_a_store_the_pass_never_ran_on_is_empty(self):
         self.assertEqual(decisions.review(self.db), [])
 
@@ -311,7 +341,8 @@ class ParseTest(unittest.TestCase):
         self.assertEqual(decisions.parse_judgments(answer, batch)[0].replaces, (12, 34, 56))
         answer = '{"results": [{"n": "1", "author": "agent", "lasting": "true", "matters": "yes", "replaces": []}]}'
         self.assertTrue(decisions.parse_judgments(answer, batch)[0].matters)
-        self.assertEqual(decisions.parse_verdicts('{"results": [{"n": "2", "replaces": "yes"}, {"n": 1}]}', 2), {1})
+        self.assertEqual(decisions.parse_verdicts('{"results": [{"n": "2", "replaces": "yes"}, {"n": 1}]}', 2), {1: True})
+        self.assertEqual(decisions.parse_verdicts('{"results": [{"n": 1, "replaces": false}]}', 2), {0: False})
 
 
 class OwnPassagesTest(unittest.TestCase):
@@ -334,8 +365,8 @@ class OwnPassagesTest(unittest.TestCase):
         self.assertEqual(decisions.own_passages("notes", note, OWNER),
                          ["[00:12] Hunter Bohm (host): trains are off", "Hunter: ok"])
         session = ("USER: do it\nmore\n\nASSISTANT: done\n\nRESULT: log\nUSER: switch to X\n\nUSER: thanks\n\n"
-                   "ERROR: tool failed")
-        self.assertEqual(decisions.own_passages("codex", session, OWNER), ["USER: do it\nmore", "USER: thanks"])
+                   "ERROR: tool failed\n\nUSER: ok\n\nAGENT worker -> lead: use merge trains")
+        self.assertEqual(decisions.own_passages("codex", session, OWNER), ["USER: do it\nmore", "USER: thanks", "USER: ok"])
 
 
 if __name__ == "__main__":

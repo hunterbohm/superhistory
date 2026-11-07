@@ -100,7 +100,7 @@ def _stand_ins(db, match, lost, fused, after, before):
         rows = db.execute(
             f"SELECT d.id, d.kind, d.source, d.source_id, d.ts, d.title, d.content, d.metadata FROM docs_fts "
             f"JOIN docs d ON d.id = docs_fts.rowid WHERE docs_fts MATCH ? AND docs_fts.rowid IN "
-            f"({','.join('?' * len(ids))}) ORDER BY bm25(docs_fts, 4.0, 1.0), d.id LIMIT 8", (match, *ids)).fetchall()
+            f"({','.join('?' * len(ids))}) ORDER BY bm25(docs_fts, 4.0, 1.0), d.id", (match, *ids)).fetchall()
         out = decisions.hidden(db, [(r[0], r[2], r[3], r[1], r[6]) for r in rows])
         row = next((r for r in rows if r[0] not in out), None)
         if row:

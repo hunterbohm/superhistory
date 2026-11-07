@@ -223,7 +223,7 @@ def own_passages(kind, text, owner):
         # agent printed, does not start one.
         turn = r"(?:\A|(?<=\n\n))"
         return [m.group(0).rstrip("\n") for m in
-                re.finditer(rf"(?s){turn}USER: .*?(?=\n\n(?:USER|ASSISTANT|TOOL|RESULT|ERROR)\b|\Z)", text)]
+                re.finditer(rf"(?s){turn}USER: .*?(?=\n\n(?:USER|ASSISTANT|AGENT|TOOL|RESULT|ERROR)\b|\Z)", text)]
     if not names:
         return []
     if kind == "gmail":
@@ -327,11 +327,12 @@ def verify_prompt(owner, pairs):
 
 
 def parse_verdicts(text, count):
-    found = set()
+    """{position: whether it replaces} for the pairs the answer names; a pair it leaves out waits for the next run."""
+    found = {}
     for e in find_json(text, "results").get("results") or []:
         n = _row_id(e.get("n")) if isinstance(e, dict) else None
-        if n is not None and 1 <= n <= count and _yes(e.get("replaces")):
-            found.add(n - 1)
+        if n is not None and 1 <= n <= count and "replaces" in e:
+            found[n - 1] = _yes(e.get("replaces"))
     return found
 
 
@@ -357,11 +358,13 @@ def mark_replaced(db, old, new, why, at):
         held = _backed(db, tuple(row))
         if held is not None and (held, _ts_of(db, row)) > (_backed(db, new.ref), new.ts):
             return False
-    db.execute("INSERT INTO decisions(source, source_id, key, new_source, new_source_id, new_key, why, at) "
-               "VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(source, source_id, key) DO UPDATE SET "
-               "new_source=excluded.new_source, new_source_id=excluded.new_source_id, new_key=excluded.new_key, "
-               "why=excluded.why", (*old.ref, *new.ref, mask(why), at))
-    return True
+    # The write itself checks the reject too: a reject committed after the read above still stops it.
+    return db.execute(
+        "INSERT INTO decisions(source, source_id, key, new_source, new_source_id, new_key, why, at) "
+        "SELECT ?,?,?,?,?,?,?,? WHERE NOT EXISTS (SELECT 1 FROM decisions WHERE source=? AND source_id=? AND key=? "
+        "AND answer='rejected') ON CONFLICT(source, source_id, key) DO UPDATE SET new_source=excluded.new_source, "
+        "new_source_id=excluded.new_source_id, new_key=excluded.new_key, why=excluded.why",
+        (*old.ref, *new.ref, mask(why), at, *new.ref)).rowcount > 0
 
 
 def _backed(db, ref):
@@ -465,7 +468,7 @@ def _judge(ask, owner, batch, log):
 
 
 def _check(ask, owner, pairs, log):
-    """The positions in `pairs`, (older, newer) decisions, that the second call agrees are replacements, or None."""
+    """{position in `pairs`, (older, newer) decisions: whether the second call agrees it is a replacement}, or None."""
     try:
         return parse_verdicts(ask(verify_prompt(owner, pairs)), len(pairs))
     except (BadAnswer, Refused) as exc:
@@ -494,9 +497,11 @@ def check_proposals(db, ask, owner, current, log, workers=WORKERS):
             at = now_iso()
             with db:
                 for n, (old, new, why) in enumerate(batch):
+                    if n not in yes:
+                        continue
                     log.debug("decisions: #%d replaces #%d? the check says %s", new.row, old.row,
-                              "yes" if n in yes else "no")
-                    if n in yes:
+                              "yes" if yes[n] else "no")
+                    if yes[n]:
                         marked += mark_replaced(db, old, new, why, at)
                     db.execute("DELETE FROM decision_proposals WHERE source=? AND source_id=? AND key=? AND "
                                "new_source=? AND new_source_id=? AND new_key=?", (*old.ref, *new.ref))
