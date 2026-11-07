@@ -3317,17 +3317,17 @@ _BASE64_ONLY_LINE = re.compile(r"[ \t\r\"'#>*,;|\]]*([A-Za-z0-9+/]+=*)?[ \t\r\"'
 # coordinator's exception for this branch lets no text show (16 characters, as tests/test_mask_against_today.py reads).
 _MIXED_RUN = re.compile(r"(?<![A-Za-z0-9+/])(?=[A-Za-z0-9+/]*[A-Z])(?=[A-Za-z0-9+/]*[a-z])[A-Za-z0-9+/]{16,}")
 # What reads as no base64 between a key's pieces (_joined_pieces), besides any character that is none: an HTML tag,
-# written or as a web page's entities ("<br>", "&lt;br/&gt;"), its attributes' names and words with it, and any entity
-# ("&amp;"), whose letters are no piece. Its attributes (group 1 or 2) are read for pieces (_piece_apart).
-_PIECE_SEPARATOR = re.compile(r"</?[A-Za-z][A-Za-z0-9]*(\s[^<>]{0,40})?/?>"
-                              r"|&lt;/?[A-Za-z][A-Za-z0-9]*(\s(?:(?!&gt;).){0,40})?/?&gt;"
-                              r"|&(?:[A-Za-z][A-Za-z0-9]*|#[0-9]+|#[xX][0-9A-Fa-f]+);")
+# written or as a web page's entities ("<br>", "&lt;br/&gt;"), and any entity ("&amp;"). Its name and its attributes
+# are read for pieces (_piece_apart), as a key's piece can be written as either ("<YfZ4kjGs>", title="Rt5H9LbN").
+_PIECE_SEPARATOR = re.compile(r"</?(?P<tag>[A-Za-z][A-Za-z0-9]*)(?P<attributes>\s[^<>]{0,40})?/?>"
+                              r"|&lt;/?(?P<lt_tag>[A-Za-z][A-Za-z0-9]*)(?P<lt_attributes>\s(?:(?!&gt;).){0,40})?/?&gt;"
+                              r"|&(?P<entity>[A-Za-z][A-Za-z0-9]*|#[0-9]+|#[xX][0-9A-Fa-f]+);")
 _PIECE_RUN = re.compile(r"[A-Za-z0-9+/]+=*")
-# Letters that read as words, alone or joined in camel case ("notes", "Docs", "GitHub", "macOS", "OAuth", "SQLite"):
-# parts of small letters with a vowel, each after one capital or none, and acronyms of two capitals or more. Read one
-# way only, so a long run costs time in proportion.
+# Letters that read as words, alone or joined in camel case ("notes", "Docs", "GitHub", "macOS", "SQLite", "URLs"):
+# parts of small letters with a vowel, each after one capital or none, and acronyms of two capitals or more, the last
+# with a plural's "s". Read one way only, so a long run costs time in proportion.
 _WORD_LETTERS = re.compile(r"(?=[A-Za-z])(?:[b-df-hj-np-tv-xz]*[aeiouy][a-z]*)?"
-                           r"(?:(?:[A-Z]{3,}|[A-Z])[b-df-hj-np-tv-xz]*[aeiouy][a-z]*)*(?:[A-Z]{2,})?")
+                           r"(?:(?:[A-Z]{3,}|[A-Z])[b-df-hj-np-tv-xz]*[aeiouy][a-z]*)*(?:[A-Z]{2,}s?)?")
 _CAPITAL = re.compile("[A-Z]")
 _SMALL = re.compile("[a-z]")
 
@@ -3352,16 +3352,17 @@ def _key_piece(run):
 
 def _piece_apart(found):
     """What a tag or an entity (_PIECE_SEPARATOR's `found`) reads as between a key's pieces: no base64, with any piece
-    a key's body could hold in its attributes' values (title="Rt5H9LbN") kept, each apart."""
-    attributes = found.group(1) or found.group(2) or ""
-    return "<>" + "".join(run + "<>" for run in _PIECE_RUN.findall(attributes) if _key_piece(run))
+    a key's body could hold in its name or its attributes kept, each apart ("<>Rt5H9LbN<>")."""
+    name = found["tag"] or found["lt_tag"] or found["entity"] or ""
+    attributes = found["attributes"] or found["lt_attributes"] or ""
+    return "<>" + "".join(run + "<>" for part in (name, attributes) for run in _PIECE_RUN.findall(part) if _key_piece(run))
 
 
 def _joined_pieces(view):
     """Whether `view` holds a key's run cut into pieces joined by any separator, 16 characters or more of both cases in
     all, as _MIXED_RUN reads one run whole. Read two ways, in proportion:
-    - a chain: pieces a key's body could hold (_key_piece), with nothing between them but what is no base64 or a short
-      run that reads as no word ("3x"); a word, short ("at", "and") or not ("notes", "GitHub"), ends it;
+    - a chain: pieces a key's body could hold (_key_piece), with nothing between them but what is no base64 or runs
+      under four characters ("and", "3x"); a run of four or more that is none ("notes", "GitHub") ends it;
     - an even cut (_evenly_cut): pieces of one width, each after the same separator, as a key cut every so many
       characters is, though one of them reads as a word ("Next").
     So words with a port's number or an acronym among them, names in camel case, a link's path, and hashes, ids and
@@ -3372,8 +3373,6 @@ def _joined_pieces(view):
     for m in _PIECE_RUN.finditer(view):
         run = m.group()
         if len(run.rstrip("=")) < 4:
-            if run.isalpha() and _WORD_LETTERS.fullmatch(run):
-                total, upper, lower = 0, False, False
             continue
         runs.append((run, m.start(), m.end()))
         if not _key_piece(run):
