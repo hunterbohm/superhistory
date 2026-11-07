@@ -528,9 +528,6 @@ _ENCODED_KEY = re.compile("|".join(re.escape(code) for word in _KEY_WORDS for co
 # feed as \f, and the others as \u000b, \u0085 or  , so a stream's lines read as one block at every depth.
 # JSON's other escapes are read by _json_unescaped's views.
 _BREAK_CHARACTERS = "\n\r\x0b\x0c\x1c\x1d\x1e\x85  "
-_BREAK_ESCAPES = (r"(?:\\+r)?\\+n|\\+r|(?:\\+u000[dD])?\\+u000[aA]"
-                  r"|\\+(?:f|u000[bcdBCD]|u001[c-eC-E]|u0085|u202[89])")
-_BREAK = rf"(?:\r?\n|[\r\x0b\x0c\x1c-\x1e\x85  ]|{_BREAK_ESCAPES})"
 # Horizontal space: every character Python reads as space but a line break, as str.split parts words at each: a space,
 # a tab, the no-break space and Unicode's other spaces, and the unit separator. And the quotes a string is written in,
 # a backtick too, as a template literal or a code span is. Each also escaped as JSON writes it, behind any number of
@@ -539,20 +536,100 @@ _HORIZONTAL = frozenset("\t\x1f \xa0   　" + "".join(map(chr, range(0x200
 _QUOTES = "\"'`"
 
 
-def _escape_codes(characters, backward=False):
-    """The four hex digits of each of `characters`' "\\uXXXX" escapes, in either case, as a regex's alternatives; with
-    `backward`, each written from its last digit, to read a text reversed."""
-    return "|".join("".join(f"[{d.lower()}{d.upper()}]" if d.isalpha() else d
-                            for d in (f"{ord(c):04x}"[::-1] if backward else f"{ord(c):04x}")) for c in sorted(characters))
+_BACKSLASHES = ("\\", 1, None)
 
 
-_SPACING = rf"(?:[{''.join(sorted(_HORIZONTAL))}]|\\+(?:t|u(?:{_escape_codes(_HORIZONTAL)})))"
-# A quote as main reads one (_QUOTE), and a backtick: written, escaped, or as a web page's entity; and the same read
-# back from its end. Not percent-encoded, as a link writes one: there base64's own "+", "/" and "=" are encoded too,
-# and the digits of "%22" would read as the run's.
-_ENCODED_QUOTE = r"&(?:quot|apos|grave|#0*(?:3[49]|96)|#[xX]0*(?:2[27]|60));"
-_ENCODED_QUOTE_BACK = r";(?:touq|sopa|evarg|(?:[49]3|69)0*#|(?:[27]2|06)0*[xX]#)&"
-_QUOTE_MARK = rf"(?:\\*[{_QUOTES}]|\\+u(?:{_escape_codes(_QUOTES)})|{_ENCODED_QUOTE})"
+def _literal(characters):
+    """The places of a token that is `characters`, each written once."""
+    return tuple((c, 1, 1) for c in characters)
+
+
+def _escaped(character):
+    """The places of `character`'s escape as JSON writes it, behind any number of backslashes: a "u" and four hex
+    digits, in either case."""
+    return (_BACKSLASHES, ("u", 1, 1)) + tuple((d + d.upper() if d.isalpha() else d, 1, 1)
+                                               for d in f"{ord(character):04x}")
+
+
+# Every token the readers of a line's lead and of a line break accept, each as its places: the characters one place may
+# hold, and how many of it in a row, at least and at most (None: any number). Each reader below, forward or back from a
+# token's end, in a str or in the bytes a key's base64 decodes to, is built from these tables, and so is each window's
+# test of a token its edge cuts (_cuts): a token added here is read, and cut, alike, and the tests cut each one.
+# Horizontal space: each character, written; a tab as "\\t"; each escaped. A quote: written behind any number of
+# backslashes, escaped, or as a web page's entity, as main reads one (_QUOTE), and a backtick; not percent-encoded, as a
+# link writes one: there base64's own "+", "/" and "=" are encoded too, and the digits of "%22" would read as the run's.
+_SPACE_TOKENS = (tuple(_literal(c) for c in sorted(_HORIZONTAL)) + ((_BACKSLASHES, ("t", 1, 1)),)
+                 + tuple(_escaped(c) for c in sorted(_HORIZONTAL)))
+_QUOTE_TOKENS = (tuple((("\\", 0, None), (q, 1, 1)) for q in _QUOTES) + tuple(_escaped(q) for q in _QUOTES)
+                 + tuple(_literal(f"&{name};") for name in ("quot", "apos", "grave"))
+                 + tuple(_literal("&#") + (("0", 0, None),) + _literal(f"{code};") for code in ("34", "39", "96"))
+                 + tuple(_literal("&#") + (("xX", 1, 1), ("0", 0, None)) + _literal(f"{code};")
+                         for code in ("22", "27", "60")))
+_LEAD_TOKENS = _SPACE_TOKENS + _QUOTE_TOKENS
+# A line break: each written, "\\n", "\\r" and "\\f", and each escaped; a carriage return and a line feed as one.
+_BREAK_TOKENS = ((_literal("\r\n"), (_BACKSLASHES, ("r", 1, 1), _BACKSLASHES, ("n", 1, 1)),
+                  _escaped("\r") + _escaped("\n"))
+                 + tuple(_literal(c) for c in _BREAK_CHARACTERS) + tuple((_BACKSLASHES, (c, 1, 1)) for c in "nrf")
+                 + tuple(_escaped(c) for c in _BREAK_CHARACTERS))
+
+
+def _place(place):
+    """A regex of one place of a token."""
+    chars, least, most = place
+    one = re.escape(chars) if len(chars) == 1 else "[" + "".join(map(re.escape, chars)) + "]"
+    return one + {(1, 1): "", (0, 1): "?", (0, None): "*", (1, None): "+"}[least, most]
+
+
+def _pattern(tokens, searched=False):
+    """A regex of any one of `tokens`, as one tree of their places: tokens that start alike are tried once, a longer one
+    before one it starts with, and places alike but for their characters, with the same tree after them, are one
+    class. `searched`: one that starts with backslashes matches only from the first of them, so a long run of them is
+    tried once."""
+    tree = {}
+    for token in tokens:
+        node = tree
+        for place in token:
+            node = node.setdefault(place, {})
+        node[None] = {}
+
+    def alternatives(node, top=False):
+        groups = []  # (counts, the tree after, characters)
+        for place, after in node.items():
+            group = next((g for g in groups if place is not None and g[0] == place[1:] and g[1] == after), None)
+            if group:
+                group[2].append(place[0])
+            elif place is not None:
+                groups.append((place[1:], after, [place[0]]))
+        out = []
+        for (least, most), after, chars in groups:
+            rest = "|".join(alternatives(after))
+            rest = f"(?:{rest})?" if rest and None in after else f"(?:{rest})" if rest else ""
+            guard = "(?<!\\\\)" if searched and top and chars == ["\\"] else ""
+            out.append(guard + _place(("".join(chars), least, most)) + rest)
+        return out
+
+    return "(?:" + "|".join(alternatives(tree, True)) + ")"
+
+
+def _reversed(tokens):
+    """`tokens` read back from their ends."""
+    return tuple(token[::-1] for token in tokens)
+
+
+def _cuts(tokens, back=False):
+    """What a window's edge leaves of one of `tokens` where it cuts it, as tokens: its places before one, whole, then
+    fewer of that one, none too; with `back`, the edge before it: fewer of one, then the places after it, whole."""
+    out = []
+    for token in tokens:
+        for i, (chars, _, most) in enumerate(token):
+            fewer = ((chars, 0, most),)
+            out.append(fewer + token[i + 1:] if back else token[:i] + fewer)
+    return tuple(out)
+
+
+_SPACING = _pattern(_SPACE_TOKENS)
+_QUOTE_MARK = _pattern(_QUOTE_TOKENS)
+_BREAK = _pattern(_BREAK_TOKENS)
 _WRAP = rf"(?:\r|{_SPACING})*{_BREAK}{_SPACING}*"
 # A run of base64, with each line after it that it wraps onto: a line that is base64 from its indentation to its end,
 # however short, which a line break, a quote, a tag or the text's end ends. A run shorter than 16 starts one only when
@@ -561,43 +638,51 @@ _WRAP = rf"(?:\r|{_SPACING})*{_BREAK}{_SPACING}*"
 _WRAPPED_LINE = rf"{_WRAP}(?:[A-Za-z0-9+/]+={{0,2}}|={{1,2}})(?=(?:\r|{_SPACING})*(?:{_BREAK}|{_QUOTE_MARK}|<|\Z))"
 _WRAPPED_BASE64 = re.compile(rf"(?<![A-Za-z0-9+/])(?:[A-Za-z0-9+/]{{16,}}={{0,2}}(?:{_WRAPPED_LINE})*"
                              rf"|[A-Za-z0-9+/]+={{0,2}}(?:{_WRAPPED_LINE})+)")
-# The same in the bytes a key's base64 decodes to, each character as UTF-8 writes it (a no-break space alone as Latin-1
-# writes it, too; a lone \x85 is cp1252's ellipsis, no line break), and their escapes as above.
-_BREAK_BYTES = re.compile(b"(?:\r\n|" + b"|".join(re.escape(c.encode()) for c in _BREAK_CHARACTERS) + b"|"
-                          + _BREAK_ESCAPES.encode() + b")")
-_SPACE_OR_QUOTE_BYTES = re.compile(
-    b"(?:" + b"|".join(re.escape(c.encode()) for c in sorted(_HORIZONTAL, key=lambda c: (-len(c.encode()), c)))
-    + rb"|\xa0"
-    + rb"|\\+(?:t|u(?:" + _escape_codes(_HORIZONTAL | set(_QUOTES)).encode() + rb"))|\\*[" + _QUOTES.encode() + rb"]|"
-    + _ENCODED_QUOTE.encode() + b")")
-_SPACE_OR_QUOTE_RUN = re.compile(b"(?:" + _SPACE_OR_QUOTE_BYTES.pattern + b")*")
+# The same in the bytes a key's base64 decodes to: each character as UTF-8 writes it, each byte a Latin-1 character of
+# the tables, and a no-break space alone as Latin-1 writes it, too (a lone \x85 is cp1252's ellipsis, no line break).
+def _in_bytes(tokens):
+    """`tokens` with each place past ASCII as the places of its UTF-8 bytes."""
+    return tuple(tuple(place for chars, least, most in token
+                       for place in (((chars, least, most),) if chars.isascii()
+                                     else _literal(chars.encode().decode("latin-1"))))
+                 for token in tokens)
+
+
+def _bytes(pattern):
+    return re.compile(pattern.encode("latin-1"))
+
+
+_LEAD_TOKENS_BYTES = _in_bytes(_LEAD_TOKENS) + (_literal("\xa0"),)
+_BREAK_TOKENS_BYTES = _in_bytes(_BREAK_TOKENS)
+_SPACE_OR_QUOTE_BYTES = _bytes(_pattern(_LEAD_TOKENS_BYTES))
+_SPACE_OR_QUOTE_RUN = _bytes(_pattern(_LEAD_TOKENS_BYTES) + "*")
+_BREAK_BYTES = _bytes(_pattern(_BREAK_TOKENS_BYTES))
+_BREAK_BYTES_RUN = _bytes(_pattern(_BREAK_TOKENS_BYTES) + "*")
 # Searched for: an escape only from the first backslash of its run, so a long run of them is tried once.
-_BREAK_BYTES_SEARCH = re.compile(b"(?:\r\n|" + b"|".join(re.escape(c.encode()) for c in _BREAK_CHARACTERS)
-                                 + rb"|(?<!\\)(?:" + _BREAK_ESCAPES.encode() + b"))")
-_BREAK_BYTES_RUN = re.compile(b"(?:" + _BREAK_BYTES.pattern + b")*")
-# The first bytes of one of those cut where a window of decoded bytes ends: backslashes, with a "u" and up to three
-# hex digits after them, or a UTF-8 space's or line break's lead byte, with its second.
-_CUT_TOKEN = re.compile(rb"\\+(?:u[0-9A-Fa-f]{0,3})?|[\xc2\xe1\xe2\xe3][\x80-\xbf]?")
-# The same runs read back from where they end, in a text reversed: each character as above, each escape from its last
-# letter to its backslashes.
-_LEAD_BACK = re.compile(rf"(?:[{''.join(sorted(_HORIZONTAL))}]|t\\+|(?:{_escape_codes(_HORIZONTAL | set(_QUOTES), True)})u\\+"
-                        rf"|[{_QUOTES}]\\*|{_ENCODED_QUOTE_BACK})*")
-_LEAD_BACK_BYTES = re.compile(
-    b"(?:" + b"|".join(re.escape(c.encode()[::-1]) for c in sorted(_HORIZONTAL, key=lambda c: (-len(c.encode()), c)))
-    + rb"|\xa0|t\\+|(?:" + _escape_codes(_HORIZONTAL | set(_QUOTES), True).encode() + rb")u\\+|[" + _QUOTES.encode()
-    + rb"]\\*|" + _ENCODED_QUOTE_BACK.encode() + b")*")
+_BREAK_BYTES_SEARCH = _bytes(_pattern(_BREAK_TOKENS_BYTES, searched=True))
+# A line's lead read back from where it ends, in a text reversed; and what a window's edge leaves of a token it cuts,
+# before the run it reads (_lead_start), and before and after a header or footer (_frame).
+_LEAD_BACK = {str: re.compile(_pattern(_reversed(_LEAD_TOKENS)) + "*"),
+              bytes: _bytes(_pattern(_reversed(_LEAD_TOKENS_BYTES)) + "*")}
+_CUT_BACK = {str: re.compile(_pattern(_cuts(_LEAD_TOKENS, back=True))),
+             bytes: _bytes(_pattern(_cuts(_LEAD_TOKENS_BYTES, back=True)))}
+_CUT_FRAME_BACK = _bytes(_pattern(_cuts(_LEAD_TOKENS_BYTES + _BREAK_TOKENS_BYTES, back=True)))
+_CUT_FRAME_AHEAD = _bytes(_pattern(_cuts(_LEAD_TOKENS_BYTES + _BREAK_TOKENS_BYTES)))
+# The longest a line break is with each run of backslashes in it one long: a longer one ends with one that long or less.
+_BREAK_REACH = max(sum(least for _, least, _ in token) for token in _BREAK_TOKENS)
 
 
 def _lead_start(text, at):
-    """Where the run of horizontal space and quotes, written or escaped (_SPACING, _QUOTE_MARK, _SPACE_OR_QUOTE_BYTES),
-    that ends at `at` in `text` starts: in a str, or in the bytes a key's base64 decodes to. Read back in windows twice as
-    wide each time, past where an escape cut at a window's edge could start, so a run costs time in proportion to its
-    length."""
-    back, width = _LEAD_BACK if isinstance(text, str) else _LEAD_BACK_BYTES, 64
+    """Where the run of horizontal space and quotes, written or escaped (_LEAD_TOKENS), that ends at `at` in `text`
+    starts: in a str, or in the bytes a key's base64 decodes to. Read back in windows twice as wide each time while what
+    a window holds before the run is all the window's edge leaves of a token it cuts (_CUT_BACK), so a run costs time in
+    proportion to its length."""
+    kind = str if isinstance(text, str) else bytes
+    back, cut, width = _LEAD_BACK[kind], _CUT_BACK[kind], 64
     while True:
         lo = max(at - width, 0)
         start = at - back.match(text[lo:at][::-1]).end()
-        if not lo or start - lo > 8:
+        if not lo or not cut.fullmatch(text, lo, start):
             return start
         width *= 2
 _UNWRAP = re.compile(_WRAP)
@@ -828,9 +913,12 @@ _KEY_WORD_AT = {code: (k, -(-8 * k // 6)) for word in _KEY_WORDS for k, code in 
 # A key's header or footer, each label main reads written plain: a PEM key's, an OpenPGP key's, and SSH2's, its words
 # before "PRIVATE KEY" up to 200 bytes, far past any a key tool writes ("ENCRYPTED", "OPENSSH", "SSH2 ENCRYPTED"):
 # each key word reads its label back to the dashes, so a run of label words read whole by each took time in its square.
-_KEY_FRAME = re.compile(rb"-----(BEGIN|END) (?:[A-Z0-9 ]{0,200}PRIVATE KEY|PGP (?:PRIVATE|SECRET) KEY BLOCK)-----"
-                        rb"|---- (BEGIN|END) SSH2 [A-Z0-9 ]{0,200}PRIVATE KEY ----")
-_LABEL = b"-ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 "
+_LABEL_CHARACTERS = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 "
+_LABEL_WORDS = b"[" + re.escape(_LABEL_CHARACTERS) + b"]{0,200}"
+_KEY_FRAME = re.compile(rb"-----(BEGIN|END) (?:" + _LABEL_WORDS + rb"PRIVATE KEY|PGP (?:PRIVATE|SECRET) KEY BLOCK)-----"
+                        rb"|---- (BEGIN|END) SSH2 " + _LABEL_WORDS + rb"PRIVATE KEY ----")
+# A header's or footer's line up to its key word: its dashes, words and spaces.
+_LABEL = b"-" + _LABEL_CHARACTERS
 # A control character, which no text holds: any but horizontal space and a line break (_HORIZONTAL, _BREAK_CHARACTERS).
 _TEXT_CONTROL = re.compile(r"[\x00-\x08\x0e-\x1b\x7f-\x84\x86-\x9f]")
 _CONTINUATION_BYTES = bytes(range(0x80, 0xc0))
@@ -880,9 +968,9 @@ def _frame(joined, starts, found, refused=False):
     encoded text ends, with only horizontal space and quotes between, written or escaped (_lead_start,
     _SPACE_OR_QUOTE_RUN), and a line break written or escaped (_BREAK_BYTES), as a key file indented in a document, or
     written in a JSON string, writes one. Its label, and the space before and after it, are read however long: the
-    bytes around its word are decoded in windows twice as wide each time while they reach a window's edge. With
-    `refused`, also a header after text on its decoded line, where a line of the block starts or inside one, which alone
-    starts no key (_key_spans)."""
+    bytes around its word are decoded in windows twice as wide each time while they reach a window's edge, or the edge
+    cuts a token there (_CUT_FRAME_BACK, _CUT_FRAME_AHEAD). With `refused`, also a header after text on its decoded
+    line, where a line of the block starts or inside one, which alone starts no key (_key_spans)."""
     byte, char = _KEY_WORD_AT[found.group()]
     group = found.start() - char
     back, ahead = 64, 40
@@ -899,15 +987,16 @@ def _frame(joined, starts, found, refused=False):
         at = (group - lo) // 4 * 3 + byte
         m = next((m for m in _KEY_FRAME.finditer(decoded) if m.start() <= at < m.end()), None)
         if m is None:
-            if not whole and back < 512 and len(decoded[:at].rstrip(_LABEL)) <= 8:
+            if not whole and back < 512 and not decoded[:at].rstrip(_LABEL):
                 back *= 2  # its label, up to _KEY_FRAME's 200 bytes, may start before the window
                 continue
             return None
         lead = _lead_start(decoded, m.start())
         trail = _SPACE_OR_QUOTE_RUN.match(decoded, m.end()).end()
         brk = _BREAK_BYTES.match(decoded, trail)
-        more_back = not whole and lead <= 8
-        more_ahead = not closed and not brk and (trail == len(decoded) or bool(_CUT_TOKEN.fullmatch(decoded, trail)))
+        # Past an edge: more of the line's lead, the words before it (_starts_encoded_text), or a token the edge cuts.
+        more_back = not whole and (lead <= 8 or bool(_CUT_FRAME_BACK.fullmatch(decoded, 0, lead)))
+        more_ahead = not closed and not brk and bool(_CUT_FRAME_AHEAD.fullmatch(decoded, trail))
         if not (more_back or more_ahead):
             break
         back, ahead = back * (1 + more_back), ahead * (1 + more_ahead)
@@ -1161,10 +1250,11 @@ _BREAK_ENDS = re.compile(rf"(?:{_BREAK})\Z")
 def _starts_its_line(text, at):
     """Whether the line of a block that starts at `at` starts its line: after the text's start or a line break,
     written or escaped, with only horizontal space and quotes between, written or escaped, however many (_lead_start).
-    No line break ends with one of those characters, so the break, if any, ends where they start, and a few characters
-    before that read it, as any number of backslashes before an escape's letter reads as one."""
+    No line break ends with one of those characters, so the break, if any, ends where they start, and the characters
+    before that, as many as the longest break with one backslash to each run (_BREAK_REACH), read it, as any number of
+    backslashes before an escape's letter reads as one."""
     start = _lead_start(text, at)
-    return not start or _BREAK_ENDS.search(text, max(start - 16, 0), start) is not None
+    return not start or _BREAK_ENDS.search(text, max(start - _BREAK_REACH, 0), start) is not None
 
 
 def _stream_end(widths, padded, k, cut=False):
