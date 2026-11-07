@@ -4360,7 +4360,7 @@ class Base64ReviewTwentySixthTest(unittest.TestCase):
         from kb import mask as masking
         nl = chr(10)
         for slash in ("\\/", "\\u002f"):
-            took, viewed = {}, {}
+            took, viewed, joined = {}, {}, {}
             for size in (1 << 18, 1 << 20):
                 words = ("notes deploy Tavlemor" + slash + "q today ") * (size // 30)
                 text = "[masked]" + nl + "MIIE" + "A" * 60 + nl + words + nl + nl + "next paragraph"
@@ -4370,12 +4370,87 @@ class Base64ReviewTwentySixthTest(unittest.TestCase):
                 started = time.process_time()
                 masking._fragment_view(text)
                 viewed[size] = time.process_time() - started
+                started = time.process_time()
+                masking._rest_view(text, joined=True)
+                joined[size] = time.process_time() - started
                 with self.subTest(slash=slash, size=size):
                     self.assertNotIn("Tavlemor", masked)
             with self.subTest(slash=slash):
                 # four times the text
                 self.assertLess(took[1 << 20], 8 * max(took[1 << 18], 0.05), took)
                 self.assertLess(viewed[1 << 20], 8 * max(viewed[1 << 18], 0.01), viewed)
+                self.assertLess(joined[1 << 20], 8 * max(joined[1 << 18], 0.01), joined)
+
+    # A fresh review of this round's fix, before it was pushed, found the check of a run past public material
+    # (_runs_past) reading the one view, where an escape of no base64 character reads as a space: a key's piece that
+    # such an escape splits read as two runs too short to be one, past a certificate after a placeholder, and showed,
+    # where main and 369b575 hide it. That check fails closed, so it reads the view joined: an escape of no base64
+    # character, a quote's entity and a backslash read as nothing there.
+    SPLITS = tuple(s.replace("@", chr(92)) for s in (
+        "@t", "@r", "@u00e9", "@u0020", "@u00a0", "@@@u200b", "@@@@u200b", "&quot;", "&#34;", "@"))
+    # characters written as themselves that JSON escapes: at depths 1 and 2 they are escapes
+    ESCAPED_BY_JSON = (chr(9), chr(13), chr(0xe9), chr(0xa0))
+
+    @staticmethod
+    def split_written(text, between, depth):
+        """`text` in JSON `depth` times, each U+E001 in it then written as `between` is, escaped with it."""
+        mark = chr(0xE001)
+        for _ in range(depth):
+            text, mark, between = (json.dumps(s)[1:-1] for s in (text, mark, between))
+        return text.replace(mark, between)
+
+    def splits(self):
+        """Each way of splitting a run that the check reads joined, with the depths it is written at."""
+        for between in self.SPLITS:
+            yield between, range(3)
+        for between in self.ESCAPED_BY_JSON:
+            yield between, range(1, 3)
+
+    def test_the_check_of_a_run_past_public_material_reads_an_escape_entity_or_backslash_as_nothing(self):
+        from kb import mask as masking
+        for between, depths in self.splits():
+            for depth in depths:
+                with self.subTest(between=between, depth=depth):
+                    text = self.split_written("Qw7Zk3PmXa" + chr(0xE001) + "Rt5Hv9LbNe", between, depth)
+                    self.assertEqual(masking._rest_view(text, joined=True), "Qw7Zk3PmXaRt5Hv9LbNe")
+        for slash in self.SLASHES:  # an escape of a base64 character reads as that character, joined too
+            for depth in range(3):
+                with self.subTest(slash=slash, depth=depth):
+                    text = self.written("Qw7Zk3PmXa/Rt5Hv9LbNe", depth, slash)
+                    self.assertEqual(masking._rest_view(text, joined=True), "Qw7Zk3PmXa/Rt5Hv9LbNe")
+
+    def test_a_keys_piece_an_escape_splits_past_a_certificate_stays_masked(self):
+        nl = chr(10)
+        cert = nl.join(self.certificate())
+        for between, depths in self.splits():
+            for depth in depths:
+                for tail in ("", nl + nl + "next paragraph"):
+                    text = self.split_written("[masked]" + nl + cert + nl + "Qw7Zk3PmXa" + chr(0xE001) + "Rt5Hv9LbNe"
+                                              + tail, between, depth)
+                    for older in (False, True):
+                        with self.subTest(between=between, depth=depth, tail=bool(tail), older=older):
+                            masked = Base64ReviewEighteenTest.masks(text, older)
+                            self.assertEqual([p for p in ("Qw7Zk3PmXa", "Rt5Hv9LbNe") if p in masked], [])
+                            if tail:
+                                self.assertIn("next paragraph", masked)
+
+    def test_a_keys_body_an_escape_splits_every_12_characters_past_a_certificate_stays_masked(self):
+        import base64
+        import random
+        import textwrap
+        nl = chr(10)
+        body = textwrap.wrap(base64.b64encode(made_up_private_key(random.Random(2711))).decode(), 64)
+        pieces = [line[i:i + 12] for line in body for i in range(0, len(line), 12)]
+        split = nl.join(chr(0xE001).join(line[i:i + 12] for i in range(0, len(line), 12)) for line in body)
+        text = "[masked]" + nl + nl.join(self.certificate()) + nl + split + nl + nl + "next paragraph"
+        for between in (chr(92) + "t", "&quot;", chr(9)):
+            for depth in range(1 if between == chr(9) else 0, 3):
+                written = self.split_written(text, between, depth)
+                for older in (False, True):
+                    with self.subTest(between=between, depth=depth, older=older):
+                        masked = Base64ReviewEighteenTest.masks(written, older)
+                        self.assertEqual([p for p in pieces if len(p) >= 8 and p in masked], [])
+                        self.assertIn("next paragraph", masked)
 
 
 class HeadlessKeyTest(unittest.TestCase):
