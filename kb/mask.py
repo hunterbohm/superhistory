@@ -3279,8 +3279,8 @@ def _line_past(text, found):
 def _token_tail(text):
     """For a key's rest stopped early, at a line of words or a JSON object's next field, where it ends instead: past
     the last line holding a token (_token_like) before where main's reading of it ended (its paragraph's end, the next
-    header, or its footer), so that only a tail of ordinary text stays. Read once for the text: each rest then costs a
-    lookup."""
+    header, or its footer), so that only a tail of ordinary text stays, and never past a footer, where main's ends.
+    Read once for the text: each rest then costs a lookup."""
     # runs read as every reader of a key's fragment reads them (_fragment_view): a fragment that the characters a
     # reader does not see or an escaped slash split reads whole, in JSON in JSON too
     view, kept = _fragment_view(text)
@@ -3293,8 +3293,9 @@ def _token_tail(text):
             if run:
                 tokens.append(run.start())
     tokens.sort()
+    footers = {m.end() for m in _KEY_END_TEXT.finditer(text)}
     ends = sorted([m.start() for m in _BLANK_LINE.finditer(text)] + [m.start() for m in _PEM_HEADER.finditer(text)]
-                  + [m.end() for m in _KEY_END_TEXT.finditer(text)])
+                  + list(footers))
 
     # Every line's end, found once when a rest first asks: many rests, each with a token of its own, can end on one long
     # line, and each read on to its end took time in its square. A token's line ends at the first end at or after it;
@@ -3318,7 +3319,10 @@ def _token_tail(text):
         last = bisect.bisect_left(tokens, ends[i] if i < len(ends) else len(text)) - 1
         if last < 0 or tokens[last] < at:
             return at
-        return line_end(tokens[last])
+        # main's reading ends at a footer's end, whatever its line holds past it: the footer's own words ("RSA", "KEY")
+        # are tokens, and read on to their line's end they took what follows the footer on its line
+        stop = line_end(tokens[last])
+        return min(stop, ends[i]) if i < len(ends) and ends[i] in footers else stop
     return through
 
 
