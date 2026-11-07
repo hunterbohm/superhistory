@@ -301,22 +301,24 @@ Known limits:
   and a run glued to a placeholder ends at a backslash, as main's does, so past "[masked]Abcd\/" the rest of its
   line shows.
 - After a placeholder where a key was masked, public material (a certificate, a public key) that the key's rest starts
-  with stays, and all that main's reading of that rest takes past it is masked, as main masks it, whatever it holds:
-  its lines up to the first line of ordinary words, a JSON object's next field or the paragraph's end, and on through
-  the last line of the paragraph that holds a token, as above. Where a run of base64 of both cases, 16 characters or
-  more, follows the material there, where main's reading ends inside a line of words past it (a key's body run on into
-  that line), or where a line of base64 right after it reads as a possible fragment of a key, base64 of words included
-  ("bm90ZXMg..."), the material is masked with the rest, as on main. In JSON inside JSON, a blank line does not end
-  that paragraph, as on main. Main masks the material too; this shows only it.
-- Past a private key encoded whole as base64, which this branch masks and main leaves readable, and then a
-  certificate, what follows is that key's rest, read as main reads one after a key in plain text, where main keeps it:
-  its lines are masked up to the first that starts with ordinary words (a word, a space and a letter), and on through
-  the last line of the paragraph with a token (a port's or a build's number, an acronym, a name in camel case, a hash,
-  an id, a hex constant), with every line before it. So a paragraph that opens with code, a command and its flags
-  ("mongosh --help"), inline code, a bracket, a brace, a tag, a path or a link, a number, an acronym or a name in
-  camel case, or a string of JSON inside JSON, which opens with an escape, is masked up to such a line; a paragraph
-  that opens with ordinary words and holds no token stays ("Thanks, see you tomorrow."). This only masks more and
-  shows nothing; it stops at the paragraph's end, and in JSON inside JSON, as on main, a blank line ends no rest.
+  with stays, and so do later lines in that rest that are public material of their own (another certificate alone on its
+  lines); all else that main's reading of that rest takes past it is masked, as main masks it, whatever it holds: its
+  lines up to the first line of ordinary words, a JSON object's next field or the paragraph's end, and on through the
+  last line of the paragraph that holds a token, as above. Where a run of base64 of both cases, 16 characters or more,
+  follows the material there outside such lines, where main's reading ends inside a line of words past it (a key's body
+  run on into that line), or where a line of base64 right after it reads as a possible fragment of a key, base64 of
+  words included ("bm90ZXMg..."), the material is masked with the rest, as on main. In JSON inside JSON, a blank line
+  does not end that paragraph, as on main. Main masks the material too; this shows only it.
+- Past a private key encoded whole as base64, which this branch masks and main leaves readable, and then a certificate,
+  what follows is that key's rest, read as main reads one after a key in plain text, where main keeps it: its lines are
+  masked up to the first that starts with ordinary words (a word, a space and a letter), and on through the last line of
+  the paragraph with a token (a port's or a build's number, an acronym, a name in camel case, a hash, an id, a hex
+  constant), with every line before it, but for lines that are public material of their own, which stay as the
+  certificate does. So a paragraph that opens with code, a command and its flags ("mongosh --help"), inline code, a
+  bracket, a brace, a tag, a path or a link, a number, an acronym or a name in camel case, or a string of JSON inside
+  JSON, which opens with an escape, is masked up to such a line; a paragraph that opens with ordinary words and holds no
+  token stays ("Thanks, see you tomorrow."). This only masks more and shows nothing; it stops at the paragraph's end,
+  and in JSON inside JSON, as on main, a blank line ends no rest.
 - A knowledge base that an older kb wrote, before each row recorded how it was masked, does not open: an older kb's
   masking can leave a secret that no pattern finds afterwards. kb says so and names `kb rebuild`, which reads your
   sources into a fresh one, each as far back as its oldest item in the old one. When a source no longer has some of
