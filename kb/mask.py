@@ -3312,12 +3312,65 @@ _BASE64_ONLY_LINE = re.compile(r"[ \t\r\"'#>*,;|\]]*([A-Za-z0-9+/]+=*)?[ \t\r\"'
 _MIXED_RUN = re.compile(r"(?<![A-Za-z0-9+/])(?=[A-Za-z0-9+/]*[A-Z])(?=[A-Za-z0-9+/]*[a-z])[A-Za-z0-9+/]{16,}")
 
 
-def _mixed_run_starts(text):
+def _mixed_run_starts(text, spans):
     """Where each run of base64 of both cases, 16 characters or more (_MIXED_RUN), starts in `text`, read as a key's
-    fragment is (_fragment_view), in order. Read once for a text, so many rests in one paragraph cost time in
-    proportion."""
+    fragment is (_fragment_view), in order, outside lines that are public material of their own (`spans`,
+    _public_lines): a certificate past the next placeholder is no key's fragment. Read once for a text, so many rests
+    in one paragraph cost time in proportion."""
     view, kept = _fragment_view(text)
-    return [kept[m.start()] for m in _MIXED_RUN.finditer(view)]
+    i, starts = 0, []
+    for m in _MIXED_RUN.finditer(view):
+        at = kept[m.start()]
+        while i < len(spans) and spans[i][1] <= at:
+            i += 1
+        if i == len(spans) or at < spans[i][0]:
+            starts.append(at)
+    return starts
+
+
+def _public_lines(text):
+    """Where each run of lines of base64 in `text` that is public material of its own starts and ends, in order: the
+    whole public material a block of lines of base64 starts with (_public_prefix), or a run of its lines between lines
+    that are none a key's could be ("notes") that is all public material, as round 26's head read them; a line's part
+    past a placeholder starts a block of its own, as a rest does. Each line is read once, as a key's fragment is
+    (_rest_view)."""
+    spans, block, at = [], [], 0
+
+    def close():
+        lines = [line for line, _, _ in block]
+        k = _public_prefix(lines)
+        if k:
+            spans.append((block[0][1], block[k - 1][2]))
+        while k < len(block):
+            if not _token_like(lines[k]):
+                k += 1
+                continue
+            q = k
+            while q < len(block) and _token_like(lines[q]):
+                q += 1
+            if _public_prefix(lines[k:q]) == q - k:
+                spans.append((block[k][1], block[q - 1][2]))
+            k = q
+        block.clear()
+
+    for brk in itertools.chain(_LINE_BREAK.finditer(text), [None]):
+        stop = brk.start() if brk else len(text)
+        line = _rest_view(text[at:stop])
+        held = None
+        for held in _PLACEHOLDER.finditer(line):
+            pass
+        if held is not None:
+            close()
+        found = _BASE64_ONLY_LINE.fullmatch(line, held.end() if held else 0)
+        if found is None:
+            close()
+        elif found.group(1):
+            block.append((found.group(1), at, stop))
+        if brk is None:
+            break
+        at = brk.end()
+    close()
+    return spans
 
 
 def _base64_lines(text, start, end):
@@ -3464,6 +3517,15 @@ def _cut_body_end(text, start, stop):
     return brk.end() + kept[word.end(1)] if word else stop
 
 
+def _breaks_start(text, start, end):
+    """Where the run of line breaks that text[start:end] ends with starts; `end` where it ends with none."""
+    for brk in reversed([*_LINE_BREAK.finditer(text, start, end)]):
+        if brk.end() != end:
+            break
+        end = brk.start()
+    return end
+
+
 def _ends_inside_words(text, start, end):
     """Whether a key's rest read through text[start:end] ends inside a line of words, past its first run, as main's
     reading of a body run on into one does (_cut_body_end)."""
@@ -3478,9 +3540,10 @@ def _ends_inside_words(text, start, end):
 def _key_rests(text, starts=_REST_START):
     """Each key's rest after an older kb's placeholder (`starts`, _REST) that main's reading would remove, in order, as
     (where it starts, where it ends, whether it stays): where it starts with public material (_public_end) and no run
-    of base64 of both cases, 16 characters or more, follows it through all main's reading takes (_MIXED_RUN), that
-    material stays and all main's reading takes past it is removed, whatever it holds, as main removes it, failing
-    closed; any other rest is removed unless its base64 decodes whole as public material. Base64 glued to a placeholder
+    of base64 of both cases, 16 characters or more, follows it through all main's reading takes (_MIXED_RUN) but in
+    lines that are public material of their own (_public_lines), that material stays, and so do those lines, and all
+    else main's reading takes past it is removed, whatever it holds, as main removes it, failing closed; any other rest
+    is removed unless its base64 decodes whole as public material. Base64 glued to a placeholder
     that starts no rest, as before a line break escaped twice, is read so too, but only to stay: such a run's own
     reading (_glued_run_edits) masks it otherwise, as main's does. Lines that decode to words right after a
     placeholder (_encoded_words) stay, and the rest starts past them where their next line starts one, in the
@@ -3490,7 +3553,7 @@ def _key_rests(text, starts=_REST_START):
     own at any length starts one too (_REST_PAST_WORDS), as a stream's short last line is, past any word alone on its
     line, and runs on as main's does. Each placeholder outside the core of the rest before it is read once, and each
     core runs once to its end, so a paragraph of many costs time in proportion."""
-    core, covered, tail, mixed, ends = 0, 0, None, None, _rest_ends(text)
+    core, covered, tail, mixed, spans, ends = 0, 0, None, None, None, _rest_ends(text)
     start = _ID_REST_START if starts is _REST_START and not _STORED_ROW.get() else starts
     for at in _PLACEHOLDER.finditer(text):
         if at.start() < core:
@@ -3546,7 +3609,9 @@ def _key_rests(text, starts=_REST_START):
             continue
         public = _public_end(text, begin, end)
         if public is not None:
-            mixed = _mixed_run_starts(text) if mixed is None else mixed
+            if mixed is None:
+                spans = _public_lines(text)
+                mixed = _mixed_run_starts(text, spans)
             i = bisect.bisect_left(mixed, public)
             past = rest and _BASE64_CHARACTER.search(_rest_view(text[public:end]))
             # with no run of a key's past it, the material is no key's rest, unless main's reading ends inside a line
@@ -3556,7 +3621,26 @@ def _key_rests(text, starts=_REST_START):
                 yield begin, public, True
                 if not past:
                     continue
-                begin = public  # all main's reading takes past it is masked, as main masks it, whatever it holds
+                # all main's reading takes past it is masked, as main masks it, whatever it holds, but for lines that
+                # are public material of their own, which stay as the material does, each line's lead with it
+                begin = public
+                j = bisect.bisect_left(spans, (public, public))
+                while j < len(spans) and spans[j][0] < end:
+                    first, last = spans[j]
+                    cut = None
+                    for cut in _LINE_BREAK.finditer(text, begin, first):
+                        pass
+                    if cut is not None and cut.start() > begin:
+                        yield begin, cut.start(), False
+                    yield first, last, True
+                    begin, j = last, j + 1
+                # the line breaks it ends with stay, so the next pass reads what follows as this one does: removed, a
+                # blank line before a line of words, in JSON inside JSON, left the material's last line run on into it
+                stop = _breaks_start(text, begin, end)
+                if stop > begin and not _public_rest(text[begin:stop]):
+                    yield begin, stop, False
+                core, covered = reach, max(covered, end)
+                continue
         if not rest:
             continue
         core = reach
