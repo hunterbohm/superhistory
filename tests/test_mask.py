@@ -4452,6 +4452,89 @@ class Base64ReviewTwentySixthTest(unittest.TestCase):
                         self.assertEqual([p for p in pieces if len(p) >= 8 and p in masked], [])
                         self.assertIn("next paragraph", masked)
 
+    # The coordinator's ruling on round 27's own review: past a certificate after a placeholder, a key's run cut into
+    # pieces shorter than the 16 characters the check reads, and joined by any separator written as itself (a space, a
+    # hyphen, a comma, an entity outside the quote table, a tab or a no-break space as written), showed, on 369b575
+    # too, where main hides it; a key's whole body cut so showed. The 16-character exception is for a stray short
+    # piece, not a key cut into short pieces, so the check reads a run across any separator between pieces of it.
+    JOINERS = (" ", "-", ",", ", ", ".", "_", " | ", "&amp;", "&nbsp;", chr(9), chr(0xe9), chr(0xa0)) + SPLITS
+
+    def test_a_keys_pieces_joined_by_any_separator_past_a_certificate_stay_masked(self):
+        nl = chr(10)
+        cert = nl.join(self.certificate())
+        for between in self.JOINERS:
+            for depth in range(3):
+                text = self.split_written("[masked]" + nl + cert + nl + "Qw7Zk3PmXa" + chr(0xE001) + "Rt5Hv9LbNe" + nl
+                                          + nl + "next paragraph", between, depth)
+                for older in (False, True):
+                    with self.subTest(between=between, depth=depth, older=older):
+                        masked = Base64ReviewEighteenTest.masks(text, older)
+                        self.assertEqual([p for p in ("Qw7Zk3PmXa", "Rt5Hv9LbNe") if p in masked], [])
+                        self.assertIn("next paragraph", masked)
+
+    def test_a_keys_body_cut_at_every_width_and_joined_by_any_separator_past_a_certificate_stays_masked(self):
+        # generated: each separator, each width from 4 to 16, JSON depths 0 to 2, fresh and in an older kb's row; the
+        # pieces on lines of their own, and on a line of words
+        import base64
+        import random
+        import textwrap
+        nl, mark = chr(10), chr(0xE001)
+        body = textwrap.wrap(base64.b64encode(made_up_private_key(random.Random(2712))).decode(), 64)[1:4]
+        cert = nl.join(self.certificate())
+        failed = {}
+        for width in range(4, 17):
+            cut = [[line[i:i + width] for i in range(0, len(line), width)] for line in body]
+            forms = {"lines": (nl.join(mark.join(pieces) for pieces in cut), cut),
+                     "words": ("notes deploy " + mark.join(cut[0]) + " today", cut[:1])}
+            for shape, (joined, lines) in forms.items():
+                pieces = [piece for line in lines for piece in line if len(piece) >= 4]
+                for between in self.JOINERS:
+                    for depth in range(3):
+                        text = self.split_written("[masked]" + nl + cert + nl + joined + nl + nl + "next paragraph",
+                                                  between, depth)
+                        for older in (False, True):
+                            masked = Base64ReviewEighteenTest.masks(text, older)
+                            if ([piece for piece in pieces if text.count(piece) == 1 and piece in masked]
+                                    or "next paragraph" not in masked):
+                                failed.setdefault((shape, between), []).append((width, depth, older))
+        self.assertEqual({key: len(cases) for key, cases in failed.items()}, {})
+
+    def test_ordinary_words_with_numbers_and_acronyms_past_a_certificate_stay(self):
+        # the exception's own: past public material, words with a port, a version, a date, acronyms, paths and a
+        # request id in small letters are no key's pieces
+        nl = chr(10)
+        words = ["deploy on port 8080 with HTTP/2 and TCP/IP, build 20261104, v1.2.3",
+                 "request id 123e4567-e89b-12d3-a456-426614174000 at 2026-11-07T12:00Z",
+                 "see the README for SHA256 and RSA notes"]
+        text = "[masked]" + nl + nl.join(self.certificate()) + nl + nl.join(words) + nl + nl + "next paragraph"
+        for depth in range(3):
+            written = self.split_written(text, "", depth)
+            for older in (False, True):
+                with self.subTest(depth=depth, older=older):
+                    masked = Base64ReviewEighteenTest.masks(written, older)
+                    self.assertEqual([line for line in words if self.split_written(line, "", depth) not in masked], [])
+
+    def test_a_megabyte_of_short_pieces_past_a_certificate_costs_time_in_proportion(self):
+        import time
+        from kb import mask as masking
+        nl = chr(10)
+        cert = nl.join(self.certificate())
+        # pieces a key's could be that never make 16 characters between words, and pieces in small letters only
+        for unit in ("Qw7Z notes deploy ", "ab12 cd34 ef56 "):
+            took, read = {}, {}
+            for size in (1 << 18, 1 << 20):
+                text = "[masked]" + nl + cert + nl + unit * (size // len(unit)) + nl + nl + "next paragraph"
+                started = time.process_time()
+                mask(text)
+                took[size] = time.process_time() - started
+                started = time.process_time()
+                masking._joined_pieces(text)
+                read[size] = time.process_time() - started
+            with self.subTest(unit=unit):
+                # four times the text
+                self.assertLess(took[1 << 20], 8 * max(took[1 << 18], 0.05), took)
+                self.assertLess(read[1 << 20], 8 * max(read[1 << 18], 0.01), read)
+
 
 class HeadlessKeyTest(unittest.TestCase):
     """A key's body without its header, as an older kb's row-by-row remask leaves the chunk after the header's."""
