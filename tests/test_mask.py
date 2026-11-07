@@ -3023,6 +3023,32 @@ class Base64KeyFooterWholeLineTest(unittest.TestCase):
                             if depth == 0:
                                 self.assertEqual([line for line in ahead if line not in masked], [])
 
+    def test_a_header_after_a_word_written_below_a_held_one_takes_no_place(self):
+        # The key's header follows words on its decoded line, so it is held. A header written on the next line after a
+        # word ("see -----BEGIN ...") is held back too, and where it started a line of the block it took the first's
+        # place past that word, so the key started there and the line above showed. Only one that starts a stream of
+        # its own, by the widths or after a byte order mark, takes a held header's place
+        # (Base64ReviewEighteenFindingsTest, a key file under a document that runs on into it).
+        import base64
+        import textwrap
+        key = Base64ReviewNineteenFindingsTest.fixture("openssl_p256").split(b"\n")
+        for lead in (b"see the key: ", b"Notes: the harbor ledger for today. ", b"x"):
+            for piece in (b"see -----BEGIN EC PRIVATE KEY-----", b"x -----BEGIN PGP SECRET KEY BLOCK----- "):
+                data = lead + b"\n".join([key[0], piece] + key[1:])
+                encoded = base64.b64encode(data).decode()
+                for width in range(16, 77):
+                    lines = textwrap.wrap(encoded, width)
+                    ahead = [line for j, line in enumerate(lines) if (j + 1) * width * 6 <= len(lead) * 8]
+                    held = [i for i, line in enumerate(lines) if (i + 1) * width * 6 > len(lead) * 8]
+                    text = "\n".join(lines) + "\n\nnext paragraph"
+                    for depth in range(3):
+                        for older in (False, True):
+                            with self.subTest(lead=lead[:6], piece=piece[:2], width=width, depth=depth, older=older):
+                                masked = self.masked(Base64ReviewNineteenFindingsTest.written(text, depth), older)
+                                self.assertEqual([i for i in held if lines[i] in masked], [])
+                                if depth == 0:
+                                    self.assertEqual([line for line in ahead if line not in masked], [])
+
     def test_many_headers_after_words_below_one_held_back_cost_time_in_proportion(self):
         # Each header after words that starts a line of the block, below a held one, asks what lies between them (here
         # a line a key's body could be, so none takes its place); those lines are read once, so four times the text
