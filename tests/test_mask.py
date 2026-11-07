@@ -4920,6 +4920,28 @@ class Base64ReviewTwentyEighthTest(unittest.TestCase):
             self.check("[masked]" + nl + body + nl + "notes deploy" + nl + body + nl + "-----END RSA PRIVATE KEY-----"
                        + after, "[masked]" + after)
 
+    def test_a_later_footer_goes_with_a_rest_only_where_mains_rest_takes_it(self):
+        # Main's rest from a placeholder runs on through its paragraph to a footer and takes it. Where the rest here
+        # stopped short of that footer (a JSON object's next field), the footer was left to the reading of a footer
+        # with no header, which masks from the paragraph's start, so the words and the field's name above the
+        # placeholder went too; where main reads no rest from the placeholder (an older row's rest of a line of base64
+        # that is no body's start), the rest here took the footer, so that reading never came, and a key's line
+        # above the placeholder showed where main masks it.
+        nl, bs = chr(10), chr(92)
+        body = "MIGkAgEBBDAJYa375gq4DV9Oxby6PrTLAdadGa53z3jWtGIGSXPhshfkVdxJDYb2o"
+        line = "MIIEowIBAAKCAQEAqwdveyd2YTXmKMGnWbnzU7B2nNm2Nz0fE/bTGcbaIN5/O9xMCzyZ2MyAT"
+        rest = "qwdveyd2YTXmKMGnWbnzU7B2nNm2Nz0fE/bTGcbaIN5/O9xMCzyZ2MyATkr8zEeLgnSdvDq2"
+        openssh, rsa = "-----END OPENSSH PRIVATE KEY-----", "-----END RSA PRIVATE KEY-----"
+        self.check('notes deploy {"key": "[masked]' + bs + "n" + body + '"} [masked]' + openssh,
+                   'notes deploy {"key": "[masked]')
+        self.check('{"key": "[masked]' + bs + "n" + body + bs + "n" + body + '"} [masked]' + openssh + nl + nl
+                   + "next steps", '{"key": "[masked]' + nl + nl + "next steps")
+        self.check(line + nl + "[masked]" + nl + rest + nl + rsa, "[masked]")
+        self.check("notes deploy" + nl + "[masked]" + nl + rest + nl + rsa + nl + nl + "next steps",
+                   "[masked]" + nl + nl + "next steps")
+        self.check(line + nl + "[masked]" + nl + rest + nl + rest + nl + openssh + nl + nl + "next steps",
+                   "[masked]" + nl + nl + "next steps")
+
 
 class HeadlessKeyTest(unittest.TestCase):
     """A key's body without its header, as an older kb's row-by-row remask leaves the chunk after the header's."""
