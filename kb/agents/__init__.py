@@ -27,11 +27,14 @@ import time
 from typing import Callable, List, NamedTuple, Optional
 
 from kb import check
+from kb.agents import _turns
 from kb.config import MAX_CHECK_BUDGET
 from kb.ai.cli import NESTED_ENV
 
 # A few seconds above the check's longest budget, so the agent never cuts the check off.
 HOOK_TIMEOUT = int(MAX_CHECK_BUDGET) + 5
+# A hook run in the background also waits for a model request that reads its records (_turns.WAIT_SECONDS).
+BACKGROUND_HOOK_TIMEOUT = 60
 # Grok runs the hooks in Claude Code's settings file too, but drops what a prompt hook prints.
 GROK_ENV = "GROK_HOOK_EVENT"
 
@@ -50,6 +53,9 @@ class Agent(NamedTuple):
     uninstall: Callable[[str], List[Change]]
     request: Callable[[dict], Optional[tuple]]
     reply: Callable[[str], str]
+    # in_background(home): whether the installed hook runs without the agent waiting for it ("async"), giving its
+    # records to the next model request (see run). None for agents that always wait.
+    in_background: Optional[Callable[[str], bool]] = None
 
 
 def names():
@@ -85,7 +91,25 @@ def run(paths, config, name, stdin_text):
     if not found:
         return ""
     message, before, session = found
-    text = check.answer(paths, config, json.dumps({"message": message, "before": before}), session or "")
+    started = time.monotonic()
+    event = json.loads(stdin_text)
+    transcript = event.get("transcript_path") if isinstance(event, dict) else None
+    offset = _turns.size(transcript) or 0
+    wanted = None
+    agent = load(name)
+    # Asked of the installed entry, not assumed: an entry from before background hooks still makes the agent wait,
+    # and waiting there for a tool call would hold every message up.
+    try:
+        background = bool(agent.in_background and agent.in_background(os.path.expanduser("~")))
+    except Exception:
+        return ""
+    if background:
+        # Printed while the model writes its last answer, records would come with the next message, which is about
+        # something else. They go out only while a tool call runs, since the request after it reads them.
+        def wanted():
+            return _turns.await_reader(transcript, message, offset, started + _turns.WAIT_SECONDS) == "ready"
+    text = check.answer(paths, config, json.dumps({"message": message, "before": before}), session or "",
+                        still_wanted=wanted)
     return load(name).reply(text) if text else ""
 
 
@@ -208,22 +232,26 @@ def _is_kb_handler(name):
     return lambda handler: isinstance(handler, dict) and is_kb_command(handler.get("command", ""), name)
 
 
-def add_json_hook(path, event, name, kb_command):
+def add_json_hook(path, event, name, kb_command, background=False):
     text = read(path)
-    new, gi, hi, handler, action = json_hook_added(text, path, event, name, kb_command)
+    new, gi, hi, handler, action = json_hook_added(text, path, event, name, kb_command, background)
     problem = checked_write(path, text, new, event, _is_kb_handler(name), [handler])
     if problem:
         raise Unreadable(f"{problem}; wrote nothing")
     return gi, hi, handler, Change(path, action)
 
 
-def json_hook_added(text, path, event, name, kb_command):
-    """The file's text with kb's hook added or brought up to date: (text, group, position, handler, action)."""
+def json_hook_added(text, path, event, name, kb_command, background=False):
+    """The file's text with kb's hook added or brought up to date: (text, group, position, handler, action).
+    background: the agent runs the hook without waiting for it ("async") and gives its records to the next model
+    request, so the user's message goes through at once."""
     data = _parse(text, path)
     groups = data.setdefault("hooks", {}).setdefault(event, [])
     found = next(((gi, hi, handler) for gi, group in enumerate(groups) for hi, handler in enumerate(group.get("hooks") or [])
                   if is_kb_command(handler.get("command", ""), name)), None)
-    wanted = {"type": "command", "command": kb_command, "timeout": HOOK_TIMEOUT}
+    wanted = {"type": "command", "command": kb_command, "timeout": BACKGROUND_HOOK_TIMEOUT if background else HOOK_TIMEOUT}
+    if background:
+        wanted["async"] = True
     if found and all(found[2].get(k) == v for k, v in wanted.items()):
         return (text, *found, "unchanged")
     if found:
@@ -236,12 +264,14 @@ def json_hook_added(text, path, event, name, kb_command):
     return (_dump(data, text), *found, action)
 
 
-def has_json_hook(path, event, name):
+def has_json_hook(path, event, name, background=False):
+    """Whether the file holds kb's hook; with background, one the agent runs without waiting ("async")."""
     try:
         groups = (_load(path)[1].get("hooks") or {}).get(event) or []
     except Unreadable:
         return False
-    return any(is_kb_command(h.get("command", ""), name) for group in groups for h in group.get("hooks") or [])
+    return any(is_kb_command(h.get("command", ""), name) and (not background or h.get("async") is True)
+               for group in groups for h in group.get("hooks") or [])
 
 
 def remove_json_hook(path, event, name):

@@ -280,6 +280,8 @@ def cmd_hooks(paths, config, args):
         for name in agents.names():
             agent = agents.load(name)
             state = "hook on" if agent.installed(home) else "found, no hook" if agent.detect(home) else "not found"
+            if state == "hook on" and agent.in_background and not agent.in_background(home):
+                state = "hook on, older form; `kb hooks install` stops it holding up messages"
             print(f"{name:<14}{state}")
         return 0
     if not chosen:

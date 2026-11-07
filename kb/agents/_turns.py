@@ -1,10 +1,15 @@
 import json
 import os
 import re
+import time
 
 from kb.mask import mask
 
 TAIL_BYTES = 1_000_000
+# How far back from the hook's start to look for the prompt's own transcript line.
+PROMPT_BYTES = 200_000
+# How long, from the hook's start, records may wait for a model request that reads them. Below the hook timeout.
+WAIT_SECONDS = 50
 BEFORE_CHARS = {"assistant": 1500, "user": 600}
 INJECTED = re.compile(r"^\s*(<task-notification>|<system-reminder>|<command-|<local-command|# AGENTS\.md instructions"
                       r"|<environment_context>|<user_instructions>|<skill>|Caveat:|\[Request interrupted)")
@@ -58,3 +63,104 @@ def turns_before(transcript_path, prompt):
         text = mask(text)  # whole, before the cut, so the cut cannot keep a secret without its field name
         out.append({"role": role, "text": text[-limit:] if role == "assistant" else text[:limit]})
     return out
+
+
+def size(path):
+    try:
+        return os.path.getsize(path)
+    except (OSError, TypeError):
+        return None
+
+
+def _ends_turn(entry):
+    """Whether a transcript line written after the prompt shows the agent's turn is over: Claude Code's final
+    answer or interrupt note, or Codex's task_complete or turn_aborted."""
+    if entry.get("isSidechain"):
+        return False
+    if entry.get("type") == "assistant":
+        return (entry.get("message") or {}).get("stop_reason") == "end_turn"
+    if entry.get("type") == "user":
+        return _text((entry.get("message") or {}).get("content")).lstrip().startswith("[Request interrupted")
+    if entry.get("type") == "event_msg":
+        return (entry.get("payload") or {}).get("type") in ("task_complete", "turn_aborted")
+    return False
+
+
+def _calls(entry):
+    """(tool calls opened, tool calls closed) by one transcript line, as ids."""
+    if entry.get("isSidechain"):
+        return (), ()
+    if entry.get("type") in ("assistant", "user"):
+        content = (entry.get("message") or {}).get("content")
+        parts = [p for p in content if isinstance(p, dict)] if isinstance(content, list) else []
+        return ([p.get("id") for p in parts if p.get("type") == "tool_use"],
+                [p.get("tool_use_id") for p in parts if p.get("type") == "tool_result"])
+    payload = entry.get("payload") or {}
+    if entry.get("type") == "response_item" and payload.get("call_id"):
+        kind = str(payload.get("type"))
+        return ([payload["call_id"]], ()) if kind.endswith("_call") else \
+            ((), [payload["call_id"]]) if kind.endswith("_call_output") else ((), ())
+    return (), ()
+
+
+def turn_state(transcript_path, prompt, offset):
+    """Where the turn this prompt started stands: "ended" (an end line after the prompt's own line), "ready" (a
+    tool call is still running, so the agent makes another model request, which reads the records) or "busy"
+    (the model is mid-request and may end the turn with it). The turn starts at the prompt's line, the last one
+    matching it before `offset` (the transcript's size when the hook began), else at `offset` itself. An
+    unreadable transcript counts as ended, since nothing shows the turn still runs."""
+    start = max(0, offset - PROMPT_BYTES)
+    try:
+        with open(transcript_path, "rb") as fh:
+            fh.seek(start)
+            data = fh.read()
+    except (OSError, TypeError):
+        return "ended"
+    entries, at = [], start
+    for raw in data.split(b"\n"):
+        try:
+            entry = json.loads(raw)
+            if isinstance(entry, dict):
+                entries.append((at, entry))
+        except ValueError:
+            pass
+        at += len(raw) + 1
+    prompts = [at for at, entry in entries if _turn(entry) == ("user", prompt.strip())]
+    before = [at for at in prompts if at < offset]
+    # A match after `offset` can be the same words sent again after this turn ended, so the turn starts at the last
+    # match before it. Claude Code writes the message before it starts the hook, so that match is this message.
+    anchor = before[-1] if before else offset - 1
+    return _scan(entries, anchor, None if before else prompt.strip())[0]
+
+
+def _scan(entries, anchor, own=None):
+    """(state, where the turn ended or None) for the lines after `anchor`. Any later message from the user ends the
+    turn, however it ended (an API error, say), except the first one equal to `own`: when the turn starts at the
+    hook's offset, the prompt's own line may still come."""
+    running = set()
+    for at, entry in entries:
+        if at <= anchor:
+            continue
+        turn = _turn(entry)
+        if turn and turn[0] == "user" and own is not None and turn[1] == own:
+            own = None
+        elif _ends_turn(entry) or (turn and turn[0] == "user"):
+            return "ended", at
+        opened, closed = _calls(entry)
+        running.update(opened)
+        running.difference_update(closed)
+    return ("ready" if running else "busy"), None
+
+
+def await_reader(transcript_path, prompt, offset, deadline, poll=0.25):
+    """"ready" once a later model request in the prompt's turn is sure to read records printed now; "ended" when the
+    turn ends first; "deadline" when `deadline` (time.monotonic) passes."""
+    while True:
+        state = turn_state(transcript_path, prompt, offset)
+        if state == "ended":
+            return state
+        if time.monotonic() >= deadline:
+            return "deadline"
+        if state == "ready":
+            return state
+        time.sleep(poll)

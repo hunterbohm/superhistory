@@ -51,8 +51,8 @@ class Home(unittest.TestCase):
     def backups(self):
         return sorted(f for f in os.listdir(os.path.dirname(self.settings)) if ".bak-kb-" in f)
 
-    def our_group(self, command=COMMAND, timeout=agents.HOOK_TIMEOUT):
-        return {"hooks": [{"type": "command", "command": command, "timeout": timeout}]}
+    def our_group(self, command=COMMAND, timeout=agents.BACKGROUND_HOOK_TIMEOUT):
+        return {"hooks": [{"type": "command", "command": command, "timeout": timeout, "async": True}]}
 
 
 class InstallTest(Home):
@@ -144,6 +144,14 @@ class DetectTest(Home):
         self.assertTrue(AGENT.installed(self.home))
         AGENT.uninstall(self.home)
         self.assertFalse(AGENT.installed(self.home))
+
+    def test_only_the_current_entry_runs_in_the_background(self):
+        os.makedirs(os.path.dirname(self.settings))
+        self.put({"hooks": {"UserPromptSubmit": [{"hooks": [{"type": "command", "command": COMMAND, "timeout": 30}]}]}})
+        self.assertTrue(AGENT.installed(self.home))
+        self.assertFalse(AGENT.in_background(self.home), "an entry from before background hooks makes Claude wait")
+        AGENT.install(self.home, COMMAND)
+        self.assertTrue(AGENT.in_background(self.home))
 
     def test_the_agent_is_found_by_name(self):
         self.assertIs(agents.load("claude-code"), AGENT)
