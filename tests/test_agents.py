@@ -163,6 +163,11 @@ class RunTest(unittest.TestCase):
         self.assertEqual(self.deliver({"type": "user", "message": {"content": "what did she say"}},
                                       later=CLAUDE_TOOL, prompt_before=ended), "")
 
+    def test_a_repeat_sent_after_the_turn_ended_does_not_stand_in_for_a_missing_prompt_line(self):
+        self.assertEqual(self.deliver([{"type": "assistant", "message": {"stop_reason": "end_turn"}},
+                                       {"type": "user", "message": {"content": "what did she say"}},
+                                       CLAUDE_TOOL]), "")
+
     def test_a_background_hook_without_a_transcript_gets_nothing(self):
         self.answer.side_effect = lambda *args, still_wanted=None: "RECORDS" if still_wanted() else ""
         self.assertEqual(self.run_hook(json.dumps({"prompt": "what did she say", "session_id": "s"})), "")

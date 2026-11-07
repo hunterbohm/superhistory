@@ -106,8 +106,8 @@ def _calls(entry):
 def turn_state(transcript_path, prompt, offset):
     """Where the turn this prompt started stands: "ended" (an end line after the prompt's own line), "ready" (a
     tool call is still running, so the agent makes another model request, which reads the records) or "busy"
-    (the model is mid-request and may end the turn with it). The prompt's line is the last one matching it before
-    `offset` (the transcript's size when the hook began), else the first after it, else `offset` itself. An
+    (the model is mid-request and may end the turn with it). The turn starts at the prompt's line, the last one
+    matching it before `offset` (the transcript's size when the hook began), else at `offset` itself. An
     unreadable transcript counts as ended, since nothing shows the turn still runs."""
     start = max(0, offset - PROMPT_BYTES)
     try:
@@ -127,7 +127,8 @@ def turn_state(transcript_path, prompt, offset):
         at += len(raw) + 1
     prompts = [at for at, entry in entries if _turn(entry) == ("user", prompt.strip())]
     before = [at for at in prompts if at < offset]
-    anchor = before[-1] if before else prompts[0] if prompts else offset - 1
+    # Never a match after `offset`: that can be the same words sent again after this turn ended.
+    anchor = before[-1] if before else offset - 1
     running = set()
     for at, entry in entries:
         if at <= anchor:
