@@ -3266,6 +3266,92 @@ class KeyRestPastWordsWholeLineTest(unittest.TestCase):
                         self.assertIn(words, masked)
 
 
+class Base64ReviewTwentySecondTest(unittest.TestCase):
+    """#34's twenty-second review. A key's fragment split by an invisible character, written as an escape ("\\u200b"),
+    on a line past encoded words after a placeholder, was read as two ordinary halves, the escape taken for a space, so
+    the line was passed over and the fragment showed, which main masks. A footer in a later stream, encoded on its own,
+    let a header with no footer in its own stream read on through every byte to it, so a public key between them was
+    masked, which main keeps. And checking found a key with no footer, encoded alone below a shorter stream of encoded
+    words, read as a sentence quoting its header, so all its lines showed. Made-up keys only."""
+
+    @staticmethod
+    def masks(written, older):
+        from kb import mask as masking
+        if older:
+            with masking.stored_row(None):
+                return mask(written)
+        return mask(written)
+
+    def test_a_keys_fragment_split_by_an_escaped_invisible_character_past_encoded_words_is_masked(self):
+        body, words = KeyRestPastWordsWholeLineTest.parts()
+        fragments = {"a key's line": body[2][:20], "the review's": "ABCDEFGHabcdefgh"}
+        for name, fragment in fragments.items():
+            half = len(fragment) // 2
+            for unseen in ("\u200b", "\u2060", "\ufeff", "\u00ad", "\u200d"):
+                for form in ("\nnext steps {}", "\n{}", "\nThanks\t{}"):
+                    # written as the character itself, escaped once and twice by the JSON around it, and as an escape
+                    # the text itself holds
+                    split = fragment[:half] + unseen + fragment[half:]
+                    texts = {depth: Base64ReviewNineteenFindingsTest.written(
+                        "[masked]\n" + words + form.format(split) + "\n\nnext paragraph", depth) for depth in range(3)}
+                    texts["as written"] = "[masked]\n" + words + form.format(
+                        fragment[:half] + "\\u%04x" % ord(unseen) + fragment[half:]) + "\n\nnext paragraph"
+                    for depth, written in texts.items():
+                        for older in (False, True):
+                            with self.subTest(fragment=name, unseen=hex(ord(unseen)), form=form[1:7], depth=depth,
+                                              older=older):
+                                masked = self.masks(written, older)
+                                self.assertEqual([piece for piece in (fragment[:half], fragment[half:])
+                                                  if piece in masked], [])
+                                if depth != 2:
+                                    self.assertIn("next paragraph", masked)
+
+    def test_a_footer_in_a_later_stream_carries_no_header_through_a_public_key(self):
+        import base64
+        import random
+        r = random.Random(2201)
+        encoded = Base64ReviewSeventeenTest.encoded
+        publics = {"ed25519": bytes.fromhex("302a300506032b6570032100") + bytes(r.randrange(256) for _ in range(32)),
+                   "rsa": made_up_public_key(r)}
+        line = base64.b64encode(bytes(r.randrange(256) for _ in range(48)))
+        for width in (64, 76):
+            for lines in (1, 2):
+                cut = encoded(b"-----BEGIN PRIVATE KEY-----\n" + (line + b"\n") * lines, width)
+                for footer in (b"-----END PRIVATE KEY-----\n", b"\n-----END PRIVATE KEY-----\n",
+                               b"notes\n-----END PRIVATE KEY-----\n"):
+                    for name, public in publics.items():
+                        kept = encoded(public, width)
+                        text = "\n".join([cut, kept, encoded(footer, width)]) + "\n\nnext paragraph"
+                        for depth in range(3):
+                            written = Base64ReviewNineteenFindingsTest.written(text, depth)
+                            with self.subTest(width=width, lines=lines, footer=footer[:6], public=name, depth=depth):
+                                masked = mask(written)
+                                self.assertEqual([k for k in kept.splitlines() if k not in masked], [])
+                                self.assertEqual([k for k in cut.splitlines() if len(k) >= 16 and k in masked], [])
+
+    def test_a_key_with_no_footer_below_a_shorter_stream_of_encoded_words_is_masked(self):
+        import base64
+        import random
+        r = random.Random(2202)
+        encoded = Base64ReviewSeventeenTest.encoded
+        line = base64.b64encode(bytes(r.randrange(256) for _ in range(48)))
+        for width in (64, 72, 76):
+            for said in (b"notes " * 3, b"notes " * 5, b"notes " * 7, b"notes " * 11, b"see the runbook for the harbor"):
+                words = encoded(said, width)
+                for lines in (1, 2, 3):
+                    cut = encoded(b"-----BEGIN PRIVATE KEY-----\n" + (line + b"\n") * lines, width)
+                    for brk in ("\n", "\r\n"):
+                        text = (words + "\n" + cut).replace("\n", brk) + brk + brk + "next paragraph"
+                        for depth in range(3):
+                            written = Base64ReviewNineteenFindingsTest.written(text, depth)
+                            for older in (False, True):
+                                with self.subTest(width=width, said=said[:12], lines=lines, brk=brk, depth=depth,
+                                                  older=older):
+                                    masked = self.masks(written, older)
+                                    self.assertEqual([k for k in cut.splitlines() if len(k) >= 16 and k in masked], [])
+                                    self.assertEqual([k for k in words.splitlines() if k not in masked], [])
+
+
 class HeadlessKeyTest(unittest.TestCase):
     """A key's body without its header, as an older kb's row-by-row remask leaves the chunk after the header's."""
     LINE = "MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7"
