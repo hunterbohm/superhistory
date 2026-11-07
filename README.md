@@ -284,11 +284,6 @@ Known limits:
   words included ("bm90ZXMg..."); in JSON inside JSON, a blank line does not end that paragraph. Main keeps them only
   as it leaves a key written as base64 readable; after a key in plain text it masks them too. This masks more, and
   shows nothing.
-- A PGP private key block written as base64 in one stream after words, its header inside a line of the base64, with
-  a control character in the armour's headers above its body ("Comment: a\x01b"), is masked from its footer up to
-  the line holding that character. That line and those above it show, with whatever of the header, the armour's
-  headers and the block's body they hold, and so, at some offsets, does a last line holding nothing but the end of
-  the footer; main shows the whole block.
 - A knowledge base that an older kb wrote, before each row recorded how it was masked, does not open: an older kb's
   masking can leave a secret that no pattern finds afterwards. kb says so and names `kb rebuild`, which reads your
   sources into a fresh one, each as far back as its oldest item in the old one. When a source no longer has some of
