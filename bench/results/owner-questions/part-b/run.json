@@ -1,0 +1,279 @@
+{
+ "date": "2026-11-05T14:52:17Z",
+ "month": "a (dev)",
+ "answer_model": "claude-sonnet-5-5",
+ "judge_model": "gpt-6.1-sol",
+ "summary_model": "claude-haiku-5-5",
+ "workers": 1,
+ "slots": 2,
+ "check_commit": "68506d92ad1d8bd9b528cfcf0a170bc3a684bbd3+uncommitted",
+ "arms": [
+  {
+   "tool": "haiku",
+   "load": {
+    "model": "claude-haiku-5-5",
+    "items": 471,
+    "long_items_summarized": 42,
+    "summary_failures": 0,
+    "seconds": 107.8,
+    "tokens": {
+     "calls": 42,
+     "input": 144334,
+     "output": 37367,
+     "thinking": 278,
+     "total": 181701,
+     "models": [
+      "claude-haiku-5-5"
+     ]
+    },
+    "rows": {
+     "atom": 278,
+     "doc": 429,
+     "raw": 95,
+     "segment": 121
+    }
+   },
+   "ran": 171,
+   "failed": 0,
+   "store": {
+    "model": "claude-haiku-5-5",
+    "items": 471,
+    "long_items_summarized": 42,
+    "summary_failures": 0,
+    "seconds": 107.8,
+    "tokens": {
+     "calls": 42,
+     "input": 144334,
+     "output": 37367,
+     "thinking": 278,
+     "total": 181701,
+     "models": [
+      "claude-haiku-5-5"
+     ]
+    },
+    "rows": {
+     "atom": 278,
+     "doc": 429,
+     "raw": 95,
+     "segment": 121
+    }
+   }
+  },
+  {
+   "tool": "sonnet",
+   "load": {
+    "model": "claude-sonnet-5-5",
+    "items": 471,
+    "long_items_summarized": 42,
+    "summary_failures": 0,
+    "seconds": 154.8,
+    "tokens": {
+     "calls": 42,
+     "input": 144334,
+     "output": 35977,
+     "thinking": 0,
+     "total": 180311,
+     "models": [
+      "claude-sonnet-5-5"
+     ]
+    },
+    "rows": {
+     "atom": 308,
+     "doc": 429,
+     "raw": 95,
+     "segment": 105
+    }
+   },
+   "ran": 171,
+   "failed": 0,
+   "store": {
+    "model": "claude-sonnet-5-5",
+    "items": 471,
+    "long_items_summarized": 42,
+    "summary_failures": 0,
+    "seconds": 154.8,
+    "tokens": {
+     "calls": 42,
+     "input": 144334,
+     "output": 35977,
+     "thinking": 0,
+     "total": 180311,
+     "models": [
+      "claude-sonnet-5-5"
+     ]
+    },
+    "rows": {
+     "atom": 308,
+     "doc": 429,
+     "raw": 95,
+     "segment": 105
+    }
+   }
+  },
+  {
+   "tool": "notes",
+   "load": {
+    "summaries_and_atoms": {
+     "model": "claude-haiku-5-5",
+     "items": 471,
+     "long_items_summarized": 42,
+     "summary_failures": 0,
+     "seconds": 107.8,
+     "tokens": {
+      "calls": 42,
+      "input": 144334,
+      "output": 37367,
+      "thinking": 278,
+      "total": 181701,
+      "models": [
+       "claude-haiku-5-5"
+      ]
+     },
+     "rows": {
+      "atom": 278,
+      "doc": 429,
+      "raw": 95,
+      "segment": 121
+     }
+    },
+    "notes": {
+     "model": "claude-sonnet-5-5",
+     "sessions": 81,
+     "notes_written": 516,
+     "session_failures": 0,
+     "seconds": 224.5,
+     "tokens": {
+      "calls": 81,
+      "input": 172193,
+      "output": 47591,
+      "thinking": 0,
+      "total": 219784,
+      "models": [
+       "claude-sonnet-5-5"
+      ]
+     }
+    }
+   },
+   "ran": 171,
+   "failed": 0,
+   "store": {
+    "summaries_and_atoms": {
+     "model": "claude-haiku-5-5",
+     "items": 471,
+     "long_items_summarized": 42,
+     "summary_failures": 0,
+     "seconds": 107.8,
+     "tokens": {
+      "calls": 42,
+      "input": 144334,
+      "output": 37367,
+      "thinking": 278,
+      "total": 181701,
+      "models": [
+       "claude-haiku-5-5"
+      ]
+     },
+     "rows": {
+      "atom": 278,
+      "doc": 429,
+      "raw": 95,
+      "segment": 121
+     }
+    },
+    "notes": {
+     "model": "claude-sonnet-5-5",
+     "sessions": 81,
+     "notes_written": 516,
+     "session_failures": 0,
+     "seconds": 224.5,
+     "tokens": {
+      "calls": 81,
+      "input": 172193,
+      "output": 47591,
+      "thinking": 0,
+      "total": 219784,
+      "models": [
+       "claude-sonnet-5-5"
+      ]
+     }
+    }
+   }
+  },
+  {
+   "tool": "facts",
+   "load": {
+    "rows": {
+     "atom": 794
+    },
+    "items_with_facts": 81,
+    "built_from": "b-notes",
+    "model_calls_added": 0
+   },
+   "ran": 171,
+   "failed": 0,
+   "store": {
+    "rows": {
+     "atom": 794
+    },
+    "items_with_facts": 81,
+    "built_from": "b-notes",
+    "model_calls_added": 0
+   }
+  },
+  {
+   "tool": "facts-all",
+   "load": {
+    "rows": {
+     "atom": 1690
+    },
+    "items_with_facts": 467,
+    "built_from": "b-notes",
+    "notes_for_every_other_item": {
+     "model": "claude-sonnet-5-5",
+     "items": 390,
+     "sessions": 390,
+     "notes_written": 896,
+     "session_failures": 4,
+     "seconds": 519.0,
+     "tokens": {
+      "calls": 390,
+      "input": 233241,
+      "output": 73432,
+      "thinking": 0,
+      "total": 306673,
+      "models": [
+       "claude-sonnet-5-5"
+      ]
+     }
+    }
+   },
+   "ran": 171,
+   "failed": 0,
+   "store": {
+    "rows": {
+     "atom": 1690
+    },
+    "items_with_facts": 467,
+    "built_from": "b-notes",
+    "notes_for_every_other_item": {
+     "model": "claude-sonnet-5-5",
+     "items": 390,
+     "sessions": 390,
+     "notes_written": 896,
+     "session_failures": 4,
+     "seconds": 519.0,
+     "tokens": {
+      "calls": 390,
+      "input": 233241,
+      "output": 73432,
+      "thinking": 0,
+      "total": 306673,
+      "models": [
+       "claude-sonnet-5-5"
+      ]
+     }
+    }
+   }
+  }
+ ]
+}
