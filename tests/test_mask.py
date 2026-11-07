@@ -3430,6 +3430,57 @@ class Base64ReviewTwentySecondTest(unittest.TestCase):
                                     self.assertEqual([k for k in whole.splitlines()[1:-1] if k in masked], [])
 
 
+class Base64ReviewTwentyThirdTest(unittest.TestCase):
+    """#34's twenty-third review. Whether a block's first line starts its line was read only 64 characters back, so past
+    longer indentation a footer encoded alone on a narrower line read as one stream with a public key below it and a
+    whole key after that, and the public key was masked, which main keeps. And many key rests on one long line, each
+    stopped early with a token of its own to end at, each read on to that line's end, which took time in its square.
+    Made-up keys only."""
+
+    def test_a_narrower_line_of_its_own_ends_its_stream_past_any_indentation(self):
+        import base64
+        import random
+        r = random.Random(2301)
+        encoded = Base64ReviewSeventeenTest.encoded
+        line = base64.b64encode(bytes(r.randrange(256) for _ in range(48)))
+        publics = {"certificate": (made_up_certificate(r), 52), "rsa": (made_up_public_key(r), 56)}
+        for name, (public, width) in publics.items():
+            kept = encoded(public, width)
+            whole = encoded(b"-----BEGIN PRIVATE KEY-----\n" + line + b"\n" + line + b"\n-----END PRIVATE KEY-----\n",
+                            width)
+            for indent in (" " * 64, " " * 65, " " * 200, "\t" * 70, "Notes from today:\n" + " \t" * 60):
+                text = indent + "\n".join([encoded(b"\n-----END PRIVATE KEY-----\n", width), kept, whole]) + (
+                    "\n\nnext paragraph")
+                for brk in ("\n", "\r\n"):
+                    for depth in range(3):
+                        written = Base64ReviewNineteenFindingsTest.written(text.replace("\n", brk), depth)
+                        with self.subTest(public=name, indent=repr(indent[-3:]), size=len(indent), brk=brk,
+                                          depth=depth):
+                            masked = mask(written)
+                            self.assertEqual([k for k in kept.splitlines() if k not in masked], [])
+                            self.assertEqual([k for k in whole.splitlines()[1:-1] if k in masked], [])
+
+    def test_many_rests_on_one_long_line_each_with_a_token_of_its_own_cost_time_in_proportion(self):
+        # The review's repro: single-line JSON objects, each with a key's rest that stops at the next field and a
+        # token of its own after it, many on one line.
+        import time
+        from kb import mask as masking
+        unit = '{"k":"[masked] MIIE' + "A" * 36 + '","n":"AbCdEfGhAbCdEfGh-----BEGIN CERTIFICATE-----"}'
+        for older in (False, True):
+            took = {}
+            for n in (250, 2000):
+                text = ",".join([unit] * n)
+                started = time.process_time()
+                if older:
+                    with masking.stored_row(None):
+                        mask(text)
+                else:
+                    mask(text)
+                took[n] = time.process_time() - started
+            with self.subTest(older=older):
+                # eight times the text
+                self.assertLess(took[2000], 24 * max(took[250], 0.05), took)
+
 class HeadlessKeyTest(unittest.TestCase):
     """A key's body without its header, as an older kb's row-by-row remask leaves the chunk after the header's."""
     LINE = "MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7"
