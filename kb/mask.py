@@ -3330,6 +3330,7 @@ _WORD_LETTERS = re.compile(r"(?=[A-Za-z])(?:[b-df-hj-np-tv-xz]*[aeiouy][a-z]*)?"
                            r"(?:(?:[A-Z]{3,}|[A-Z])[b-df-hj-np-tv-xz]*[aeiouy][a-z]*)*(?:[A-Z]{2,}s?)?")
 _CAPITAL = re.compile("[A-Z]")
 _SMALL = re.compile("[a-z]")
+_HEX_CONSTANT = re.compile("0x[0-9A-Fa-f]+")
 
 
 def _reads_as_words(run):
@@ -3343,10 +3344,11 @@ def _reads_as_words(run):
 
 def _key_piece(run):
     """Whether a run of four characters or more could be a piece of a key's body: _token_like, no words, not digits
-    alone (a year, a port: about 1 in 1,700 of a key's pieces of four) and, of eight characters or more, of both cases
-    (a hash in hex, an id in capitals: about 3 in 100 of a key's)."""
+    alone (a year, a port: about 1 in 1,700 of a key's pieces of four), no hex constant ("0x2A": about 1 in 35,000)
+    and, of eight characters or more, of both cases (a hash in hex, an id in capitals: about 3 in 100 of a key's)."""
     piece = run.rstrip("=")
     return (len(piece) >= 4 and _token_like(run) and not _reads_as_words(run) and not piece.isdigit()
+            and not _HEX_CONSTANT.fullmatch(piece)
             and (len(piece) < 8 or bool(_CAPITAL.search(piece) and _SMALL.search(piece))))
 
 
