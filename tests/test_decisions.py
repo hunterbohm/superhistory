@@ -245,6 +245,44 @@ class DecisionTest(Store):
         me = d(10, "2026-09-01", "Composio CLI default app accounts connected rule replaced")
         self.assertEqual([c.row for c in decisions.Index(newer + [older, me]).older(me, k=1)], [9])
 
+    def test_an_agents_report_hides_nothing_until_the_older_decision_is_judged(self):
+        self.session("old", "2026-06-12T10:00:00Z", ["Composio CLI is the default for connected app accounts."],
+                     text="USER: composio cli is the default for app accounts\n\nASSISTANT: ok")
+        self.session("new", "2026-10-24T10:00:00Z", ["Composio switched off; Executor replaces it for app accounts."])
+        judge = Model(lambda text, older, _: answer(replaces=older) if "switched" in text
+                      else answer("owner", "composio cli is the default for app accounts"))
+        decisions.run(self.db, judge, OWNER, kind_of, LOG, limit=1, workers=1)
+        self.assertEqual(self.db.execute("SELECT count(*) FROM decisions WHERE new_key IS NOT NULL").fetchone()[0], 1)
+        self.assertEqual(len(self.ids("Composio app accounts")), 2)
+        self.run_pass(judge)
+        self.assertEqual(len(self.ids("Composio app accounts")), 2)
+
+    def test_a_copy_of_the_replaced_text_in_another_item_is_marked_too(self):
+        for sid in ("old1", "old2"):
+            self.session(sid, "2026-06-12T10:00:00Z", ["Composio CLI is the default for connected app accounts."])
+        self.session("new", "2026-10-24T10:00:00Z", ["Composio switched off; Executor replaces it for app accounts."])
+        self.assertEqual(self.run_pass(Model(lambda text, older, _: answer(
+            replaces=older if "switched" in text else ()))).replaced, 2)
+        self.assertEqual(self.ids("Composio app accounts"),
+                         ["Composio switched off; Executor replaces it for app accounts."])
+
+    def test_the_note_does_not_depend_on_which_row_of_the_item_search_picked(self):
+        self.session("old", "2026-06-12T10:00:00Z", ["Composio CLI is the default for connected app accounts."])
+        store.replace_rows(self.db, "claude_code", "old", [
+            {"kind": "segment", "ts": "2026-06-12T10:00:00Z", "title": "Composio CLI default for connected app accounts",
+             "content": "Composio CLI default connected app accounts: the Composio CLI is the default.",
+             "metadata": {}},
+            {"kind": "atom", "ts": "2026-06-12T10:00:00Z", "title": "decision: Composio CLI is the default",
+             "content": "Composio CLI is the default for connected app accounts.", "metadata": {"atom": "decision"}}],
+            store.SUMMARY_KINDS)
+        self.db.commit()
+        self.session("new", "2026-10-24T10:00:00Z", ["Composio switched off; Executor replaces it for app accounts."])
+        self.run_pass(Model(lambda text, older, _: answer(replaces=older if "switched" in text else ())))
+        new = self.db.execute("SELECT id FROM docs WHERE content LIKE 'Composio switched off%'").fetchone()[0]
+        hits = [h for h in search.search(self.db, "Composio CLI default connected app accounts")
+                if h["source_id"].endswith("old")]
+        self.assertEqual([(h["kind"], h.get("replaced_in_item")) for h in hits], [("segment", [new])])
+
     def test_review_on_a_store_the_pass_never_ran_on_is_empty(self):
         self.assertEqual(decisions.review(self.db), [])
 

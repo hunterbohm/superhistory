@@ -86,16 +86,28 @@ def _grouped(db, rows, rows_arg, kinds, after, sources, n, before):
     return [rid for (rid,) in db.execute(sql, (*args, n))]
 
 
-def _stale_items(db, lost, out):
-    """{item: the ids of the newer decisions} for the items whose matching decisions search left out, so their other
-    rows, such as the session text that still states the old choice, carry a note naming what replaced it."""
+def _stale_items(db, match, items):
+    """{item: the ids of the newer decisions} for those of `items` holding a decision that matches the search and
+    that search leaves out, so their other rows, such as the session text that still states the old choice, carry a
+    note naming what replaced it. Checked per item, whichever of its rows the search picked."""
     found = {}
-    for rid, _, src, sid, *_ in lost:
-        if out[rid] != "rejected":
-            row, _ = decisions.describe(db, out[rid])
-            if row and row not in found.setdefault((src, sid), []):
-                found[(src, sid)].append(row)
-    return {item: rows for item, rows in found.items() if rows}
+    for src, sid in items:
+        if not db.execute("SELECT 1 FROM decisions WHERE source=? AND source_id=? AND (new_key IS NOT NULL "
+                          "OR answer='rejected') LIMIT 1", (src, sid)).fetchone():
+            continue
+        atoms = db.execute("SELECT id, source, source_id, kind, content FROM docs WHERE source=? AND source_id=? "
+                           "AND kind='atom'", (src, sid)).fetchall()
+        matching = {i for (i,) in db.execute(
+            f"SELECT rowid FROM docs_fts WHERE docs_fts MATCH ? AND rowid IN ({','.join('?' * len(atoms))})",
+            (match, *[a[0] for a in atoms]))} if atoms else set()
+        rows = []
+        for by in decisions.hidden(db, [a for a in atoms if a[0] in matching]).values():
+            row = decisions.describe(db, by)[0] if by != "rejected" else None
+            if row and row not in rows:
+                rows.append(row)
+        if rows:
+            found[(src, sid)] = rows
+    return found
 
 
 def _stand_ins(db, match, lost, fused, after, before):
@@ -168,10 +180,8 @@ def search(db, query, after=None, sources=(), limit=10, before=None, keep=None, 
         f"SELECT id, kind, source, source_id, ts, title, content, metadata FROM docs "
         f"WHERE id IN ({','.join('?' * len(fused))})", list(fused)).fetchall()
     out = decisions.hidden(db, [(r[0], r[2], r[3], r[1], r[6]) for r in rows])
-    stale = {}
     if not history:
         lost = [r for r in rows if r[0] in out]
-        stale = _stale_items(db, lost, out)
         rows = [r for r in rows if r[0] not in out]
         for row in _stand_ins(db, match, lost, fused, after, before):
             rows.append(row)
@@ -198,6 +208,9 @@ def search(db, query, after=None, sources=(), limit=10, before=None, keep=None, 
     allowed = (h for h in best.values() if h["id"] not in skipped and (h["id"] in fresh
                or not secret_id(h["source"], h["source_id"], item_names(db, h["source"], h["source_id"]))))
     hits = sorted((h for h in allowed if keep is None or keep(h)), key=lambda h: -h["score"])[:limit]
+    stale = {}
+    if not history and decisions.has_table(db):
+        stale = _stale_items(db, match, {(h["source"], h["source_id"]) for h in hits if h["kind"] != "atom"})
     for hit in hits:
         if hit["id"] in fresh:
             own = hit["content"]
@@ -211,7 +224,7 @@ def search(db, query, after=None, sources=(), limit=10, before=None, keep=None, 
             snip, marked = _snippets(hit["title"], own, match)
         hit["snippet"] = re.sub(r"\s+", " ", snip if "[" in snip else own[:SNIPPET_CHARS]).strip()
         hit["excerpt"] = excerpt(marked if MARK in marked else own)
-        newer = stale.get((hit["source"], hit["source_id"]))
+        newer = stale.get((hit["source"], hit["source_id"])) if hit["kind"] != "atom" else None
         if newer:
             hit["replaced_in_item"] = newer
             note = STALE_NOTE.format(", ".join(f"#{n}" for n in newer))

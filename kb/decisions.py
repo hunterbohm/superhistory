@@ -155,7 +155,7 @@ def ensure(db):
     db.executescript(SCHEMA)
 
 
-def _has_table(db):
+def has_table(db):
     return bool(db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='decisions'").fetchone())
 
 
@@ -197,7 +197,8 @@ class Index:
             self.db.execute("INSERT INTO d(rowid, text) VALUES (?, ?)", (i, d.text))
 
     def older(self, d, k=CANDIDATES):
-        """Up to k decisions older than d, from other items, that share its words, best first, one per wording."""
+        """Up to k decisions older than d, from other items, that share its words, best first, one per text: a copy of
+        the same text in another item is marked with the one shown (check_proposals)."""
         words = terms(d.text)[:30]
         if not words:
             return []
@@ -206,9 +207,9 @@ class Index:
         # Read on past newer and repeated matches until k qualify, however far down they rank.
         for (i,) in self.db.execute("SELECT rowid FROM d WHERE d MATCH ? ORDER BY bm25(d), rowid", (match,)):
             c = self.items[i]
-            if c.ts >= d.ts or (c.source, c.source_id) == (d.source, d.source_id) or c.text[:80] in seen:
+            if c.ts >= d.ts or (c.source, c.source_id) == (d.source, d.source_id) or c.key in seen:
                 continue
-            seen.add(c.text[:80])
+            seen.add(c.key)
             found.append(c)
             if len(found) == k:
                 break
@@ -403,19 +404,20 @@ def reconcile(db, current):
     return len(stale)
 
 
-# The marks that take a decision out of view: the owner rejected it, or a newer decision replaced it and either it is
-# not in his own words (nor confirmed by him) or the newer one is.
+# The marks that take a decision out of view: the owner rejected it, or a newer decision replaced it and either the
+# newer one is in his own words (or confirmed by him) or this one was judged and is not.
 HIDING = ("SELECT d.source, d.source_id, d.key, d.new_source, d.new_source_id, d.new_key, d.answer FROM decisions d "
           "LEFT JOIN decisions n ON n.source=d.new_source AND n.source_id=d.new_source_id AND n.key=d.new_key "
           "WHERE (d.answer='rejected' OR (d.new_key IS NOT NULL AND (coalesce(n.author='owner' OR "
-          "n.answer='confirmed', 0) OR NOT coalesce(d.author='owner' OR d.answer='confirmed', 0))))")
+          "n.answer='confirmed', 0) OR (d.author IS NOT NULL AND NOT coalesce(d.author='owner' OR "
+          "d.answer='confirmed', 0)))))")
 
 
 def hidden(db, rows):
     """Of `rows`, (id, source, source_id, kind, content) tuples, {id: the replacing decision's (source, source_id,
     key), or "rejected"} for the decisions search leaves out by default. A decision in the owner's own words, or one he
     confirmed, is left out only for another such decision, so an agent's report never hides what he said."""
-    if not _has_table(db):
+    if not has_table(db):
         return {}
     keys = {(src, sid, key_of(content)): rid for rid, src, sid, kind, content in rows if kind == "atom"}
     out, alive = {}, {}
@@ -489,6 +491,9 @@ def check_proposals(db, ask, owner, current, log, workers=WORKERS):
                        "AND new_source_id=? AND new_key=?",
                        [r[:6] for r in rows if r[:3] not in by_ref or r[3:6] not in by_ref])
     pending = [(by_ref[r[:3]], by_ref[r[3:6]], r[6]) for r in rows if r[:3] in by_ref and r[3:6] in by_ref]
+    copies = {}
+    for d in current:
+        copies.setdefault(d.key, []).append(d)
     batches = [pending[i:i + CHECK_BATCH] for i in range(0, len(pending), CHECK_BATCH)]
     marked = 0
     with ThreadPoolExecutor(max(1, workers)) as pool:
@@ -503,14 +508,16 @@ def check_proposals(db, ask, owner, current, log, workers=WORKERS):
                     log.debug("decisions: #%d replaces #%d? the check says %s", new.row, old.row,
                               "yes" if yes[n] else "no")
                     if yes[n]:
-                        marked += mark_replaced(db, old, new, why, at)
+                        for same in [old] + [c for c in copies.get(old.key, ()) if c.ref != old.ref and c.ts < new.ts
+                                             and c.source_id != new.source_id]:
+                            marked += mark_replaced(db, same, new, why, at)
                     db.execute("DELETE FROM decision_proposals WHERE source=? AND source_id=? AND key=? AND "
                                "new_source=? AND new_source_id=? AND new_key=?", (*old.ref, *new.ref))
     return len(batches), marked
 
 
 def _out_of_view(db):
-    if not _has_table(db):
+    if not has_table(db):
         return set()
     return {tuple(r[:3]) for r in db.execute(HIDING)}
 
@@ -574,7 +581,7 @@ def run(db, ask, owner, kind_of, log, limit=None, workers=WORKERS):
 def review(db, limit=10, since=None):
     """The agent-reported decisions that matter and that the owner has not answered, newest first, one per wording
     that differs, the ones that claim his approval first."""
-    if not _has_table(db):
+    if not has_table(db):
         return []
     rows = db.execute("SELECT source, source_id, key FROM decisions WHERE author='agent' AND matters=1 "
                       "AND answer IS NULL AND new_key IS NULL").fetchall()
@@ -686,7 +693,7 @@ class Rules:
 def owned(db, since):
     """The owner's own lasting decisions made on or after `since` (an ISO date), and those he confirmed, still current,
     each with the texts of the decisions it replaced and the quote that backs it."""
-    if not _has_table(db):
+    if not has_table(db):
         return []
     found, out = [], _out_of_view(db)
     for src, sid, key, quote, answer in db.execute(
