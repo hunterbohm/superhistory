@@ -3351,6 +3351,31 @@ class Base64ReviewTwentySecondTest(unittest.TestCase):
                                     self.assertEqual([k for k in cut.splitlines() if len(k) >= 16 and k in masked], [])
                                     self.assertEqual([k for k in words.splitlines() if k not in masked], [])
 
+    def test_in_an_older_row_a_keys_run_past_encoded_words_goes_where_mains_rest_takes_it(self):
+        # Found by round 23's generator. Past "[masked]" glued to a line of encoded words, a stream's short last line
+        # (34 characters and "==", or 35 and "=") was not read as words, as only 36 before the padding were, so it
+        # started a rest of its own; and a rest that starts there, or at a key's line, took none of the run on the next
+        # line, which main's rest from the placeholder takes. (On its own line, main reads no rest there, and the run
+        # shows on both: Base64KeyPieceLimitTest.)
+        import base64
+        import random
+        import textwrap
+        r = random.Random(2203)
+        key_line = base64.b64encode(made_up_private_key(r)).decode()[64:128]
+        alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
+        run = "".join(r.choice(alphabet) for _ in range(26)) + "7Qa"
+        for size in (25, 26):
+            words = textwrap.wrap(base64.b64encode((b"notes for the harbor ledger today " * 3)[:48 + size]).decode(), 64)
+            for name, lines in (("a short last line of words", words), ("a key's line", words[:1] + [key_line])):
+                for brk in ("\n", "\r\n"):
+                    text = "[masked]" + brk.join(lines) + brk + "next steps " + run + brk + brk + "next paragraph"
+                    for depth in range(2):
+                        written = Base64ReviewNineteenFindingsTest.written(text, depth)
+                        with self.subTest(size=size, between=name, brk=brk, depth=depth):
+                            masked = self.masks(written, True)
+                            self.assertEqual([piece for piece in (run[:12], run[12:]) if piece in masked], [])
+                            self.assertIn("next paragraph", masked)
+
 
 class HeadlessKeyTest(unittest.TestCase):
     """A key's body without its header, as an older kb's row-by-row remask leaves the chunk after the header's."""
