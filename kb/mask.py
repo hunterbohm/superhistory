@@ -1116,12 +1116,13 @@ def _key_spans(text, lines):
             # in a line as wide as none above and then its short last line, starts its own stream there, though the
             # widths alone read that line as the last of the stream above.
             lead = _base64_decoded(joined, starts[line], frame[1]) if frame[1] - starts[line] in (0, 4) else None
-            at_start = bool(line) and lead in (b"", _BYTE_ORDER_MARK)
-            # One that starts its line below another, past prose (_Below), takes its place, as a key file's
-            # header does under a document that quotes one, unless the first starts a stream of its own.
-            if held is not None and (held[1] or not at_start or held[2].no_prose(frame[1], frame[2] - frame[1])):
+            own = bool(line) and lead in (b"", _BYTE_ORDER_MARK) and not _wrapping_break(starts, line, len(joined))
+            # One below another, past prose (_Below), takes its place where it starts a stream of its own, by the
+            # widths or after a byte order mark, as a key file's header does under a document that quotes one, unless
+            # the first starts a stream of its own; a header written after a word into the key below it takes none.
+            if held is not None and (held[1] or not (own or line and lead == _BYTE_ORDER_MARK) or held[2].no_prose(
+                    frame[1], frame[2] - frame[1])):
                 continue
-            own = at_start and not _wrapping_break(starts, line, len(joined))
             held, held_end = (line, own, _Below(joined, frame[1])), _stream_end(widths, padded, line) if own else (
                 stream_end[line])
     return spans
