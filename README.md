@@ -305,11 +305,12 @@ Known limits:
   words included ("bm90ZXMg..."), or where anything past them holds a run of base64 of both cases, 16 characters or
   more, whole or as one key's run cut into pieces and joined by any separator (a space, a hyphen, a comma, a line break,
   an HTML tag, a web page's entity, an escape or a short word): pieces of four characters or more that a key's body
-  could hold, in a row, or cut at one width with the same separator between each, a piece in a tag's attribute included.
-  A word, a name in camel case ("GitHub", "macOS"), a link's path, digits alone, or a run of eight or more in one case
-  (a hash in hex, an id in capitals) is no such piece, and ends a row. In JSON inside JSON, a blank line does not end
-  that paragraph. Main keeps them only as it leaves a key written as base64 readable; after a key in plain text it masks
-  them too. This masks more, and shows nothing. A stray piece shorter than that among the words past them stays.
+  could hold, in a row, or cut at one width with the same separator between each, a piece written as a tag's name or in
+  its attributes included. A word of four letters or more, a name in camel case ("GitHub", "macOS"), a link's path,
+  digits alone, or a run of eight or more in one case (a hash in hex, an id in capitals) is no such piece, and ends a
+  row; a shorter word between pieces does not. In JSON inside JSON, a blank line does not end that paragraph. Main keeps
+  them only as it leaves a key written as base64 readable; after a key in plain text it masks them too. This masks more,
+  and shows nothing. A stray piece shorter than that among the words past them stays.
 - A knowledge base that an older kb wrote, before each row recorded how it was masked, does not open: an older kb's
   masking can leave a secret that no pattern finds afterwards. kb says so and names `kb rebuild`, which reads your
   sources into a fresh one, each as far back as its oldest item in the old one. When a source no longer has some of
