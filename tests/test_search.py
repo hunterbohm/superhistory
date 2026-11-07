@@ -3,6 +3,7 @@ import os
 import sqlite3
 import tempfile
 import unittest
+from unittest import mock
 from datetime import datetime, timedelta, timezone
 
 from kb import search, store
@@ -447,6 +448,20 @@ class SearchTest(TempDB):
         self.assertEqual(search.pointer(hit["meta"]), "laptop:/tmp/x.md")
         self.assertEqual(search.pointer(hit["meta"], machine="laptop"), "/tmp/x.md")
 
+
+    def test_scoring_only_the_top_rows_finds_the_same_hits(self):
+        for i in range(30):
+            self.add(f"item{i}", f"deploy notes {i} " + "deploy " * (i % 7) + ("rollback" if i % 4 == 0 else ""),
+                     title=f"item{i}", ts=f"2026-10-{i % 28 + 1:02d}T00:00:00Z", source="a" if i % 2 else "b")
+        queries = [("deploy rollback", {}), ("deploy", {"after": "2026-10-15T00:00:00Z"}),
+                   ("deploy", {"sources": ("a",)}), ("rollback", {"before": "2026-10-10T00:00:00Z"})]
+        for query, kw in queries:
+            with self.subTest(query=query, **kw), mock.patch.object(search, "CANDIDATES", 4):
+                with mock.patch.object(search, "TOP_ROWS", None):
+                    full = [h["id"] for h in search.search(self.db, query, **kw)]
+                for top in (1, 3, 12):
+                    with mock.patch.object(search, "TOP_ROWS", top):
+                        self.assertEqual([h["id"] for h in search.search(self.db, query, **kw)], full)
 
 class SupersedeMarkTest(TempDB):
     SECRET = "sk-ant-api03-" + "Q" * 40  # made up

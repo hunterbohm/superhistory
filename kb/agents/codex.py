@@ -269,10 +269,11 @@ def install(home, kb_command):
     hooks_json, config = _hooks_json(home), _config(home)
     old = (agents.read(hooks_json), agents.read(config))
     by_hand = (f"To add the hook by hand, put {{\"type\": \"command\", \"command\": {json.dumps(kb_command)}, "
-               f"\"timeout\": {agents.HOOK_TIMEOUT}}} under hooks.UserPromptSubmit in {hooks_json}, then trust it "
-               "once with /hooks in Codex.")
+               f"\"timeout\": {agents.HOOK_TIMEOUT}, \"async\": true}} under hooks.UserPromptSubmit in {hooks_json}, "
+               "then trust it once with /hooks in Codex.")
     try:
-        new_hooks, gi, hi, handler, action = agents.json_hook_added(old[0], hooks_json, EVENT, "codex", kb_command)
+        new_hooks, gi, hi, handler, action = agents.json_hook_added(old[0], hooks_json, EVENT, "codex", kb_command,
+                                                                    background=True)
     except ValueError as exc:
         return [agents.Change(hooks_json, "skipped", f"{exc}; left as it is")]
     key = _key(hooks_json, gi, hi)

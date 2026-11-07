@@ -97,6 +97,42 @@ class RunTest(unittest.TestCase):
         self.assertEqual((paths, config, session), ("paths", "config", "s1"))
         self.assertEqual(json.loads(request), {"message": "what did she say", "before": []})
 
+    def deliver(self, written_during_check):
+        with tempfile.TemporaryDirectory() as tmp:
+            transcript = os.path.join(tmp, "session.jsonl")
+            with open(transcript, "w") as fh:
+                fh.write(json.dumps({"type": "assistant", "message": {"stop_reason": "end_turn"}}) + "\n")
+
+            def check_while_the_agent_works(*args):
+                with open(transcript, "a") as fh:
+                    fh.write(json.dumps(written_during_check) + "\n")
+                return "RECORDS"
+
+            self.answer.side_effect = check_while_the_agent_works
+            event = {"prompt": "what did she say", "session_id": "s", "transcript_path": transcript}
+            return self.run_hook(json.dumps(event))
+
+    def test_records_reach_a_turn_still_running(self):
+        for name, line in {
+            "the prompt itself": {"type": "user", "message": {"content": "what did she say"}},
+            "a tool call": {"type": "assistant", "message": {"stop_reason": "tool_use"}},
+            "a subagent's answer": {"type": "assistant", "isSidechain": True, "message": {"stop_reason": "end_turn"}},
+            "a tool result naming end_turn": {"type": "user", "message": {"content": [
+                {"type": "tool_result", "content": '"stop_reason":"end_turn" task_complete'}]}},
+        }.items():
+            with self.subTest(name):
+                self.assertEqual(json.loads(self.deliver(line))["hookSpecificOutput"]["additionalContext"], "RECORDS")
+
+    def test_records_for_a_turn_that_ended_are_dropped(self):
+        for name, line in {
+            "claude answered": {"type": "assistant", "message": {"stop_reason": "end_turn"}},
+            "claude interrupted": {"type": "user", "message": {"content": "[Request interrupted by user]"}},
+            "codex finished": {"type": "event_msg", "payload": {"type": "task_complete"}},
+            "codex aborted": {"type": "event_msg", "payload": {"type": "turn_aborted"}},
+        }.items():
+            with self.subTest(name):
+                self.assertEqual(self.deliver(line), "")
+
     def test_nothing_found_prints_nothing(self):
         self.answer.return_value = ""
         self.assertEqual(self.run_hook(json.dumps({"prompt": "yes", "session_id": "s"})), "")

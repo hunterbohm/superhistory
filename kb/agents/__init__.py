@@ -27,6 +27,7 @@ import time
 from typing import Callable, List, NamedTuple, Optional
 
 from kb import check
+from kb.agents import _turns
 from kb.config import MAX_CHECK_BUDGET
 from kb.ai.cli import NESTED_ENV
 
@@ -85,7 +86,14 @@ def run(paths, config, name, stdin_text):
     if not found:
         return ""
     message, before, session = found
+    event = json.loads(stdin_text)
+    transcript = event.get("transcript_path") if isinstance(event, dict) else None
+    offset = _turns.size(transcript)
     text = check.answer(paths, config, json.dumps({"message": message, "before": before}), session or "")
+    # A hook run in the background can finish after the agent's turn; its records would then come with the next
+    # message, which is about something else.
+    if text and offset is not None and _turns.turn_ended(transcript, offset):
+        return ""
     return load(name).reply(text) if text else ""
 
 
@@ -208,22 +216,26 @@ def _is_kb_handler(name):
     return lambda handler: isinstance(handler, dict) and is_kb_command(handler.get("command", ""), name)
 
 
-def add_json_hook(path, event, name, kb_command):
+def add_json_hook(path, event, name, kb_command, background=False):
     text = read(path)
-    new, gi, hi, handler, action = json_hook_added(text, path, event, name, kb_command)
+    new, gi, hi, handler, action = json_hook_added(text, path, event, name, kb_command, background)
     problem = checked_write(path, text, new, event, _is_kb_handler(name), [handler])
     if problem:
         raise Unreadable(f"{problem}; wrote nothing")
     return gi, hi, handler, Change(path, action)
 
 
-def json_hook_added(text, path, event, name, kb_command):
-    """The file's text with kb's hook added or brought up to date: (text, group, position, handler, action)."""
+def json_hook_added(text, path, event, name, kb_command, background=False):
+    """The file's text with kb's hook added or brought up to date: (text, group, position, handler, action).
+    background: the agent runs the hook without waiting for it ("async") and gives its records to the next model
+    request, so the user's message goes through at once."""
     data = _parse(text, path)
     groups = data.setdefault("hooks", {}).setdefault(event, [])
     found = next(((gi, hi, handler) for gi, group in enumerate(groups) for hi, handler in enumerate(group.get("hooks") or [])
                   if is_kb_command(handler.get("command", ""), name)), None)
     wanted = {"type": "command", "command": kb_command, "timeout": HOOK_TIMEOUT}
+    if background:
+        wanted["async"] = True
     if found and all(found[2].get(k) == v for k, v in wanted.items()):
         return (text, *found, "unchanged")
     if found:

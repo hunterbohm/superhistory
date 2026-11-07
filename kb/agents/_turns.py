@@ -58,3 +58,41 @@ def turns_before(transcript_path, prompt):
         text = mask(text)  # whole, before the cut, so the cut cannot keep a secret without its field name
         out.append({"role": role, "text": text[-limit:] if role == "assistant" else text[:limit]})
     return out
+
+
+def size(path):
+    try:
+        return os.path.getsize(path)
+    except (OSError, TypeError):
+        return None
+
+
+def _ends_turn(entry):
+    """Whether a transcript line written after the prompt shows the agent's turn is over: Claude Code's final
+    answer or interrupt note, or Codex's task_complete or turn_aborted."""
+    if entry.get("isSidechain"):
+        return False
+    if entry.get("type") == "assistant":
+        return (entry.get("message") or {}).get("stop_reason") == "end_turn"
+    if entry.get("type") == "user":
+        return _text((entry.get("message") or {}).get("content")).lstrip().startswith("[Request interrupted")
+    if entry.get("type") == "event_msg":
+        return (entry.get("payload") or {}).get("type") in ("task_complete", "turn_aborted")
+    return False
+
+
+def turn_ended(transcript_path, offset):
+    """Whether the transcript gained a line past `offset` that ends the turn the prompt started."""
+    try:
+        with open(transcript_path, "rb") as fh:
+            fh.seek(offset)
+            added = fh.read().decode("utf-8", "replace").split("\n")
+    except OSError:
+        return False
+    for line in added:
+        try:
+            if _ends_turn(json.loads(line)):
+                return True
+        except (ValueError, AttributeError):
+            continue
+    return False

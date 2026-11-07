@@ -99,7 +99,7 @@ class Home(unittest.TestCase):
         return {p: self.text(p) for p in (self.hooks_json, self.config) if os.path.exists(p)}
 
     def handler(self, command=COMMAND, timeout=TIMEOUT):
-        return {"type": "command", "command": command, "timeout": timeout}
+        return {"type": "command", "command": command, "timeout": timeout, "async": True}
 
     def digest(self, command=COMMAND, timeout=TIMEOUT):
         return codex.codex_hook_hash("user_prompt_submit", self.handler(command, timeout))

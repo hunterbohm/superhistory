@@ -52,7 +52,7 @@ class Home(unittest.TestCase):
         return sorted(f for f in os.listdir(os.path.dirname(self.settings)) if ".bak-kb-" in f)
 
     def our_group(self, command=COMMAND, timeout=agents.HOOK_TIMEOUT):
-        return {"hooks": [{"type": "command", "command": command, "timeout": timeout}]}
+        return {"hooks": [{"type": "command", "command": command, "timeout": timeout, "async": True}]}
 
 
 class InstallTest(Home):

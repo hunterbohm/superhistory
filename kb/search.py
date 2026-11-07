@@ -15,6 +15,10 @@ all also get got make made say said tell""".split())
 RRF_K = 60
 RAW_WEIGHT = 0.5
 CANDIDATES = 60
+# Rows a search scores before it groups them by item. A common word like "test" can match a third of a store's rows,
+# and reading each one's item took up to 3.5 s on a 440,000-row store; the top 3,000 held every full list in 400
+# real lookups.
+TOP_ROWS = 3000
 # The longest passage FTS5's snippet() gives: the stretch of a record where its matching words cluster.
 EXCERPT_TOKENS = 64
 # The short snippet with its matches in brackets, then the excerpt with them marked for excerpt() to cut around.
@@ -44,9 +48,24 @@ def fts_query(text):
 
 
 def _ranked(db, match, kinds, after, sources, n, before=None):
-    sql = (f"SELECT d.id, d.source, d.source_id, bm25(docs_fts, 4.0, 1.0) AS score FROM docs_fts "
-           f"JOIN docs d ON d.id = docs_fts.rowid WHERE docs_fts MATCH ? AND d.kind IN ({','.join('?' * len(kinds))})")
-    args = [match, *kinds]
+    """Best-first row ids of these kinds, one per item, so one long session can't fill the list."""
+    ids = _ranked_rows(db, match, kinds, after, sources, n, before, TOP_ROWS)
+    if len(ids) < n:
+        ids = _ranked_rows(db, match, kinds, after, sources, n, before, None)
+    return ids
+
+
+def _ranked_rows(db, match, kinds, after, sources, n, before, top):
+    """_ranked over the `top` best-scoring rows, or every matching row when top is None. When the list fills to n
+    items from the top rows it is exact: an item with no row there scores below every item that has one."""
+    rows = "SELECT rowid AS id, bm25(docs_fts, 4.0, 1.0) AS score FROM docs_fts WHERE docs_fts MATCH ?"
+    args = [match]
+    if top:
+        rows += " ORDER BY score LIMIT ?"
+        args.append(top)
+    sql = (f"SELECT d.id, d.source, d.source_id, t.score FROM ({rows}) t JOIN docs d ON d.id = t.id "
+           f"WHERE d.kind IN ({','.join('?' * len(kinds))})")
+    args += kinds
     if after:
         sql += " AND d.ts >= ?"
         args.append(after)

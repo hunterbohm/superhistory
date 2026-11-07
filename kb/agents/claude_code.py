@@ -20,7 +20,7 @@ def installed(home):
 
 
 def install(home, kb_command):
-    return [agents.add_json_hook(_settings(home), EVENT, "claude-code", kb_command)[3]]
+    return [agents.add_json_hook(_settings(home), EVENT, "claude-code", kb_command, background=True)[3]]
 
 
 def uninstall(home):
