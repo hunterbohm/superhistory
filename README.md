@@ -249,24 +249,27 @@ Known limits:
 - A private key written as base64 (as a Kubernetes secret holds one) is masked from the line with its header's first
   byte through the line with its footer's. A footer ends it only as a whole line with no other footer later in the
   same encoded stream, so text between a key's footer and a stray footer later in that stream is masked with the key,
-  prose holding a control character included, and so is text between two whole keys in one stream. In a row an older
+  prose holding a control character included, and so is text between two whole keys in one stream. A footer encoded on
+  its own in a later stream ends no key of an earlier stream's, so a public key between them stays. In a row an older
   kb stored, encoded text after a key in its stream that does not decode from its line's start to words reads as an
   older kb's rest of a key after the key's placeholder, and is masked too. A header after text on its decoded line, as
   a sentence quoting one writes it, starts a key only with a footer later in its stream, and then the key starts on
-  that line, with the words before the header and whatever lies between it and the footer. A key file's header below
-  it, past prose, starts the key instead, on a line of its own, or, where the text runs on into the file with no line
-  break, after a byte order mark or where the line widths change; past no prose (a run a key's body could be, an
-  armour header such as "Comment: ...", another header's text, a control character, or nothing), the key still starts
-  on the quote's line. Cut off before its footer, it is masked while its base64 decodes to text, so a word on the next
-  line that happens to decode to text goes with it; cut off before its header, the same holds for the line above.
-  Base64 of a short label glued to a quoted header, where the label's own base64 is one word in one case as long as
-  the block's lines ("ABC" written "QUJD" at width 4), reads as a heading over a key, so the quote after it is masked;
-  a key there is masked either way. Any line break wraps it, as written or escaped, and it is read with JSON's escapes
-  read once and twice too, as JSON and JSON in JSON write a key with any escape (a tab, \u000a, \/). A field name
-  whose base64 ends in "=" before a value is read as main reads it, which leaves that value readable. After a
-  placeholder, a key's body on the placeholder's own line followed by words ("[masked] MC4C... notes deploy") shows,
-  and so does a fragment that is itself a plain word inside a line of words after a key. In a row an older kb stored,
-  an OpenSSH private key's private section, re-encoded alone after a placeholder, reads as public material and shows.
+  that line, with the words before the header and whatever lies between it and the footer. A header that starts a line
+  below a shorter one, the last of another encoded stream, starts a stream of its own, so the words above it quote
+  nothing and it starts its key, footer or none. A key file's header below it, past prose, starts the key instead, on
+  a line of its own, or, where the text runs on into the file with no line break, after a byte order mark or where the
+  line widths change; past no prose (a run a key's body could be, an armour header such as "Comment: ...", another
+  header's text, a control character, or nothing), the key still starts on the quote's line. Cut off before its
+  footer, it is masked while its base64 decodes to text, so a word on the next line that happens to decode to text
+  goes with it; cut off before its header, the same holds for the line above. Base64 of a short label glued to a
+  quoted header, where the label's own base64 is one word in one case as long as the block's lines ("ABC" written
+  "QUJD" at width 4), reads as a heading over a key, so the quote after it is masked; a key there is masked either
+  way. Any line break wraps it, as written or escaped, and it is read with JSON's escapes read once and twice too, as
+  JSON and JSON in JSON write a key with any escape (a tab, \u000a, \/). A field name whose base64 ends in "=" before
+  a value is read as main reads it, which leaves that value readable. After a placeholder, a key's body on the
+  placeholder's own line followed by words ("[masked] MC4C... notes deploy") shows, and so does a fragment that is
+  itself a plain word inside a line of words after a key. In a row an older kb stored, an OpenSSH private key's
+  private section, re-encoded alone after a placeholder, reads as public material and shows.
 - A piece of a private key's base64 with neither its header nor its footer shows, as on main, unless a key's rest
   after a placeholder, as one where a key was masked, takes it. A rest starts with base64 glued to the placeholder, or
   with a line right after it of base64 alone, 40 characters or more, starting as a key's body does ("MIIE..."); in a
