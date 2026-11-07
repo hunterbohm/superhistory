@@ -457,11 +457,21 @@ class SearchTest(TempDB):
                    ("deploy", {"sources": ("a",)}), ("rollback", {"before": "2026-10-10T00:00:00Z"})]
         for query, kw in queries:
             with self.subTest(query=query, **kw), mock.patch.object(search, "CANDIDATES", 4):
-                with mock.patch.object(search, "TOP_ROWS", None):
+                with mock.patch.object(search, "TOP_ROWS", 10 ** 9):
                     full = [h["id"] for h in search.search(self.db, query, **kw)]
                 for top in (1, 3, 12):
                     with mock.patch.object(search, "TOP_ROWS", top):
                         self.assertEqual([h["id"] for h in search.search(self.db, query, **kw)], full)
+
+    def test_a_tie_across_the_cut_is_not_cut(self):
+        for i in range(12):
+            self.add(f"same{i}", "zebra", title=f"same{i}", source="a")
+        with mock.patch.object(search, "CANDIDATES", 2):
+            with mock.patch.object(search, "TOP_ROWS", 10 ** 9):
+                full = [h["id"] for h in search.search(self.db, "zebra")]
+            for top in (1, 2, 5):
+                with self.subTest(top=top), mock.patch.object(search, "TOP_ROWS", top):
+                    self.assertEqual([h["id"] for h in search.search(self.db, "zebra")], full)
 
 class SupersedeMarkTest(TempDB):
     SECRET = "sk-ant-api03-" + "Q" * 40  # made up

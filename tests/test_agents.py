@@ -103,10 +103,10 @@ class RunTest(unittest.TestCase):
             with open(transcript, "w") as fh:
                 fh.write(json.dumps({"type": "assistant", "message": {"stop_reason": "end_turn"}}) + "\n")
 
-            def check_while_the_agent_works(*args):
+            def check_while_the_agent_works(*args, still_wanted=None):
                 with open(transcript, "a") as fh:
                     fh.write(json.dumps(written_during_check) + "\n")
-                return "RECORDS"
+                return "" if still_wanted and not still_wanted() else "RECORDS"
 
             self.answer.side_effect = check_while_the_agent_works
             event = {"prompt": "what did she say", "session_id": "s", "transcript_path": transcript}
@@ -132,6 +132,18 @@ class RunTest(unittest.TestCase):
         }.items():
             with self.subTest(name):
                 self.assertEqual(self.deliver(line), "")
+
+    def test_a_turn_that_ended_before_the_hook_started_or_cannot_be_read_gets_nothing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            transcript = os.path.join(tmp, "session.jsonl")
+            with open(transcript, "w") as fh:
+                fh.write(json.dumps({"type": "user", "message": {"content": "what did she say"}}) + "\n")
+                fh.write(json.dumps({"type": "assistant", "message": {"stop_reason": "end_turn"}}) + "\n")
+            self.answer.side_effect = lambda *args, still_wanted=None: "" if not still_wanted() else "RECORDS"
+            for path in (transcript, os.path.join(tmp, "missing.jsonl")):
+                with self.subTest(path=path):
+                    event = {"prompt": "what did she say", "session_id": "s", "transcript_path": path}
+                    self.assertEqual(self.run_hook(json.dumps(event)), "")
 
     def test_nothing_found_prints_nothing(self):
         self.answer.return_value = ""

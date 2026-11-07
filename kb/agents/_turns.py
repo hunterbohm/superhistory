@@ -5,6 +5,8 @@ import re
 from kb.mask import mask
 
 TAIL_BYTES = 1_000_000
+# How far back from the hook's start to look for the prompt's own transcript line.
+PROMPT_BYTES = 200_000
 BEFORE_CHARS = {"assistant": 1500, "user": 600}
 INJECTED = re.compile(r"^\s*(<task-notification>|<system-reminder>|<command-|<local-command|# AGENTS\.md instructions"
                       r"|<environment_context>|<user_instructions>|<skill>|Caveat:|\[Request interrupted)")
@@ -81,17 +83,32 @@ def _ends_turn(entry):
     return False
 
 
-def turn_ended(transcript_path, offset):
-    """Whether the transcript gained a line past `offset` that ends the turn the prompt started."""
+def turn_ended(transcript_path, prompt, offset):
+    """Whether the turn this prompt started is over: an end line after the prompt's own line, or after `offset`
+    (the transcript's size when the hook began) if the prompt's line is not found. An unreadable transcript counts
+    as over, since nothing shows the turn still runs."""
+    start = max(0, offset - PROMPT_BYTES)
     try:
         with open(transcript_path, "rb") as fh:
-            fh.seek(offset)
-            added = fh.read().decode("utf-8", "replace").split("\n")
+            fh.seek(start)
+            data = fh.read()
     except OSError:
-        return False
-    for line in added:
+        return True
+    lines, at, after = [], start, offset - 1
+    for raw in data.split(b"\n"):
+        lines.append((at, raw))
+        at += len(raw) + 1
+    for at, raw in lines:
         try:
-            if _ends_turn(json.loads(line)):
+            if _turn(json.loads(raw)) == ("user", prompt.strip()):
+                after = at
+        except (ValueError, AttributeError):
+            continue
+    for at, raw in lines:
+        if at <= after:
+            continue
+        try:
+            if _ends_turn(json.loads(raw)):
                 return True
         except (ValueError, AttributeError):
             continue

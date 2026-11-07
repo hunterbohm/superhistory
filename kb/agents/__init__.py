@@ -88,12 +88,12 @@ def run(paths, config, name, stdin_text):
     message, before, session = found
     event = json.loads(stdin_text)
     transcript = event.get("transcript_path") if isinstance(event, dict) else None
-    offset = _turns.size(transcript)
-    text = check.answer(paths, config, json.dumps({"message": message, "before": before}), session or "")
+    offset = _turns.size(transcript) or 0
     # A hook run in the background can finish after the agent's turn; its records would then come with the next
     # message, which is about something else.
-    if text and offset is not None and _turns.turn_ended(transcript, offset):
-        return ""
+    wanted = (lambda: not _turns.turn_ended(transcript, message, offset)) if transcript else None
+    text = check.answer(paths, config, json.dumps({"message": message, "before": before}), session or "",
+                        still_wanted=wanted)
     return load(name).reply(text) if text else ""
 
 

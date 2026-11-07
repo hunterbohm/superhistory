@@ -49,23 +49,26 @@ def fts_query(text):
 
 def _ranked(db, match, kinds, after, sources, n, before=None):
     """Best-first row ids of these kinds, one per item, so one long session can't fill the list."""
-    ids = _ranked_rows(db, match, kinds, after, sources, n, before, TOP_ROWS)
-    if len(ids) < n:
-        ids = _ranked_rows(db, match, kinds, after, sources, n, before, None)
-    return ids
-
-
-def _ranked_rows(db, match, kinds, after, sources, n, before, top):
-    """_ranked over the `top` best-scoring rows, or every matching row when top is None. When the list fills to n
-    items from the top rows it is exact: an item with no row there scores below every item that has one."""
+    best = db.execute("SELECT rowid, bm25(docs_fts, 4.0, 1.0) AS score FROM docs_fts WHERE docs_fts MATCH ? "
+                      "ORDER BY score, rowid LIMIT ?", (match, TOP_ROWS + 1)).fetchall()
+    # Exact when the list fills from the best rows: an item with no row among them scores below every item with one.
+    # A tie across the cut would make "the best rows" ambiguous, so it counts as not filling.
+    if len(best) <= TOP_ROWS or best[TOP_ROWS - 1][1] != best[TOP_ROWS][1]:
+        rows = "SELECT value ->> 0 AS id, value ->> 1 AS score FROM json_each(?)"
+        ids = _grouped(db, rows, json.dumps(best[:TOP_ROWS]), kinds, after, sources, n, before)
+        if len(best) <= TOP_ROWS or len(ids) >= n:
+            return ids
     rows = "SELECT rowid AS id, bm25(docs_fts, 4.0, 1.0) AS score FROM docs_fts WHERE docs_fts MATCH ?"
-    args = [match]
-    if top:
-        rows += " ORDER BY score LIMIT ?"
-        args.append(top)
-    sql = (f"SELECT d.id, d.source, d.source_id, t.score FROM ({rows}) t JOIN docs d ON d.id = t.id "
+    return _grouped(db, rows, match, kinds, after, sources, n, before)
+
+
+def _grouped(db, rows, rows_arg, kinds, after, sources, n, before):
+    """The best row of each item among `rows`, a query of (id, score) taking one argument, best first, ties by row id
+    so every run orders them the same."""
+    # CROSS JOIN keeps the rows first; otherwise SQLite may walk every doc and run the full-text match for each.
+    sql = (f"SELECT d.id, d.source, d.source_id, r.score FROM ({rows}) r CROSS JOIN docs d ON d.id = r.id "
            f"WHERE d.kind IN ({','.join('?' * len(kinds))})")
-    args += kinds
+    args = [rows_arg, *kinds]
     if after:
         sql += " AND d.ts >= ?"
         args.append(after)
@@ -76,7 +79,8 @@ def _ranked_rows(db, match, kinds, after, sources, n, before, top):
         sql += f" AND d.source IN ({','.join('?' * len(sources))})"
         args += list(sources)
     sql = (f"WITH m AS MATERIALIZED ({sql}) SELECT id FROM (SELECT id, score, row_number() OVER "
-           f"(PARTITION BY source, source_id ORDER BY score) AS nth FROM m) WHERE nth = 1 ORDER BY score LIMIT ?")
+           f"(PARTITION BY source, source_id ORDER BY score, id) AS nth FROM m) WHERE nth = 1 ORDER BY score, id "
+           f"LIMIT ?")
     return [rid for (rid,) in db.execute(sql, (*args, n))]
 
 

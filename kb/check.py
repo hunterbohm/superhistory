@@ -185,9 +185,12 @@ class Seen:
         except (FileNotFoundError, ValueError):
             return set()
 
-    def save(self, session, seen):
+    def add(self, session, pairs):
+        """Adds pairs to the session's file, read again just before the write so a check running alongside keeps
+        its own."""
         if not session:
             return
+        seen = self.load(session) | set(pairs)
         os.makedirs(self.folder, exist_ok=True)
         cutoff = time.time() - SEEN_DAYS * 86400
         for name in os.listdir(self.folder):
@@ -214,12 +217,13 @@ def write_log(path, entry):
         pass
 
 
-def answer(paths, config, text, session, model=None):
+def answer(paths, config, text, session, model=None, still_wanted=None):
     """The records for the request JSON in `text`, rendered, or "" on any failure. Never raises.
-    `model` stands in for the configured plug-in in tests."""
+    `model` stands in for the configured plug-in in tests. still_wanted(), when given, says whether records found
+    can still be shown; when it says no they are neither shown nor marked as seen."""
     started = time.monotonic()
     entry = {"session": session, "asked": False, "searched": False, "query": None, "candidates": 0, "shown": [],
-             "seconds": 0.0, "error": None}
+             "late": False, "seconds": 0.0, "error": None}
     output = ""
     try:
         message, before = read_request(text)
@@ -235,8 +239,10 @@ def answer(paths, config, text, session, model=None):
             finally:
                 db.close()
             entry.update(searched=bool(found.query), query=found.query, candidates=len(found.candidates))
-            if found.hits:
-                seen.save(session, shown | {(h["source"], h["source_id"]) for h in found.hits})
+            if found.hits and still_wanted and not still_wanted():
+                entry["late"] = True
+            elif found.hits:
+                seen.add(session, {(h["source"], h["source_id"]) for h in found.hits})
                 entry["shown"] = [h["id"] for h in found.hits]
                 output = render(found.hits, config.machine)
     except Exception as exc:
