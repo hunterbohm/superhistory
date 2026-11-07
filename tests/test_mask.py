@@ -3376,6 +3376,30 @@ class Base64ReviewTwentySecondTest(unittest.TestCase):
                             self.assertEqual([piece for piece in (run[:12], run[12:]) if piece in masked], [])
                             self.assertIn("next paragraph", masked)
 
+    def test_a_blank_line_escaped_in_json_ends_a_keys_paragraph_as_one_written_plain_does(self):
+        # Found by round 23's generator: in JSON, after a line of a key's base64 that ends with its padding, a blank
+        # line escaped ("\\n\\n") began the next run at the first escape's letter, so the block read on past it as
+        # past one line break, and a key with no footer above took the encoded words of the next paragraph, which a
+        # blank line written plain keeps. Main keeps them.
+        import base64
+        import random
+        r = random.Random(2204)
+        encoded = Base64ReviewSeventeenTest.encoded
+        line = base64.b64encode(bytes(r.randrange(256) for _ in range(48)))
+        words = encoded(b"notes walrus notes moved ledger plan the plan harbor notes approved today notes today")
+        tops = {"a header alone": encoded(b"-----BEGIN PRIVATE KEY-----\n"),
+                "a key with no footer": encoded(b"-----BEGIN PRIVATE KEY-----\n" + line + b"\n"),
+                "a key with no footer, unpadded": encoded(b"-----BEGIN PRIVATE KEY-----\n" + line + b"\n" + line[:7] + b"\n")}
+        for name, top in tops.items():
+            for blank in ("\n\n", "\r\n\r\n", "\n \n", "\n\t\n"):
+                text = top + blank + words + "\n\nnext paragraph"
+                for depth in range(2):
+                    written = Base64ReviewNineteenFindingsTest.written(text, depth)
+                    with self.subTest(top=name, blank=blank, depth=depth):
+                        masked = mask(written)
+                        self.assertEqual([k for k in words.splitlines() if k not in masked], [])
+                        self.assertEqual([k for k in top.splitlines()[1:] if len(k) >= 16 and k in masked], [])
+
 
 class HeadlessKeyTest(unittest.TestCase):
     """A key's body without its header, as an older kb's row-by-row remask leaves the chunk after the header's."""
