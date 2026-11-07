@@ -91,6 +91,8 @@ roots = ["~/code"]
 | `notes` | A folder of Markdown or text files, such as an Obsidian vault | the note's path in the folder |
 | `git` | Your commits in the repositories under `roots` | the repository's folder |
 | `github` | Issues and pull requests you are involved in, through `gh` | `owner/repo` |
+| `youtube` | A channel's videos, shorts and streams with their captions, through `yt-dlp` and the channel's feed | the kind and id, as `short/abc123` |
+| `eden` | Your own posts on X or another network, through Eden (eden.so) and your Eden API key | the post's id |
 
 Add as many sources of one type as you like, each in its own `[sources.NAME]` table with `type = "..."`. The table's
 name is what `kb search --source` takes.
@@ -114,6 +116,32 @@ iMessage needs Full Disk Access for the Python that runs kb. The installer print
 Gmail needs an app password, which needs 2-Step Verification on your Google account. `kb setup` saves the password
 in a file only you can read. To use your own Google OAuth client instead, set `auth = "oauth"`, `client_id` and
 `client_secret`, then run `kb login NAME`.
+
+YouTube needs `yt-dlp` and no key. `channel` is an `@handle`, a channel URL or a channel id. The first run reads
+every video; later runs read the channel's public feed and only the videos published since. A new video waits up to a
+day for its captions.
+
+```toml
+[sources.youtube]
+channel = "@yourhandle"
+languages = ["en"]          # captions in the first of these the video has
+```
+
+Eden reads your posts without an X API plan, but each call spends Eden research credits: 0.5 for a page of 50 posts,
+0.2 for your analytics and 1 for a whole post, by Eden's price list in November 2026. So it asks Eden at most once
+every `every_hours` and reads whole only new posts that Eden cut short or that start a thread, at most `full_reads` a
+run. A day's check with one long post costs about 1.7 credits. The first run reads your whole history at 0.5 per 50
+posts. Thread detection reads your Eden analytics, so it covers only accounts connected to your Eden workspace.
+
+```toml
+[sources.x]
+type = "eden"
+username = "yourhandle"
+key = "env:EDEN_API_KEY"    # or "file:..." or "cmd:..."
+platform = "twitter"        # or linkedin, threads, instagram, tiktok, youtube, substack
+every_hours = 24
+full_reads = 5
+```
 
 ## AI plug-ins
 

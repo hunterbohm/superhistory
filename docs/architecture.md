@@ -49,7 +49,7 @@ The Sync client goes in `kb/sync/`, imported as `kb.sync`.
 - For the client and the engine to import: `store.replace_rows`, `search.search_stores`, `check.lookup_with`,
   `gmail.render_thread`, and `summarize.request`, `parse` and `rows`.
 
-Each online account has one reader. Gmail and GitHub read an account, not a computer, so two computers reading one
+Each online account has one reader. Gmail, GitHub, YouTube and Eden read an account, not a computer, so two computers reading one
 would store every thread twice under two prefixes. `config.account_keys()` names the account each source reads, one
 key however the config spells it (case, a leading `@`, dots in a gmail.com name). With `[sync]` or `[cloud]` on, a
 source whose config does not name its account, such as GitHub left at `"@me"`, is a config error. The Sync client
