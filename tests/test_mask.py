@@ -4009,6 +4009,24 @@ class Base64ReviewTwentyFifthTest(unittest.TestCase):
             with self.subTest(kind=kind.__name__):
                 self.assertLess(took[1 << 20], 8 * max(took[1 << 18], 0.01), took)
 
+    def test_a_body_line_led_by_a_quote_written_as_a_web_pages_entity_takes_the_characters_glued_below_it(self):
+        # Found by round 26's generators: a key's body line after an older kb's placeholder, led by a quote as a web
+        # page writes one, its body cut into the line of words below; main masks the glued characters, with the words.
+        import base64
+        import random
+        r = random.Random(2505)
+        line = base64.b64encode(made_up_private_key(r)).decode()[:64]
+        for entity in ("&quot;", "&apos;", "&#34;", "&#39;", "&#x22;", "&#X27;"):  # those main's rest reads past
+            for lead in ("", "# ", "> ", "  "):
+                text = ("intro notes\n" + lead + "[masked]\n" + entity + line + "\n" + lead + "Uq walrus moved today"
+                        "\n\nnext paragraph")
+                for depth in range(3):
+                    with self.subTest(entity=entity, lead=lead, depth=depth):
+                        masked = mask(Base64ReviewNineteenFindingsTest.written(text, depth))
+                        self.assertNotIn(line[8:40], masked)
+                        self.assertNotIn("Uq walrus", masked)
+                        self.assertIn("walrus moved today", masked)
+
     @staticmethod
     def instances(tokens, kind):
         """Each of `tokens`, as kb/mask.py's table writes one (its places: the characters each may hold, and how many in
