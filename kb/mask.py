@@ -2978,7 +2978,9 @@ def _token_like(run):
             and not re.fullmatch(r"[A-Z][a-z]*[aeiouy][a-z]*", run))
 
 
-_LINE_RUN = re.compile(r"[A-Za-z0-9+/]{36,}={0,2}")
+# a line's run of base64 as long as a rest's start reads one (_LINE_OF_BASE64, its padding counted): a stream's short
+# last line of 34 characters and "==" is one
+_LINE_RUN = re.compile(r"(?=[A-Za-z0-9+/=]{36})[A-Za-z0-9+/]+={0,2}")
 
 
 def _encoded_words(found):
@@ -3275,8 +3277,9 @@ def _key_rests(text, starts=_REST_START):
     to a placeholder that starts no rest, as before a line break escaped twice, is read so too, but only to stay: such a
     run's own reading (_glued_run_edits) masks it otherwise, as main's does. Lines that decode to words right after a
     placeholder (_encoded_words) stay, and the rest starts past them where their next line starts one, in the
-    placeholder's paragraph, as main's ends with it; main reads no rest there, so such a rest takes none of the tail of
-    tokens main's rest takes. Where main's rest from the placeholder runs on past them, base64 alone on a line of its
+    placeholder's paragraph, as main's ends with it; where main reads no rest from the placeholder, such a rest takes
+    none of the tail of tokens main's rest takes, and where main's runs on past its start, it runs on as main's does.
+    Where main's rest from the placeholder runs on past them, base64 alone on a line of its
     own at any length starts one too (_REST_PAST_WORDS), as a stream's short last line is, past any word alone on its
     line, and runs on as main's does. Each placeholder outside the core of the rest before it is read once, and each
     core runs once to its end, so a paragraph of many costs time in proportion."""
@@ -3316,6 +3319,14 @@ def _key_rests(text, starts=_REST_START):
                     stop = _KEY_LINE_END.search(text, line).start()
                     rest = _holds_token(text, line, stop) and _BASE64_CHARACTER.search(text, line, stop) or None
                 begin, as_main = (line, True) if rest else (begin, False)
+        if rest and begin != at.end() and not as_main:
+            # a rest that starts past lines of words at a line that starts one, where main's rest from the
+            # placeholder runs on past it, runs on as main's does too, with the run on its next line
+            if main_reach is None:
+                main_reach = (_ID_REST_START.match(text, at.end()) and ends(at.end())) or -1
+                tail = tail or _token_tail(text)
+                main_reach = tail(main_reach) if main_reach >= 0 else -1
+            as_main = main_reach > begin
         if not rest and not _BASE64_CHARACTER.match(text, at.end()):
             continue
         reach = ends(begin)
