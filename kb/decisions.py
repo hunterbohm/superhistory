@@ -203,7 +203,8 @@ class Index:
             return []
         match = " OR ".join(f'"{w}"' for w in words)
         found, seen = [], set()
-        for (i,) in self.db.execute("SELECT rowid FROM d WHERE d MATCH ? ORDER BY bm25(d) LIMIT ?", (match, k * 6)):
+        # Read on past newer and repeated matches until k qualify, however far down they rank.
+        for (i,) in self.db.execute("SELECT rowid FROM d WHERE d MATCH ? ORDER BY bm25(d), rowid", (match,)):
             c = self.items[i]
             if c.ts >= d.ts or (c.source, c.source_id) == (d.source, d.source_id) or c.text[:80] in seen:
                 continue

@@ -225,6 +225,26 @@ class DecisionTest(Store):
         self.assertEqual(self.db.execute("SELECT count(*) FROM decisions WHERE new_key IS NOT NULL").fetchone()[0], 12)
         self.assertIn(kept, self.ids("Composio app accounts rule uses CLI"))
 
+    def test_other_hits_from_an_item_whose_decision_was_replaced_say_so(self):
+        self.session("old", "2026-06-12T10:00:00Z", ["Composio CLI is the default for connected app accounts."],
+                     text="USER: make the composio cli the default for connected app accounts\n\nASSISTANT: ok")
+        self.session("new", "2026-10-24T10:00:00Z", ["Composio switched off; Executor replaces it for app accounts."])
+        self.run_pass(Model(lambda text, older, _: answer(replaces=older if "switched" in text else ())))
+        new = self.db.execute("SELECT id FROM docs WHERE content LIKE 'Composio switched off%'").fetchone()[0]
+        raw = [h for h in search.search(self.db, "composio cli default connected app accounts") if h["kind"] == "raw"
+               and h["source_id"].endswith("old")]
+        self.assertEqual(len(raw), 1)
+        self.assertEqual(raw[0]["replaced_in_item"], [new])
+        self.assertTrue(raw[0]["snippet"].startswith(f"[A decision here was replaced later; see #{new}]"))
+
+    def test_older_candidates_are_found_below_any_number_of_newer_better_matches(self):
+        def d(n, ts, text):
+            return decisions.Decision(n, "s", f"i{n}", "k", ts, text)
+        newer = [d(n, "2026-10-0%d" % n, "Composio CLI default app accounts connected rule") for n in range(1, 8)]
+        older = d(9, "2026-01-01", "Composio is used for some things.")
+        me = d(10, "2026-09-01", "Composio CLI default app accounts connected rule replaced")
+        self.assertEqual([c.row for c in decisions.Index(newer + [older, me]).older(me, k=1)], [9])
+
     def test_review_on_a_store_the_pass_never_ran_on_is_empty(self):
         self.assertEqual(decisions.review(self.db), [])
 

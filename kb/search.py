@@ -27,6 +27,7 @@ SNIPPETS = ("snippet({table}, {column}, '[', ']', ' … ', 24), "
 EXCERPT_CHARS = 500
 SNIPPET_CHARS = 220
 MARK, END = "\x02", "\x03"
+STALE_NOTE = "[A decision here was replaced later; see {}] "
 
 
 def fts_terms(text):
@@ -83,6 +84,18 @@ def _grouped(db, rows, rows_arg, kinds, after, sources, n, before):
            f"(PARTITION BY source, source_id ORDER BY score, id) AS nth FROM m) WHERE nth = 1 ORDER BY score, id "
            f"LIMIT ?")
     return [rid for (rid,) in db.execute(sql, (*args, n))]
+
+
+def _stale_items(db, lost, out):
+    """{item: the ids of the newer decisions} for the items whose matching decisions search left out, so their other
+    rows, such as the session text that still states the old choice, carry a note naming what replaced it."""
+    found = {}
+    for rid, _, src, sid, *_ in lost:
+        if out[rid] != "rejected":
+            row, _ = decisions.describe(db, out[rid])
+            if row and row not in found.setdefault((src, sid), []):
+                found[(src, sid)].append(row)
+    return {item: rows for item, rows in found.items() if rows}
 
 
 def _stand_ins(db, match, lost, fused, after, before):
@@ -155,8 +168,10 @@ def search(db, query, after=None, sources=(), limit=10, before=None, keep=None, 
         f"SELECT id, kind, source, source_id, ts, title, content, metadata FROM docs "
         f"WHERE id IN ({','.join('?' * len(fused))})", list(fused)).fetchall()
     out = decisions.hidden(db, [(r[0], r[2], r[3], r[1], r[6]) for r in rows])
+    stale = {}
     if not history:
         lost = [r for r in rows if r[0] in out]
+        stale = _stale_items(db, lost, out)
         rows = [r for r in rows if r[0] not in out]
         for row in _stand_ins(db, match, lost, fused, after, before):
             rows.append(row)
@@ -196,6 +211,11 @@ def search(db, query, after=None, sources=(), limit=10, before=None, keep=None, 
             snip, marked = _snippets(hit["title"], own, match)
         hit["snippet"] = re.sub(r"\s+", " ", snip if "[" in snip else own[:SNIPPET_CHARS]).strip()
         hit["excerpt"] = excerpt(marked if MARK in marked else own)
+        newer = stale.get((hit["source"], hit["source_id"]))
+        if newer:
+            hit["replaced_in_item"] = newer
+            note = STALE_NOTE.format(", ".join(f"#{n}" for n in newer))
+            hit["snippet"], hit["excerpt"] = note + hit["snippet"], note + hit["excerpt"]
     return hits
 
 
