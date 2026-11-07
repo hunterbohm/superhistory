@@ -4543,6 +4543,57 @@ class Base64ReviewTwentySixthTest(unittest.TestCase):
                         masked = Base64ReviewEighteenTest.masks(text, older)
                         self.assertIn(self.split_written(line, "", depth), masked)
 
+    def test_ids_hashes_and_dates_after_a_key_encoded_whole_and_a_certificate_stay_as_on_main(self):
+        # The comparison texts read past such a key and a certificate: a hash or an id in one case (hex, a chat's
+        # channel id, a ULID) and a date's digits read as a key's pieces with a piece of the other case near them, so
+        # lines main keeps were masked. A key's piece of 8 characters or more holds both cases (but about 3 in 100);
+        # its digits alone, about 1 in 1,700 of 4.
+        import random
+        nl = chr(10)
+        key = Base64ReviewSeventeenTest.encoded(Base64ReviewTwentyFourthTest.pem(random.Random(2713)))
+        cert = nl.join(self.certificate())
+        lines = ["vpc-04e33e4a378dfd251 2026-11-02T13:27:00Z INFO took 76ms",
+                 "channel C0HXMYO0FF user U0TOM6TJ3U, 0179d4b9a7fb95b24e87d1db08e56f9ae63dc298 dist",
+                 "ULID 01SKMVR4M7C957VR8SY1BYQGGF sha256:60be6050f7dfb2e31d951afbaa7982f1"]
+        for line in lines:
+            for depth in range(3):
+                text = self.split_written("notes" + nl + key + nl + cert + nl + line + nl + nl + "next paragraph", "",
+                                          depth)
+                for older in (False, True):
+                    with self.subTest(line=line, depth=depth, older=older):
+                        masked = Base64ReviewEighteenTest.masks(text, older)
+                        self.assertIn(self.split_written(line, "", depth), masked)
+
+    def test_a_keys_pieces_of_letters_alone_or_in_a_tags_attributes_past_a_certificate_stay_masked(self):
+        # An automated review of eb1f4ab: a row of a key's pieces had to hold a digit, "+" or "/", which a fragment of
+        # letters alone (about 1 in 28 of 16 characters) lacks, though _MIXED_RUN masks one run on its cases alone;
+        # and a tag's attributes read as part of the separator, so a piece in one ("title") was passed over.
+        nl, mark = chr(10), chr(0xE001)
+        cert = nl.join(self.certificate())
+        letters = "QwZRtHLbNPqRkXvMjWgT"
+        cuts = {f"letters every {w}": [letters[i:i + w] for i in range(0, 20, w)] for w in (4, 5, 10)}
+        quote = chr(34)
+        for between in (" ", "-", "<br>", "&lt;br&gt;", chr(9)):
+            for name, pieces in cuts.items():
+                for depth in range(3):
+                    text = self.split_written("[masked]" + nl + cert + nl + "notes deploy " + mark.join(pieces)
+                                              + " today" + nl + nl + "next paragraph", between, depth)
+                    for older in (False, True):
+                        with self.subTest(cut=name, between=between, depth=depth, older=older):
+                            masked = Base64ReviewEighteenTest.masks(text, older)
+                            self.assertEqual([p for p in pieces if p in masked], [])
+                            self.assertIn("next paragraph", masked)
+        for tag in ("<span title=@{}@>", "&lt;span title=&quot;{}&quot;&gt;", "<a data-x=@{}@ class=@hl@>"):
+            tag = tag.replace("@", quote)
+            words = "notes Qw7Z" + tag.format("Rt5H9LbN") + "Pq2R" + tag.format("Xy8kMn3B") + " today"
+            for depth in range(3):
+                text = self.split_written("[masked]" + nl + cert + nl + words + nl + nl + "next paragraph", "", depth)
+                for older in (False, True):
+                    with self.subTest(tag=tag, depth=depth, older=older):
+                        masked = Base64ReviewEighteenTest.masks(text, older)
+                        self.assertEqual([p for p in ("Qw7Z", "Rt5H9LbN", "Pq2R", "Xy8kMn3B") if p in masked], [])
+                        self.assertIn("next paragraph", masked)
+
     def test_ordinary_words_with_numbers_and_acronyms_past_a_certificate_stay(self):
         # the exception's own: past public material, words with a port, a version, a date, acronyms, paths and a
         # request id in small letters are no key's pieces
