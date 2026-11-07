@@ -54,7 +54,8 @@ def _ranked(db, match, kinds, after, sources, n, before=None):
     # Exact when the list fills from the best rows: an item with no row among them scores below every item with one.
     # A tie across the cut would make "the best rows" ambiguous, so it counts as not filling.
     if len(best) <= TOP_ROWS or best[TOP_ROWS - 1][1] != best[TOP_ROWS][1]:
-        rows = "SELECT value ->> 0 AS id, value ->> 1 AS score FROM json_each(?)"
+        # json_extract, not ->>, which needs SQLite 3.38 (Ubuntu 22.04's Python has 3.37).
+        rows = "SELECT json_extract(value, '$[0]') AS id, json_extract(value, '$[1]') AS score FROM json_each(?)"
         ids = _grouped(db, rows, json.dumps(best[:TOP_ROWS]), kinds, after, sources, n, before)
         if len(best) <= TOP_ROWS or len(ids) >= n:
             return ids
