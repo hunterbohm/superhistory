@@ -4878,6 +4878,49 @@ class Base64ReviewTwentySixthTest(unittest.TestCase):
                         self.assertLess(took[1 << 15], 8 * max(took[1 << 13], 0.05), took)
 
 
+class Base64ReviewTwentyEighthTest(unittest.TestCase):
+    """#34 against main alone, before its twenty-eighth review: a key's rest that stopped early, at a JSON object's
+    next field or a line of words, read on through a tail of tokens to where main's reading of it ends, at a later
+    key's footer in its paragraph; the footer's own words ("RSA", "KEY") are tokens, and read on to their line's end
+    they took what follows the footer on its line, which main keeps: a JSON string's closing quote and brace, words, a
+    later placeholder, a header's name before its token ("Authorization: Token"). The tail ends at the footer now, as
+    main's reading does. Made-up keys only."""
+
+    @staticmethod
+    def escaped(text, depth):
+        for _ in range(depth):
+            text = json.dumps(text)[1:-1]
+        return text
+
+    def check(self, text, expected):
+        for depth in range(3):
+            for older in (False, True):
+                with self.subTest(text=text[-40:], depth=depth, older=older):
+                    self.assertEqual(Base64ReviewEighteenTest.masks(self.escaped(text, depth), older),
+                                     self.escaped(expected, depth))
+
+    def test_what_follows_a_later_keys_footer_on_its_line_stays_as_on_main(self):
+        nl, bs = chr(10), chr(92)
+        cut = "MIICXAIBAAKBgQsckT0R6+xCD0x/WkX3GzksGUSV3prY4ynokM4yR4CB67+j5iA1PjLc" + bs + "nPQk4NUzGl/A1t4VR"
+        body = "MIIEpAIBAAKCAQEAthwMQMkqQIbk1N6jM+qwdveyd2YTXmKMGnWbnzU7B2nNm2Nz0fE/bTGcb" + bs + "naIN5/O9xMCzyZ2MyAT"
+        footer = bs + "n-----END RSA PRIVATE KEY-----"
+        for after, kept in (('"} deploy notes approved today', '"} deploy notes approved today'), ('"}', '"}'),
+                            ('"} Authorization: Token Zq00768052Wm4Np8Rt2Kd9', '"} Authorization: Token [masked]'),
+                            ('"} [masked] next steps', '"} [masked] next steps'),
+                            ('"}' + nl + "next steps", '"}' + nl + "next steps")):
+            # the cut key's object, then the whole key's, on one line or on the next
+            for between in ('"} ', '"}' + nl):
+                self.check('{"key": "[masked]' + bs + "n" + cut + between + '{"key": "[masked]' + bs + "n" + body
+                           + footer + after, '{"key": "[masked]' + kept)
+
+    def test_after_a_line_of_words_in_a_rest_the_footers_line_stays_past_it(self):
+        nl = chr(10)
+        body = "MIIEowIBAAKCAQEAqwdveyd2YTXmKMGnWbnzU7B2nNm2Nz0fE/bTGcbaIN5/O9xMCzyZ2MyAT"
+        for after in (" deploy notes approved today", " [masked] next steps", ""):
+            self.check("[masked]" + nl + body + nl + "notes deploy" + nl + body + nl + "-----END RSA PRIVATE KEY-----"
+                       + after, "[masked]" + after)
+
+
 class HeadlessKeyTest(unittest.TestCase):
     """A key's body without its header, as an older kb's row-by-row remask leaves the chunk after the header's."""
     LINE = "MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7"
