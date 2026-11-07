@@ -3316,6 +3316,33 @@ _BASE64_ONLY_LINE = re.compile(r"[ \t\r\"'#>*,;|\]]*([A-Za-z0-9+/]+=*)?[ \t\r\"'
 # A run of base64 of both cases, as a key's fragment is, past public material: the run today's main would hide that the
 # coordinator's exception for this branch lets no text show (16 characters, as tests/test_mask_against_today.py reads).
 _MIXED_RUN = re.compile(r"(?<![A-Za-z0-9+/])(?=[A-Za-z0-9+/]*[A-Z])(?=[A-Za-z0-9+/]*[a-z])[A-Za-z0-9+/]{16,}")
+# A run of base64, or a web page's entity, whose name is no run ("&amp;"): what _joined_pieces reads.
+_PIECE_OR_ENTITY = re.compile(r"&(?:[A-Za-z][A-Za-z0-9]*|#[0-9]+|#[xX][0-9A-Fa-f]+);|[A-Za-z0-9+/]+=*")
+_CAPITAL = re.compile("[A-Z]")
+_SMALL = re.compile("[a-z]")
+
+
+def _joined_pieces(view):
+    """Whether `view` holds a key's run cut into pieces joined by any separator, as _MIXED_RUN reads one run whole:
+    runs of base64 of four characters or more, each one a key's body could hold (_token_like), with nothing between
+    them that is base64 (any spacing, punctuation, line break, web page's entity or other character), 16 characters
+    or more in all, of both cases. A shorter run, or a word ("notes"), ends such a chain, so ordinary words with a
+    number or an acronym among them ("port 8080", "HTTP") are none; a run of 16 or more alone is _MIXED_RUN's. Read
+    once, in proportion."""
+    total, upper, lower = 0, False, False
+    for m in _PIECE_OR_ENTITY.finditer(view):
+        run = m.group()
+        if run[0] == "&":
+            continue
+        if len(run.rstrip("=")) < 4 or not _token_like(run):
+            total, upper, lower = 0, False, False
+            continue
+        total += len(run)
+        upper = upper or bool(_CAPITAL.search(run))
+        lower = lower or bool(_SMALL.search(run))
+        if total >= 16 and upper and lower:
+            return True
+    return False
 
 
 def _base64_lines(text, start, end):
@@ -3394,13 +3421,13 @@ def _public_prefix(lines):
 
 def _runs_past(text):
     """For the rests of keys in `text`, past the public material each starts with (_public_first): whether
-    text[last:end] holds no run of base64 of both cases (_MIXED_RUN) outside lines that are public material of their
-    own, read as _rest_view reads it joined, failing closed, so a certificate after a line of words ("next steps") is
-    no key's fragment. Such lines are whole public material that a block of lines of base64 starts with
-    (_public_prefix), or a run of its lines between words alone ("notes"), all public material; a line that starts
-    with a placeholder starts a block past it. The text's lines are read once, from the first rest on, and each end is
-    read through once for every rest from which it holds none, as a later one past it holds none too: many rests
-    before the same end cost time in proportion."""
+    text[last:end] holds no run of base64 of both cases (_MIXED_RUN), whole or cut into pieces joined by any separator
+    (_joined_pieces), outside lines that are public material of their own, read as _rest_view reads it joined, failing
+    closed, so a certificate after a line of words ("next steps") is no key's fragment. Such lines are whole public
+    material that a block of lines of base64 starts with (_public_prefix), or a run of its lines between words alone
+    ("notes"), all public material; a line that starts with a placeholder starts a block past it. The text's lines are
+    read once, from the first rest on, and each end is read through once for every rest from which it holds none, as a
+    later one past it holds none too: many rests before the same end cost time in proportion."""
     public = []  # (start, end) of each line of public material, in order
     stops = []
     clean = {}  # for each end, the earliest start found to hold no such run through it
@@ -3465,7 +3492,8 @@ def _runs_past(text):
             pieces.append(text[at:max(at, public[i][0])])
             at, i = max(at, public[i][1]), i + 1
         pieces.append(text[at:end])
-        if _MIXED_RUN.search(_rest_view(" ".join(pieces), joined=True)):
+        view = _rest_view(" ".join(pieces), joined=True)
+        if _MIXED_RUN.search(view) or _joined_pieces(view):
             return False
         clean[end] = min(clean.get(end, last), last)
         return True
