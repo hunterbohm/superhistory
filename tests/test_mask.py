@@ -4564,6 +4564,50 @@ class Base64ReviewTwentySixthTest(unittest.TestCase):
                         masked = Base64ReviewEighteenTest.masks(text, older)
                         self.assertIn(self.split_written(line, "", depth), masked)
 
+    def test_a_keys_pieces_joined_by_short_words_or_written_as_a_tags_name_past_a_certificate_stay_masked(self):
+        # A fresh review of 0e26db3: a short word between pieces ended a row, so pieces of uneven width joined by
+        # " and ", or by a short word and another separator in turn, showed; and a piece written as a tag's or an
+        # entity's name ("<YfZ4kjGsrY>", "&nhYfZ4kj;") read as the tag. Main masks them.
+        nl = chr(10)
+        cert = nl.join(self.certificate())
+        pieces = ["J/mX4", "LFcy4", "Jsp06Q", "g9u8QI"]
+        for first, second in ((" and ", " and "), (" and ", " "), (" or ", "; "), (" a ", ", "), (" to ", nl)):
+            words = "notes " + "".join(p + (first if k % 2 == 0 else second) for k, p in enumerate(pieces[:-1]))
+            words += pieces[-1] + " today"
+            for depth in range(3):
+                text = self.split_written("[masked]" + nl + cert + nl + words + nl + nl + "next paragraph", "", depth)
+                for older in (False, True):
+                    with self.subTest(between=(first, second), depth=depth, older=older):
+                        masked = Base64ReviewEighteenTest.masks(text, older)
+                        self.assertEqual([p for p in pieces if p in masked], [])
+                        self.assertIn("next paragraph", masked)
+        named = ["nhYfZ4kj", "GsrYrjVj", "Qw7ZRt5H", "YY4hKuXX"]
+        for form in ("<{}>", "</{}>", "<{}/>", "&{};", "&lt;{}&gt;", "&lt;/{}&gt;"):
+            words = "notes " + "".join(form.format(p) for p in named) + " today"
+            for depth in range(3):
+                text = self.split_written("[masked]" + nl + cert + nl + words + nl + nl + "next paragraph", "", depth)
+                for older in (False, True):
+                    with self.subTest(form=form, depth=depth, older=older):
+                        masked = Base64ReviewEighteenTest.masks(text, older)
+                        self.assertEqual([p for p in named if p in masked], [])
+                        self.assertIn("next paragraph", masked)
+
+    def test_acronyms_plurals_after_a_key_encoded_whole_and_a_certificate_stay_as_on_main(self):
+        # The same review: an acronym's plural ("APIs", "URLs") read as a key's piece of both cases, so a list of them
+        # past a key encoded whole and a certificate was masked; main keeps it.
+        import random
+        nl = chr(10)
+        key = Base64ReviewSeventeenTest.encoded(Base64ReviewTwentyFourthTest.pem(random.Random(2713)))
+        cert = nl.join(self.certificate())
+        for line in ("We expose APIs, URLs, PDFs, IDEs", "Supports APIs, SDKs and URLs, PDFs, IDs"):
+            for depth in range(3):
+                text = self.split_written("notes" + nl + key + nl + cert + nl + line + nl + nl + "next paragraph", "",
+                                          depth)
+                for older in (False, True):
+                    with self.subTest(line=line, depth=depth, older=older):
+                        masked = Base64ReviewEighteenTest.masks(text, older)
+                        self.assertIn(self.split_written(line, "", depth), masked)
+
     def test_a_keys_pieces_of_letters_alone_or_in_a_tags_attributes_past_a_certificate_stay_masked(self):
         # An automated review of eb1f4ab: a row of a key's pieces had to hold a digit, "+" or "/", which a fragment of
         # letters alone (about 1 in 28 of 16 characters) lacks, though _MIXED_RUN masks one run on its cases alone;
