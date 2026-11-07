@@ -91,9 +91,13 @@ class EdenCase(unittest.TestCase):
 
 
 class EdenSourceTest(EdenCase):
+    def setUp(self):
+        super().setUp()
+        self.upto = self.now - eden.SETTLE  # the newest publish time a run reads
+
     def test_first_run_pages_the_whole_history_and_renders_each_post(self):
         for n in range(eden.PAGE + 3):
-            self.eden.add(str(100 + n), self.now - (n + 1) * 3600, f"post {n} &amp; more")
+            self.eden.add(str(100 + n), self.upto - (n + 1) * 3600, f"post {n} &amp; more")
         events = self.read()
         searches = [body for tool, body in self.eden.calls if tool == "eden_search_social_content"]
         self.assertEqual([s["offset"] for s in searches], [0, eden.PAGE])
@@ -105,80 +109,87 @@ class EdenSourceTest(EdenCase):
         self.assertEqual(first.source_id, "twitter/100")
         self.assertEqual(first.title, "@Sam on X: post 0 & more")
         self.assertEqual(first.content, "X tweet by @Sam\n\npost 0 & more")
-        self.assertEqual(first.ts, "2026-11-07T11:00:00Z")
+        self.assertEqual(first.ts, "2026-11-07T05:00:00Z")
         self.assertEqual(first.meta, {"url": "https://x.com/sam/status/100", "network": "X", "kind": "tweet"})
-        self.assertTrue(all(e.mark == self.now for e in events))
-        self.assertEqual(events[-1], Progress(self.now))
+        self.assertTrue(all(e.mark == self.upto for e in events))
+        self.assertEqual(events[-1], Progress(self.upto))
         analytics = [body for tool, body in self.eden.calls if tool == "eden_list_analytics_posts"]
         self.assertEqual(analytics, [{"platform": "twitter", "limit": 100}], "all the history Eden keeps")
 
-    def test_a_check_sooner_than_every_hours_asks_eden_nothing(self):
-        self.eden.add("1", self.now - 60, "new")
-        self.assertEqual(self.read(since=self.now - 23 * 3600), [])
-        self.assertEqual(self.eden.calls, [])
-        self.assertEqual(self.read(since=self.now - 2 * 3600, every_hours=1)[-1], Progress(self.now))
+    def test_a_post_younger_than_settle_waits_for_a_later_run(self):
+        self.eden.add("1", self.upto - 60, "settled")
+        self.eden.add("2", self.upto + 60, "too new")
+        self.assertEqual([i.source_id for i in self.items(self.read(since=self.upto - DAY))], ["twitter/1"])
+        self.now += DAY
+        self.assertEqual([i.source_id for i in self.items(self.read(since=self.upto))], ["twitter/2"])
 
-    def test_later_runs_ask_from_the_day_before_the_last_check(self):
-        self.eden.add("1", self.now - 10 * DAY, "old")
-        self.eden.add("2", self.now - 3 * 3600, "new")
-        since = self.now - 2 * DAY
+    def test_a_check_sooner_than_every_hours_asks_eden_nothing(self):
+        self.assertEqual(self.read(since=self.upto - 23 * 3600), [])
+        self.assertEqual(self.eden.calls, [])
+        self.assertEqual(self.read(since=self.upto - 2 * 3600, every_hours=1), [Progress(self.upto)])
+
+    def test_later_runs_ask_from_the_last_run_and_read_only_posts_after_it(self):
+        self.eden.add("1", self.upto - 10 * DAY, "old")
+        self.eden.add("2", self.upto - 2.5 * DAY, "same day as the last run, before it")
+        self.eden.add("3", self.upto - 3 * 3600, "new")
+        since = self.upto - 2 * DAY
         events = self.read(since=since)
         search = next(body for tool, body in self.eden.calls if tool == "eden_search_social_content")
-        self.assertEqual(search["publishedAfter"], "2026-11-04")
-        self.assertEqual([i.source_id for i in self.items(events)], ["twitter/2"])
+        self.assertEqual(search["publishedAfter"], datetime.fromtimestamp(since, timezone.utc).strftime("%Y-%m-%d"))
+        self.assertEqual([i.source_id for i in self.items(events)], ["twitter/3"])
         analytics = next(body for tool, body in self.eden.calls if tool == "eden_list_analytics_posts")
-        self.assertEqual(analytics["days"], 3)
+        self.assertEqual(analytics["days"], 4)
 
     def test_no_new_post_needs_no_analytics(self):
-        self.eden.add("1", self.now - 2.5 * DAY, "seen before")
-        events = self.read(since=self.now - 2 * DAY)
+        self.eden.add("1", self.upto - 2.5 * DAY, "seen before")
+        self.assertEqual(self.read(since=self.upto - 2 * DAY), [Progress(self.upto)])
         self.assertEqual(self.eden.tools(), ["eden_search_social_content"])
-        self.assertEqual([i.source_id for i in self.items(events)], ["twitter/1"], "whole, so stored again as is")
+
+    def test_a_thread_stored_whole_is_never_stored_again_by_its_start(self):
+        self.eden.add("1", self.upto - 3600, "thread start")
+        self.eden.heads = {"1"}
+        self.eden.threads["1"] = [("2", "a1", "second post")]
+        events = self.read(since=self.upto - DAY)
+        self.assertEqual(self.items(events)[0].meta["kind"], "thread")
+        self.now += DAY
+        self.eden.heads = set()
+        self.assertEqual(self.read(since=events[-1].mark), [Progress(self.now - eden.SETTLE)])
 
     def test_new_cut_posts_are_read_whole_newest_first_up_to_full_reads(self):
         for n in range(4):
-            self.eden.add(str(n), self.now - (4 - n) * 3600, f"start {n}", cut=True)
+            self.eden.add(str(n), self.upto - (4 - n) * 3600, f"start {n}", cut=True)
             self.eden.whole[str(n)] = f"start {n} and the whole rest"
-        items = self.items(self.read(since=self.now - DAY, full_reads=2))
+        items = self.items(self.read(since=self.upto - DAY, full_reads=2))
         self.assertEqual(self.eden.reads(), ["3", "2"])
         texts = {i.source_id: i.content for i in items}
         self.assertEqual(texts["twitter/3"], "X tweet by @Sam\n\nstart 3 and the whole rest")
         self.assertEqual(texts["twitter/1"], "X tweet by @Sam\n\nstart 1\n\n(Eden returned only the start of this post.)")
 
-    def test_a_cut_or_thread_post_seen_before_is_not_stored_again(self):
-        self.eden.add("1", self.now - 2.5 * DAY, "start", cut=True)
-        self.eden.add("2", self.now - 2.4 * DAY, "thread start")
-        self.eden.add("3", self.now - 3600, "new")
-        self.eden.heads = {"2"}
-        items = self.items(self.read(since=self.now - 2 * DAY))
-        self.assertEqual([i.source_id for i in items], ["twitter/3"])
-        self.assertEqual(self.eden.reads(), [])
-
     def test_a_thread_keeps_the_authors_later_posts_only(self):
-        self.eden.add("1", self.now - 3600, "i built my own")
+        self.eden.add("1", self.upto - 3600, "i built my own")
         self.eden.heads = {"1"}
         self.eden.threads["1"] = [("2", "a1", "how i timed it"), ("3", "b2", "cool!"), ("4", "a1", "repo &gt; here")]
-        [item] = self.items(self.read(since=self.now - DAY))
+        [item] = self.items(self.read(since=self.upto - DAY))
         self.assertEqual(item.content, "X thread by @Sam\n\ni built my own\n\n---\n\nhow i timed it\n\n---\n\nrepo > here")
         self.assertEqual(item.meta["kind"], "thread")
 
     def test_a_thread_left_unread_says_so(self):
-        self.eden.add("1", self.now - 3600, "i built my own")
+        self.eden.add("1", self.upto - 3600, "i built my own")
         self.eden.heads = {"1"}
-        [item] = self.items(self.read(since=self.now - DAY, full_reads=0))
+        [item] = self.items(self.read(since=self.upto - DAY, full_reads=0))
         self.assertEqual(item.content, "X thread by @Sam\n\ni built my own\n\n(The rest of this thread was not read.)")
 
     def test_excludes_match_the_post_id(self):
-        self.eden.add("1", self.now - 3600, "keep")
-        self.eden.add("2", self.now - 1800, "skip", cut=True)
-        items = self.items(self.read(since=self.now - DAY, exclude=("2",)))
+        self.eden.add("1", self.upto - 3600, "keep")
+        self.eden.add("2", self.upto - 1800, "skip", cut=True)
+        items = self.items(self.read(since=self.upto - DAY, exclude=("2",)))
         self.assertEqual([i.source_id for i in items], ["twitter/1"])
         self.assertEqual(self.eden.reads(), [])
 
     def test_a_titled_post_on_another_network(self):
-        self.eden.add("abc", self.now - 3600, "A walk through my setup", platform="youtube", kind="video",
+        self.eden.add("abc", self.upto - 3600, "A walk through my setup", platform="youtube", kind="video",
                       title="Too many agents?")
-        [item] = self.items(self.read(since=self.now - DAY, platform="youtube"))
+        [item] = self.items(self.read(since=self.upto - DAY, platform="youtube"))
         self.assertEqual(item.source_id, "youtube/abc")
         self.assertEqual(item.title, "@Sam on YouTube: Too many agents?")
         self.assertEqual(item.content, "YouTube video by @Sam\n\nToo many agents?\n\nA walk through my setup")

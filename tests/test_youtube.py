@@ -227,12 +227,20 @@ class WaitTest(YouTubeCase):
         self.now += 2 * DAY
         self.assertEqual(self.read(since=self.now - 3 * DAY), [], "never finished: skipped, not stored")
 
-    def test_an_unreadable_video_waits_while_new_and_is_skipped_once_old(self):
+    def test_an_unreadable_video_waits_while_new_then_fails_the_run_until_excluded(self):
         self.channel.add("v1", self.now - 3600, readable=False)
         self.channel.add("v2", self.now - 1800)
         self.assertEqual(self.read(since=self.now - DAY), [])
         self.now += 2 * DAY
-        self.assertEqual([i.source_id for i in self.read(since=self.now - 3 * DAY)], ["v2"])
+        with self.assertRaisesRegex(RuntimeError, "yt-dlp could not read video v1; if it stays unreadable"):
+            self.read(since=self.now - 3 * DAY)
+        self.assertEqual([i.source_id for i in self.read(since=self.now - 3 * DAY, exclude=("v1",))], ["v2"])
+
+    def test_a_video_published_in_the_same_second_as_a_waiting_one_waits_with_it(self):
+        self.channel.add("a1", self.now - 3600)
+        self.channel.add("b1", self.now - 3600, captions={})
+        self.channel.add("a0", self.now - 7200)
+        self.assertEqual([i.source_id for i in self.read(since=self.now - DAY)], ["a0"])
 
     def test_an_unreadable_old_video_off_the_feed_does_not_stop_the_first_run(self):
         self.channel.add("v0", self.now - 90 * DAY, readable=False, in_feed=False)

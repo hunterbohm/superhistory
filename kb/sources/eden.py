@@ -4,12 +4,12 @@ item per post, or per thread. Eden indexes public posts itself, so this needs no
 Eden charges research credits for each call. Its price list (eden.so/skills/eden-mcp/references/errors.md, read
 2026-11-07) puts a search at 0.5 credits, a read of your own analytics at 0.2 and a whole post at 1. So a run asks
 Eden at most once every `every_hours`. It lists the account's posts PAGE at a time, newest first: the whole history
-on the first run, and from the day before the last check after that. Eden's search returns the start of a long post
-and only the first post of a thread, so the run also reads your own analytics, which mark the posts that start a
-thread, and reads whole each new post that was cut short or starts a thread, at most `full_reads` a run, newest
-first. Analytics cover only accounts connected to your Eden workspace; for another account, threads keep their first
-post only. A post seen on an earlier run is stored again only when nothing of it was left out, so a whole post or
-thread already stored is never replaced by its start.
+on the first run, then only posts published since the last run. Each run stops SETTLE short of now, so Eden has time
+to index a post before a run passes it, and no post is read twice, so a whole post or thread already stored is never
+replaced by its start. Eden's search returns the start of a long post and only the first post of a thread, so the run
+also reads your own analytics, which mark the posts that start a thread, and reads whole each new post that was cut
+short or starts a thread, at most `full_reads` a run, newest first. Analytics cover only accounts connected to your
+Eden workspace; for another account, threads keep their first post only.
 
 The key needs Eden's research tools. Make one in Eden under Settings, API.
 
@@ -32,6 +32,7 @@ from kb.sources import Item, Progress, SourceType
 API = "https://mcp.eden.so/v1/tools/"
 PAGE = 50
 DAY = 86400
+SETTLE = 6 * 3600
 HTTP_TIMEOUT = 120
 TEXT_CHARS = 24000
 TRANSCRIPT_CHARS = 200000
@@ -153,28 +154,25 @@ def _render(options, post, full, head):
 
 def extract(run):
     options, since, now = run.options, run.since, time.time()
-    if since is not None and now - since < options.every_hours * 3600:
+    # Each run reads the posts published up to SETTLE ago and marks that time, so a post Eden indexes a little after
+    # it went out is still read, and no post is read twice.
+    upto = now - SETTLE
+    if since is not None and upto - since < options.every_hours * 3600:
         return
-    found = [p for p in posts(options, None if since is None else _date(since - DAY))
-             if not run.excludes(_native_id(p))]
-    if any(since is None or p["publishedAt"] / 1000 > since for p in found):
-        heads = thread_heads(options, None if since is None else min(365, math.ceil((now - since) / DAY) + 1))
-    else:
-        heads = set()
+    found = [p for p in posts(options, None if since is None else _date(since))
+             if (since is None or p["publishedAt"] / 1000 > since) and p["publishedAt"] / 1000 <= upto
+             and not run.excludes(_native_id(p))]
+    heads = thread_heads(options, None if since is None else min(365, math.ceil((now - since) / DAY) + 1)) \
+        if found else set()
     reads = options.full_reads
     for post in found:
         head = _native_id(post) in heads
-        partial = head or bool(post.get("bodyTruncated"))
         full = None
-        if partial:
-            if since is not None and post["publishedAt"] / 1000 <= since:
-                # Stored on an earlier run, whole when a read was left for it.
-                continue
-            if reads > 0:
-                full = whole(options, post)
-                reads -= 1
-        yield _render(options, post, full, head)._replace(mark=now)
-    yield Progress(now)
+        if (head or post.get("bodyTruncated")) and reads > 0:
+            full = whole(options, post)
+            reads -= 1
+        yield _render(options, post, full, head)._replace(mark=upto)
+    yield Progress(upto)
 
 
 def _account(options):

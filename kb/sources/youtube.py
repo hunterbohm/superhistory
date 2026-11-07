@@ -5,7 +5,8 @@ The first run lists the channel's videos, shorts and streams with yt-dlp and rea
 channel's feed, which lists its newest FEED_SIZE uploads with their publish times, and read only those published
 since the last run; when every feed entry is new, the run lists the whole channel again so none is missed. A video
 that is still live, still processing, or has no captions yet is left for a later run, up to WAIT_DAYS after it was
-published, and so is every video published after it, so the watermark never passes it.
+published, and so is every video published at or after it, so the watermark never passes it. A video in the feed
+that yt-dlp cannot read fails the run, so it is tried again; exclude its id if it stays unreadable.
 
 `channel` is "@handle", a channel URL or a channel id ("UC..."). `yt-dlp` must be installed.
 
@@ -222,17 +223,27 @@ def extract(run):
         return published.get(vid) or info.get("timestamp") or info.get("release_timestamp") or 0
 
     order = sorted((vid for vid in ids if since is None or mark(vid) > since), key=lambda vid: (mark(vid), vid))
+    ready, wait = [], None
     for vid in order:
         info, words = videos.get(vid, (None, ""))
-        if info is not None and run.excludes(f"{_kind(info)}/{vid}"):
+        if run.excludes(vid if info is None else f"{_kind(info)}/{vid}"):
             continue
-        if info is None or not _ready(info, words, options):
-            if mark(vid) and now - mark(vid) < WAIT_DAYS * DAY:
-                # Captions and a finished stream come some hours after publishing; a later run reads it again.
-                return
-            if info is None or info.get("live_status") in NOT_READY:
-                continue
-        yield _render(info, words, mark(vid))
+        if info is not None and _ready(info, words, options):
+            ready.append((info, words))
+        elif mark(vid) and now - mark(vid) < WAIT_DAYS * DAY:
+            # Captions and a finished stream come some hours after publishing; a later run reads it again.
+            wait = mark(vid)
+            break
+        elif info is None and vid in published:
+            # A public upload yt-dlp could not read now. Skipping it would move the watermark past it for good.
+            raise RuntimeError(f"yt-dlp could not read video {vid}; if it stays unreadable, add it to exclude")
+        elif info is not None and info.get("live_status") not in NOT_READY:
+            ready.append((info, words))
+    for info, words in ready:
+        # A video published in the same second as the one waiting would move the watermark onto it.
+        if wait is not None and mark(info["id"]) >= wait:
+            return
+        yield _render(info, words, mark(info["id"]))
 
 
 def _account(options):
