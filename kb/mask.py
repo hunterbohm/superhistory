@@ -825,9 +825,11 @@ def _wrapped_lines(text, start, end):
 # For each encoding of a key's word, the byte of its base64 group of 4 characters the word starts at, and the character
 # its encoding starts at, which fix how the groups of the base64 around it fall.
 _KEY_WORD_AT = {code: (k, -(-8 * k // 6)) for word in _KEY_WORDS for k, code in enumerate(_base64_of(word))}
-# A key's header or footer, each label main reads written plain: a PEM key's, an OpenPGP key's, and SSH2's.
-_KEY_FRAME = re.compile(rb"-----(BEGIN|END) (?:[A-Z0-9 ]*PRIVATE KEY|PGP (?:PRIVATE|SECRET) KEY BLOCK)-----"
-                        rb"|---- (BEGIN|END) SSH2 [A-Z0-9 ]*PRIVATE KEY ----")
+# A key's header or footer, each label main reads written plain: a PEM key's, an OpenPGP key's, and SSH2's, its words
+# before "PRIVATE KEY" up to 200 bytes, far past any a key tool writes ("ENCRYPTED", "OPENSSH", "SSH2 ENCRYPTED"):
+# each key word reads its label back to the dashes, so a run of label words read whole by each took time in its square.
+_KEY_FRAME = re.compile(rb"-----(BEGIN|END) (?:[A-Z0-9 ]{0,200}PRIVATE KEY|PGP (?:PRIVATE|SECRET) KEY BLOCK)-----"
+                        rb"|---- (BEGIN|END) SSH2 [A-Z0-9 ]{0,200}PRIVATE KEY ----")
 _LABEL = b"-ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 "
 # A control character, which no text holds: any but horizontal space and a line break (_HORIZONTAL, _BREAK_CHARACTERS).
 _TEXT_CONTROL = re.compile(r"[\x00-\x08\x0e-\x1b\x7f-\x84\x86-\x9f]")
@@ -897,8 +899,8 @@ def _frame(joined, starts, found, refused=False):
         at = (group - lo) // 4 * 3 + byte
         m = next((m for m in _KEY_FRAME.finditer(decoded) if m.start() <= at < m.end()), None)
         if m is None:
-            if not whole and len(decoded[:at].rstrip(_LABEL)) <= 8:
-                back *= 2  # its label may start before the window
+            if not whole and back < 512 and len(decoded[:at].rstrip(_LABEL)) <= 8:
+                back *= 2  # its label, up to _KEY_FRAME's 200 bytes, may start before the window
                 continue
             return None
         lead = _lead_start(decoded, m.start())
@@ -2917,11 +2919,23 @@ def _skipped_line(text, at):
     return None
 
 
+# JSON's escaped slash ("\\/", as PHP writes JSON), behind any number of backslashes: a slash of the base64 it is in. A
+# run of backslashes is tried once, from its start.
+_ESCAPED_SLASH = re.compile(r"(?<!\\)\\+/")
+
+
+def _rest_view(line):
+    """A line as a key's rest is read: without the characters a reader does not see, JSON's escaped slash read as the
+    slash it is (_ESCAPED_SLASH), and any other escape of a space or a line break as a space."""
+    return _KEY_ESCAPE.sub(" ", _ESCAPED_SLASH.sub("/", INVISIBLE.sub("", line)))
+
+
 def _holds_token(text, start, end):
     """Whether text[start:end] holds a run of base64 a key's fragment could be (_token_like), read past escapes,
     placeholders and the characters a reader does not see, as _token_tail reads its tokens: one written as an escape
-    ("\\u200b") goes before an escape reads as a space, so a run it splits reads whole."""
-    line = _KEY_ESCAPE.sub(" ", INVISIBLE.sub("", text[start:end])).replace("[masked]", " ")
+    ("\\u200b") goes before an escape reads as a space, so a run it splits reads whole, and so does one JSON's escaped
+    slash splits (_rest_view)."""
+    line = _rest_view(text[start:end]).replace("[masked]", " ")
     return any(_token_like(m.group()) for m in _RUN.finditer(line))
 
 
@@ -3324,7 +3338,7 @@ def _runs_past(text):
             pieces.append(text[at:max(at, public[i][0])])
             at, i = max(at, public[i][1]), i + 1
         pieces.append(text[at:end])
-        if _MIXED_RUN.search(INVISIBLE.sub("", _KEY_ESCAPE.sub("", " ".join(pieces)))):
+        if _MIXED_RUN.search(INVISIBLE.sub("", _KEY_ESCAPE.sub("", _ESCAPED_SLASH.sub("/", " ".join(pieces))))):
             return False
         clean[end] = min(clean.get(end, last), last)
         return True
@@ -3378,18 +3392,11 @@ def _rest_ends(text):
 # after a placeholder is read so too, glued to it ("[masked]MIIC...") or after any run of what is no letter or digit:
 # space of any width, quote, comment and list marks, escapes, "<br>" and more placeholders ("[masked] \\t[masked]MIIC"),
 # as main's rest reads a body past any of them, and before any such run but "=". Each line is read as a reader sees it
-# (_cut_view): JSON's escaped slash ("\\/", as PHP writes JSON) is a slash of the base64, and other escapes are spaces.
+# (_rest_view): JSON's escaped slash ("\\/", as PHP writes JSON) is a slash of the base64, and other escapes are spaces.
 _CUT_LEAD = r"\[masked\]|\[(?!masked\])|<br\s*/?>|<(?!br\s*/?>)|[^A-Za-z0-9+/\[<]|[+/](?![A-Za-z0-9+/])"
 _CUT_LINE = re.compile(rf"(?:{_CUT_LEAD})*([A-Za-z0-9+/]+)[^A-Za-z0-9+/=]*")
 _CUT_ABOVE = re.compile(r"(?<![A-Za-z0-9+/=])([A-Za-z0-9+/]+)[^A-Za-z0-9+/=]*\Z")
 _CUT_END = re.compile(r"(?:\r?\n|(?<!\\)\\+(?:r\\+)?n)[ \t\"'#>*-]*([A-Za-z0-9+/]+)")
-_ESCAPED_SLASH = re.compile(r"(?<!\\)\\+/")  # a run of backslashes tried once, from its start
-
-
-def _cut_view(line):
-    """A line as the tail rule reads it: without the characters a reader does not see, JSON's escaped slash, behind any
-    number of backslashes, read as the slash it is, and any other escape of a space or a line break as a space."""
-    return _KEY_ESCAPE.sub(" ", _ESCAPED_SLASH.sub("/", INVISIBLE.sub("", line)))
 
 
 def _cut_body_end(text, start, stop):
@@ -3399,10 +3406,10 @@ def _cut_body_end(text, start, stop):
     breaks = []  # the rest's last two line breaks: each stretch's rest is read once (_rest_ends), in proportion
     for m in _LINE_BREAK.finditer(text, start, stop):
         breaks[:] = breaks[-1:] + [m.span()]
-    last = _CUT_LINE.fullmatch(_cut_view(text[breaks[-1][1] if breaks else start:stop]))
+    last = _CUT_LINE.fullmatch(_rest_view(text[breaks[-1][1] if breaks else start:stop]))
     if not last:
         return stop
-    above = breaks and _CUT_ABOVE.search(_cut_view(text[breaks[-2][1] if len(breaks) > 1 else start:breaks[-1][0]]))
+    above = breaks and _CUT_ABOVE.search(_rest_view(text[breaks[-2][1] if len(breaks) > 1 else start:breaks[-1][0]]))
     if above and len(last.group(1)) < len(above.group(1)) or _public_rest(text[start:stop]):
         return stop
     return _CUT_END.match(text, stop).end(1)
