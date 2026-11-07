@@ -3014,10 +3014,15 @@ def _skipped_line(text, at):
 _ESCAPED_SLASH = re.compile(r"(?<!\\)\\+/")
 
 
+# A quote as a web page writes it, one of the entities the readers of a line's lead accept (_QUOTE_TOKENS).
+_QUOTE_ENTITY = re.compile(_pattern(tuple(token for token in _QUOTE_TOKENS if token[0][0] == "&")))
+
+
 def _rest_view(line):
     """A line as a key's rest is read: without the characters a reader does not see, JSON's escaped slash read as the
-    slash it is (_ESCAPED_SLASH), and any other escape of a space or a line break as a space."""
-    return _KEY_ESCAPE.sub(" ", _ESCAPED_SLASH.sub("/", INVISIBLE.sub("", line)))
+    slash it is (_ESCAPED_SLASH), and any other escape of a space or a line break, and a quote written as a web page's
+    entity (_QUOTE_ENTITY), as a space."""
+    return _QUOTE_ENTITY.sub(" ", _KEY_ESCAPE.sub(" ", _ESCAPED_SLASH.sub("/", INVISIBLE.sub("", line))))
 
 
 def _holds_token(text, start, end):
