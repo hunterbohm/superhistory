@@ -103,15 +103,6 @@ def _calls(entry):
     return (), ()
 
 
-def _replied(entry):
-    """Whether a transcript line is the agent's own output in the main conversation: text, thinking or a tool call."""
-    if entry.get("isSidechain"):
-        return False
-    return entry.get("type") == "assistant" or (
-        entry.get("type") == "response_item" and (entry.get("payload") or {}).get("type") != "message"
-        or (entry.get("payload") or {}).get("role") == "assistant")
-
-
 def turn_state(transcript_path, prompt, offset):
     """Where the turn this prompt started stands: "ended" (an end line after the prompt's own line), "ready" (a
     tool call is still running, so the agent makes another model request, which reads the records) or "busy"
@@ -139,19 +130,22 @@ def turn_state(transcript_path, prompt, offset):
     # A match after `offset` can be the same words sent again after this turn ended, so the turn starts at the last
     # match before it. Claude Code writes the message before it starts the hook, so that match is this message.
     anchor = before[-1] if before else offset - 1
-    return _scan(entries, anchor)[0]
+    return _scan(entries, anchor, None if before else prompt.strip())[0]
 
 
-def _scan(entries, anchor):
-    """(state, where the turn ended or None) for the lines after `anchor`."""
-    running, answered = set(), False
+def _scan(entries, anchor, own=None):
+    """(state, where the turn ended or None) for the lines after `anchor`. Any later message from the user ends the
+    turn, however it ended (an API error, say), except the first one equal to `own`: when the turn starts at the
+    hook's offset, the prompt's own line may still come."""
+    running = set()
     for at, entry in entries:
         if at <= anchor:
             continue
-        # A new message after the agent replied ends the turn too, however the turn ended (an API error, say).
-        if _ends_turn(entry) or (answered and (_turn(entry) or ("",))[0] == "user"):
+        turn = _turn(entry)
+        if turn and turn[0] == "user" and own is not None and turn[1] == own:
+            own = None
+        elif _ends_turn(entry) or (turn and turn[0] == "user"):
             return "ended", at
-        answered = answered or _replied(entry)
         opened, closed = _calls(entry)
         running.update(opened)
         running.difference_update(closed)
@@ -163,8 +157,10 @@ def await_reader(transcript_path, prompt, offset, deadline, poll=0.25):
     turn ends first; "deadline" when `deadline` (time.monotonic) passes."""
     while True:
         state = turn_state(transcript_path, prompt, offset)
-        if state != "busy":
+        if state == "ended":
             return state
         if time.monotonic() >= deadline:
             return "deadline"
+        if state == "ready":
+            return state
         time.sleep(poll)

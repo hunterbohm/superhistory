@@ -99,7 +99,11 @@ def run(paths, config, name, stdin_text):
     agent = load(name)
     # Asked of the installed entry, not assumed: an entry from before background hooks still makes the agent wait,
     # and waiting there for a tool call would hold every message up.
-    if agent.in_background and agent.in_background(os.path.expanduser("~")):
+    try:
+        background = bool(agent.in_background and agent.in_background(os.path.expanduser("~")))
+    except Exception:
+        return ""
+    if background:
         # Printed while the model writes its last answer, records would come with the next message, which is about
         # something else. They go out only while a tool call runs, since the request after it reads them.
         def wanted():

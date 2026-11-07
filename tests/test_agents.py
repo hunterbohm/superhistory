@@ -192,6 +192,18 @@ class RunTest(unittest.TestCase):
                                        {"type": "response_item", "payload": {"type": "custom_tool_call",
                                                                              "call_id": "c1"}}]), "")
 
+    def test_a_turn_with_no_reply_ends_at_the_next_message(self):
+        self.assertEqual(self.deliver([{"type": "user", "message": {"content": "what did she say"}},
+                                       {"type": "user", "message": {"content": "never mind, other thing"}},
+                                       CLAUDE_TOOL]), "")
+
+    def test_an_unreadable_settings_file_prints_nothing(self):
+        self.background = None
+        real_load = agents.load
+        with mock.patch.object(agents, "load", side_effect=lambda name: real_load(name)._replace(
+                in_background=lambda home: 1 / 0)):
+            self.assertEqual(self.run_hook(json.dumps({"prompt": "what did she say", "session_id": "s"})), "")
+
     def test_a_background_hook_without_a_transcript_gets_nothing(self):
         self.answer.side_effect = lambda *args, still_wanted=None: "RECORDS" if still_wanted() else ""
         self.assertEqual(self.run_hook(json.dumps({"prompt": "what did she say", "session_id": "s"})), "")
