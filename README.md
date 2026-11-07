@@ -297,7 +297,9 @@ Known limits:
   reads none, ends where its lines of base64 end, so a piece further down shows. As on main, a rest starts only past
   what main reads before a key's body: after a no-break or other wide space escaped in JSON, a backtick (written or
   as a web page's entity, "&grave;"), a quote's entity padded with more than three zeros ("&#000034;") or "- ", or
-  with JSON's escaped slash ("\/") in the first 40 characters of its first line, a body after a placeholder shows.
+  with JSON's escaped slash ("\/") in the first 40 characters of its first line, a body after a placeholder shows;
+  and a run glued to a placeholder ends at a backslash, as main's does, so past "[masked]Abcd\/" the rest of its
+  line shows.
 - After a placeholder where a key was masked, public material (a certificate, a public key) and lines of words in the
   same paragraph are masked with it where a line of base64 past them reads as a possible fragment of a key, base64 of
   words included ("bm90ZXMg..."); in JSON inside JSON, a blank line does not end that paragraph. Main keeps them only
