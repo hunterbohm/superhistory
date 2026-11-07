@@ -4,7 +4,7 @@ import re
 import sqlite3
 from datetime import datetime, timezone
 
-from kb import store
+from kb import decisions, store
 from kb.mask import mask, mask_all
 from kb.store import SUMMARY_KINDS, TOKENIZE, current, item_names, secret_id, unversioned
 
@@ -107,10 +107,12 @@ def _age_days(ts, now):
     return abs((now - t).total_seconds()) / 86400
 
 
-def search(db, query, after=None, sources=(), limit=10, before=None, keep=None):
+def search(db, query, after=None, sources=(), limit=10, before=None, keep=None, history=False):
     """sources: names to search in, or () for every source.
     before: an ISO time; the search then sees only older items and ranks recency from that time.
-    keep: a test on each hit, applied before the limit so skipped hits don't use up slots."""
+    keep: a test on each hit, applied before the limit so skipped hits don't use up slots.
+    history: also find decisions a newer one replaced or the owner rejected, which are left out by default; such a hit
+    names what replaced it in hit["replaced_by"]."""
     terms = fts_terms(query)
     if not terms:
         return []
@@ -128,6 +130,9 @@ def search(db, query, after=None, sources=(), limit=10, before=None, keep=None):
     rows = db.execute(
         f"SELECT id, kind, source, source_id, ts, title, content, metadata FROM docs "
         f"WHERE id IN ({','.join('?' * len(fused))})", list(fused)).fetchall()
+    out = decisions.hidden(db, [(r[0], r[2], r[3], r[1], r[6]) for r in rows])
+    if not history:
+        rows = [r for r in rows if r[0] not in out]
     marks = store.superseded(db, {(r[2], r[3]) for r in rows})
     best, total = {}, {}
     for row in rows:
@@ -137,7 +142,8 @@ def search(db, query, after=None, sources=(), limit=10, before=None, keep=None):
         if superseded:
             score *= 0.5
         hit = {"id": rid, "kind": kind, "source": src, "source_id": sid, "ts": ts, "title": title,
-               "content": content, "meta": json.loads(meta), "superseded_by": superseded, "score": score}
+               "content": content, "meta": json.loads(meta), "superseded_by": superseded, "score": score,
+               "replaced_by": out.get(rid)}
         total[(src, sid)] = total.get((src, sid), 0.0) + score
         if (src, sid) not in best or score > best[(src, sid)]["score"]:
             best[(src, sid)] = hit
@@ -165,12 +171,12 @@ def search(db, query, after=None, sources=(), limit=10, before=None, keep=None):
     return hits
 
 
-def search_stores(stores, query, after=None, sources=(), limit=10, before=None, keep=None):
+def search_stores(stores, query, after=None, sources=(), limit=10, before=None, keep=None, history=False):
     """search() in each of several stores, merged best first. `stores` is [(label, db), ...]. Row ids are unique only
     within one store, so each hit names its store in hit["store"]."""
     hits = []
     for label, db in stores:
-        for hit in search(db, query, after, sources, limit, before, keep):
+        for hit in search(db, query, after, sources, limit, before, keep, history):
             hits.append({**hit, "store": label})
     return sorted(hits, key=lambda h: -h["score"])[:limit]
 

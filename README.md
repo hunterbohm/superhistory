@@ -68,7 +68,7 @@ roots = ["~/code"]
 
 | Command | What it does |
 | --- | --- |
-| `kb search "words"` | Searches everything. `--source`, `--after` and `--limit` narrow it. |
+| `kb search "words"` | Searches everything. `--source`, `--after` and `--limit` narrow it. `--history` also shows decisions a newer one replaced. |
 | `kb get ID` | Prints the stored text of a search hit, a page at a time. |
 | `kb ingest` | Reads every source now, then summarizes new long items. |
 | `kb stats` | Shows how many records each source has and which sources failed. |
@@ -78,6 +78,9 @@ roots = ["~/code"]
 | `kb ai list`, `kb ai test` | Lists the AI plug-ins, or makes one tiny call and says which plug-in answered. |
 | `kb setup`, `kb try` | Sets kb up, or shows it on a made-up month. |
 | `kb login NAME` | Signs a Gmail source in with your own Google OAuth client. |
+| `kb decisions run` | Judges new decision records: whether they are your own words or an agent's report, and which older decision each one replaces. Ingest runs it once a day when `[decisions] owner` is set. |
+| `kb decisions review`, `confirm ID`, `reject ID` | Lists agent-reported decisions that matter and that your own words don't back, and records your answer. |
+| `kb decisions drift` | Lists lines in your agents' instruction files that a newer decision of yours contradicts, each with a fix. It changes nothing. |
 
 ## Sources
 

@@ -16,6 +16,7 @@ folder names, job labels and printed text come from it, so a rename is one edit.
 | `kb/search.py` | Keyword search with rank fusion, term coverage and recency. |
 | `kb/check.py` | The check: one model call writes a query, search finds candidates, a second call keeps the ones that fit. |
 | `kb/summarize.py` | Segment and atom rows for long items. |
+| `kb/decisions.py` | The decision pass: who made each decision atom, which newer one replaces it, and instruction lines it contradicts. Its `decisions` table keys a judgment by item and text hash, and search leaves out replaced decisions. It never changes `docs`. A personal kb carries a copy of it, which matches this file from the `# BODY` line on. |
 | `kb/ingest.py` | The runner that reads every source and stores what changed. |
 | `kb/ids.py` | The install id and the prefix on every stored `source_id`. |
 | `kb/ai/` | AI plug-ins. Each one answers `ask(prompt, timeout)` with the model's text. |
