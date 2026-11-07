@@ -4592,6 +4592,42 @@ class Base64ReviewTwentySixthTest(unittest.TestCase):
                         self.assertEqual([p for p in named if p in masked], [])
                         self.assertIn("next paragraph", masked)
 
+    def test_past_a_key_encoded_whole_and_a_certificate_the_listed_words_are_masked_to_the_paragraphs_end(self):
+        # The coordinator's listed limit: past a key encoded whole as base64 (main leaves it readable; this branch
+        # masks it) and a certificate, what follows is that placeholder's rest, read failing closed, so words with a
+        # number, short hashes, ids of one width and camel case with a capital vowel read as a key's pieces and are
+        # masked, where main and 369b575 keep them. It only masks, and only to where the rest ends: the paragraph's
+        # end, so a next paragraph, even one holding such words, stays. In JSON inside JSON a blank line ends no rest,
+        # on main too, so there the rest runs on to its last line holding such words. Words with none stay.
+        import random
+        nl = chr(10)
+        key = Base64ReviewSeventeenTest.encoded(Base64ReviewTwentyFourthTest.pem(random.Random(2713)))
+        cert = nl.join(self.certificate())
+        listed = ["java -Xmx512m -jar app.jar opt0 opt1 opt2 opt3", "Merge: ebe75d1 1fe02a3 by Walrus1687",
+                  "The address is an IPv4Network or IPv6Network object.", "const asyncId = triggerAsyncId(resourceArn)",
+                  "Sign in with LinkedIn, OAuth, DevOps"]
+        kept = "We use iPhone, GitHub, macOS and YouTube today"
+        such = "Merge: d61f60d 62547c8 by Facebook880"
+        for line in listed + [kept]:
+            for after in ("deploy today", such):
+                for depth in range(3):
+                    raw = "notes" + nl + key + nl + cert + nl + line + nl + nl + "next paragraph" + nl + after
+                    text = self.split_written(raw, "", depth)
+                    runs_on = depth == 2 and after == such
+                    for older in (False, True):
+                        with self.subTest(line=line, after=after, depth=depth, older=older):
+                            masked = Base64ReviewEighteenTest.masks(text, older)
+                            self.assertNotIn(key.split(nl)[1], masked)
+                            if line == kept and not runs_on:
+                                self.assertIn(self.split_written(line, "", depth), masked)
+                            else:
+                                self.assertNotIn(self.split_written(line, "", depth), masked)
+                            second = self.split_written("next paragraph" + nl + after, "", depth)
+                            if runs_on:
+                                self.assertNotIn(self.split_written(such, "", depth), masked)
+                            else:
+                                self.assertIn(second, masked)
+
     def test_hex_constants_after_a_key_encoded_whole_and_a_certificate_stay_as_on_main(self):
         # The comparison texts' code read past such a key and a certificate: hex constants written "0x2A" are of both
         # cases ("x" and "A"), so a list of them read as a key's pieces; main keeps it. A key's piece of four
