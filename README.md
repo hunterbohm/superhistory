@@ -282,7 +282,7 @@ Known limits:
   This masks more.
   A header or footer whose words before "PRIVATE KEY" run past 200 bytes, far past any a key tool writes, is read as
   none, so a key encoded with one shows, as on main.
-- A piece of a private key's base64 with neither its header nor its footer shows, as on main, unless a key's rest
+- A lone piece of a private key's base64 with neither header nor footer shows, as on main, unless a key's rest
   after a placeholder, as one where a key was masked, takes it. A rest starts with base64 glued to the placeholder, or
   with a line right after it of base64 alone, 40 characters or more, starting as a key's body does ("MIIE..."); in a
   row an older kb stored, 36 characters or more with a capital, a small letter and a digit, "+" or "/" are enough, and
@@ -302,9 +302,11 @@ Known limits:
   line shows.
 - After a placeholder where a key was masked, public material (a certificate, a public key) and lines of words in the
   same paragraph are masked with it where a line of base64 past them reads as a possible fragment of a key, base64 of
-  words included ("bm90ZXMg..."); in JSON inside JSON, a blank line does not end that paragraph. Main keeps them only
-  as it leaves a key written as base64 readable; after a key in plain text it masks them too. This masks more, and
-  shows nothing.
+  words included ("bm90ZXMg..."), or where anything past them holds a run of base64 of both cases, 16 characters or
+  more, whole or as one key's run cut into pieces of four or more and joined by any separator (a space, a hyphen, a
+  comma, a line break, a web page's entity or an escape); in JSON inside JSON, a blank line does not end that
+  paragraph. Main keeps them only as it leaves a key written as base64 readable; after a key in plain text it masks
+  them too. This masks more, and shows nothing. A stray piece shorter than that among the words past them stays.
 - A knowledge base that an older kb wrote, before each row recorded how it was masked, does not open: an older kb's
   masking can leave a secret that no pattern finds afterwards. kb says so and names `kb rebuild`, which reads your
   sources into a fresh one, each as far back as its oldest item in the old one. When a source no longer has some of
