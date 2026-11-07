@@ -310,6 +310,33 @@ class DecisionTest(Store):
                          [("Run composio connect ", [new])])
         self.assertTrue(hits[0]["snippet"].startswith("[A decision here was replaced later"))
 
+    def test_an_older_decision_that_arrives_after_its_replacement_was_judged_is_still_checked(self):
+        new = "Composio switched off; Executor replaces it for app accounts."
+        old = "Composio CLI is the default for connected app accounts."
+        self.session("new", "2026-10-24T10:00:00Z", [new])
+        self.run_pass(Model(lambda text, older, _: answer()))
+        self.session("old", "2026-06-12T10:00:00Z", [old])  # summarized late, as a backfill runs newest first
+        checked = []
+        model = Model(lambda text, older, _: answer(), verify=lambda o, n: checked.append((o, n)) or True)
+        self.assertEqual(self.run_pass(model).replaced, 1)
+        self.assertEqual(checked, [(old, new)])
+        self.assertEqual(self.ids("Composio connected app accounts"), [new])
+
+    def test_a_late_decision_the_check_turns_down_stays(self):
+        self.session("new", "2026-10-24T10:00:00Z", ["Executor holds the Gmail accounts for app connections."])
+        self.run_pass(Model(lambda text, older, _: answer()))
+        self.session("old", "2026-06-12T10:00:00Z", ["Gmail app connections need a weekly token check."])
+        self.assertEqual(self.run_pass(Model(lambda text, older, _: answer(), verify=lambda o, n: False)).replaced, 0)
+        self.assertIn("Gmail app connections need a weekly token check.", self.ids("Gmail app connections"))
+
+    def test_a_new_decision_with_nothing_newer_makes_no_check_call(self):
+        self.session("old", "2026-06-12T10:00:00Z", ["Composio CLI is the default for connected app accounts."])
+        self.run_pass(Model(lambda text, older, _: answer()))
+        self.session("new", "2026-10-24T10:00:00Z", ["Composio stays the default for connected app accounts."])
+        model = Model(lambda text, older, _: answer())
+        self.run_pass(model)
+        self.assertFalse([p for p in model.calls if p.system.startswith("You check")])
+
     def test_every_copy_of_a_replaced_decision_in_one_item_is_hidden(self):
         old = "Composio CLI is the default for connected app accounts."
         self.session("old", "2026-06-12T10:00:00Z", [old, old, old])

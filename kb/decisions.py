@@ -57,6 +57,9 @@ ANSWERS = ("confirmed", "rejected")
 BATCH = 8
 CHECK_BATCH = 20
 CANDIDATES = 8
+# A decision that reaches the store after newer ones were judged (an old item summarized late) is put to the check
+# against this many of them: they were judged before it existed, so none of them could name it as replaced.
+LATE_CANDIDATES = 3
 PASSAGES = 3
 PASSAGE_CHARS = 500
 TEXT_CHARS = 500
@@ -197,21 +200,27 @@ class Index:
             self.db.execute("INSERT INTO d(rowid, text) VALUES (?, ?)", (i, d.text))
 
     def older(self, d, k=CANDIDATES):
-        """Up to k decisions older than d, from other items, that share its words, best first, one per text in each item.
-        The same words in another item are shown on their own: they may be another client's or site's rule, and only a
-        check of that pair can mark them."""
+        """Up to k decisions older than d, from other items, that share its words, best first, one per text in each
+        item. The same words in another item are shown on their own: they may be another client's or site's rule, and
+        only a check of that pair can mark them."""
+        return self._near(d, k, lambda c: c.ts < d.ts)
+
+    def newer(self, d, among, k=LATE_CANDIDATES):
+        """Up to k decisions in `among` (refs) newer than d, from other items, that share its words, best first."""
+        return self._near(d, k, lambda c: c.ts > d.ts and c.ref in among)
+
+    def _near(self, d, k, wanted):
         words = terms(d.text)[:30]
         if not words:
             return []
         match = " OR ".join(f'"{w}"' for w in words)
         found, seen = [], set()
-        # Read on past newer and repeated matches until k qualify, however far down they rank.
+        # Read on past matches that do not qualify until k do, however far down they rank.
         for (i,) in self.db.execute("SELECT rowid FROM d WHERE d MATCH ? ORDER BY bm25(d), rowid", (match,)):
             c = self.items[i]
-            same = c.ref
-            if c.ts >= d.ts or (c.source, c.source_id) == (d.source, d.source_id) or same in seen:
+            if not wanted(c) or (c.source, c.source_id) == (d.source, d.source_id) or c.ref in seen:
                 continue
-            seen.add(same)
+            seen.add(c.ref)
             found.append(c)
             if len(found) == k:
                 break
@@ -544,7 +553,8 @@ def run(db, ask, owner, kind_of, log, limit=None, workers=WORKERS):
     todo = [d for d in current if d.ref not in judged]
     todo = todo[-limit:] if limit else todo
     out = _out_of_view(db)
-    work = prepare(db, todo, Index([d for d in current if d.ref not in out]), owner, kind_of)
+    index = Index([d for d in current if d.ref not in out])
+    work = prepare(db, todo, index, owner, kind_of)
     batches = [work[i:i + BATCH] for i in range(0, len(work), BATCH)]
     done = proposed = failed = 0
     authors = dict.fromkeys(AUTHORS, 0)
@@ -567,6 +577,10 @@ def run(db, ask, owner, kind_of, log, limit=None, workers=WORKERS):
                             proposed += 1
                             db.execute("INSERT OR IGNORE INTO decision_proposals VALUES (?,?,?,?,?,?,?)",
                                        (*old.ref, *d.ref, mask(found[pos].why)))
+                    for new in index.newer(d, judged):
+                        proposed += 1
+                        db.execute("INSERT OR IGNORE INTO decision_proposals VALUES (?,?,?,?,?,?,?)",
+                                   (*d.ref, *new.ref, "judged before this older decision reached the store"))
     checks, replaced = check_proposals(db, ask, owner[0], current, log, workers)
     calls = len(batches) + checks
     with db:
