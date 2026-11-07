@@ -181,6 +181,17 @@ class RunTest(unittest.TestCase):
         out = self.run_hook(json.dumps({"prompt": "what did she say", "session_id": "s", "transcript_path": "/x"}))
         self.assertEqual(self.delivered(out), "RECORDS")
 
+    def test_a_turn_that_ended_without_an_end_line_ends_at_the_next_message(self):
+        api_error = {"type": "assistant", "message": {"content": [{"type": "text", "text": "API Error: 529"}],
+                                                      "stop_reason": "stop_sequence"}}
+        self.assertEqual(self.deliver([api_error, {"type": "user", "message": {"content": "try again"}},
+                                       CLAUDE_TOOL]), "")
+        codex_next = {"type": "response_item", "payload": {"type": "message", "role": "user",
+                                                           "content": [{"type": "input_text", "text": "try again"}]}}
+        self.assertEqual(self.deliver([{"type": "response_item", "payload": {"type": "reasoning"}}, codex_next,
+                                       {"type": "response_item", "payload": {"type": "custom_tool_call",
+                                                                             "call_id": "c1"}}]), "")
+
     def test_a_background_hook_without_a_transcript_gets_nothing(self):
         self.answer.side_effect = lambda *args, still_wanted=None: "RECORDS" if still_wanted() else ""
         self.assertEqual(self.run_hook(json.dumps({"prompt": "what did she say", "session_id": "s"})), "")

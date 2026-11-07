@@ -103,7 +103,7 @@ def run(paths, config, name, stdin_text):
         # Printed while the model writes its last answer, records would come with the next message, which is about
         # something else. They go out only while a tool call runs, since the request after it reads them.
         def wanted():
-            return _turns.await_reader(transcript, message, offset, started + _turns.WAIT_SECONDS)
+            return _turns.await_reader(transcript, message, offset, started + _turns.WAIT_SECONDS) == "ready"
     text = check.answer(paths, config, json.dumps({"message": message, "before": before}), session or "",
                         still_wanted=wanted)
     return load(name).reply(text) if text else ""

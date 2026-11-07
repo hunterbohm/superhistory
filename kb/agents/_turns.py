@@ -103,6 +103,15 @@ def _calls(entry):
     return (), ()
 
 
+def _replied(entry):
+    """Whether a transcript line is the agent's own output in the main conversation: text, thinking or a tool call."""
+    if entry.get("isSidechain"):
+        return False
+    return entry.get("type") == "assistant" or (
+        entry.get("type") == "response_item" and (entry.get("payload") or {}).get("type") != "message"
+        or (entry.get("payload") or {}).get("role") == "assistant")
+
+
 def turn_state(transcript_path, prompt, offset):
     """Where the turn this prompt started stands: "ended" (an end line after the prompt's own line), "ready" (a
     tool call is still running, so the agent makes another model request, which reads the records) or "busy"
@@ -129,12 +138,14 @@ def turn_state(transcript_path, prompt, offset):
     before = [at for at in prompts if at < offset]
     # Never a match after `offset`: that can be the same words sent again after this turn ended.
     anchor = before[-1] if before else offset - 1
-    running = set()
+    running, answered = set(), False
     for at, entry in entries:
         if at <= anchor:
             continue
-        if _ends_turn(entry):
+        # A new message after the agent replied ends the turn too, however the turn ended (an API error, say).
+        if _ends_turn(entry) or (answered and (_turn(entry) or ("",))[0] == "user"):
             return "ended"
+        answered = answered or _replied(entry)
         opened, closed = _calls(entry)
         running.update(opened)
         running.difference_update(closed)
@@ -142,10 +153,12 @@ def turn_state(transcript_path, prompt, offset):
 
 
 def await_reader(transcript_path, prompt, offset, deadline, poll=0.25):
-    """True once a later model request in the prompt's turn is sure to read records printed now; False when the
-    turn ends first or `deadline` (time.monotonic) passes."""
+    """"ready" once a later model request in the prompt's turn is sure to read records printed now; "ended" when the
+    turn ends first; "deadline" when `deadline` (time.monotonic) passes."""
     while True:
         state = turn_state(transcript_path, prompt, offset)
-        if state != "busy" or time.monotonic() >= deadline:
-            return state == "ready"
+        if state != "busy":
+            return state
+        if time.monotonic() >= deadline:
+            return "deadline"
         time.sleep(poll)
