@@ -3851,12 +3851,12 @@ class Base64ReviewTwentyFourthTest(unittest.TestCase):
     @unittest.expectedFailure
     def test_a_keys_lines_each_after_one_quote_or_comment_mark_are_masked(self):
         # The listed limit, as on main: lines that each start with the same mark ("> ", "# ", "// ", "-- ", "; ", "* ",
-        # "| ", a quote) read as no block, so a key encoded in them shows.
+        # "| ", a quote, written or as a web page's entity) read as no block, so a key encoded in them shows.
         import random
         data = self.pem(random.Random(9))
         start, end = data.index(b"\n") + 1, data.rindex(b"\n-----END")
         lines = Base64ReviewSeventeenTest.encoded(data, 64).splitlines()
-        for prefix in ("> ", "# ", "// ", "-- ", "; ", "* ", "| ", '"', "'", "`"):
+        for prefix in ("> ", "# ", "// ", "-- ", "; ", "* ", "| ", '"', "'", "`", "&quot;", "&#39;"):
             with self.subTest(prefix=prefix):
                 masked = mask("Notes:\n" + "\n".join(prefix + line for line in lines) + "\n\nnext paragraph")
                 self.assertEqual([k for k in self.lines_within(data, 64, start, end) if k in masked], [])
