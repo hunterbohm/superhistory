@@ -69,8 +69,8 @@ class Pull(Arm):
 
     def call(self, name, args):
         with _lock:
-            text, _ = mcp.call(self.store.paths, ct.CONFIG, name, args)
-        return text, self.shown(name, args, text)
+            text, failed = mcp.call(self.store.paths, ct.CONFIG, name, args)
+        return text, ([] if failed else self.shown(name, args, text))
 
 
 class PullLookup(Pull):

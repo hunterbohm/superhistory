@@ -2,7 +2,9 @@ import json
 import os
 import sys
 import tempfile
+import types
 import unittest
+import unittest.mock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
@@ -64,6 +66,14 @@ class PullToolsTest(unittest.TestCase):
         self.assertEqual([t["description"] for t in arms.Pull.agent_tools], [t["description"] for t in mcp.TOOLS])
         self.assertEqual([t["name"] for t in arms.PullLookup.agent_tools], names + ["lookup"])
         self.assertEqual(arms.Pull().retrieve({"question": "q"}).context, "")
+
+    def test_a_tool_error_shows_no_records(self):
+        tool = arms.Pull()
+        tool.store = types.SimpleNamespace(paths=None)
+        tool.shown = lambda *a: self.fail("an error must not count as a record read")
+        for args in ({"id": "bad"}, {"id": 1, "offset": -1}):
+            with unittest.mock.patch.object(arms.mcp, "call", return_value=("Bad arguments.", True)):
+                self.assertEqual(tool.call("get", args), ("Bad arguments.", []))
 
 
 if __name__ == "__main__":
