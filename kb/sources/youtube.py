@@ -227,7 +227,9 @@ def extract(run):
         info = videos.get(vid, ({}, ""))[0]
         return published.get(vid) or info.get("timestamp") or info.get("release_timestamp") or 0
 
-    order = sorted((vid for vid in ids if since is None or mark(vid) > since), key=lambda vid: (mark(vid), vid))
+    # A listed video with no time could not be read; on a later run it may be one pushed off the feed while waiting.
+    order = sorted((vid for vid in ids if since is None or mark(vid) > since or not mark(vid)),
+                   key=lambda vid: (mark(vid), vid))
     ready, wait = [], None
     for vid in order:
         info, words = videos.get(vid, (None, ""))
@@ -239,7 +241,7 @@ def extract(run):
             # Captions and a finished stream come some hours after publishing; a later run reads it again.
             wait = mark(vid)
             break
-        elif info is None and vid in published:
+        elif info is None and (vid in published or since is not None):
             # A public upload yt-dlp could not read now. Skipping it would move the watermark past it for good.
             raise RuntimeError(f"yt-dlp could not read video {vid}; if it stays unreadable, add it to exclude")
         elif info is not None and info.get("live_status") not in NOT_READY:
