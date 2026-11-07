@@ -4457,7 +4457,10 @@ class Base64ReviewTwentySixthTest(unittest.TestCase):
     # hyphen, a comma, an entity outside the quote table, a tab or a no-break space as written), showed, on 369b575
     # too, where main hides it; a key's whole body cut so showed. The 16-character exception is for a stray short
     # piece, not a key cut into short pieces, so the check reads a run across any separator between pieces of it.
-    JOINERS = (" ", "-", ",", ", ", ".", "_", " | ", "&amp;", "&nbsp;", chr(9), chr(0xe9), chr(0xa0)) + SPLITS
+    # and, by a second fresh review, a line break, an HTML tag written or as entities, and a short word or number
+    JOINERS = (" ", "-", ",", ", ", ".", "_", " | ", "&amp;", "&nbsp;", chr(9), chr(0xe9), chr(0xa0), chr(10), "<br>",
+               "&lt;br&gt;", "&lt;br/&gt;", "&lt;wbr&gt;", "&lt;/b&gt;", "&lt;/span&gt;&lt;span&gt;", " and ", " or ",
+               " a ", " 1 ") + SPLITS
 
     def test_a_keys_pieces_joined_by_any_separator_past_a_certificate_stay_masked(self):
         nl = chr(10)
@@ -4499,6 +4502,47 @@ class Base64ReviewTwentySixthTest(unittest.TestCase):
                                 failed.setdefault((shape, between), []).append((width, depth, older))
         self.assertEqual({key: len(cases) for key, cases in failed.items()}, {})
 
+    def test_a_keys_pieces_with_one_that_reads_as_a_word_past_a_certificate_stay_masked(self):
+        # A second fresh review: a piece of four characters that reads as a word ("kmpt", "Next"), as about one in
+        # fifteen of a key's do, ended the chain, so 20 characters cut every 4 showed.
+        nl, mark = chr(10), chr(0xE001)
+        cert = nl.join(self.certificate())
+        for word in ("kmpt", "Xyzw", "ABCE", "Next"):
+            pieces = ["Qw7Z", word, "Rt5H", "9LbN", "Pq2R"]
+            for between in self.JOINERS:
+                for depth in range(3):
+                    text = self.split_written("[masked]" + nl + cert + nl + "notes deploy " + mark.join(pieces)
+                                              + " today" + nl + nl + "next paragraph", between, depth)
+                    for older in (False, True):
+                        with self.subTest(word=word, between=between, depth=depth, older=older):
+                            masked = Base64ReviewEighteenTest.masks(text, older)
+                            self.assertEqual([p for p in pieces if text.count(p) == 1 and p in masked], [])
+                            self.assertIn("next paragraph", masked)
+
+    def test_ordinary_words_after_a_key_encoded_whole_and_a_certificate_stay_as_on_main(self):
+        # A second fresh review: a key encoded whole, which main leaves readable and this branch masks, then a
+        # certificate: what follows reads as that placeholder's rest, so a chain of names in camel case or a link's
+        # path ("iPhone, GitHub, macOS", "example.com/Docs/Index") masked words main keeps. A piece that reads as words
+        # is no key's. (A run of 16 or more of both cases, as in a longer path, is masked there as before: listed.)
+        import random
+        nl = chr(10)
+        key = Base64ReviewSeventeenTest.encoded(Base64ReviewTwentyFourthTest.pem(random.Random(2713)))
+        cert = nl.join(self.certificate())
+        words = ["We use iPhone, GitHub, macOS and YouTube today", "Visit https://example.com/Docs/Index for more",
+                 "PostgreSQL JavaScript TypeScript OAuth2 WebSocket", "Kubernetes, OpenShift, DigitalOcean, LinkedIn, PayPal",
+                 "AbortController, useEffect, useState and setTimeout",
+                 "request id 123e4567-e89b-12d3-a456-426614174000 at 2026-11-07T12:00Z",
+                 "uses SHA256 with abc123 and IPv6 for Win11", "the iOS17 and macOS14 builds of XcodeKit",
+                 "deploy on port 8080 with HTTP/2 and TCP/IP, build 20261104, v1.2.3"]
+        for line in words:
+            for depth in range(3):
+                text = self.split_written("notes" + nl + key + nl + cert + nl + line + nl + nl + "next paragraph", "",
+                                          depth)
+                for older in (False, True):
+                    with self.subTest(line=line, depth=depth, older=older):
+                        masked = Base64ReviewEighteenTest.masks(text, older)
+                        self.assertIn(self.split_written(line, "", depth), masked)
+
     def test_ordinary_words_with_numbers_and_acronyms_past_a_certificate_stay(self):
         # the exception's own: past public material, words with a port, a version, a date, acronyms, paths and a
         # request id in small letters are no key's pieces
@@ -4519,8 +4563,9 @@ class Base64ReviewTwentySixthTest(unittest.TestCase):
         from kb import mask as masking
         nl = chr(10)
         cert = nl.join(self.certificate())
-        # pieces a key's could be that never make 16 characters between words, and pieces in small letters only
-        for unit in ("Qw7Z notes deploy ", "ab12 cd34 ef56 "):
+        # pieces a key's could be that never make 16 characters between words, pieces in small letters only, and pieces
+        # between an escaped tag and a name in camel case
+        for unit in ("Qw7Z notes deploy ", "ab12 cd34 ef56 ", "Qw7Z&lt;br&gt;GitHub "):
             took, read = {}, {}
             for size in (1 << 18, 1 << 20):
                 text = "[masked]" + nl + cert + nl + unit * (size // len(unit)) + nl + nl + "next paragraph"
@@ -4534,6 +4579,42 @@ class Base64ReviewTwentySixthTest(unittest.TestCase):
                 # four times the text
                 self.assertLess(took[1 << 20], 8 * max(took[1 << 18], 0.05), took)
                 self.assertLess(read[1 << 20], 8 * max(read[1 << 18], 0.01), read)
+
+    def test_a_long_run_of_letters_after_a_placeholder_costs_time_in_proportion(self):
+        # A check of this round's: a capital, small letters and a digit glued to a placeholder or on the next line
+        # ("[masked]Baaa...a1") were read against a word in time that grows with the square of their length
+        # (_token_like), 5 seconds for 32,000 characters on 369b575, where main takes 0.05. The same runs, and runs
+        # of letters read against words in camel case (_reads_as_words), past a certificate.
+        import time
+        from kb import mask as masking
+        nl = chr(10)
+        runs = {"word then a digit": lambda n: "B" + "a" * n + "1", "small then a capital": lambda n: "a" * n + "B",
+                "camel case then a capital": lambda n: "Ab" * (n // 2) + "X"}
+        shapes = {"glued": "[masked]@", "next line": "[masked]" + nl + "@",
+                  "words past a certificate": "[masked]" + nl + nl.join(self.certificate()) + nl + "notes @ today"}
+        for name, run in runs.items():
+            read, joined = {}, {}
+            for size in (1 << 13, 1 << 15):
+                started = time.process_time()
+                masking._token_like(run(size))
+                read[size] = time.process_time() - started
+                started = time.process_time()
+                masking._joined_pieces("notes " + run(size) + " today")
+                joined[size] = time.process_time() - started
+            with self.subTest(run=name):
+                # four times the run
+                self.assertLess(read[1 << 15], 8 * max(read[1 << 13], 0.01), read)
+                self.assertLess(joined[1 << 15], 8 * max(joined[1 << 13], 0.01), joined)
+            for shape, around in shapes.items():
+                for older in (False, True):
+                    took = {}
+                    for size in (1 << 13, 1 << 15):
+                        text = around.replace("@", run(size))
+                        started = time.process_time()
+                        Base64ReviewEighteenTest.masks(text, older)
+                        took[size] = time.process_time() - started
+                    with self.subTest(run=name, shape=shape, older=older):
+                        self.assertLess(took[1 << 15], 8 * max(took[1 << 13], 0.05), took)
 
 
 class HeadlessKeyTest(unittest.TestCase):
