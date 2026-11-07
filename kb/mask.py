@@ -3009,27 +3009,13 @@ def _skipped_line(text, at):
     return None
 
 
-# JSON's escaped slash ("\\/", as PHP writes JSON), behind any number of backslashes: a slash of the base64 it is in. A
-# run of backslashes is tried once, from its start.
-_ESCAPED_SLASH = re.compile(r"(?<!\\)\\+/")
-
-
 # A quote as a web page writes it, one of the entities the readers of a line's lead accept (_QUOTE_TOKENS).
 _QUOTE_ENTITY = re.compile(_pattern(tuple(token for token in _QUOTE_TOKENS if token[0][0] == "&")))
 
 
-def _rest_view(line):
-    """A line as a key's rest is read: without the characters a reader does not see, JSON's escaped slash read as the
-    slash it is (_ESCAPED_SLASH), and any other escape of a space or a line break, and a quote written as a web page's
-    entity (_QUOTE_ENTITY), as a space."""
-    return _QUOTE_ENTITY.sub(" ", _KEY_ESCAPE.sub(" ", _ESCAPED_SLASH.sub("/", INVISIBLE.sub("", line))))
-
-
 def _holds_token(text, start, end):
-    """Whether text[start:end] holds a run of base64 a key's fragment could be (_token_like), read past escapes,
-    placeholders and the characters a reader does not see, as _token_tail reads its tokens: one written as an escape
-    ("\\u200b") goes before an escape reads as a space, so a run it splits reads whole, and so does one JSON's escaped
-    slash splits (_rest_view)."""
+    """Whether text[start:end] holds a run of base64 a key's fragment could be (_token_like), read as every reader of a
+    key's fragment reads it (_fragment_view), past placeholders."""
     line = _rest_view(text[start:end]).replace("[masked]", " ")
     return any(_token_like(m.group()) for m in _RUN.finditer(line))
 
@@ -3055,6 +3041,46 @@ _WORDS_LINE_AT = re.compile(_WORDS_LINE)
 _BASE64_CHARACTER = re.compile(r"[A-Za-z0-9+/]")
 _RUN = re.compile(r"[A-Za-z0-9+/]{2,}={1,2}|[A-Za-z0-9+/]{4,}")
 _KEY_ESCAPE = re.compile(r"(?<!\\)\\+(?:[nrt]|u[0-9A-Fa-f]{4})")
+# JSON's escape of one of base64's characters, behind any number of backslashes: a slash as PHP writes one ("\\/",
+# and "\\\\\\/" in JSON in JSON), or any of them by its code ("\\u002f", "\\u0041"), a character of the run
+# it is in. A run of backslashes is tried once, from its start.
+_ESCAPED_BASE64 = r"(?<!\\)\\+(?:/|u00(?:2[bBfF]|3[0-9dD]|4[1-9a-fA-F]|5[0-9aA]|6[1-9a-fA-F]|7[0-9aA]))"
+# What every reader of a key's fragment reads as another character (_fragment_view): an escaped character of base64's
+# as that character; any other escape of a space, a line break or a character (_KEY_ESCAPE), and a quote written as a
+# web page's entity (_QUOTE_ENTITY), as a space.
+_FRAGMENT_READS = re.compile(rf"({_ESCAPED_BASE64})|(?:{_KEY_ESCAPE.pattern})|(?:{_QUOTE_ENTITY.pattern})")
+
+
+def _fragment_read(m):
+    """What a match of _FRAGMENT_READS reads as."""
+    escape = m.group(1)
+    return " " if escape is None else "/" if escape[-1] == "/" else chr(int(escape[-2:], 16))
+
+
+def _fragment_view(text):
+    """(`text` as every reader of a key's fragment reads it, and for each of its characters where it starts in `text`,
+    then `len(text)`): without the characters a reader does not see, at any depth of escaping (_unseen_view), and with
+    each escape _FRAGMENT_READS reads as another character read so. One view for every such reader (_rest_view,
+    _holds_token, _token_tail, _encoded_words, _base64_lines, _runs_past, _public_rest, _cut_body_end), so a run one
+    reads whole none reads as parted. Read once, in proportion."""
+    unseen, kept = _unseen_view(text)
+    pieces, at, last = [], [], 0
+    for m in _FRAGMENT_READS.finditer(unseen):
+        pieces += (unseen[last:m.start()], _fragment_read(m))
+        at += kept[last:m.start()]
+        at.append(kept[m.start()])
+        last = m.end()
+    if not pieces:
+        return unseen, (range(len(text) + 1) if unseen is text else [*kept, len(text)])
+    pieces.append(unseen[last:])
+    at += kept[last:]
+    at.append(len(text))
+    return "".join(pieces), at
+
+
+def _rest_view(line):
+    """A line as a key's rest is read: _fragment_view's text, without its map."""
+    return _FRAGMENT_READS.sub(_fragment_read, _unseen_view(line)[0])
 
 
 def _headless_key_edits(text):
@@ -3212,7 +3238,7 @@ def _encoded_words(found):
     start, to words: text a reader sees, with a space, and no run that could be part of a key's body (_token_like) or a
     header's or footer's dashes. Such a line is another stream encoded alone, as words above a key encoded alone are
     ("notes notes ..."), and no part of a key, whose lines decode to its PEM text."""
-    runs = _LINE_RUN.findall(INVISIBLE.sub("", _KEY_ESCAPE.sub("", found)))  # past an escaped line break's "n"
+    runs = _LINE_RUN.findall(_rest_view(found))  # an escaped line break a space, past its "n"
     if not runs:
         return False
     run = runs[-1]
@@ -3237,9 +3263,9 @@ def _token_tail(text):
     the last line holding a token (_token_like) before where main's reading of it ended (its paragraph's end, the next
     header, or its footer), so that only a tail of ordinary text stays. Read once for the text: each rest then costs a
     lookup."""
-    # runs read without the characters a reader does not see, escaped at any depth, so a fragment one of them splits
-    # reads whole, in JSON in JSON too
-    view, kept = _unseen_view(text)
+    # runs read as every reader of a key's fragment reads them (_fragment_view): a fragment that the characters a
+    # reader does not see or an escaped slash split reads whole, in JSON in JSON too
+    view, kept = _fragment_view(text)
     tokens = [kept[m.start()] for m in _RUN.finditer(view) if _token_like(m.group())]
     # and every line that is no line of words (_WORDS_LINE) but holds a run of base64's characters, as a fragment of a
     # key alone on its line ("Bcsv") does
@@ -3298,7 +3324,7 @@ def _base64_lines(text, start, end):
         if brk is None and held:
             break  # the line that holds the next placeholder
         stop = brk.start() if brk else end
-        line = _BASE64_ONLY_LINE.fullmatch(INVISIBLE.sub("", _KEY_ESCAPE.sub("", text[at:stop])))
+        line = _BASE64_ONLY_LINE.fullmatch(_rest_view(text[at:stop]))
         if line is None:
             break
         if line.group(1):
@@ -3400,7 +3426,7 @@ def _runs_past(text):
             brk = next(state["lines"], None)
             at = state["read"]
             stop = brk.start() if brk else len(text)
-            line = INVISIBLE.sub("", _KEY_ESCAPE.sub("", text[at:stop]))
+            line = _rest_view(text[at:stop])
             placeholder = line.rfind("[masked]")
             if placeholder >= 0:  # a rest past a placeholder starts a block of its own
                 if block:
@@ -3433,7 +3459,7 @@ def _runs_past(text):
             pieces.append(text[at:max(at, public[i][0])])
             at, i = max(at, public[i][1]), i + 1
         pieces.append(text[at:end])
-        if _MIXED_RUN.search(INVISIBLE.sub("", _KEY_ESCAPE.sub("", _ESCAPED_SLASH.sub("/", " ".join(pieces))))):
+        if _MIXED_RUN.search(_rest_view(" ".join(pieces))):
             return False
         clean[end] = min(clean.get(end, last), last)
         return True
@@ -3456,7 +3482,7 @@ def _public_first(text, start, end, past):
 def _public_rest(rest):
     """Whether the text after a placeholder decodes whole, as base64, to public material (_public_material)."""
     data = None if _KEY_END_TEXT.search(rest) else _base64_decoded(
-        re.sub(r"[^A-Za-z0-9+/=]", "", _KEY_ESCAPE.sub("", INVISIBLE.sub("", rest))), 0, None)
+        re.sub(r"[^A-Za-z0-9+/=]", "", _rest_view(rest)), 0, None)
     return bool(data) and _public_material(data)
 
 
@@ -3491,7 +3517,7 @@ def _rest_ends(text):
 _CUT_LEAD = r"\[masked\]|\[(?!masked\])|<br\s*/?>|<(?!br\s*/?>)|[^A-Za-z0-9+/\[<]|[+/](?![A-Za-z0-9+/])"
 _CUT_LINE = re.compile(rf"(?:{_CUT_LEAD})*([A-Za-z0-9+/]+)[^A-Za-z0-9+/=]*")
 _CUT_ABOVE = re.compile(r"(?<![A-Za-z0-9+/=])([A-Za-z0-9+/]+)[^A-Za-z0-9+/=]*\Z")
-_CUT_END = re.compile(r"(?:\r?\n|(?<!\\)\\+(?:r\\+)?n)[ \t\"'#>*-]*([A-Za-z0-9+/]+)")
+_CUT_WORD = re.compile(r"[ \t\"'#>*-]*([A-Za-z0-9+/]+)")
 
 
 def _cut_body_end(text, start, stop):
@@ -3507,7 +3533,10 @@ def _cut_body_end(text, start, stop):
     above = breaks and _CUT_ABOVE.search(_rest_view(text[breaks[-2][1] if len(breaks) > 1 else start:breaks[-1][0]]))
     if above and len(last.group(1)) < len(above.group(1)) or _public_rest(text[start:stop]):
         return stop
-    return _CUT_END.match(text, stop).end(1)
+    brk = _LINE_BREAK.match(text, stop)
+    view, kept = _fragment_view(text[brk.end():_KEY_LINE_END.search(text, brk.end()).start()])
+    word = _CUT_WORD.match(view)
+    return brk.end() + kept[word.end(1)] if word else stop
 
 
 def _key_rests(text, starts=_REST_START):
