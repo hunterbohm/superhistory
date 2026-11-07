@@ -311,6 +311,12 @@ Known limits:
   such piece, and ends a row; a shorter word between pieces does not. In JSON inside JSON, a blank line does not end
   that paragraph. Main keeps them only as it leaves a key written as base64 readable; after a key in plain text it masks
   them too. This masks more, and shows nothing. A stray piece shorter than that among the words past them stays.
+- Past a private key encoded whole as base64, which this branch masks and main leaves readable, and then a certificate,
+  what follows in the same paragraph is that key's rest, read failing closed: a line with words with a number ("opt0",
+  "Walrus1687", "-Xmx512m"), short hashes ("ebe75d1"), ids of one width side by side ("IPv4Network or IPv6Network"),
+  camel case with a capital vowel ("asyncId", "LinkedIn", "DevOps") or a colour table reads as a key's pieces and is
+  masked, where main keeps it. This only masks more and shows nothing, and it stops where the rest ends, at the
+  paragraph's end; in JSON inside JSON, as on main, a blank line ends no rest.
 - A knowledge base that an older kb wrote, before each row recorded how it was masked, does not open: an older kb's
   masking can leave a secret that no pattern finds afterwards. kb says so and names `kb rebuild`, which reads your
   sources into a fresh one, each as far back as its oldest item in the old one. When a source no longer has some of
