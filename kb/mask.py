@@ -1062,9 +1062,24 @@ def _key_range(joined, starts, ends, found, floor, frames, stream_end, held=None
     return max(top, floor), bottom, at
 
 
-# A block's first line that starts its line: after the text's start or a line break, written or escaped, with only
-# spaces, tabs and quotes between, as JSON writes a string that starts with it.
-_LINE_LEAD = re.compile(rf"(?:\A|{_BREAK})(?:{_SPACING}|\\*[\"'])*\Z")
+# What may stand between a line's start and a block's first line for that line to start its line: spaces, tabs and
+# quotes, escaped or not, as JSON writes a string that starts with it, however many (_starts_its_line).
+_LINE_LEAD = re.compile(rf"(?:{_SPACING}|\\*[\"'])*")
+_LINE_LEAD_CHARACTERS = " \t\"'\\"
+_BREAK_ENDS = re.compile(rf"(?:{_BREAK})\Z")
+
+
+def _starts_its_line(text, at):
+    """Whether the line of a block that starts at `at` starts its line: after the text's start or a line break,
+    written or escaped, with only what _LINE_LEAD reads between, however long, read back from `at` once. No line
+    break ends with one of those characters, so the break, if any, ends where they start, and a few characters before
+    that read it, as any number of backslashes before an escape's letter reads as one."""
+    start = at
+    while start and (text[start - 1] in _LINE_LEAD_CHARACTERS
+                     or text[start - 1] == "t" and text[start - 2:start - 1] == "\\"):
+        start -= 1
+    return _LINE_LEAD.fullmatch(text, start, at) is not None and (
+        not start or _BREAK_ENDS.search(text, max(start - 16, 0), start) is not None)
 
 
 def _stream_end(widths, padded, k, cut=False):
@@ -1096,7 +1111,7 @@ def _key_spans(text, lines):
     widths = [b - a for a, b in lines]
     padded = ["=" in joined[starts[k]:ends[k]] for k in range(len(lines))]
     stream_end, k = [], 0  # stream_end[k]: the last line of the stream that holds line k (_stream_end)
-    cut = not _LINE_LEAD.search(text, max(lines[0][0] - 64, 0), lines[0][0])
+    cut = not _starts_its_line(text, lines[0][0])
     while k < len(lines):
         last = _stream_end(widths, padded, k, cut and not k)
         stream_end += [last] * (last + 1 - k)
@@ -3042,16 +3057,29 @@ def _token_tail(text):
     ends = sorted([m.start() for m in _BLANK_LINE.finditer(text)] + [m.start() for m in _PEM_HEADER.finditer(text)]
                   + [m.end() for m in _KEY_END_TEXT.finditer(text)])
 
-    line_ends = {}  # each token's line's end, found once: many rests can end on one long line
+    # Every line's end, found once when a rest first asks: many rests, each with a token of its own, can end on one long
+    # line, and each read on to its end took time in its square. A token's line ends at the first end at or after it;
+    # one that starts inside an escaped line break, after its letter, is read from there, once.
+    breaks, inside = None, {}
+
+    def line_end(at):
+        nonlocal breaks
+        if breaks is None:
+            found = list(_KEY_LINE_END.finditer(text))
+            breaks = [m.start() for m in found], [m.end() for m in found]
+        i = bisect.bisect_left(breaks[0], at)
+        if i and at < breaks[1][i - 1]:
+            if at not in inside:
+                inside[at] = _KEY_LINE_END.search(text, at).start()
+            return inside[at]
+        return breaks[0][i]
 
     def through(at):
         i = bisect.bisect_left(ends, at)
         last = bisect.bisect_left(tokens, ends[i] if i < len(ends) else len(text)) - 1
         if last < 0 or tokens[last] < at:
             return at
-        if tokens[last] not in line_ends:
-            line_ends[tokens[last]] = _KEY_LINE_END.search(text, tokens[last]).start()
-        return line_ends[tokens[last]]
+        return line_end(tokens[last])
     return through
 
 
