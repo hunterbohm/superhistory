@@ -295,7 +295,8 @@ Known limits:
   with a longer line further down. A rest that starts right at its placeholder runs on past lines of words to the last
   line of its paragraph holding a token, as main's does; one that starts past lines that decode to words, where main
   reads none, ends where its lines of base64 end, so a piece further down shows. As on main, a rest starts only past
-  what main reads before a key's body: after a no-break or other wide space escaped in JSON, a backtick or "- ", or
+  what main reads before a key's body: after a no-break or other wide space escaped in JSON, a backtick (written or
+  as a web page's entity, "&grave;"), a quote's entity padded with more than three zeros ("&#000034;") or "- ", or
   with JSON's escaped slash ("\/") in the first 40 characters of its first line, a body after a placeholder shows.
 - After a placeholder where a key was masked, public material (a certificate, a public key) and lines of words in the
   same paragraph are masked with it where a line of base64 past them reads as a possible fragment of a key, base64 of
