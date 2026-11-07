@@ -4148,6 +4148,236 @@ class Base64ReviewTwentyFifthTest(unittest.TestCase):
         self.assertEqual(missed[:20], [], len(missed))
 
 
+class Base64ReviewTwentySixthTest(unittest.TestCase):
+    """#34's twenty-sixth review: the reading of a key's rest that keeps a tail of ordinary text read its tokens with
+    JSON's escaped slash as written, so a fragment PHP's JSON wrote ("Tavlemor\\/q\\/z...") read as a word and pieces
+    too short for a token, and showed where main masks it. Each reader of a key's fragment read a view of its own; every
+    one now reads the one view (_fragment_view), and a test generated from the readers writes each escape of a slash at
+    every place, in JSON at every depth, against the plain read. Made-up keys only."""
+
+    # "/" as JSON writes it: as itself, escaped as PHP writes it, escaped again as JSON in JSON holds that, by its code
+    SLASHES = ("/", "\\/", "\\\\\\/", "\\u002f", "\\u002F", "\\\\u002f")
+    FRAGMENT = "Tavlemor/q/z/x/w/v/k/j/p"
+
+    @staticmethod
+    def written(text, depth, slash, only=None):
+        """`text` in a JSON string escaped `depth` times, as Python writes one, with its slashes, or only the one at
+        index `only` among them, then written as `slash`."""
+        for _ in range(depth):
+            text = json.dumps(text)[1:-1]
+        if only is None:
+            return text.replace("/", slash)
+        at = [i for i, c in enumerate(text) if c == "/"][only]
+        return text[:at] + slash + text[at + 1:]
+
+    @staticmethod
+    def slashes(text, slash):
+        """`text` with each `slash` read back as the slash it writes."""
+        return text.replace(slash, "/")
+
+    def test_a_fragment_with_jsons_escaped_slash_after_a_placeholder_stays_masked(self):
+        # The review's repro: "Tavlemor" reads as a word, and each "\/q" read apart is too short for a token.
+        nl = chr(10)
+        text = "[masked]" + nl + "MIIE" + "A" * 60 + nl + "notes deploy " + self.FRAGMENT
+        for depth in range(3):
+            for slash in self.SLASHES:
+                written = self.written(text, depth, slash)
+                for older in (False, True):
+                    with self.subTest(depth=depth, slash=slash, older=older):
+                        masked = Base64ReviewEighteenTest.masks(written, older)
+                        self.assertEqual([piece for piece in ["Tavlemor"] + [slash + c for c in "qzxwvkjp"]
+                                          if piece in masked], [])
+
+    @staticmethod
+    def fragments():
+        """The fragment with its slashes, and with one slash at every place inside it."""
+        letters = "Tavlemorqzxwvkjp"
+        yield "Tavlemor/q/z/x/w/v/k/j/p"
+        for i in range(1, len(letters)):
+            yield letters[:i] + "/" + letters[i:]
+
+    @staticmethod
+    def encoded_words():
+        """Lines of base64 of words, each with slashes at other places, as an older kb's rest passes over."""
+        import base64
+        out = []
+        for lead in ("", "a ", "an ", "and ", "notes ", "so the "):
+            for words in ("notes? the harbor? door, walk? the ledger? today", "what? the walrus? moved, why? notes"):
+                line = base64.b64encode((lead + words).encode()).decode()
+                if "/" in line and len(line) >= 40 and not line.endswith("="):
+                    out.append(line)
+        return out
+
+    @staticmethod
+    def certificate():
+        import base64
+        import random
+        import textwrap
+        return textwrap.wrap(base64.b64encode(made_up_certificate(random.Random(2601))).decode(), 64)
+
+    @staticmethod
+    def body():
+        import base64
+        import random
+        import textwrap
+        for seed in range(2602, 2700):
+            lines = textwrap.wrap(base64.b64encode(made_up_private_key(random.Random(seed))).decode(), 64)[:3]
+            if all("/" in line for line in lines[1:]):
+                return lines
+        raise AssertionError("no made-up key with a slash on each line")
+
+    def reads(self):
+        """Each reader of a key's fragment, as (its name, a plain text with slashes, how many of them, how it reads a
+        text): a read is a value, or the text up to the place it reads, with its slashes read back."""
+        from kb import mask as masking
+        nl = chr(10)
+        for fragment in self.fragments():
+            line = "notes " + fragment + " today"
+            yield "_rest_view", line, lambda text: masking._rest_view(text)
+            yield "_holds_token", line, lambda text: masking._holds_token(text, 0, len(text))
+            rest = "[masked]" + nl + "MIIE" + "A" * 60 + nl + "notes deploy " + fragment + nl + "more words" + nl + nl + "next"
+
+            def tail(text):
+                through = masking._token_tail(text)
+                return [text[:through(m.start())] for m in masking._LINE_BREAK.finditer(text)]
+            yield "_token_tail", rest, tail
+        for words in self.encoded_words():
+            yield "_encoded_words", nl + words + nl, lambda text: masking._encoded_words(text)
+        cert = nl.join(self.certificate())
+        yield "_base64_lines", "[masked]" + nl + cert + nl + "notes deploy today", lambda text: [
+            line for line, _, _ in masking._base64_lines(text, len("[masked]"), len(text))]
+        yield "_public_rest", cert, lambda text: masking._public_rest(text)
+
+        def past(text):
+            first = text.index("notes")
+            return masking._runs_past(text)(first, len(text))
+        yield "_runs_past", "[masked]" + nl + cert + nl + "notes" + nl + cert + nl + "more" + nl + nl + "next", past
+        yield ("_runs_past", "[masked]" + nl + cert + nl + "notes " + self.FRAGMENT + nl + nl + "next", past)
+        body = self.body()
+
+        def cut(text):
+            words = text.index("ei walrus")
+            stop = [m.start() for m in masking._LINE_BREAK.finditer(text) if m.end() == words][0]
+            return text[:masking._cut_body_end(text, len("[masked]"), stop)]
+        yield "_cut_body_end", "[masked]" + nl + nl.join(body) + nl + "ei walrus moved today", cut
+
+    def test_every_reader_of_a_keys_fragment_reads_each_escape_of_a_slash_at_every_place_as_the_slash(self):
+        def read_back(value, slash):
+            if isinstance(value, str):
+                return self.slashes(value, slash)
+            if isinstance(value, list):
+                return [read_back(v, slash) for v in value]
+            return value
+        failed = {}
+        for name, text, read in self.reads():
+            count = text.count("/")
+            self.assertTrue(count, name)
+            for depth in range(3):
+                plain = read(self.written(text, depth, "/"))
+                for slash in self.SLASHES[1:]:
+                    for only in [None] + list(range(count)):
+                        written = self.written(text, depth, slash, only)
+                        if read_back(read(written), slash) != plain:
+                            failed.setdefault(name, []).append((depth, slash, only, text[:40]))
+        self.assertEqual({name: len(cases) for name, cases in failed.items()}, {})
+        self.assertEqual(failed, {})
+
+    def test_the_readers_of_a_keys_fragment_read_one_view(self):
+        # every reader of a line of a key's rest reads it as _fragment_view does, its characters mapped back
+        from kb import mask as masking
+        nl = chr(10)
+        for slash in self.SLASHES:
+            for depth in range(3):
+                text = self.written("[masked]" + nl + "notes " + self.FRAGMENT + " &quot;x" + chr(0x200b) + "y"
+                                    + nl + "next", depth, slash)
+                with self.subTest(slash=slash, depth=depth):
+                    view, kept = masking._fragment_view(text)
+                    self.assertEqual(view, masking._rest_view(text))
+                    self.assertEqual(len(kept), len(view) + 1)
+                    self.assertEqual(kept[-1], len(text))
+                    self.assertEqual([i for i in range(len(view)) if view[i].isalnum() and text[kept[i]] != view[i]
+                                      and not text.startswith(("\\", "&"), kept[i])], [])
+
+    def test_where_main_reads_the_text_as_written_a_slash_escaped_reads_as_main_reads_it(self):
+        # The readers of where a key's rest starts and of a run glued to a placeholder read the text as written, as
+        # main's do: a rest with an escaped slash in its body's first 40 characters starts none, and a run glued to a
+        # placeholder ends at a backslash, on main too. Read through the fragment view, they would mask what main
+        # shows; read as written, the output is main's.
+        import importlib.util
+        import os
+        spec = importlib.util.spec_from_file_location(
+            "main_mask_68506d9", os.path.join(os.path.dirname(__file__), "fixtures", "main_mask_68506d9.py"))
+        main = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(main)
+        nl = chr(10)
+        forms = {"a run glued to a placeholder": "notes" + nl + "[masked]Abcd/efgh/ijkl notes deploy" + nl + nl + "next",
+                 "a body with a slash in its first 40 characters": "notes" + nl + "[masked]" + nl + "MIIEAb9/"
+                 + "Qz7x" * 14 + nl + "notes deploy" + nl + nl + "next"}
+        for name, text in forms.items():
+            for depth in range(3):
+                for slash in self.SLASHES[1:]:
+                    written = self.written(text, depth, slash)
+                    for older in (False, True):
+                        with self.subTest(form=name, depth=depth, slash=slash, older=older):
+                            self.assertEqual(Base64ReviewEighteenTest.masks(written, older), main.mask(written))
+
+    def test_a_key_encoded_whole_reads_each_escape_of_its_slashes_as_its_plain_lines_do(self):
+        # The readers of a key's header and footer and of its lines' lead read JSON's escapes at every depth in views
+        # of their own (_encoded_key_spans): each escape of a slash reads as the slash there, so they keep them. A
+        # key's PEM text encodes to no slash; a "?" in the words around it, at every third byte, writes one, on the
+        # lines that hold its header and its footer.
+        import base64
+        import random
+        nl = chr(10)
+        key = Base64ReviewTwentyFourthTest.pem(random.Random(2603))
+        for width in (64, 76):
+            for n in range(width * 3):
+                for m in range(3):
+                    data = b"x" * n + b"notes? why? what?" + nl.encode() + key + b"ok" * m + b"next? why? ok?" + nl.encode()
+                    start, end = data.index(b"-----BEGIN"), data.rindex(b"-----") + 5
+                    encoded = base64.b64encode(data).decode()
+                    lines = [encoded[at:at + width] for at in range(0, len(encoded), width)
+                             if 6 * at // 8 < end and start <= (6 * min(at + width, len(encoded)) - 1) // 8]
+                    if "/" in lines[0] and "/" in lines[-1]:
+                        break
+                else:
+                    continue
+                break
+            self.assertTrue("/" in lines[0] and "/" in lines[-1])
+            text = Base64ReviewSeventeenTest.encoded(data, width) + nl + nl + "next paragraph"
+            for depth in range(3):
+                for slash in self.SLASHES:
+                    written = self.written(text, depth, slash)
+                    for older in (False, True):
+                        with self.subTest(width=width, depth=depth, slash=slash, older=older):
+                            masked = Base64ReviewEighteenTest.masks(written, older)
+                            self.assertEqual([line for line in lines
+                                              if self.written(line, depth, slash) in masked], [])
+                            self.assertIn("next paragraph", masked)
+
+    def test_a_megabyte_of_escaped_slashes_after_a_placeholder_costs_time_in_proportion(self):
+        import time
+        from kb import mask as masking
+        nl = chr(10)
+        for slash in ("\\/", "\\u002f"):
+            took, viewed = {}, {}
+            for size in (1 << 18, 1 << 20):
+                words = ("notes deploy Tavlemor" + slash + "q today ") * (size // 30)
+                text = "[masked]" + nl + "MIIE" + "A" * 60 + nl + words + nl + nl + "next paragraph"
+                started = time.process_time()
+                masked = mask(text)
+                took[size] = time.process_time() - started
+                started = time.process_time()
+                masking._fragment_view(text)
+                viewed[size] = time.process_time() - started
+                with self.subTest(slash=slash, size=size):
+                    self.assertNotIn("Tavlemor", masked)
+            with self.subTest(slash=slash):
+                # four times the text
+                self.assertLess(took[1 << 20], 8 * max(took[1 << 18], 0.05), took)
+                self.assertLess(viewed[1 << 20], 8 * max(viewed[1 << 18], 0.01), viewed)
+
+
 class HeadlessKeyTest(unittest.TestCase):
     """A key's body without its header, as an older kb's row-by-row remask leaves the chunk after the header's."""
     LINE = "MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7"
