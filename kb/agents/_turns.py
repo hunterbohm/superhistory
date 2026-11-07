@@ -136,20 +136,26 @@ def turn_state(transcript_path, prompt, offset):
         at += len(raw) + 1
     prompts = [at for at, entry in entries if _turn(entry) == ("user", prompt.strip())]
     before = [at for at in prompts if at < offset]
-    # Never a match after `offset`: that can be the same words sent again after this turn ended.
+    # A match after `offset` can be the same words sent again after this turn ended, so the turn starts at the last
+    # match before it. Claude Code writes the message before it starts the hook, so that match is this message.
     anchor = before[-1] if before else offset - 1
+    return _scan(entries, anchor)[0]
+
+
+def _scan(entries, anchor):
+    """(state, where the turn ended or None) for the lines after `anchor`."""
     running, answered = set(), False
     for at, entry in entries:
         if at <= anchor:
             continue
         # A new message after the agent replied ends the turn too, however the turn ended (an API error, say).
         if _ends_turn(entry) or (answered and (_turn(entry) or ("",))[0] == "user"):
-            return "ended"
+            return "ended", at
         answered = answered or _replied(entry)
         opened, closed = _calls(entry)
         running.update(opened)
         running.difference_update(closed)
-    return "ready" if running else "busy"
+    return ("ready" if running else "busy"), None
 
 
 def await_reader(transcript_path, prompt, offset, deadline, poll=0.25):
