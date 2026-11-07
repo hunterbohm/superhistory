@@ -3332,8 +3332,10 @@ def _public_lines(text):
     """Where each run of lines of base64 in `text` that is public material of its own starts and ends, in order: the
     whole public material a block of lines of base64 starts with (_public_prefix), or a run of its lines between lines
     that are none a key's could be ("notes") that is all public material, as round 26's head read them; a line's part
-    past a placeholder starts a block of its own, as a rest does. Each line is read once, as a key's fragment is
-    (_rest_view)."""
+    past a placeholder starts a block of its own, as a rest does, where nothing but what can stand around a line of
+    base64 stands before the placeholder: a stretch is whole lines, so a line with more before it (a key's run glued to
+    the placeholder, words) is none, and only what decodes as public material stays. Each line is read once, as a
+    key's fragment is (_rest_view)."""
     spans, block, at = [], [], 0
 
     def close():
@@ -3362,7 +3364,8 @@ def _public_lines(text):
         if held is not None:
             close()
         found = _BASE64_ONLY_LINE.fullmatch(line, held.end() if held else 0)
-        if found is None:
+        lead = held and _BASE64_ONLY_LINE.fullmatch(line, 0, held.start())
+        if found is None or held and (lead is None or lead.group(1)):
             close()
         elif found.group(1):
             block.append((found.group(1), at, stop))
