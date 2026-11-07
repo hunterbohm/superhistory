@@ -236,6 +236,17 @@ class WaitTest(YouTubeCase):
             self.read(since=self.now - 3 * DAY)
         self.assertEqual([i.source_id for i in self.read(since=self.now - 3 * DAY, exclude=("v1",))], ["v2"])
 
+    def test_the_only_new_video_unreadable_waits_then_fails_until_excluded_by_id(self):
+        self.channel.add("v0", self.now - 9 * DAY)
+        self.channel.add("v1", self.now - 3600, readable=False)
+        self.assertEqual(self.read(since=self.now - 2 * DAY), [], "waits, without failing")
+        self.now += 2 * DAY
+        with self.assertRaisesRegex(RuntimeError, "could not read video v1"):
+            self.read(since=self.now - 4 * DAY)
+        calls = len(self.channel.calls())
+        self.assertEqual(self.read(since=self.now - 4 * DAY, exclude=("v1",)), [])
+        self.assertEqual(self.channel.calls()[calls:], [], "an excluded id is not even asked for")
+
     def test_a_video_published_in_the_same_second_as_a_waiting_one_waits_with_it(self):
         self.channel.add("a1", self.now - 3600)
         self.channel.add("b1", self.now - 3600, captions={})

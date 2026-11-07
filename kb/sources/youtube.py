@@ -155,7 +155,10 @@ def read_videos(options, ids):
             with open(path, encoding="utf-8") as fh:
                 info = json.load(fh)
             found[info["id"]] = (info, _captions(folder, info["id"], options.languages))
-        if proc.returncode and not found:
+        # An error about one video leaves it out, and extract decides whether to wait for it; any other error, such
+        # as yt-dlp being blocked, fails the read.
+        errors = [line for line in proc.stderr.splitlines() if line.startswith("ERROR")]
+        if proc.returncode and (not errors or not all(any(f"] {vid}:" in line for vid in ids) for line in errors)):
             raise RuntimeError(_ytdlp_error(proc))
         return found
 
@@ -216,6 +219,8 @@ def extract(run):
         ids = listing(options)
     else:
         ids = new
+    # A bare id in exclude skips a video before yt-dlp reads it, so one it cannot read can be left out.
+    ids = [vid for vid in ids if not run.excludes(vid)]
     videos = read_videos(options, ids)
 
     def mark(vid):
