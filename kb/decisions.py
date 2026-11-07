@@ -579,14 +579,17 @@ def run(db, ask, owner, kind_of, log, limit=None, workers=WORKERS):
 
 
 def review(db, limit=10, since=None):
-    """The agent-reported decisions that matter and that the owner has not answered, newest first, one per wording
-    that differs, the ones that claim his approval first."""
+    """The agent-reported decisions that matter and that the owner has not answered, one per wording that differs:
+    first those that would replace a decision in his own words, which waits in search until he answers, then the
+    rest, newest first."""
     if not has_table(db):
         return []
     rows = db.execute("SELECT source, source_id, key FROM decisions WHERE author='agent' AND matters=1 "
                       "AND answer IS NULL AND new_key IS NULL").fetchall()
+    held = {tuple(r) for r in db.execute("SELECT new_source, new_source_id, new_key FROM decisions WHERE "
+                                         "new_key IS NOT NULL AND (author='owner' OR answer='confirmed')")}
     found = [d for d in (_find(db, tuple(r)) for r in rows) if d and (since is None or d.ts >= since)]
-    found.sort(key=lambda d: d.ts, reverse=True)
+    found.sort(key=lambda d: (d.ref in held, d.ts), reverse=True)
     picked, seen = [], []
     for d in found:
         words = set(terms(d.text))

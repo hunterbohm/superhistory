@@ -283,6 +283,21 @@ class DecisionTest(Store):
                 if h["source_id"].endswith("old")]
         self.assertEqual([(h["kind"], h.get("replaced_in_item")) for h in hits], [("segment", [new])])
 
+    def test_review_puts_first_what_would_replace_the_owners_own_words(self):
+        self.session("old", "2026-06-12T10:00:00Z", ["Composio CLI is the default for connected app accounts."],
+                     text="USER: composio cli is the default for app accounts\n\nASSISTANT: ok")
+        self.session("new", "2026-10-24T10:00:00Z", ["Composio switched off; Executor replaces it for app accounts."])
+        self.session("later", "2026-11-01T10:00:00Z", ["Invoices go out on the first business day of the month."])
+
+        def judge(text, older, passages):
+            if "CLI is the default" in text:
+                return answer("owner", "composio cli is the default for app accounts")
+            return answer(matters=True, replaces=older if "switched" in text else ())
+
+        self.run_pass(Model(judge))
+        self.assertEqual([d.text[:20] for d in decisions.review(self.db)],
+                         ["Composio switched of", "Invoices go out on t"])
+
     def test_review_on_a_store_the_pass_never_ran_on_is_empty(self):
         self.assertEqual(decisions.review(self.db), [])
 
