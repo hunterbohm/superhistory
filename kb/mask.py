@@ -3231,7 +3231,7 @@ def _token_like(run):
     if re.search(r"[+/]", run) or re.fullmatch(r"[0-9]{4,}", run):
         return True  # "0123/567", "20261103": base64's own marks, or a run of digits no word or small number holds
     return (sum(bool(re.search(kind, run)) for kind in ("[A-Z]", "[a-z]", "[0-9+/]")) >= 2
-            and not re.fullmatch(r"[A-Z][a-z]*[aeiouy][a-z]*", run))
+            and not re.fullmatch(r"[A-Z][b-df-hj-np-tv-xz]*[aeiouy][a-z]*", run))  # read one way: in proportion
 
 
 # a line's run of base64 as long as a rest's start reads one (_LINE_OF_BASE64, its padding counted): a stream's short
@@ -3316,32 +3316,88 @@ _BASE64_ONLY_LINE = re.compile(r"[ \t\r\"'#>*,;|\]]*([A-Za-z0-9+/]+=*)?[ \t\r\"'
 # A run of base64 of both cases, as a key's fragment is, past public material: the run today's main would hide that the
 # coordinator's exception for this branch lets no text show (16 characters, as tests/test_mask_against_today.py reads).
 _MIXED_RUN = re.compile(r"(?<![A-Za-z0-9+/])(?=[A-Za-z0-9+/]*[A-Z])(?=[A-Za-z0-9+/]*[a-z])[A-Za-z0-9+/]{16,}")
-# A run of base64, or a web page's entity, whose name is no run ("&amp;"): what _joined_pieces reads.
-_PIECE_OR_ENTITY = re.compile(r"&(?:[A-Za-z][A-Za-z0-9]*|#[0-9]+|#[xX][0-9A-Fa-f]+);|[A-Za-z0-9+/]+=*")
+# What reads as no base64 between a key's pieces (_joined_pieces), besides any character that is none: an HTML tag,
+# written or as a web page's entities ("<br>", "&lt;br/&gt;"), and any entity ("&amp;"), whose letters are no piece.
+_PIECE_SEPARATOR = re.compile(r"</?[A-Za-z][A-Za-z0-9]*(?:\s[^<>]{0,40})?/?>"
+                              r"|&lt;/?[A-Za-z][A-Za-z0-9]*(?:\s(?:(?!&gt;).){0,40})?/?&gt;"
+                              r"|&(?:[A-Za-z][A-Za-z0-9]*|#[0-9]+|#[xX][0-9A-Fa-f]+);")
+_PIECE_RUN = re.compile(r"[A-Za-z0-9+/]+=*")
+# Letters that read as words, alone or joined in camel case ("notes", "Docs", "GitHub", "macOS", "OAuth", "SQLite"):
+# parts of small letters with a vowel, each after one capital or none, and acronyms of two capitals or more. Read one
+# way only, so a long run costs time in proportion.
+_WORD_LETTERS = re.compile(r"(?=[A-Za-z])(?:[b-df-hj-np-tv-xz]*[aeiouy][a-z]*)?"
+                           r"(?:(?:[A-Z]{3,}|[A-Z])[b-df-hj-np-tv-xz]*[aeiouy][a-z]*)*(?:[A-Z]{2,})?")
 _CAPITAL = re.compile("[A-Z]")
 _SMALL = re.compile("[a-z]")
+_RANDOM_MARK = re.compile("[0-9+/]")
+
+
+def _reads_as_words(run):
+    """Whether a run of base64's characters reads as words, as a name's or a link's path does ("GitHub",
+    "example.com/Docs/Index"): each part between its slashes under four characters or letters that read as words
+    (_WORD_LETTERS), one of them four or more."""
+    parts = run.rstrip("=").split("/")
+    return (any(len(part) >= 4 for part in parts)
+            and all(len(part) < 4 or (part.isalpha() and _WORD_LETTERS.fullmatch(part)) for part in parts))
+
+
+def _key_piece(run):
+    """Whether a run of four characters or more could be a piece of a key's body: _token_like, and no words."""
+    return len(run.rstrip("=")) >= 4 and _token_like(run) and not _reads_as_words(run)
 
 
 def _joined_pieces(view):
-    """Whether `view` holds a key's run cut into pieces joined by any separator, as _MIXED_RUN reads one run whole:
-    runs of base64 of four characters or more, each one a key's body could hold (_token_like), with nothing between
-    them that is base64 (any spacing, punctuation, line break, web page's entity or other character), 16 characters
-    or more in all, of both cases. A shorter run, or a word ("notes"), ends such a chain, so ordinary words with a
-    number or an acronym among them ("port 8080", "HTTP") are none; a run of 16 or more alone is _MIXED_RUN's. Read
-    once, in proportion."""
-    total, upper, lower = 0, False, False
-    for m in _PIECE_OR_ENTITY.finditer(view):
+    """Whether `view` holds a key's run cut into pieces joined by any separator, 16 characters or more of both cases in
+    all, with a digit, "+" or "/", as _MIXED_RUN reads one run whole. Read two ways, in proportion:
+    - a chain: pieces a key's body could hold (_key_piece), with nothing between them but what is no base64 or a short
+      run that reads as no word ("3x"); a word, short ("at", "and") or not ("notes", "GitHub"), ends it;
+    - an even cut (_evenly_cut): pieces of one width, each after the same separator, as a key cut every so many
+      characters is, though one of them reads as a word ("Next").
+    So words with a port's number or an acronym among them, names in camel case and a link's path are none."""
+    view = _PIECE_SEPARATOR.sub("<>", view)  # not a space: a cut joined by tags or entities ends at a space
+    total, upper, lower, mark = 0, False, False, False
+    runs = []  # (run, where it starts, where it ends), each of four characters or more
+    for m in _PIECE_RUN.finditer(view):
         run = m.group()
-        if run[0] == "&":
+        if len(run.rstrip("=")) < 4:
+            if run.isalpha() and _WORD_LETTERS.fullmatch(run):
+                total, upper, lower, mark = 0, False, False, False
             continue
-        if len(run.rstrip("=")) < 4 or not _token_like(run):
-            total, upper, lower = 0, False, False
+        runs.append((run, m.start(), m.end()))
+        if not _key_piece(run):
+            total, upper, lower, mark = 0, False, False, False
             continue
         total += len(run)
         upper = upper or bool(_CAPITAL.search(run))
         lower = lower or bool(_SMALL.search(run))
-        if total >= 16 and upper and lower:
+        mark = mark or bool(_RANDOM_MARK.search(run))
+        if total >= 16 and upper and lower and mark:
             return True
+    return _evenly_cut(view, runs)
+
+
+def _evenly_cut(view, runs):
+    """Whether `runs` (_joined_pieces') hold two or more of one width under 16, the last up to it, each after the same
+    separator (what is between them, short runs and words included: " and "), not a blank line, 16 characters or more
+    of both cases in all with a digit, "+" or "/", two thirds of them or more pieces a key's body could hold
+    (_key_piece). Each run is read at most twice."""
+    after = [view[end:runs[k + 1][1] if k + 1 < len(runs) else len(view)] for k, (_, _, end) in enumerate(runs)]
+    i = 0
+    while i < len(runs):
+        width = len(runs[i][0])
+        if not 4 <= width <= 15:
+            i += 1
+            continue
+        j = i
+        while (j + 1 < len(runs) and len(runs[j][0]) == width and after[j] == after[i] and after[i]
+               and "\n\n" not in after[i]):
+            j += 1
+        group = [run for run, _, _ in runs[i:j + 1 if len(runs[j][0]) <= width else j]]
+        cut = "".join(group)
+        if (len(group) >= 2 and len(cut) >= 16 and _CAPITAL.search(cut) and _SMALL.search(cut)
+                and _RANDOM_MARK.search(cut) and 3 * sum(map(_key_piece, group)) >= 2 * len(group)):
+            return True
+        i = max(j, i + 1)
     return False
 
 
