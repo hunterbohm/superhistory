@@ -3047,23 +3047,22 @@ _KEY_ESCAPE = re.compile(r"(?<!\\)\\+(?:[nrt]|u[0-9A-Fa-f]{4})")
 _ESCAPED_BASE64 = r"(?<!\\)\\+(?:/|u00(?:2[bBfF]|3[0-9dD]|4[1-9a-fA-F]|5[0-9aA]|6[1-9a-fA-F]|7[0-9aA]))"
 # What every reader of a key's fragment reads as another character (_fragment_view): an escaped character of base64's
 # as that character; any other escape of a space, a line break or a character (_KEY_ESCAPE), and a quote written as a
-# web page's entity (_QUOTE_ENTITY), as a space, or as nothing where the view is read joined (_rest_view).
+# web page's entity (_QUOTE_ENTITY), as a space.
 _FRAGMENT_READS = re.compile(rf"({_ESCAPED_BASE64})|(?:{_KEY_ESCAPE.pattern})|(?:{_QUOTE_ENTITY.pattern})")
 
 
-def _fragment_read(m, apart=" "):
-    """What a match of _FRAGMENT_READS reads as: an escape of no base64 character, or an entity, as `apart`."""
+def _fragment_read(m):
+    """What a match of _FRAGMENT_READS reads as."""
     escape = m.group(1)
-    return apart if escape is None else "/" if escape[-1] == "/" else chr(int(escape[-2:], 16))
+    return " " if escape is None else "/" if escape[-1] == "/" else chr(int(escape[-2:], 16))
 
 
 def _fragment_view(text):
     """(`text` as every reader of a key's fragment reads it, and for each of its characters where it starts in `text`,
     then `len(text)`): without the characters a reader does not see, at any depth of escaping (_unseen_view), and with
     each escape _FRAGMENT_READS reads as another character read so. One view for every such reader (_rest_view,
-    _holds_token, _token_tail, _encoded_words, _base64_lines, _runs_past, _public_rest, _cut_body_end), so a run one
-    reads whole none reads as parted; the check of a run past public material reads it joined (_rest_view). Read once,
-    in proportion."""
+    _holds_token, _token_tail, _encoded_words, _base64_lines, _public_rest, _cut_body_end), so a run one reads whole
+    none reads as parted. Read once, in proportion."""
     unseen, kept = _unseen_view(text)
     pieces, at, last = [], [], 0
     for m in _FRAGMENT_READS.finditer(unseen):
@@ -3079,14 +3078,9 @@ def _fragment_view(text):
     return "".join(pieces), at
 
 
-def _rest_view(line, joined=False):
-    """A line as a key's rest is read: _fragment_view's text, without its map. Joined, as the check of a run past public
-    material reads it (_runs_past), which fails closed: an escape of no base64 character, a quote's entity and a
-    backslash left read as nothing, so a key's piece that one splits reads whole, as main hides it."""
-    view = _unseen_view(line)[0]
-    if not joined:
-        return _FRAGMENT_READS.sub(_fragment_read, view)
-    return _FRAGMENT_READS.sub(lambda m: _fragment_read(m, ""), view).replace("\\", "")
+def _rest_view(line):
+    """A line as a key's rest is read: _fragment_view's text, without its map."""
+    return _FRAGMENT_READS.sub(_fragment_read, _unseen_view(line)[0])
 
 
 def _headless_key_edits(text):
@@ -3313,104 +3307,17 @@ def _token_tail(text):
 # A line of base64 as a key's rest or public material is written, past what can stand around it (quotes, comment and
 # quote marks, a list's punctuation), read without the characters a reader does not see.
 _BASE64_ONLY_LINE = re.compile(r"[ \t\r\"'#>*,;|\]]*([A-Za-z0-9+/]+=*)?[ \t\r\"',;]*")
-# A run of base64 of both cases, as a key's fragment is, past public material: the run today's main would hide that the
-# coordinator's exception for this branch lets no text show (16 characters, as tests/test_mask_against_today.py reads).
+# A run of base64 of both cases, 16 characters or more, as a key's fragment is: past the public material a key's rest
+# starts with, one takes that material with the rest, failing closed (_key_rests).
 _MIXED_RUN = re.compile(r"(?<![A-Za-z0-9+/])(?=[A-Za-z0-9+/]*[A-Z])(?=[A-Za-z0-9+/]*[a-z])[A-Za-z0-9+/]{16,}")
-# What reads as no base64 between a key's pieces (_joined_pieces), besides any character that is none: an HTML tag,
-# written or as a web page's entities ("<br>", "&lt;br/&gt;"), and any entity ("&amp;"). Its name and its attributes
-# are read for pieces (_piece_apart), as a key's piece can be written as either ("<YfZ4kjGs>", title="Rt5H9LbN").
-_PIECE_SEPARATOR = re.compile(r"</?(?P<tag>[A-Za-z][A-Za-z0-9]*)(?P<attributes>\s[^<>]{0,40})?/?>"
-                              r"|&lt;/?(?P<lt_tag>[A-Za-z][A-Za-z0-9]*)(?P<lt_attributes>\s(?:(?!&gt;).){0,40})?/?&gt;"
-                              r"|&(?P<entity>[A-Za-z][A-Za-z0-9]*|#[0-9]+|#[xX][0-9A-Fa-f]+);")
-_PIECE_RUN = re.compile(r"[A-Za-z0-9+/]+=*")
-# Letters that read as words, alone or joined in camel case ("notes", "Docs", "GitHub", "macOS", "SQLite", "URLs"):
-# parts of small letters with a vowel, each after one capital or none, and acronyms of two capitals or more, the last
-# with a plural's "s". Read one way only, so a long run costs time in proportion.
-_WORD_LETTERS = re.compile(r"(?=[A-Za-z])(?:[b-df-hj-np-tv-xz]*[aeiouy][a-z]*)?"
-                           r"(?:(?:[A-Z]{3,}|[A-Z])[b-df-hj-np-tv-xz]*[aeiouy][a-z]*)*(?:[A-Z]{2,}s?)?")
-_CAPITAL = re.compile("[A-Z]")
-_SMALL = re.compile("[a-z]")
-_HEX_CONSTANT = re.compile("0x[0-9A-Fa-f]+")
 
 
-def _reads_as_words(run):
-    """Whether a run of base64's characters reads as words, as a name's or a link's path does ("GitHub",
-    "example.com/Docs/Index"): each part between its slashes under four characters or letters that read as words
-    (_WORD_LETTERS), one of them four or more."""
-    parts = run.rstrip("=").split("/")
-    return (any(len(part) >= 4 for part in parts)
-            and all(len(part) < 4 or (part.isalpha() and _WORD_LETTERS.fullmatch(part)) for part in parts))
-
-
-def _key_piece(run):
-    """Whether a run of four characters or more could be a piece of a key's body: _token_like, no words, not digits
-    alone (a year, a port: about 1 in 1,700 of a key's pieces of four), no hex constant ("0x2A": about 1 in 35,000)
-    and, of eight characters or more, of both cases (a hash in hex, an id in capitals: about 3 in 100 of a key's)."""
-    piece = run.rstrip("=")
-    return (len(piece) >= 4 and _token_like(run) and not _reads_as_words(run) and not piece.isdigit()
-            and not _HEX_CONSTANT.fullmatch(piece)
-            and (len(piece) < 8 or bool(_CAPITAL.search(piece) and _SMALL.search(piece))))
-
-
-def _piece_apart(found):
-    """What a tag or an entity (_PIECE_SEPARATOR's `found`) reads as between a key's pieces: no base64, with any piece
-    a key's body could hold in its name or its attributes kept, each apart ("<>Rt5H9LbN<>")."""
-    name = found["tag"] or found["lt_tag"] or found["entity"] or ""
-    attributes = found["attributes"] or found["lt_attributes"] or ""
-    return "<>" + "".join(run + "<>" for part in (name, attributes) for run in _PIECE_RUN.findall(part) if _key_piece(run))
-
-
-def _joined_pieces(view):
-    """Whether `view` holds a key's run cut into pieces joined by any separator, 16 characters or more of both cases in
-    all, as _MIXED_RUN reads one run whole. Read two ways, in proportion:
-    - a chain: pieces a key's body could hold (_key_piece), with nothing between them but what is no base64 or runs
-      under four characters ("and", "3x"); a run of four or more that is none ("notes", "GitHub") ends it;
-    - an even cut (_evenly_cut): pieces of one width, each after the same separator, as a key cut every so many
-      characters is, though one of them reads as a word ("Next").
-    So words with a port's number or an acronym among them, names in camel case, a link's path, and hashes, ids and
-    dates among words are none."""
-    view = _PIECE_SEPARATOR.sub(_piece_apart, view)  # not a space: a cut joined by tags or entities ends at a space
-    total, upper, lower = 0, False, False
-    runs = []  # (run, where it starts, where it ends), each of four characters or more
-    for m in _PIECE_RUN.finditer(view):
-        run = m.group()
-        if len(run.rstrip("=")) < 4:
-            continue
-        runs.append((run, m.start(), m.end()))
-        if not _key_piece(run):
-            total, upper, lower = 0, False, False
-            continue
-        total += len(run)
-        upper = upper or bool(_CAPITAL.search(run))
-        lower = lower or bool(_SMALL.search(run))
-        if total >= 16 and upper and lower:
-            return True
-    return _evenly_cut(view, runs)
-
-
-def _evenly_cut(view, runs):
-    """Whether `runs` (_joined_pieces') hold two or more of one width under 16, the last up to it, each after the same
-    separator (what is between them, short runs and words included: " and "), not a blank line, 16 characters or more
-    of both cases in all, two thirds of them or more pieces a key's body could hold (_key_piece). Each run is read at
-    most twice."""
-    after = [view[end:runs[k + 1][1] if k + 1 < len(runs) else len(view)] for k, (_, _, end) in enumerate(runs)]
-    i = 0
-    while i < len(runs):
-        width = len(runs[i][0])
-        if not 4 <= width <= 15:
-            i += 1
-            continue
-        j = i
-        while (j + 1 < len(runs) and len(runs[j][0]) == width and after[j] == after[i] and after[i]
-               and "\n\n" not in after[i]):
-            j += 1
-        group = [run for run, _, _ in runs[i:j + 1 if len(runs[j][0]) <= width else j]]
-        cut = "".join(group)
-        if (len(group) >= 2 and len(cut) >= 16 and _CAPITAL.search(cut) and _SMALL.search(cut)
-                and 3 * sum(map(_key_piece, group)) >= 2 * len(group)):
-            return True
-        i = max(j, i + 1)
-    return False
+def _mixed_run_starts(text):
+    """Where each run of base64 of both cases, 16 characters or more (_MIXED_RUN), starts in `text`, read as a key's
+    fragment is (_fragment_view), in order. Read once for a text, so many rests in one paragraph cost time in
+    proportion."""
+    view, kept = _fragment_view(text)
+    return [kept[m.start()] for m in _MIXED_RUN.finditer(view)]
 
 
 def _base64_lines(text, start, end):
@@ -3487,98 +3394,14 @@ def _public_prefix(lines):
     return most
 
 
-def _runs_past(text):
-    """For the rests of keys in `text`, past the public material each starts with (_public_first): whether
-    text[last:end] holds no run of base64 of both cases (_MIXED_RUN), whole or cut into pieces joined by any separator
-    (_joined_pieces), outside lines that are public material of their own, read as _rest_view reads it joined, failing
-    closed, so a certificate after a line of words ("next steps") is no key's fragment. Such lines are whole public
-    material that a block of lines of base64 starts with (_public_prefix), or a run of its lines between words alone
-    ("notes"), all public material; a line that starts with a placeholder starts a block past it. The text's lines are
-    read once, from the first rest on, and each end is read through once for every rest from which it holds none, as a
-    later one past it holds none too: many rests before the same end cost time in proportion."""
-    public = []  # (start, end) of each line of public material, in order
-    stops = []
-    clean = {}  # for each end, the earliest start found to hold no such run through it
-    state = {"lines": None, "block": [], "read": None}
-
-    def close(block):
-        n = _public_prefix([line for line, _, _ in block])
-        marked = block[:n]
-        k = n
-        while k < len(block):
-            if not _token_like(block[k][0]):
-                k += 1
-                continue
-            q = k
-            while q < len(block) and _token_like(block[q][0]):
-                q += 1
-            if _public_prefix([line for line, _, _ in block[k:q]]) == q - k:
-                marked += block[k:q]
-            k = q
-        for _, a, b in marked:
-            public.append((a, b))
-            stops.append(b)
-
-    def extend(to):
-        if state["lines"] is None:
-            return
-        block = state["block"]
-        while state["read"] < to or block:
-            brk = next(state["lines"], None)
-            at = state["read"]
-            stop = brk.start() if brk else len(text)
-            line = _rest_view(text[at:stop])
-            placeholder = line.rfind("[masked]")
-            if placeholder >= 0:  # a rest past a placeholder starts a block of its own
-                if block:
-                    close(block)
-                block = []
-            found = _BASE64_ONLY_LINE.fullmatch(line, placeholder + len("[masked]") if placeholder >= 0 else 0)
-            if found is None:
-                if block:
-                    close(block)
-                block = []
-            elif found.group(1):
-                block.append((found.group(1), at, stop))
-            if brk is None:
-                if block:
-                    close(block)
-                block = []
-                state["read"] = len(text) + 1
-                break
-            state["read"] = brk.end()
-        state["block"] = block
-
-    def holds_none(last, end):
-        if end in clean and clean[end] <= last:
-            return True
-        if state["lines"] is None:
-            state["lines"], state["read"] = _LINE_BREAK.finditer(text, last), last
-        extend(end)
-        pieces, at, i = [], last, bisect.bisect_right(stops, last)
-        while i < len(public) and public[i][0] < end:  # each line of public material read as a space
-            pieces.append(text[at:max(at, public[i][0])])
-            at, i = max(at, public[i][1]), i + 1
-        pieces.append(text[at:end])
-        view = _rest_view(" ".join(pieces), joined=True)
-        if _MIXED_RUN.search(view) or _joined_pieces(view):
-            return False
-        clean[end] = min(clean.get(end, last), last)
-        return True
-    return holds_none
-
-
-def _public_first(text, start, end, past):
-    """Whether text[start:end], what main reads as a key's rest after a placeholder, starts with whole lines of base64
-    that decode to public material, one element or a run of them as a chain of certificates is, ending where the line
-    after is none a key's could be (_public_prefix), and holds no run of base64 of both cases past them through `end`,
-    all main's reading of a key's rest hides, outside lines of public material of their own (`past`, _runs_past): then
-    it is no key's rest, and the lines after the material, a word alone ("notes"), or a port's number or an acronym
-    among words ("port 8080", "HTTP", "build 20261104"), are its own. A run of base64 lines that holds a private key's
-    bytes too decodes to no such run."""
+def _public_end(text, start, end):
+    """Where the whole lines of base64 that text[start:end], what main reads as a key's rest after a placeholder, starts
+    with end, where they decode to public material, one element or a run of them as a chain of certificates is, ending
+    where the line after is none a key's could be (_public_prefix); None where they do not. That material is no key's
+    rest. A run of base64 lines that holds a private key's bytes too decodes to no such run."""
     lines = _base64_lines(text, start, end)
     n = _public_prefix([line for line, _, _ in lines])
-    return bool(n) and past(lines[n - 1][2], end)
+    return lines[n - 1][2] if n else None
 
 
 def _public_rest(rest):
@@ -3641,12 +3464,25 @@ def _cut_body_end(text, start, stop):
     return brk.end() + kept[word.end(1)] if word else stop
 
 
+def _ends_inside_words(text, start, end):
+    """Whether a key's rest read through text[start:end] ends inside a line of words, past its first run, as main's
+    reading of a body run on into one does (_cut_body_end)."""
+    if _KEY_LINE_END.match(text, end):
+        return False
+    brk = None
+    for brk in _LINE_BREAK.finditer(text, start, end):
+        pass
+    return brk is not None and bool(_WORDS_LINE_AT.match(text, brk.start()))
+
+
 def _key_rests(text, starts=_REST_START):
     """Each key's rest after an older kb's placeholder (`starts`, _REST) that main's reading would remove, in order, as
-    (where it starts, where it ends, whether it stays): it stays where it starts with public material and holds no run
-    of base64 past it (_public_first), and is removed unless its base64 decodes whole as public material. Base64 glued
-    to a placeholder that starts no rest, as before a line break escaped twice, is read so too, but only to stay: such a
-    run's own reading (_glued_run_edits) masks it otherwise, as main's does. Lines that decode to words right after a
+    (where it starts, where it ends, whether it stays): where it starts with public material (_public_end) and no run
+    of base64 of both cases, 16 characters or more, follows it through all main's reading takes (_MIXED_RUN), that
+    material stays and all main's reading takes past it is removed, whatever it holds, as main removes it, failing
+    closed; any other rest is removed unless its base64 decodes whole as public material. Base64 glued to a placeholder
+    that starts no rest, as before a line break escaped twice, is read so too, but only to stay: such a run's own
+    reading (_glued_run_edits) masks it otherwise, as main's does. Lines that decode to words right after a
     placeholder (_encoded_words) stay, and the rest starts past them where their next line starts one, in the
     placeholder's paragraph, as main's ends with it; where main reads no rest from the placeholder, such a rest takes
     none of the tail of tokens main's rest takes, and where main's runs on past its start, it runs on as main's does.
@@ -3654,7 +3490,7 @@ def _key_rests(text, starts=_REST_START):
     own at any length starts one too (_REST_PAST_WORDS), as a stream's short last line is, past any word alone on its
     line, and runs on as main's does. Each placeholder outside the core of the rest before it is read once, and each
     core runs once to its end, so a paragraph of many costs time in proportion."""
-    core, covered, tail, past, ends = 0, 0, None, None, _rest_ends(text)
+    core, covered, tail, mixed, ends = 0, 0, None, None, _rest_ends(text)
     start = _ID_REST_START if starts is _REST_START and not _STORED_ROW.get() else starts
     for at in _PLACEHOLDER.finditer(text):
         if at.start() < core:
@@ -3708,10 +3544,19 @@ def _key_rests(text, starts=_REST_START):
         if end <= covered:  # which ends inside one already masked, read before the public material past it, which
             core = reach if rest else core  # reads on to `end`: many such in one tail took time in its square
             continue
-        past = past or _runs_past(text)
-        if _public_first(text, begin, end, past):
-            yield begin, end, True  # public material, then no run of base64 through all main hides: no key's rest
-            continue
+        public = _public_end(text, begin, end)
+        if public is not None:
+            mixed = _mixed_run_starts(text) if mixed is None else mixed
+            i = bisect.bisect_left(mixed, public)
+            past = rest and _BASE64_CHARACTER.search(_rest_view(text[public:end]))
+            # with no run of a key's past it, the material is no key's rest, unless main's reading ends inside a line
+            # of words, at a body's last line run on into it (_cut_body_end): masked past the material, the line's
+            # other words would join its last line, so it goes with the rest, as on main
+            if (i == len(mixed) or mixed[i] >= end) and not (past and _ends_inside_words(text, public, end)):
+                yield begin, public, True
+                if not past:
+                    continue
+                begin = public  # all main's reading takes past it is masked, as main masks it, whatever it holds
         if not rest:
             continue
         core = reach
@@ -3721,7 +3566,7 @@ def _key_rests(text, starts=_REST_START):
 
 
 class _Rests(list):
-    """_key_rest_edits' edits, and in `stays` where each rest it keeps as public material starts and ends."""
+    """_key_rest_edits' edits, and in `stays` where the public material each rest starts with starts and ends."""
     stays = ()
 
 
