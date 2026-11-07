@@ -4592,6 +4592,24 @@ class Base64ReviewTwentySixthTest(unittest.TestCase):
                         self.assertEqual([p for p in named if p in masked], [])
                         self.assertIn("next paragraph", masked)
 
+    def test_hex_constants_after_a_key_encoded_whole_and_a_certificate_stay_as_on_main(self):
+        # The comparison texts' code read past such a key and a certificate: hex constants written "0x2A" are of both
+        # cases ("x" and "A"), so a list of them read as a key's pieces; main keeps it. A key's piece of four
+        # characters is one in about 35,000.
+        import random
+        nl = chr(10)
+        key = Base64ReviewSeventeenTest.encoded(Base64ReviewTwentyFourthTest.pem(random.Random(2713)))
+        cert = nl.join(self.certificate())
+        for line in ("oid = bytes([0x2A, 0x86, 0x48, 0xCE, 0x3D, 0x03, 0x01, 0x07])",
+                     "flags = 0xDEADBEEF | 0x7fffffff, mask 0xFFFF0000"):
+            for depth in range(3):
+                text = self.split_written("notes" + nl + key + nl + cert + nl + line + nl + nl + "next paragraph", "",
+                                          depth)
+                for older in (False, True):
+                    with self.subTest(line=line, depth=depth, older=older):
+                        masked = Base64ReviewEighteenTest.masks(text, older)
+                        self.assertIn(self.split_written(line, "", depth), masked)
+
     def test_acronyms_plurals_after_a_key_encoded_whole_and_a_certificate_stay_as_on_main(self):
         # The same review: an acronym's plural ("APIs", "URLs") read as a key's piece of both cases, so a list of them
         # past a key encoded whole and a certificate was masked; main keeps it.
