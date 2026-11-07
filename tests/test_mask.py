@@ -4709,6 +4709,79 @@ class Base64ReviewTwentySixthTest(unittest.TestCase):
                                                   if run[i:i + 16] in masked], [])
                                 self.assertIn("next paragraph", masked)
 
+    @staticmethod
+    def openssh(r, kind):
+        """A made-up OpenSSH public key's blob: its strings, each after its length, as many as its type holds."""
+        import struct
+
+        def string(b):
+            return struct.pack(">I", len(b)) + b
+        if kind == "ed25519":
+            return string(b"ssh-ed25519") + string(bytes(r.randrange(256) for _ in range(32)))
+        if kind == "rsa":
+            return string(b"ssh-rsa") + string(bytes.fromhex("010001")) + string(
+                b"\0" + bytes(r.randrange(256) for _ in range(256)))
+        return string(b"ecdsa-sha2-nistp256") + string(b"nistp256") + string(
+            b"\x04" + bytes(r.randrange(256) for _ in range(64)))
+
+    def test_an_openssh_public_key_after_a_placeholder_stays_as_a_certificate_does(self):
+        # Round 28 (review-pr round 8): the public material a key's rest starts with was read as DER alone, so an
+        # OpenSSH public key's base64 after an older kb's placeholder, then a word alone, was masked; main keeps it.
+        # Made up.
+        import base64
+        import random
+        import textwrap
+        nl = chr(10)
+        r = random.Random(2801)
+        for kind in ("ed25519", "rsa", "ecdsa"):
+            encoded = base64.b64encode(self.openssh(r, kind)).decode()
+            for width in (None, 64):
+                lines = textwrap.wrap(encoded, width) if width else [encoded]
+                for after in ("notes", "", "next steps"):
+                    text = "[masked]" + nl + nl.join(lines) + (nl + after if after else "") + nl + nl + "next paragraph"
+                    for depth in range(3):
+                        written = self.split_written(text, "", depth)
+                        for older in (False, True):
+                            with self.subTest(kind=kind, width=width, after=after, depth=depth, older=older):
+                                masked = Base64ReviewEighteenTest.masks(written, older)
+                                self.assertEqual([line for line in lines if line not in masked], [])
+                                self.assertIn("next paragraph", masked)
+                                if after == "next steps":
+                                    self.assertIn("next steps", masked)
+
+    def test_what_only_looks_like_an_openssh_public_key_after_a_placeholder_stays_masked(self):
+        # Round 28: an OpenSSH public key is its type's strings, as many as the type holds, and no more. A private
+        # key's blob (openssh-key-v1), a public key's blob with bytes after it, and a blob of one type with another's
+        # count of strings are no public material, so after an older kb's placeholder they fail closed. Made up.
+        import base64
+        import random
+        import struct
+        import textwrap
+        nl = chr(10)
+        r = random.Random(2802)
+
+        def string(b):
+            return struct.pack(">I", len(b)) + b
+        public = self.openssh(r, "ed25519")
+        private = (b"openssh-key-v1" + bytes(1) + string(b"none") + string(b"none") + string(b"") +
+                   struct.pack(">I", 1) + string(public) + string(bytes(r.randrange(256) for _ in range(144))))
+        blobs = {"a private key": private,
+                 "bytes after it": public + bytes(r.randrange(256) for _ in range(48)),
+                 "a third string": public + string(bytes(r.randrange(256) for _ in range(32))),
+                 "RSA's two": string(b"ssh-rsa") + string(bytes(r.randrange(256) for _ in range(257)))}
+        for name, blob in blobs.items():
+            encoded = base64.b64encode(blob).decode()
+            for width in (None, 64):
+                lines = [line for line in (textwrap.wrap(encoded, width) if width else [encoded]) if len(line) >= 16]
+                for after in ("notes", ""):
+                    text = "[masked]" + nl + nl.join(textwrap.wrap(encoded, width) if width else [encoded]) + (
+                        nl + after if after else "") + nl + nl + "next paragraph"
+                    for depth in range(3):
+                        with self.subTest(blob=name, width=width, after=after, depth=depth):
+                            masked = Base64ReviewEighteenTest.masks(self.split_written(text, "", depth), True)
+                            self.assertEqual([line[:16] for line in lines if line[:16] in masked], [])
+                            self.assertIn("next paragraph", masked)
+
     def test_a_keys_pieces_of_letters_alone_or_in_a_tags_attributes_past_a_certificate_stay_masked(self):
         # An automated review of eb1f4ab: a row of a key's pieces had to hold a digit, "+" or "/", which a fragment of
         # letters alone (about 1 in 28 of 16 characters) lacks, though one run of 16 was masked on its cases alone;
