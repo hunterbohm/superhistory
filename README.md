@@ -131,7 +131,7 @@ Eden reads your posts without an X API plan, but each call spends Eden research 
 0.2 for your analytics and 1 for a whole post, by Eden's price list in November 2026. So it asks Eden at most once
 every `every_hours` and reads whole only new posts that Eden cut short or that start a thread, at most `full_reads` a
 run. A day's check with one long post costs about 1.7 credits. The first run reads your whole history at 0.5 per 50
-posts. Thread detection reads your Eden analytics, so it covers only accounts connected to your Eden workspace.
+posts. Thread detection reads your Eden analytics, so it covers only accounts connected to your Eden workspace, and on the first run only your newest 100 posts, the most Eden's analytics return.
 
 ```toml
 [sources.x]

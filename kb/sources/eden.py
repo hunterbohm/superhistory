@@ -9,7 +9,9 @@ to index a post before a run passes it, and no post is read twice, so a whole po
 replaced by its start. Eden's search returns the start of a long post and only the first post of a thread, so the run
 also reads your own analytics, which mark the posts that start a thread, and reads whole each new post that was cut
 short or starts a thread, at most `full_reads` a run, newest first. Analytics cover only accounts connected to your
-Eden workspace; for another account, threads keep their first post only.
+Eden workspace; for another account, threads keep their first post only. Eden's analytics return at most the
+newest 100 posts and cannot be paged (Starter keeps 30 days of them), so on the first run, threads older than those
+keep their first post only. A later run's window is short, so its threads are all found.
 
 The key needs Eden's research tools. Make one in Eden under Settings, API.
 
