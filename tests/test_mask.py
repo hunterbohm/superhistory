@@ -5004,6 +5004,13 @@ class Base64ReviewTwentyEighthTest(unittest.TestCase):
                 text = "intro notes" + nl + "[masked]" + nl + body + nl + "walrus moved today" + nl + nl + "next paragraph"
                 self.check_rows(text, text, "intro notes" + nl + "[masked]" + nl + "walrus moved today" + nl + nl
                                 + "next paragraph")
+        # and each line below it after what can stand before a body's line, as main's rest reads one past it: a quote
+        # or its entity, "<br>", a placeholder, an escaped tab, a wide space, list and comment marks
+        for mark in ("&#34;", "&quot;", "<br>", "[masked] ", bs + "t", chr(0xa0), "- ", "> > ", "| "):
+            body = nl.join((mark if k else "") + line.replace("/", bs + "/") for k, line in enumerate(lines))
+            text = "intro notes" + nl + "[masked]" + nl + body + nl + "walrus moved today" + nl + nl + "next paragraph"
+            self.check_rows(text, text, "intro notes" + nl + "[masked]" + nl + "walrus moved today" + nl + nl
+                            + "next paragraph")
 
     def test_a_key_encoded_whole_and_cut_before_its_header_is_masked_from_its_paragraphs_start(self):
         # A key's body and footer, or its footer alone, encoded as base64 with no header above them, are masked from
