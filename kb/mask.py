@@ -2975,9 +2975,15 @@ _LINE_OF_BASE64 = (rf"(?:{{}})[A-Za-z0-9+/=]{{{{36,}}}}[ \t\r]*(?:\n|[\\\"'<…]
 _REST_START = re.compile(rf"[A-Za-z0-9+/=]+[ \t\r]*(?=\n|\\(?:r\\)?n)|(?:{_BEFORE_BODY}|{INVISIBLE.pattern}){{0,64}}"
                          + _LINE_OF_BASE64.format(rf"{_KEY_BODY_START}|(?=[A-Za-z0-9+/=]*[A-Z])(?=[A-Za-z0-9+/=]*[a-z])"
                                                   r"(?=[A-Za-z0-9+/=]*[0-9+/])"))
+# The run alone that starts a rest by its line of base64 (_REST_START's and _ID_REST_START's second form), as read where
+# main reads no rest from the placeholder (_key_rests): there only the run goes.
+_RUN_REST_START = re.compile(rf"(?:{_BEFORE_BODY}|{INVISIBLE.pattern}){{0,64}}"
+                             + _LINE_OF_BASE64.format(rf"{_KEY_BODY_START}|(?=[A-Za-z0-9+/=]*[A-Z])(?=[A-Za-z0-9+/=]*[a-z])"
+                                                      r"(?=[A-Za-z0-9+/=]*[0-9+/])"))
 # An item id is read more narrowly (secret_in_id): there a key's rest starts with a key's body start alone, as on main.
 _ID_REST_START = re.compile(rf"[A-Za-z0-9+/=]+[ \t\r]*(?=\n|\\(?:r\\)?n)|(?:{_BEFORE_BODY}){{0,64}}"
                             + _LINE_OF_BASE64.format(_KEY_BODY_START))
+_ID_RUN_REST_START = re.compile(rf"(?:{_BEFORE_BODY}){{0,64}}" + _LINE_OF_BASE64.format(_KEY_BODY_START))
 # Past lines of words where main's rest from the placeholder runs on, a line of base64 alone on its line starts a key's
 # rest at any length, as a stream's last line, shorter than the rest, can: after its line break, plain or escaped, up
 # to the next or an escape, a quote or the end. A word alone on its line ("Thanks", "README") is no such line.
@@ -3103,6 +3109,12 @@ _PLACEHOLDER = re.compile(r"\[masked\]")
 # decodes as public material. In text read fresh kb masks a key whole, so a key's rest starts only at a key's body
 # start, as on main, and base64 after a password's placeholder stays.
 _STORED_ROW = contextvars.ContextVar("kb_mask_stored_row", default=False)
+# Where a placeholder stands for a private key written as base64 (_encoded_key_spans), which main leaves readable: the
+# starts of such placeholders in the text a pass reads (_passes, _KEY_PLACES), and in the text a reading of keys' rests
+# reads (_run, _KEY_HERE). After one, a key's rest is read whole, as an older kb's rest after an earlier key main leaves
+# readable is; after any other, where main reads no rest from it, only the run that starts one goes (_key_rests).
+_KEY_PLACES = contextvars.ContextVar("kb_mask_key_places", default=frozenset())
+_KEY_HERE = contextvars.ContextVar("kb_mask_key_here", default=frozenset())
 
 
 @contextlib.contextmanager
@@ -3562,6 +3574,41 @@ def _ends_inside_words(text, start, end):
     return brk is not None and bool(_WORDS_LINE_AT.match(text, brk.start()))
 
 
+_SPACE_RUN = re.compile(r"[ \t\r]*")
+# A line below a run that goes on with it (_run_block_end): base64 alone after what can stand before a line's text,
+# up to its line's end, plain or escaped, a quote, escaped or not, that ends its item, or the end.
+_BLOCK_LINE = re.compile(r"[ \t\r\"'#>*,;|\]]*([A-Za-z0-9+/]+=*)[ \t\r]*(?=\n|\\*[\"']|\\+(?:r\\+)?n|[<…]|\Z)")
+
+
+def _run_block_end(text, begin, run):
+    """Where a rest that only its run takes ends (_key_rests, where main reads no rest): at the end of the run, which
+    ends its line or, at a quote, its item, and past the lines below that go on with it as a key's body is wrapped:
+    base64 alone on its line, as wide as the run's, to the first narrower one, one ending in "=" or one that ends its
+    item, its last."""
+    end = run.end()
+    if end > begin and text[end - 1] in "\n\\\"'<…":
+        end -= 1
+    while end > begin and text[end - 1] in " \t\r":
+        end -= 1
+    first = None
+    for first in _LINE_BREAK.finditer(text, begin, end):
+        pass
+    line = _BASE64_ONLY_LINE.fullmatch(text, first.end() if first else begin, end)
+    if line is None or line.group(1) is None or line.group(1).endswith("="):
+        return end
+    width = len(line.group(1))
+    while True:
+        below = _LINE_BREAK.match(text, _SPACE_RUN.match(text, end).end())
+        if below is None:
+            return end
+        line = _BLOCK_LINE.match(text, below.end())
+        if line is None or len(line.group(1)) > width:
+            return end
+        end = line.end(1)
+        if len(line.group(1)) < width or line.group(1).endswith("=") or not _LINE_BREAK.match(text, line.end()):
+            return end
+
+
 def _main_rest_stops(text):
     """Where main's reading of a key's rest (main's _KEY_REST) from a place ends, and whether at a footer: at the first
     footer, which it takes, blank line or header past the place. Read once for the text: each place then costs a
@@ -3601,6 +3648,7 @@ def _key_rests(text, starts=_REST_START):
     core runs once to its end, so a paragraph of many costs time in proportion."""
     core, covered, tail, mixed, spans, ends, main_stop = 0, 0, None, None, None, _rest_ends(text), None
     start = _ID_REST_START if starts is _REST_START and not _STORED_ROW.get() else starts
+    keys = _KEY_HERE.get()
     for at in _PLACEHOLDER.finditer(text):
         if at.start() < core:
             continue
@@ -3660,6 +3708,15 @@ def _key_rests(text, starts=_REST_START):
             end = max(end, stop)
         else:
             end = main_stop.before_footer(begin, end)
+        if rest and at.start() not in keys and not (stop > begin and _ID_REST_START.match(text, at.end())):
+            # where main's rest from the placeholder does not reach this one, only a run of a key's that starts it goes
+            # (in a row an older kb stored, 36 characters or more of both cases and a digit, "+" or "/"; else a key's
+            # body's start), with the lines that go on with it as a key's body is wrapped, or its item alone; all
+            # past it is read as main reads it, and any other rest stays, as main reads none
+            run = (_ID_RUN_REST_START if start is _ID_REST_START else _RUN_REST_START).match(text, begin)
+            if run is None:
+                continue
+            end = reach = min(end, _run_block_end(text, begin, run))
         if end <= covered:  # which ends inside one already masked, read before the public material past it, which
             core = reach if rest else core  # reads on to `end`: many such in one tail took time in its square
             continue
@@ -3827,7 +3884,8 @@ def _run(text, rules, origin=None, named=None, fired=None, look=False):
     # takes a routable token's first part and leaves ".aa1234567", and a link's reading a webhook's start. Each token
     # found so is hidden whole at the end.
     whole = _gitleaks_spans(text) if reading in ("named", "today") else []
-    untracked = whole and origin is None
+    places = _KEY_PLACES.get()
+    untracked = bool(whole or places) and origin is None
     if untracked:
         origin = list(range(size))
     given = origin
@@ -3839,7 +3897,11 @@ def _run(text, rules, origin=None, named=None, fired=None, look=False):
         text, origin = _edit(text, origin, edits)
     rests = (lambda text: _key_rest_edits(text, _ID_REST_START)) if reading == "plain" else _key_rest_edits
     for edits in (_docker_login_edits, rests, _headless_key_edits, lambda text: _glued_run_edits(text, rests)):
-        text, origin = _edit(text, origin, edits(text))
+        here = _KEY_HERE.set(frozenset(c for c, o in enumerate(origin) if o in places) if places else frozenset())
+        try:
+            text, origin = _edit(text, origin, edits(text))
+        finally:
+            _KEY_HERE.reset(here)
     for pattern, main in zip(PREFIXED_SECRETS if reading != "main" else _MAIN_PREFIXED, _MAIN_PREFIXED):
         found = list(pattern.finditer(text))
         if pattern is not main and any(not main.fullmatch(text, m.start(), m.end()) for m in found):
@@ -4240,17 +4302,24 @@ def _main_once(text, origin):
     return masked, [origin[c] if c >= 0 else -1 for c in came]
 
 
-def _passes(text, step):
+def _passes(text, step, places=frozenset()):
     """`step`, a pass that tracks where each character came from, repeated until it changes nothing: (the text, where
     each of its characters came from in `text`, whether it still changed after MAX_PASSES). The pass that changes
     nothing is counted too, as it can put a placeholder down for one, with what was glued to it kept
-    (_glued_run_edits)."""
+    (_glued_run_edits). `places`, the starts of the placeholders in `text` that stand for a key written as base64,
+    are read as such in each pass while they stay (_KEY_PLACES)."""
     origin = list(range(len(text)))
     for _ in range(MAX_PASSES):
-        masked, came = step(text, list(range(len(text))))
+        marker = _KEY_PLACES.set(places)
+        try:
+            masked, came = step(text, list(range(len(text))))
+        finally:
+            _KEY_PLACES.reset(marker)
         origin = [origin[c] if c >= 0 else -1 for c in came]
         if masked == text:
             return text, origin, False
+        if places:
+            places = frozenset(c for c, o in enumerate(came) if o in places)
         text = masked
     return text, origin, True
 
@@ -4439,11 +4508,34 @@ def _masked(text, keys=None):
     masked, origin = _hide(masked, origin, hidden)
     if still:
         return masked, origin, still
-    again, after, still = _passes_masked(masked)
+    again, after, still = _passes_masked(masked, _key_places(masked, origin, keys, len(text)))
     return again, [origin[c] if c >= 0 else -1 for c in after], still
 
 
-def _passes_masked(text):
+def _key_places(masked, origin, keys, size):
+    """The starts of the placeholders in `masked` (whose characters came from `origin` in a text of `size`) that took in
+    characters of a key in `keys`, ordered spans of that text."""
+    known, last = [], -1
+    for c in origin:
+        known.append(last)
+        if c >= 0:
+            last = c
+    after, nxt = [size] * (len(origin) + 1), size
+    for i in range(len(origin) - 1, -1, -1):
+        after[i] = nxt = origin[i] if origin[i] >= 0 else nxt
+    starts = [s for s, _ in keys]
+    places = set()
+    for m in _PLACEHOLDER.finditer(masked):
+        if origin[m.start()] >= 0:
+            continue  # written in the text
+        low, high = known[m.start()] + 1, after[m.end()]
+        i = bisect.bisect_left(starts, high) - 1
+        if i >= 0 and keys[i][1] > low:
+            places.add(m.start())
+    return frozenset(places)
+
+
+def _passes_masked(text, places=frozenset()):
     """The passes of mask(): (the text, where each of its characters came from in `text`, whether it still changed
     after MAX_PASSES). Where a pass read otherwise than main's own could (_once's `novel`), main's own mask is made too
     (_main_hidden), and every character it hides is hidden here: no reading added since can show what main hides, in
@@ -4453,7 +4545,7 @@ def _passes_masked(text):
     command's name, which the readings of commands after it read across the container ("{'password': 'keytool'}
     -storepass ..."), as main's do."""
     novel = []
-    masked, origin, still = _passes(text, lambda t, o: _once(t, _TEXT_RULES, o, novel))
+    masked, origin, still = _passes(text, lambda t, o: _once(t, _TEXT_RULES, o, novel), places)
     if not novel:
         return masked, origin, still
     unwrapped = _unwrapped_hidden(text) if any(_WRAPPINGS in fired for fired in novel) else None
@@ -4467,7 +4559,8 @@ def _passes_masked(text):
     if not any(c >= 0 and hidden[c] for c in origin):
         return masked, origin, False
     joined, came = _hide(masked, origin, hidden)
-    masked, after, still = _passes(joined, lambda t, o: _once(t, _TEXT_RULES, o))
+    places = frozenset(c for c, o in enumerate(came) if o in places) if places else places
+    masked, after, still = _passes(joined, lambda t, o: _once(t, _TEXT_RULES, o), places)
     return masked, [came[c] if c >= 0 else -1 for c in after], still
 
 
