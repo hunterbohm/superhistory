@@ -101,6 +101,7 @@ class YouTubeCase(unittest.TestCase):
         self.channel = FakeChannel(os.path.realpath(tmp.name))
         self.now = float(int(datetime(2026, 11, 7, 12, tzinfo=timezone.utc).timestamp()))
         self.fetched = []
+        self.feed_down = False
         self.page = f'<link rel="alternate" type="application/rss+xml" title="RSS" ' \
                     f'href="https://www.youtube.com/feeds/videos.xml?channel_id={CID}">'
         for name, value in (("time", types.SimpleNamespace(time=lambda: self.now)), ("fetch", self.fetch)):
@@ -111,6 +112,8 @@ class YouTubeCase(unittest.TestCase):
     def fetch(self, url):
         self.fetched.append(url)
         if url == youtube.FEED.format(CID):
+            if self.feed_down:
+                raise RuntimeError(f"YouTube answered HTTP 404 for {url}")
             return self.channel.feed()
         return self.page
 
@@ -286,10 +289,41 @@ class FailureTest(YouTubeCase):
         with self.assertRaisesRegex(RuntimeError, "yt-dlp did not run"):
             self.read(yt_dlp=os.path.join(self.channel.folder, "absent"))
 
-    def test_an_unreadable_feed_says_so(self):
-        self.channel.feed = lambda size=0: "<html>"
-        with self.assertRaisesRegex(RuntimeError, "the YouTube feed for UC"):
-            self.read()
+    def test_yt_dlp_failing_while_the_feed_is_down_fails_the_run(self):
+        self.feed_down = True
+        self.channel.add("v1", self.now - 3 * DAY)
+        with self.assertRaisesRegex(RuntimeError, "yt-dlp did not run"):
+            self.read(since=self.now - 4 * DAY, yt_dlp=os.path.join(self.channel.folder, "absent"))
+
+
+class FeedDownTest(YouTubeCase):
+    def setUp(self):
+        super().setUp()
+        self.feed_down = True
+
+    def test_the_first_run_lists_the_channel(self):
+        self.channel.add("v1", self.now - 30 * DAY)
+        self.channel.add("s1", self.now - 20 * DAY, tab="shorts", kind="short")
+        self.assertEqual([i.source_id for i in self.read()], ["v1", "s1"])
+
+    def test_later_runs_read_the_times_of_each_tabs_newest_videos_and_only_the_new_ones_whole(self):
+        for n in range(5):
+            self.channel.add(f"v{n}", self.now - (10 - n) * DAY)
+        self.channel.add("l0", self.now - 9 * DAY, tab="streams", kind="livestream", live="was_live")
+        self.channel.add("l1", self.now - 2 * DAY, tab="streams", kind="livestream", live="was_live")
+        found = self.read(since=self.now - 6.5 * DAY)
+        self.assertEqual([i.source_id for i in found], ["v4", "l1"])
+        self.assertTrue(all("Transcript:" in i.content for i in found))
+        probe, whole = self.channel.reads()
+        self.assertEqual(sorted(probe), ["l0", "l1", "v2", "v3", "v4"])
+        self.assertNotIn("--write-auto-subs", next(c for c in self.channel.calls() if "--" in c))
+        self.assertEqual(sorted(whole), ["l1", "v4"])
+
+    def test_a_tab_whose_newest_videos_are_all_new_is_read_whole(self):
+        for n in range(5):
+            self.channel.add(f"v{n}", self.now - (10 - n) * DAY)
+        found = self.read(since=self.now - 9.5 * DAY)
+        self.assertEqual([i.source_id for i in found], ["v1", "v2", "v3", "v4"])
 
 
 class TranscriptTest(unittest.TestCase):
