@@ -4,11 +4,16 @@
 It signs in with an internal integration token you made at notion.so/profile/integrations, and reads the pages that
 integration was shared with. It lists the pages by last edit time, newest first, down to the watermark, then reads the
 oldest of them first, up to `run_cap` pages a run, so a big workspace is read over several runs. Each page is one item:
-its title, its properties and the plain text of its blocks. docs/plugins.md is the format this speaks. Python 3.9+,
+its title, its properties and the plain text of its blocks. docs/plugins.md is the format this speaks. Notion's
+search never lists a page that was archived, and shows a page shared later under its old edit time, so once a week
+(`resweep_days`) it reads every page again, one pass like the first run, and asks Notion about each page it stored that
+the pass did not list. It keeps the ids it stored in a hidden file beside it in the plug-ins folder. Python 3.9+,
 standard library only.
 """
 import datetime
+import hashlib
 import json
+import os
 import re
 import sys
 import time
@@ -208,6 +213,48 @@ def item(notion, page, settings):
     return out
 
 
+def state_file(token):
+    return os.path.join(os.getcwd(), ".notion-state-" + hashlib.sha256(token.encode()).hexdigest()[:12] + ".json")
+
+
+def load_state(path):
+    try:
+        with open(path, encoding="utf-8") as fh:
+            state = json.load(fh)
+        return {"ids": set(state["ids"]), "seen": set(state["seen"]), "sweeping": bool(state["sweeping"])}
+    except (OSError, ValueError, KeyError, TypeError):
+        return {"ids": set(), "seen": set(), "sweeping": False}
+
+
+def save_state(path, state):
+    """Written whole and moved into place, readable by the user alone. The ids are those printed, even in a run that
+    Superhistory then refuses, which only means a later pass asks Notion about a page it never stored."""
+    data = {"ids": sorted(state["ids"]), "seen": sorted(state["seen"]), "sweeping": state["sweeping"]}
+    try:
+        fd = os.open(path + ".tmp", os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(data, fh)
+        os.replace(path + ".tmp", path)
+    except OSError as exc:
+        print(f"could not keep the page ids ({exc.strerror}); archived pages will not be noticed", file=sys.stderr)
+
+
+def gone_pages(notion, missing):
+    """The ids among `missing` that Notion says are archived, trashed or no longer readable by the integration."""
+    for pid in sorted(missing):
+        try:
+            answer = notion.call(f"/pages/{pid}")
+        except Refused as exc:
+            if exc.code == 401:
+                fail("Notion refused the token (HTTP 401). Check the token file.")
+            if exc.code in (403, 404):
+                yield pid
+                continue
+            fail(f"Notion answered {exc} reading page {pid}")
+        if answer.get("archived") or answer.get("in_trash"):
+            yield pid
+
+
 def main():
     request = json.load(sys.stdin)
     settings, secrets, since = request["settings"], request["secrets"], request["watermark"]
@@ -216,8 +263,17 @@ def main():
     notion = Notion(secrets["token"], settings.get("base_url", API), float(settings.get("min_interval_seconds", 0.34)))
     cap = int(settings.get("run_cap", 150))
     overlap = datetime.timedelta(minutes=int(settings.get("overlap_minutes", 10)))
+    every = datetime.timedelta(days=float(settings.get("resweep_days", 7)))
     started = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
-    mark = parse_time(since) if since else None
+    path = state_file(secrets["token"])
+    raw_mark, _, raw_swept = (since or "").partition("|")
+    mark = parse_time(raw_mark) if raw_mark else None
+    swept = parse_time(raw_swept) if raw_swept else None
+    state = load_state(path) if since else {"ids": set(), "seen": set(), "sweeping": False}
+    # A pass over every page: the first run, a rebuild, and once in `resweep_days`. It is the usual run with no mark, and
+    # it carries on over several runs, the mark moving as in a first run, until a run reaches the newest page.
+    if not since or (not state["sweeping"] and every > datetime.timedelta(0) and (swept is None or started - swept > every)):
+        state["sweeping"], state["seen"], mark, swept = True, set(), None, started
     pages = sorted(listing(notion, mark), key=lambda p: parse_time(p["last_edited_time"]))
     # The cap is soft at its edge: pages edited in the same minute as the last one read come with it, since the next
     # run starts after that minute.
@@ -226,11 +282,14 @@ def main():
         count += 1
     done = pages[:count]
     for page in done:
+        state["seen"].add(page["id"])
         if page.get("archived") or page.get("in_trash"):
             print(json.dumps({"id": page["id"], "gone": True}))
+            state["ids"].discard(page["id"])
             continue
         try:
             print(json.dumps(item(notion, page, settings)))
+            state["ids"].add(page["id"])
         except Refused as exc:
             if exc.code == 401:
                 fail("Notion refused the token (HTTP 401). Check the token file.")
@@ -238,18 +297,28 @@ def main():
                 print(json.dumps({"id": page["id"], "gone": True}))
                 print(f"Notion lets the integration read no blocks of page {page['id']} ({exc}); dropped it",
                       file=sys.stderr)
+                state["ids"].discard(page["id"])
                 continue
             fail(f"Notion answered {exc} reading page {page['id']}")
     if count < len(pages):
         # Pages are left, so the mark stays on the last one read, with no overlap that a busy workspace could use to
         # stand still.
         mark = max(mark or datetime.datetime.min, parse_time(done[-1]["last_edited_time"]))
-    elif pages:
-        # Notion's search can be a little late to show an edit, so go back a few minutes and read the newest again.
-        mark = max(mark or datetime.datetime.min, parse_time(pages[-1]["last_edited_time"]) - overlap)
-    elif not mark:
-        mark = started - overlap
-    print(json.dumps({"watermark": mark.strftime(STAMP)}))
+    else:
+        if state["sweeping"]:
+            for pid in gone_pages(notion, state["ids"] - state["seen"]):
+                print(json.dumps({"id": pid, "gone": True}))
+                state["ids"].discard(pid)
+            state["sweeping"], state["seen"] = False, set()
+        if pages:
+            # Notion's search can be a little late to show an edit, so pages edited in the last few minutes are read
+            # again next run. An older newest page is not: its time is the mark, and the listing stops after it.
+            newest = parse_time(pages[-1]["last_edited_time"])
+            mark = max(mark or datetime.datetime.min, min(newest, started - overlap))
+        elif not mark:
+            mark = started - overlap
+    save_state(path, state)
+    print(json.dumps({"watermark": mark.strftime(STAMP) + "|" + (swept or started).strftime(STAMP)}))
 
 
 if __name__ == "__main__":

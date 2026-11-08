@@ -1,3 +1,4 @@
+import datetime
 import json
 import os
 import unittest
@@ -35,6 +36,7 @@ class NotionCase(PluginCase):
         self.blocks = {}
         self.queue = []
         self.block_queue = []
+        self.by_id = {}
         self.server = FakeServer(self.answer)
         self.server.__enter__()
         self.addCleanup(self.server.__exit__)
@@ -52,6 +54,9 @@ class NotionCase(PluginCase):
             chunk = ordered[start:start + self.LIST_SIZE]
             more = start + self.LIST_SIZE < len(ordered)
             return 200, {"results": chunk, "has_more": more, "next_cursor": str(start + self.LIST_SIZE) if more else None}
+        if seen.path.startswith("/pages/"):
+            found = self.by_id.get(seen.path.split("/")[2])
+            return (200, found) if found else (404, {"object": "error", "code": "object_not_found"})
         block_id = seen.path.split("/")[2]
         if block_id not in self.blocks:
             return 404, {"object": "error", "code": "object_not_found"}
@@ -70,7 +75,15 @@ class NotionCase(PluginCase):
         return [r for r in self.server.requests if r.path == "/search"]
 
     def watermark(self):
-        return json.loads(store.get_watermark(self.db, NAME, "m1"))
+        return json.loads(store.get_watermark(self.db, NAME, "m1")).split("|")[0]
+
+    def swept(self):
+        return json.loads(store.get_watermark(self.db, NAME, "m1")).split("|")[1]
+
+    def last_swept_long_ago(self):
+        mark = self.watermark()
+        store.set_watermark(self.db, NAME, "m1", json.dumps(mark + "|2026-01-01T00:00:00.000Z"))
+        self.db.commit()
 
     def stored(self, text):
         hit = search.search(self.db, text)
@@ -134,20 +147,21 @@ class WatermarkTest(NotionCase):
         self.blocks = {f"p{i}": [para(f"body{i}")] for i in range(1, 7)}
         cfg = self.cfg()
         self.ingest(cfg)
-        self.assertEqual(self.watermark(), "2026-11-06T09:50:00.000Z")
+        self.assertEqual(self.watermark(), "2026-11-06T10:00:00.000Z")
         before = len(self.server.requests)
-        self.pages.append(page("p7", "Brand new thing", "2026-11-08T12:00:00.000Z"))
+        self.pages.append(page("p7", "Brand new thing", "2026-11-07T12:00:00.000Z"))
         self.blocks["p7"] = [para("quokka arrival")]
         self.ingest(cfg)
         later = self.server.requests[before:]
-        self.assertEqual([r.path for r in later],
-                         ["/search", "/search", "/blocks/p6/children", "/blocks/p7/children"])
+        self.assertEqual([r.path for r in later], ["/search", "/blocks/p7/children"])
         self.assertEqual(self.titles("quokka"), ["Brand new thing"])
         self.assertEqual(self.titles("number1"), ["Topic number1"])
-        self.assertEqual(self.watermark(), "2026-11-08T11:50:00.000Z")
+        self.assertEqual(self.watermark(), "2026-11-07T12:00:00.000Z")
 
-    def test_the_newest_pages_are_read_again_once_in_case_the_search_was_late_to_show_an_edit(self):
-        self.pages = [page("p1", "Late edit", "2026-11-03T10:05:00.000Z")]
+    def test_a_page_edited_in_the_last_minutes_is_read_again_once_in_case_the_search_was_late_to_show_an_edit(self):
+        just_now = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(minutes=1)).strftime(
+            "%Y-%m-%dT%H:%M:%S.000Z")
+        self.pages = [page("p1", "Late edit", just_now)]
         self.blocks["p1"] = [para("version one")]
         cfg = self.cfg()
         self.ingest(cfg)
@@ -180,7 +194,7 @@ class WatermarkTest(NotionCase):
         self.assertEqual(self.titles("number5"), [])
         self.ingest(cfg)
         self.assertEqual(self.titles("number5"), ["Topic number5"])
-        self.assertEqual(self.watermark(), "2026-11-05T09:50:00.000Z")
+        self.assertEqual(self.watermark(), "2026-11-05T10:00:00.000Z")
 
 
 class TieAtTheCapTest(NotionCase):
@@ -194,6 +208,101 @@ class TieAtTheCapTest(NotionCase):
         self.assertEqual(self.watermark(), "2026-11-03T10:00:00.000Z")
         self.ingest(cfg)
         self.assertEqual(self.titles("number4"), ["Topic number4"])
+
+
+class SweepTest(NotionCase):
+    def test_a_page_shared_after_its_last_edit_is_found_by_the_weekly_pass(self):
+        self.pages = [page("p1", "Old topic", "2026-11-05T10:00:00.000Z")]
+        self.blocks = {"p1": [para("alpha")], "p2": [para("shared later quokka")]}
+        cfg = self.cfg()
+        self.ingest(cfg)
+        self.pages.append(page("p2", "Shared later", "2026-10-01T10:00:00.000Z"))
+        self.ingest(cfg)
+        self.assertEqual(self.titles("quokka"), [])
+        self.last_swept_long_ago()
+        self.ingest(cfg)
+        self.assertEqual(self.titles("quokka"), ["Shared later"])
+        self.assertNotEqual(self.swept(), "2026-01-01T00:00:00.000Z")
+        self.assertIsNone(self.searches()[-1].body.get("start_cursor"))
+
+    def test_the_pass_does_not_run_again_before_its_week_is_up(self):
+        self.pages = [page("p1", "Old topic", "2026-11-05T10:00:00.000Z")]
+        self.blocks = {"p1": [para("alpha")]}
+        cfg = self.cfg()
+        self.ingest(cfg)
+        swept = self.swept()
+        before = len([r for r in self.server.requests if r.path.startswith("/blocks")])
+        self.ingest(cfg)
+        self.ingest(cfg)
+        self.assertEqual(self.swept(), swept)
+        self.assertEqual(len([r for r in self.server.requests if r.path.startswith("/blocks")]), before)
+
+    def test_resweep_days_zero_never_passes_again(self):
+        self.pages = [page("p1", "Old topic", "2026-11-05T10:00:00.000Z")]
+        self.blocks = {"p1": [para("alpha")]}
+        cfg = self.cfg("resweep_days = 0")
+        self.ingest(cfg)
+        self.last_swept_long_ago()
+        before = len([r for r in self.server.requests if r.path.startswith("/blocks")])
+        self.ingest(cfg)
+        self.assertEqual(len([r for r in self.server.requests if r.path.startswith("/blocks")]), before)
+
+    def test_the_pass_removes_pages_notion_no_longer_lists_that_it_says_are_archived_or_unreadable(self):
+        self.pages = [page(f"p{i}", f"Topic {name}", f"2026-11-0{i}T10:00:00.000Z")
+                      for i, name in ((1, "archived"), (2, "unshared"), (3, "missed"), (4, "plain"))]
+        self.blocks = {f"p{i}": [para(f"word{i}")] for i in range(1, 5)}
+        cfg = self.cfg()
+        self.ingest(cfg)
+        self.assertEqual([self.titles(f"word{i}") != [] for i in range(1, 5)], [True] * 4)
+        self.pages = [self.pages[3]]
+        self.by_id = {"p1": page("p1", "Topic archived", "2026-11-01T10:00:00.000Z", archived=True),
+                      "p3": page("p3", "Topic missed", "2026-11-03T10:00:00.000Z")}
+        self.ingest(cfg)
+        self.assertEqual([self.titles(f"word{i}") != [] for i in range(1, 5)], [True] * 4)
+        self.last_swept_long_ago()
+        self.assertEqual(self.ingest(cfg), 0)
+        self.assertEqual([self.titles(f"word{i}") != [] for i in range(1, 5)], [False, False, True, True])
+        asked = [r.path for r in self.server.requests if r.path.startswith("/pages/")]
+        self.assertEqual(sorted(asked), ["/pages/p1", "/pages/p2", "/pages/p3"])
+
+    def test_a_pass_spread_over_several_runs_checks_for_removed_pages_only_when_it_ends(self):
+        self.pages = [page(f"p{i}", f"Topic number{i}", f"2026-11-0{i}T10:00:00.000Z") for i in range(1, 5)]
+        self.blocks = {f"p{i}": [para(f"word{i}")] for i in range(1, 5)}
+        cfg = self.cfg("run_cap = 2")
+        self.ingest(cfg)
+        self.ingest(cfg)
+        self.pages = self.pages[1:]
+        self.last_swept_long_ago()
+        self.ingest(cfg)
+        self.assertEqual(self.titles("word1"), ["Topic number1"])
+        self.assertEqual([r.path for r in self.server.requests if r.path.startswith("/pages/")], [])
+        self.ingest(cfg)
+        self.assertEqual([r.path for r in self.server.requests if r.path.startswith("/pages/")], ["/pages/p1"])
+        self.assertEqual(self.titles("word1"), [])
+
+    def test_a_rebuild_starts_over_whatever_the_kept_ids_say(self):
+        self.pages = [page("p1", "Topic one", "2026-11-05T10:00:00.000Z")]
+        self.blocks = {"p1": [para("alpha")]}
+        cfg = self.cfg()
+        self.ingest(cfg)
+        self.pages = []
+        self.db.execute("DELETE FROM ingest_state")
+        self.db.commit()
+        before = len([r for r in self.server.requests if r.path.startswith("/pages/")])
+        self.assertEqual(self.ingest(cfg), 0)
+        self.assertEqual(len([r for r in self.server.requests if r.path.startswith("/pages/")]), before)
+
+    def test_the_kept_ids_are_a_hidden_file_that_only_the_user_can_read_and_plugins_list_does_not_show(self):
+        self.pages = [page("p1", "Topic one", "2026-11-05T10:00:00.000Z")]
+        self.blocks = {"p1": [para("alpha")]}
+        self.ingest(self.cfg())
+        kept = [n for n in os.listdir(self.dir) if n.startswith(".notion-state-")]
+        self.assertEqual(len(kept), 1)
+        self.assertEqual(os.stat(os.path.join(self.dir, kept[0])).st_mode & 0o777, 0o600)
+        self.assertNotIn(TOKEN, kept[0])
+        with open(os.path.join(self.dir, kept[0])) as fh:
+            self.assertNotIn(TOKEN, fh.read())
+        self.assertEqual(sorted(n for n in os.listdir(self.dir) if not n.startswith(".")), ["notion"])
 
 
 class RemovedTest(NotionCase):

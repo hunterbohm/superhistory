@@ -4,5 +4,6 @@ plugin = "notion"
 timeout_seconds = 600
 [sources.notion.settings]
 run_cap = 150               # pages read in one run; a big workspace is read over several runs
+resweep_days = 7            # every page is read again this often, to find newly shared pages and archived ones
 [sources.notion.secrets]
 token = "file:~/.config/superhistory/keys/notion.token"

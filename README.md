@@ -212,9 +212,14 @@ Each page is one item: its title, its properties and the text of its blocks, dat
 Notion link. The first run reads at most `run_cap` pages (150) and each later run goes on from there, oldest edit first,
 so a large workspace fills in over several runs. `timeout_seconds = 600` in the table `plugins install` printed gives
 those runs room; raise `run_cap` and the timeout together to read faster. Later runs read only pages edited since the
-last run, plus the newest again in case Notion was slow to show an edit. A page that was archived is removed when
-Notion still lists it; a page deleted outright is not listed by Notion's search, so it stays until `superhistory rebuild`.
-A page's blocks are read down six levels and at most 3,000 blocks. Notion allows about three requests a second, so the
+last run, and pages edited in the last few minutes once more in case Notion was slow to show an edit.
+
+Notion's search does not list a page you shared with the integration after its last edit, or a page that was archived.
+So once a week (`resweep_days`, 0 turns it off) the plug-in reads every page again, over as many runs as `run_cap`
+needs, and asks Notion about each page it stored earlier that the pass did not list. A page that is archived or no longer
+readable is removed then, and a page you just shared is found then. For either sooner, run `superhistory rebuild`.
+The plug-in keeps the ids it stored in a hidden file in the plug-ins folder, readable only by you; it holds no tokens
+and no text. A page's blocks are read down six levels and at most 3,000 blocks. Notion allows about three requests a second, so the
 plug-in waits between requests and obeys `Retry-After` when Notion says to slow down.
 
 Neither plug-in writes to Google or Notion. Items are masked like any source's before they are stored.
