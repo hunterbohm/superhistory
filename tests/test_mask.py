@@ -4942,6 +4942,69 @@ class Base64ReviewTwentyEighthTest(unittest.TestCase):
         self.check(line + nl + "[masked]" + nl + rest + nl + rest + nl + openssh + nl + nl + "next steps",
                    "[masked]" + nl + nl + "next steps")
 
+    def check_rows(self, text, fresh, older, depths=range(3)):
+        for depth in depths:
+            for stored, expected in ((False, fresh), (True, older)):
+                with self.subTest(text=text[-40:], depth=depth, older=stored):
+                    self.assertEqual(Base64ReviewEighteenTest.masks(self.escaped(text, depth), stored),
+                                     self.escaped(expected, depth))
+
+    def test_where_main_reads_no_rest_an_older_rows_run_goes_alone(self):
+        # Against main alone: in a row an older kb stored, a run of 36 characters or more of both cases and a digit
+        # right after a placeholder starts a key's rest where main reads none. The rest then ran on as main's reading of
+        # a rest would, through a JSON list's later items, a line of words and a later placeholder, which main keeps.
+        # Only the run goes now, with the lines that go on with it as a key's body is wrapped, or its item; all past it
+        # is read as main reads it. A fresh row reads no such rest, as main. Made up.
+        nl, bs, q = chr(10), chr(92), chr(34)
+        items = ["a", "token: [masked]", "Rk3Np8Lv2Qt7Wm1Hc6Js9Fd4Zg0Yb5Ue2Ka7Oi3Pl8Mq1Vn6Tr4Xs9C", "deadline", "x",
+                 "notes approved today"]
+        self.check_rows(json.dumps(items), json.dumps(items), json.dumps(items[:2] + items[3:]))
+        first = "Qm7Rv2Lk9Tp4Wx8Nc3Hs6Jd1Fg5Zb0Ye7Ua2Ki9Ol4Pq8Mn3Vr6Ts1Xw5Cy0Bz7Eh2Gj9D"
+        second = "Rk3Np8Lv2Qt7Wm1Hc6Js9Fd4Zg0Yb5Ue2Ka7Oi3Pl8Mq1Vn6Tr4Xs9Cw0By5Ez2Gh7Dj3F"
+        for after in ("next line", "[masked]" + nl + "next line"):
+            text = "[masked]" + nl + first + nl + second + nl + "yTc9pu" + nl + "notes the approved today" + nl + after
+            self.check_rows(text, text, "[masked]" + nl + "notes the approved today" + nl + after)
+        code = ('{"output": "var key = ' + bs + q + "[masked]" + bs + "n" + bs + q + " +" + bs + "n" + bs + "t" + bs + q
+                + "MIICXAIBAAKBgQZq7Lm2Vt9Rk4Wp8Nc3Hs6J" + bs + q + q + "}")
+        self.check_rows(code, code, '{"output": "var key = ' + bs + q + "[masked]" + bs + q + q + "}")
+        # a key's line break escaped once more than the quotes around it
+        held = "{" + bs + q + "private_key" + bs + q + ":" + bs + q + "[masked]"
+        text = held + bs + bs + "nMHcCAQEEIRk3Np8Lv2Qt7Wm1Hc6Js9Fd4Zg0" + bs + q + "}"
+        self.check_rows(text, text, held + bs + q + "}", depths=(0, 1))
+
+    def test_a_cut_keys_pieces_past_an_openssh_public_key_in_an_older_row_show_as_on_main(self):
+        # Past a run that starts a rest where main reads none, all is read as main reads it: in a row an older kb
+        # stored, a cut key's pieces past an OpenSSH public key's blob, or past a blob with bytes after it, show as
+        # they do on main, which reads no rest from the placeholder. The description lists it as on main. Made up.
+        nl = chr(10)
+        blob = "AAAAC3NzaC1lZDI1NTE5AAAAIJknTxtzmgyJLRYbY2wySNU1907xnyosxThTqdSqfef7"
+        appended = blob + "vTULVGPH26Ba0iniQ9afg1cEqbeyZiEIyvCwiNFSRHTxH9MSc0GpipF71KoQ3S9Y"
+        words = "notes deploy k2p6RYry SO6lACHZ +Y06KjPD UKxVtnvo 8zotfoYo CiAqBwnJ today" + nl + nl + "next paragraph"
+        text = "[masked]" + nl + blob + nl + words
+        self.check_rows(text, text, text)
+        text = "[masked]" + nl + appended + nl + words
+        self.check_rows(text, text, "[masked]" + nl + words)
+
+    def test_a_key_encoded_whole_and_cut_before_its_header_is_masked_from_its_paragraphs_start(self):
+        # A key's body and footer, or its footer alone, encoded as base64 with no header above them, are masked from
+        # their paragraph's start, as main's reading of a plain footer with no header masks one: a line of encoded
+        # words above them in the paragraph goes too. Main leaves the encoded key readable. It stops at the
+        # paragraph's start and never reads past a blank line. Made up.
+        import base64
+        import random
+        import textwrap
+        nl = chr(10)
+        r = random.Random(2804)
+        footer = "-----END PRIVATE KEY-----" + nl
+        key = nl.join(textwrap.wrap(base64.b64encode(bytes(r.randrange(256) for _ in range(300))).decode(), 64))
+        encoded = nl.join(textwrap.wrap(base64.b64encode((key + nl + footer).encode()).decode(), 64))
+        words = base64.b64encode(b"notes deploy approved today" + nl.encode()).decode()
+        for below in (encoded, base64.b64encode(footer.encode()).decode()):
+            self.check("intro line" + nl + nl + words + nl + below + nl + nl + "next paragraph",
+                       "intro line" + nl + nl + "[masked]" + nl + nl + "next paragraph")
+            self.check("intro line" + nl + nl + words + nl + nl + below + nl + nl + "next paragraph",
+                       "intro line" + nl + nl + words + nl + nl + "[masked]" + nl + nl + "next paragraph")
+
 
 class HeadlessKeyTest(unittest.TestCase):
     """A key's body without its header, as an older kb's row-by-row remask leaves the chunk after the header's."""
