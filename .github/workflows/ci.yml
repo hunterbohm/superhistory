@@ -56,6 +56,8 @@ jobs:
           python-version: ${{ matrix.python }}
       # The package needs nothing outside the standard library; installing it checks the packaging.
       - run: python -m pip install --quiet .
+      # The speed factor this runner's absolute time caps are scaled by (tests/speed.py), and the CPU it came from.
+      - run: grep -m1 "model name" /proc/cpuinfo; python -m tests.speed
       - run: python -m unittest discover -s tests -t .
 
   ci-ok:
