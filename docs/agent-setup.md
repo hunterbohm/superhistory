@@ -107,6 +107,7 @@ Ask the person for a word they know is in something they read, then run `superhi
 
 - Apps that take no hooks (Claude Desktop, Cursor, Grok) can ask on purpose through the local, read-only MCP server. The README's "Ask from other apps (MCP)" table has each app's line, such as `claude mcp add --scope user superhistory -- superhistory mcp` for Claude Code. Desktop apps need the full path from `which superhistory`.
 - A source this page does not list can be a plug-in, one executable file in the plug-ins folder (`superhistory paths` prints it). `docs/plugins.md` in the repo is the whole format.
+- `superhistory dashboard` serves a read-only page on 127.0.0.1 that shows what the history holds, with a page for each project and person. It stops on Ctrl-C, so tell the person the address it prints rather than leaving it running.
 - `superhistory backup DIR` writes one encrypted copy of the history. The passphrase is the person's: they type it at the terminal, never in chat.
 
 ## 8. Tell the person what you did
