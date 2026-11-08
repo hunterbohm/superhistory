@@ -3575,37 +3575,57 @@ def _ends_inside_words(text, start, end):
 
 
 _SPACE_RUN = re.compile(r"[ \t\r]*")
-# A line below a run that goes on with it (_run_block_end): base64 alone after what can stand before a line's text,
-# up to its line's end, plain or escaped, a quote, escaped or not, that ends its item, or the end.
-_BLOCK_LINE = re.compile(r"[ \t\r\"'#>*,;|\]]*([A-Za-z0-9+/]+=*)[ \t\r]*(?=\n|\\*[\"']|\\+(?:r\\+)?n|[<…]|\Z)")
+# A run's line and the lines below it that go on with it (_run_block_end) are read as every reader of a key's fragment
+# reads one: a character of base64 that JSON escapes (_ESCAPED_BASE64: "\\/", as PHP writes a slash) is one of its run.
+_BLOCK_CHARACTER = rf"(?:[A-Za-z0-9+/]|{_ESCAPED_BASE64})"
+_BLOCK_ESCAPED = re.compile(rf"(?:{_ESCAPED_BASE64}[A-Za-z0-9+/]*)+=*")
+# What can stand before a body's line, as main's rest reads one past it, on that line: space of any width, plain or
+# escaped, an escaped tab, a quote or its entity, list and comment marks ("+" only where no base64 follows it, as it is
+# one of base64's), "<br>", a placeholder, what a reader does not see.
+_BLOCK_LEAD = (rf"(?:\[masked\]|<br\s*/?>|{_QUOTE}|(?<!\\)\\+(?:[rt]|u(?:00[aA]0|20(?:0[0-9aAbB]|2[fF]|5[fF])|3000))"
+               rf"|{INVISIBLE.pattern}|[^\S\n]|[#>,;|*\]`-]|\+(?!{_BLOCK_CHARACTER})){{0,64}}")
+_BLOCK_RUN_LINE = re.compile(rf"{_BLOCK_LEAD}({_BLOCK_CHARACTER}+=*)?[ \t\r\"',;]*")
+# A line below a run that goes on with it: base64 alone after what can stand before a line's text, up to its line's
+# end, plain or escaped, a quote, escaped or not, that ends its item, or the end.
+_BLOCK_LINE = re.compile(rf"{_BLOCK_LEAD}({_BLOCK_CHARACTER}+=*)[ \t\r]*(?=\n|\\*[\"']|\\+(?:r\\+)?n|[<…]|\Z)")
+_ESCAPED_BASE64_CHARACTER = re.compile(_ESCAPED_BASE64)
+
+
+def _block_width(run):
+    """How many characters of base64 `run` holds, each one JSON escapes counted once."""
+    return len(_ESCAPED_BASE64_CHARACTER.sub("/", run))
 
 
 def _run_block_end(text, begin, run):
     """Where a rest that only its run takes ends (_key_rests, where main reads no rest): at the end of the run, which
     ends its line or, at a quote, its item, and past the lines below that go on with it as a key's body is wrapped:
     base64 alone on its line, as wide as the run's, to the first narrower one, one ending in "=" or one that ends its
-    item, its last."""
+    item, its last. A run that ends at a character of base64 that JSON escapes goes on past it (_BLOCK_ESCAPED)."""
     end = run.end()
     if end > begin and text[end - 1] in "\n\\\"'<…":
         end -= 1
     while end > begin and text[end - 1] in " \t\r":
         end -= 1
+    escaped = end == run.end() - 1 and text[end] == "\\" and _BLOCK_ESCAPED.match(text, end)
+    if escaped:
+        end = escaped.end()
     first = None
     for first in _LINE_BREAK.finditer(text, begin, end):
         pass
-    line = _BASE64_ONLY_LINE.fullmatch(text, first.end() if first else begin, end)
+    line = _BLOCK_RUN_LINE.fullmatch(text, first.end() if first else begin, end)
     if line is None or line.group(1) is None or line.group(1).endswith("="):
         return end
-    width = len(line.group(1))
+    width = _block_width(line.group(1))
     while True:
         below = _LINE_BREAK.match(text, _SPACE_RUN.match(text, end).end())
         if below is None:
             return end
         line = _BLOCK_LINE.match(text, below.end())
-        if line is None or len(line.group(1)) > width:
+        if line is None or _block_width(line.group(1)) > width:
             return end
         end = line.end(1)
-        if len(line.group(1)) < width or line.group(1).endswith("=") or not _LINE_BREAK.match(text, line.end()):
+        if (_block_width(line.group(1)) < width or line.group(1).endswith("=")
+                or not _LINE_BREAK.match(text, line.end())):
             return end
 
 
