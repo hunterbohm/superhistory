@@ -5138,6 +5138,74 @@ class Base64ReviewTwentyEighthTest(unittest.TestCase):
                        "intro line" + nl + nl + words + nl + nl + "[masked]" + nl + nl + "next paragraph")
 
 
+class Base64ReviewTwentyNinthTest(unittest.TestCase):
+    """#34 against main alone before its twenty-ninth review, by position and with no length threshold: every
+    character of a key that main hides stays hidden. Past public material after a placeholder (a certificate, on its
+    line or glued to it, or an OpenSSH key's blob), a key's rest ended at the last line of its paragraph that holds a
+    token, so a cut key's last piece of 1 to 4 letters at the start of a line of words below it ("Kb today") showed,
+    where main's rest from the placeholder runs on to its paragraph's end and masks it. Made-up keys only."""
+
+    @staticmethod
+    def shown(text, older):
+        """The places in `text` mask() keeps, read fresh or as an older superhistory's stored row."""
+        from kb import mask as masking
+        if older:
+            with masking.stored_row("0123456789abcdef"):
+                _, origin = masking.mask_with_origin(text)
+        else:
+            _, origin = masking.mask_with_origin(text)
+        return {c for c in origin if c >= 0}
+
+    def test_a_cut_keys_short_last_piece_on_a_line_of_words_past_public_material_stays_masked(self):
+        import base64
+        import random
+        import struct
+        import textwrap
+        nl = chr(10)
+        cert = nl.join(Base64ReviewTwentySixthTest.certificate())
+        r = random.Random(2901)
+
+        def string(data):
+            return struct.pack(">I", len(data)) + data
+        ed25519 = string(b"ssh-ed25519") + string(bytes(r.randrange(256) for _ in range(32)))
+        private = (b"openssh-key-v1" + bytes(1) + string(b"none") + string(b"none") + string(b"") + struct.pack(">I", 1)
+                   + string(ed25519) + string(bytes(r.randrange(256) for _ in range(144))))
+        blob = nl.join(textwrap.wrap(base64.b64encode(private).decode(), 64))
+        # what stands between the placeholder and the key's pieces, and the words that may lead the first piece
+        places = {"after a certificate": (nl + cert + nl, ("", "see ", "notes deploy ")),
+                  "on a certificate's last line": (nl + cert + " ", ("", "see ", "notes deploy ")),
+                  "glued to a certificate": (nl + cert, ("",)),
+                  "after an OpenSSH key's blob": (nl + blob + nl, ("", "see ", "notes deploy "))}
+        # made up: pieces of a key's line, the last one 1 to 4 letters
+        cuts = (["Qw7Zk3P", "mXa9Rt5", "Hv"], ["Lb2Ne8Pq4Rs1Tu6", "Vw3Xy5Za7Bc9De0", "Fgh"], ["Jk4Lm", "N6pQr", "S"],
+                ["Tz8Wq2Ys", "Ufgh"])
+        failed = {}
+        for place, (before, leads) in places.items():
+            for lead in leads:
+                for pieces in cuts:
+                    for between in (nl, nl + "> "):
+                        for depth in range(3):
+                            head = Base64ReviewEighteenTest.written("[masked]" + before + lead, depth)
+                            parts, spans, at = [head], [], len(head)
+                            for k, piece in enumerate(pieces):
+                                if k:
+                                    parts.append(Base64ReviewEighteenTest.written(between, depth))
+                                    at += len(parts[-1])
+                                spans.append((at, at + len(piece)))
+                                parts.append(piece)
+                                at += len(piece)
+                            text = "".join(parts) + Base64ReviewEighteenTest.written(
+                                " today" + nl + nl + "next paragraph", depth)
+                            # in JSON inside JSON, as on main, a blank line ends no rest
+                            after = range(text.rindex("next paragraph"), len(text)) if depth < 2 else ()
+                            for older in (False, True):
+                                kept = self.shown(text, older)
+                                if any(c in kept for a, b in spans for c in range(a, b)) or \
+                                        not all(c in kept for c in after):
+                                    failed.setdefault((place, between), []).append((lead, pieces[-1], depth, older))
+        self.assertEqual({key: len(cases) for key, cases in failed.items()}, {})
+
+
 class HeadlessKeyTest(unittest.TestCase):
     """A key's body without its header, as an older superhistory's row-by-row remask leaves the chunk after the header's."""
     LINE = "MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7"
