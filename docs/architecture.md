@@ -172,9 +172,10 @@ line, which starts as every private key's does (DER's "MII", "MHcC" or "MC4C", o
 base64 that mixes cases and digits, as part of a body split or re-wrapped holds, after what can stand before a line's
 text (line breaks plain or escaped at any depth, quotes, "#", ">", "+", <br> and spaces). It fails closed: such base64
 is shown only when it decodes whole as public material, a certificate, a certificate request, a public key
-(SubjectPublicKeyInfo) or an OpenSSH public key, so one cut short stays masked. It stops before a line of words ("next
-steps") or a JSON object's next field, but runs on through the last line of its paragraph that holds a token-like run,
-as main's reading took it, so only a tail of ordinary text stays. An item id starts a key's rest with a body's start
+(SubjectPublicKeyInfo) or an OpenSSH public key, so one cut short stays masked. Where main's reading of the
+placeholder's rest takes it, it runs at least as far as main's, through its footer or to its paragraph's end or the
+next header, whatever it holds, words included; elsewhere it stops before a line of words ("next steps") or a JSON
+object's next field. An item id starts a key's rest with a body's start
 alone, as main does. Text after a broken key in its paragraph is masked with it; that is the cost.
 
 Text can arrive escaped. In JSON text a secret right after an escape such as "\n" is masked as at the start of a
