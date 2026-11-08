@@ -1628,6 +1628,10 @@ class InstallTest(SourceCase):
                 shutil.copytree(str(origin), str(self.src / name), ignore=shutil.ignore_patterns("__pycache__"))
             else:
                 shutil.copy(str(origin), str(self.src / name))
+        # The package ships fonts, so the list that allows those files comes along: the rows for files in this tree.
+        rows = [line for line in (REPO / "tools" / "release_binaries.tsv").read_text(encoding="utf-8").splitlines(True)
+                if line.startswith("kb/")]
+        write(self.src, {"tools/release_binaries.tsv": "".join(rows)})
         git(self.src, "add", "-A")
         git(self.src, "commit", "-q", "-m", "the real package")
 
@@ -1663,7 +1667,7 @@ class InstallTest(SourceCase):
         release = self.build()
         result = rs.run_install_check(release, INSTALLER)
         self.assertTrue(result.ok, result.summary + "\n" + "\n".join(f.text for f in result.findings))
-        self.assertIn("kb --help", result.summary)
+        self.assertIn("superhistory --help", result.summary)
 
     def test_the_install_check_fails_when_the_installer_fails(self):
         release = self.build()
@@ -1675,27 +1679,27 @@ class InstallTest(SourceCase):
 
     def test_the_install_never_touches_the_real_home(self):
         release = self.build()
-        before = Path.home().joinpath(".local", "bin", "kb")
+        before = Path.home().joinpath(".local", "bin", "superhistory")
         existed = before.exists()
         rs.run_install_check(release, INSTALLER)
         self.assertEqual(before.exists(), existed)
 
     def fake_installer(self, kb_body):
         script = self.tmp / "fake_installer.sh"
-        script.write_text("#!/bin/sh\nmkdir -p \"$HOME/.local/bin\"\ncat > \"$HOME/.local/bin/kb\" <<'KB'\n%s\nKB\nchmod +x \"$HOME/.local/bin/kb\"\n" % kb_body)
+        script.write_text("#!/bin/sh\nmkdir -p \"$HOME/.local/bin\"\ncat > \"$HOME/.local/bin/superhistory\" <<'KB'\n%s\nKB\nchmod +x \"$HOME/.local/bin/superhistory\"\n" % kb_body)
         return script
 
     def scripted(self, steps, kb_body):
         script = self.tmp / "scripted.sh"
         script.write_text('#!/bin/sh\nset -e\nrepo="$SUPERHISTORY_REPO"\n%s\nmkdir -p "$HOME/.local/bin"\n'
-                          'cat > "$HOME/.local/bin/kb" <<\'KB\'\n%s\nKB\nchmod +x "$HOME/.local/bin/kb"\n' % (steps, kb_body))
+                          'cat > "$HOME/.local/bin/superhistory" <<\'KB\'\n%s\nKB\nchmod +x "$HOME/.local/bin/superhistory"\n' % (steps, kb_body))
         return script
 
     def test_an_installer_that_never_downloads_the_whole_archive_fails(self):
         release = self.build()
         steps = ('curl -fsS -o /dev/null "$repo/releases/latest"\n'
                  'curl -fsSI -o /dev/null "$repo/archive/refs/tags/%s.tar.gz"' % release.tag)
-        result = rs.run_install_check(release, self.scripted(steps, "#!/bin/sh\necho usage: kb"), timeout=60)
+        result = rs.run_install_check(release, self.scripted(steps, "#!/bin/sh\necho usage: superhistory"), timeout=60)
         self.assertFalse(result.ok)
         self.assertTrue(any("whole archive" in f.text for f in result.findings), result.findings)
 
@@ -1703,10 +1707,10 @@ class InstallTest(SourceCase):
         release = self.build()
         steps = ('curl -fsS -o /dev/null "$repo/releases/latest"\n'
                  'curl -fsS -o "$TMPDIR/a.tar.gz" "$repo/archive/refs/tags/%s.tar.gz"' % release.tag)
-        kb = '#!/bin/sh\ncase "$1" in --version) echo "Varve 9.9.9" ;; *) echo "usage: kb" ;; esac'
+        kb = '#!/bin/sh\ncase "$1" in --version) echo "Superhistory 9.9.9" ;; *) echo "usage: superhistory" ;; esac'
         result = rs.run_install_check(release, self.scripted(steps, kb), timeout=60)
         self.assertFalse(result.ok)
-        self.assertEqual([f.where for f in result.findings], ["kb --version"], result.findings)
+        self.assertEqual([f.where for f in result.findings], ["superhistory --version"], result.findings)
 
     def test_a_kb_that_hangs_fails_the_check_instead_of_raising(self):
         release = self.build()
@@ -1714,18 +1718,18 @@ class InstallTest(SourceCase):
         result = rs.run_install_check(release, self.fake_installer("#!/bin/sh\nsleep 30"), timeout=2)
         self.assertLess(time.time() - started, 25)
         self.assertFalse(result.ok)
-        self.assertTrue(any(f.where == "kb --help" and "ran past 2 seconds" in f.text for f in result.findings), result.findings)
+        self.assertTrue(any(f.where == "superhistory --help" and "ran past 2 seconds" in f.text for f in result.findings), result.findings)
 
     def test_a_kb_that_cannot_run_fails_the_check_with_the_reason(self):
         release = self.build()
         result = rs.run_install_check(release, self.fake_installer("not a program"), timeout=5)
         self.assertFalse(result.ok)
-        self.assertTrue(any(f.where == "kb --help" for f in result.findings), result.findings)
+        self.assertTrue(any(f.where == "superhistory --help" for f in result.findings), result.findings)
 
     def test_a_kb_that_is_not_executable_fails_the_check_with_the_reason(self):
         release = self.build()
         script = self.tmp / "plain.sh"
-        script.write_text("#!/bin/sh\nmkdir -p \"$HOME/.local/bin\"\necho '#!/bin/sh' > \"$HOME/.local/bin/kb\"\n")
+        script.write_text("#!/bin/sh\nmkdir -p \"$HOME/.local/bin\"\necho '#!/bin/sh' > \"$HOME/.local/bin/superhistory\"\n")
         result = rs.run_install_check(release, script, timeout=5)
         self.assertFalse(result.ok)
         self.assertTrue(any("Permission" in f.text or "not executable" in f.text for f in result.findings), result.findings)

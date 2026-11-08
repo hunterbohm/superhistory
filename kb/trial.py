@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 
 import kb
-from kb import ai, check, search, store
+from kb import COMMAND, ai, check, search, store
 from kb.mask import holds_secret, mask, secret_in_id
 
 HOST = "demo"
@@ -58,7 +58,7 @@ def show(db, question, config, model, out):
         for h in hits:
             out(f"  {h['ts'][:10]}  {h['source']}  {mask(h['title'])[:80]}")
         out("The check would now ask your AI plug-in which of these fit, and add only those. "
-            "Set one up with `kb setup` to see it.")
+            f"Set one up with `{COMMAND} setup` to see it.")
         return
     budget = config.check.budget_seconds or model.traits.check_budget
     try:
@@ -93,4 +93,4 @@ def run(paths, config, folder=None, chosen=None, out=print):
             show(db, question, config, model, out)
     finally:
         db.close()
-    out("\nSearch the made-up month yourself with `kb --try search \"words\"`.")
+    out(f"\nSearch the made-up month yourself with `{COMMAND} --try search \"words\"`.")

@@ -51,7 +51,7 @@ is then stopped) fails the check that ran it. A credential must be ASCII.
     archive     the archive, built from the tree, holds its files member by member under one folder, with install.sh,
                 but for what .gitattributes marks export-ignore, as GitHub's archive does; export-subst fails
     install     --installer: the site's installer, run against a local https server of this folder (a throwaway
-                certificate, trusted through CURL_CA_BUNDLE), GETs the whole archive, and the `kb` it installs
+                certificate, trusted through CURL_CA_BUNDLE), GETs the whole archive, and the `superhistory` it installs
                 runs --help and prints this release's version for --version
     suites      the snapshot's own tests, run in a copy: tests/ under python3 and python3.9, and each folder of bench/
                 that holds test files, under python3; every test passes or skips with a reason (--no-suites: skip)
@@ -907,30 +907,30 @@ def install_check(release, installer, timeout):
             findings.extend(Finding("installer", line) for line in text.splitlines()[-10:])
             return CheckResult("install", "FAIL", "the site's installer failed", findings)
         tarball, size = "/archive/refs/tags/%s.tar.gz" % release.tag, os.path.getsize(str(release.archive))
-        command = os.path.join(home, ".local", "bin", "kb")
+        command = os.path.join(home, ".local", "bin", "superhistory")
         if not any(path == "/releases/latest" for _, path, _ in requests):
             findings.append(Finding("installer", "never asked the server for /releases/latest"))
         sent = [n for method, path, n in requests if method == "GET" and path == tarball]
         if size not in sent:
             findings.append(Finding("installer", "never downloaded the whole archive by GET: the server sent at most %d of its %d bytes" % (max(sent or [0]), size)))
         if not os.path.exists(command):
-            findings.append(Finding(command[len(home) + 1:], "the installer left no kb command"))
+            findings.append(Finding(command[len(home) + 1:], "the installer left no superhistory command"))
         else:
             for args, good in (("--help", lambda text: "usage" in text.lower()),
                                ("--version", lambda text: text.split()[-1:] == [release.tag[1:]] and len(text.splitlines()) == 1)):
                 try:
                     code, output = run_group([command, args], timeout, cwd=tmp, env=env)
                 except subprocess.TimeoutExpired:
-                    findings.append(Finding("kb " + args, "ran past %d seconds" % timeout))
+                    findings.append(Finding("superhistory " + args, "ran past %d seconds" % timeout))
                 except OSError as exc:
-                    findings.append(Finding("kb " + args, failure(exc)))
+                    findings.append(Finding("superhistory " + args, failure(exc)))
                 else:
                     if code or not good(show(output)):
-                        findings.append(Finding("kb " + args, "exit %d: %s" % (code, esc(" | ".join(show(output).splitlines()[:10])))))
+                        findings.append(Finding("superhistory " + args, "exit %d: %s" % (code, esc(" | ".join(show(output).splitlines()[:10])))))
     if findings:
         return CheckResult("install", "FAIL", "the site's installer ran but the install is not whole", findings)
     return CheckResult("install", "PASS", "the site's installer fetched all of %s by GET from a local https server, and from "
-                       "~/.local/bin `kb --help` ran and `kb --version` printed %s" % (release.tag, release.tag[1:]))
+                       "~/.local/bin `superhistory --help` ran and `superhistory --version` printed %s" % (release.tag, release.tag[1:]))
 
 
 @dataclasses.dataclass
@@ -1002,7 +1002,7 @@ def run_suite(suite, repo, env, timeout, runner, report):
 
 def run_suites(repo, suites, timeout=SUITE_TIMEOUT):
     with tempfile.TemporaryDirectory(prefix="release-suites-") as home:
-        env = {k: v for k, v in os.environ.items() if k not in ("PYTHONPATH", "KB_HOME")}
+        env = {k: v for k, v in os.environ.items() if k not in ("PYTHONPATH", "SUPERHISTORY_HOME")}
         env.setdefault("PYTHONUSERBASE", site.getuserbase())
         env.update({"HOME": home, "PYTHONDONTWRITEBYTECODE": "1"})
         copy = os.path.join(home, "repo")

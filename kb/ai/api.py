@@ -5,7 +5,7 @@ import uuid
 from dataclasses import dataclass
 from typing import Literal, Optional
 
-from kb import __version__
+from kb import COMMAND, __version__
 from kb.ai import Busy, NotReady, PluginSpec, Refused, Traits
 from kb.config import Secret, SecretError
 from kb.mask import mask
@@ -15,7 +15,7 @@ AUTH_CODES = (401, 403)
 PAYMENT_REQUIRED = 402
 SETUP_CODES = AUTH_CODES + (PAYMENT_REQUIRED, 404)
 # Some API hosts sit behind Cloudflare, which refuses Python's default user agent.
-USER_AGENT = f"kb/{__version__}"
+USER_AGENT = f"{COMMAND}/{__version__}"
 
 
 @dataclass(frozen=True)

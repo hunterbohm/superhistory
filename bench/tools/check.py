@@ -1,6 +1,6 @@
 """The check as an agent gets it, run from this repo's package against scratch databases.
 
-Each store is a folder laid out as `Paths.under(folder)`, so kb's own `search` and `get` commands open it. Their
+Each store is a folder laid out as `Paths.under(folder)`, so superhistory's own `search` and `get` commands open it. Their
 printed output is caught per thread. The check's model is the package's Anthropic-compatible plug-in, pointed at the
 benchmark's endpoint.
 """
@@ -36,12 +36,12 @@ PARALLEL = 2
 CONFIG = Config()
 
 AGENT_TOOLS = (
-    {"name": "kb_search",
-     "description": "Run `kb search QUERY`: a keyword search over the user's knowledge base (email, texts, notes, "
+    {"name": "superhistory_search",
+     "description": "Run `superhistory search QUERY`: a keyword search over the user's knowledge base (email, texts, notes, "
                     "commits, GitHub threads and earlier agent sessions). Prints up to 10 hits, each with its id.",
      "input_schema": {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]}},
-    {"name": "kb_get",
-     "description": "Run `kb get ID`: print the stored text of the item a hit belongs to, 20,000 characters a "
+    {"name": "superhistory_get",
+     "description": "Run `superhistory get ID`: print the stored text of the item a hit belongs to, 20,000 characters a "
                     "page. Pass `offset` for later pages.",
      "input_schema": {"type": "object", "properties": {"id": {"type": "integer"}, "offset": {"type": "integer"}},
                       "required": ["id"]}},
@@ -70,7 +70,7 @@ def model():
 
 
 _post = api.post
-# kb's plug-in cuts a failed call's reply to 300 characters before it raises, and retries a busy server. Its calls go
+# superhistory's plug-in cuts a failed call's reply to 300 characters before it raises, and retries a busy server. Its calls go
 # through gateway.urlopen, which reads the whole reply first and raises gateway.RateLimited on a limit, so nothing
 # retries it.
 api.urllib = types.SimpleNamespace(
@@ -79,7 +79,7 @@ api.urllib = types.SimpleNamespace(
 
 def _counted_post(url, body, headers, timeout):
     """The gateway caches every prompt, and its `input_tokens` leaves the cached part out, so all three count."""
-    # Nothing is sent once a rate limit is seen, not even the copy kb's hedge starts after a failed call.
+    # Nothing is sent once a rate limit is seen, not even the copy superhistory's hedge starts after a failed call.
     gateway.check_limited()
     response = _post(url, body, headers, timeout)
     sink = getattr(_local, "sink", None)
@@ -211,17 +211,17 @@ def scope(sources):
 
 
 class Store:
-    """One knowledge base, at kb's own paths."""
+    """One knowledge base, at superhistory's own paths."""
 
     def __init__(self, paths):
         self.paths = paths
 
     @classmethod
     def at(cls, db):
-        """An existing kb.sqlite, read-only."""
+        """An existing superhistory.sqlite, read-only."""
         db = Path(db).expanduser()
-        if db.name != "kb.sqlite":
-            raise SystemExit(f"{db}: kb's commands open a file named kb.sqlite")
+        if db.name != "superhistory.sqlite":
+            raise SystemExit(f"{db}: superhistory's commands open a file named superhistory.sqlite")
         scratch = Path(tempfile.mkdtemp(prefix="bench-live-"))
         return cls(Paths(scratch / "config.toml", db.parent, scratch / "logs", scratch / "cache"))
 
@@ -273,10 +273,10 @@ class Store:
             db.close()
 
     def call(self, name, args):
-        """Run `kb search` or `kb get` against this store. Returns the printed text and the source_ids shown."""
-        if name == "kb_search":
+        """Run `superhistory search` or `superhistory get` against this store. Returns the printed text and the source_ids shown."""
+        if name == "superhistory_search":
             argv = ["search", "--", str(args.get("query", ""))]
-        elif name == "kb_get":
+        elif name == "superhistory_get":
             offset = args.get("offset")
             argv = ["get", str(int(args.get("id", 0)))] + ([] if offset is None else ["--offset", str(int(offset))])
         else:
@@ -286,7 +286,7 @@ class Store:
         try:
             ns.fn(self.paths, CONFIG, ns)
         except cli.Fail as exc:
-            print(f"kb: {exc}")
+            print(f"superhistory: {exc}")
         finally:
             printed, _local.out = _local.out.text(), None
         return printed, self._shown(name, args, printed)
@@ -294,7 +294,7 @@ class Store:
     def _shown(self, name, args, printed):
         db = store.connect(self.paths.db, readonly=True)
         try:
-            ids = [int(args["id"])] if name == "kb_get" else [
+            ids = [int(args["id"])] if name == "superhistory_get" else [
                 int(word[1:]) for word in printed.split() if word.startswith("#") and word[1:].isdigit()]
             return [row[0] for rid in ids
                     for row in db.execute("SELECT source_id FROM docs WHERE id = ?", (rid,)).fetchall()]
@@ -318,7 +318,7 @@ class _Buffer:
 
 
 class Check(Tool):
-    label = f"{product.NAME} check, with kb search and kb get"
+    label = f"{product.NAME} check, with superhistory search and superhistory get"
     agent_tools = AGENT_TOOLS
     _shared = {}
     _lock = threading.Lock()

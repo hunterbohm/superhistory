@@ -30,7 +30,7 @@ class TrialTest(unittest.TestCase):
         self.assertIn("Loaded 8 made-up records", out)
         self.assertIn('Question: "When is the Pelican Bakery website launching now?"', out)
         self.assertIn("gmail  Pelican launch date", out)
-        self.assertIn("Set one up with `kb setup`", out)
+        self.assertIn("Set one up with `superhistory setup`", out)
         self.assertIn("the right result is to add nothing", out)
         self.assertFalse(self.paths.db.exists(), "the user's own database is never created")
 
@@ -38,7 +38,7 @@ class TrialTest(unittest.TestCase):
         launch = plan_and_pick("pelican launch", use=[1])
         poem = plan_and_pick("autumn rain tin roof poem", use=[])
         model = FakeModel(lambda prompt: (poem if "poem" in prompt.user else launch).reply(prompt))
-        cfg = config.parse('[ai]\nplugin = "anthropic"\nkey = "env:KB_TEST_UNUSED"\n')
+        cfg = config.parse('[ai]\nplugin = "anthropic"\nkey = "env:SUPERHISTORY_TEST_UNUSED"\n')
         out = self.run_trial(cfg, model)
         self.assertIn("The check runs with fake (fake-1).", out)
         self.assertIn("The check searched for: pelican launch", out)
@@ -63,7 +63,7 @@ class TryCommandTest(unittest.TestCase):
     def setUp(self):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
-        patcher = mock.patch.dict(os.environ, {"KB_HOME": tmp.name})
+        patcher = mock.patch.dict(os.environ, {"SUPERHISTORY_HOME": tmp.name})
         patcher.start()
         self.addCleanup(patcher.stop)
 

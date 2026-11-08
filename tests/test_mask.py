@@ -193,7 +193,7 @@ class MaskTest(unittest.TestCase):
                 self.assertEqual(mask(text), text)
 
     def test_text_that_starts_like_a_sync_code_reads_as_any_other(self):
-        # kb masks no Sync codes: Cloud's egress masks them before anything leaves the computer.
+        # superhistory masks no Sync codes: the Sync client's egress masks them before anything leaves the computer.
         self.assertEqual(mask('{"VP1ApplicationPassword12":"walrus2secret9"}'), '{"VP1ApplicationPassword12":"[masked]"}')
         for text in ("VP1 sent them back next week", "VRC2 rollout plan for the team"):
             with self.subTest(text):
@@ -5139,7 +5139,7 @@ class Base64ReviewTwentyEighthTest(unittest.TestCase):
 
 
 class HeadlessKeyTest(unittest.TestCase):
-    """A key's body without its header, as an older kb's row-by-row remask leaves the chunk after the header's."""
+    """A key's body without its header, as an older superhistory's row-by-row remask leaves the chunk after the header's."""
     LINE = "MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7"
 
     def test_body_lines_up_to_the_footer_are_masked(self):
@@ -5166,7 +5166,7 @@ class HeadlessKeyTest(unittest.TestCase):
             self.assertEqual(mask(text), "notes [masked]\n\nnext paragraph")
 
     def test_after_a_placeholder_and_a_line_break_a_whole_key_line_starts_the_rest_of_a_key(self):
-        # An older kb's key pattern stopped at a backslash, so in escaped text it masked a key's header and left its
+        # An older superhistory's key pattern stopped at a backslash, so in escaped text it masked a key's header and left its
         # body from its first line, which starts as a real key's DER or OpenSSH body does and is base64 to its end.
         for first in ("MIIEvQIBADANBgkqhkiG9w0BAQEFAASC", "MHcCAQEEIJQyFkwn", "MC4CAQAwBQYDK2Vw", "MIGkAgEBBDAqCr+V",
                       "MEcCAQAwBQYDK2Vx", "b3BlbnNzaC1rZXkt"):
@@ -5206,7 +5206,7 @@ class HeadlessKeyTest(unittest.TestCase):
         self.assertEqual(mask(text), "export GH=[masked]\\n/usr/local/bin/python3 deploy.py\\nthen open it")
 
     def test_the_rest_of_a_token_masked_a_chunk_at_a_time_is_masked(self):
-        # An older kb masked "sk-ant-..." in one chunk; the token's last characters began the next.
+        # An older superhistory masked "sk-ant-..." in one chunk; the token's last characters began the next.
         self.assertEqual(mask("see [masked]QQQQQQQQQQQQQQQ and more"), "see [masked] and more")
         # Its key pattern ran on into the next line and took the start of a secret's name.
         self.assertEqual(mask("[masked]_key: walrus2secret9 next"), "[masked] next")
@@ -5421,7 +5421,7 @@ class InvisibleTest(unittest.TestCase):
         split = "ghp_" + "A1" * 6 + "\u200b" + "B2" * 6
         for seed in range(400):
             # Ended by a word and then a blank line: a cookie's value reads on to the end of its line, and the rest of a
-            # key an older kb masked reads on through a line break, as main reads them.
+            # key an older superhistory masked reads on through a line break, as main reads them.
             text = INVISIBLE.sub("", Generated(random.Random(f"tail:{seed}")).text()).rstrip() + " end"
             with self.subTest(seed=seed):
                 self.assertEqual(mask(f"{text}\n\n{split}"), mask(text) + "\n\n[masked]", ascii(text))
@@ -5477,7 +5477,7 @@ class InvisibleTest(unittest.TestCase):
                         self.assertTrue(readable.endswith(" paid"), readable)
                         if shape.startswith("glue") or shape.startswith("word"):
                             self.assertTrue(readable.startswith("budget"), readable)
-            # Cloud's two: a key whose interior is a key, and a key whose tail runs past a whole key.
+            # The sync relay's two: a key whose interior is a key, and a key whose tail runs past a whole key.
             with self.subTest(ch=hex(ord(ch)), shape="a key inside a key"):
                 self.assert_masked("sk-proj-" + "a1" * 7 + "ghp_" + "a1" * 16,
                                    "sk-proj-" + "a1" * 7 + ch + "ghp_" + "a1" * 16)
@@ -5963,7 +5963,7 @@ class KeyShapeTest(unittest.TestCase):
         from tests.test_write_fuzz import Planted
         blank = re.compile(r"\r?\n[ \t]*\r?\n|\\(?:r\\)?n[ \t]*\\(?:r\\)?n")
         footer = re.compile(r"-----END [A-Z ]*PRIVATE KEY-----")
-        for seq in range(int(os.environ.get("KB_KEY_CASES", "3000"))):
+        for seq in range(int(os.environ.get("SUPERHISTORY_KEY_CASES", "3000"))):
             block = Planted(random.Random(seq), seq).key()
             for after in (" after", "\nafter", "", "\nclientSecretToken: walrus2secret9", " …", " word, api_key = x",
                           "\n\nthe next paragraph", "\\n\\nthe next paragraph", "\r\n\r\nthe next paragraph"):

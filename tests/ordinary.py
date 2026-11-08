@@ -1,6 +1,6 @@
 """Ordinary text an agent session, a note or a mail holds, near secrets' words and shapes but holding none: ids and
 hashes of every kind, public keys, encoded data, names, paths, links, log lines and code. mask() keeps all of it, and
-no rule kb takes from another rule set may match any of it (tests/test_gitleaks.py)."""
+no rule superhistory takes from another rule set may match any of it (tests/test_gitleaks.py)."""
 import base64
 import random
 import string
@@ -67,7 +67,7 @@ def encoded(r):
 SHAPES = (
     lambda r: f"commit {run(r, HEX, 40)}", lambda r: f"git checkout {run(r, HEX, 7)}",
     lambda r: f"Merge: {run(r, HEX, 7)} {run(r, HEX, 7)}", lambda r: f"sha256:{run(r, HEX, 64)}",
-    lambda r: f"{run(r, HEX, 64)}  dist/kb-1.{r.randint(0, 9)}.tar.gz", lambda r: f"md5 {run(r, HEX, 32)}",
+    lambda r: f"{run(r, HEX, 64)}  dist/superhistory-1.{r.randint(0, 9)}.tar.gz", lambda r: f"md5 {run(r, HEX, 32)}",
     lambda r: f"trace_id={run(r, HEX, 32)} span_id={run(r, HEX, 16)}",
     lambda r: "-".join(run(r, HEX, n) for n in (8, 4, 4, 4, 12)),
     lambda r: f'"integrity": "sha512-{b64(r, 64)}"', lambda r: f'integrity="sha384-{b64(r, 48)}"',

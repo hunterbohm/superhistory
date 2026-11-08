@@ -10,7 +10,7 @@ from unittest import mock
 from kb import config, ingest, search, store
 from kb.sources import Excludes
 
-LOG = logging.getLogger("varve-test-notes")
+LOG = logging.getLogger("superhistory-test-notes")
 LOG.addHandler(logging.NullHandler())
 LOG.propagate = False
 
@@ -103,7 +103,7 @@ class NotesCase(unittest.TestCase):
         return ingest.LocalReader().live_ids(parse_source(self.root, **keys))
 
     def database(self):
-        db = store.connect(os.path.join(self.tmp.name, "kb.sqlite"))
+        db = store.connect(os.path.join(self.tmp.name, "superhistory.sqlite"))
         self.addCleanup(db.close)
         return db
 

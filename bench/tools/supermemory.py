@@ -11,7 +11,7 @@ import urllib.request
 from tools import Retrieved, Tool
 
 URL = os.environ.get("SUPERMEMORY_URL", "http://localhost:6767").rstrip("/")
-KEY_FILE = os.path.expanduser(os.environ.get("SUPERMEMORY_KEY_FILE", "~/.cache/kb-bench/supermemory/data/api-key"))
+KEY_FILE = os.path.expanduser(os.environ.get("SUPERMEMORY_KEY_FILE", "~/.cache/superhistory-bench/supermemory/data/api-key"))
 NAMESPACE = "jules"
 SETTLE_SECONDS = 3 * 3600
 

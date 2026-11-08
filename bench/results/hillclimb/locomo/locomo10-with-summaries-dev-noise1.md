@@ -1,9 +1,9 @@
 | Run | Score | Overall (762) | single-hop (418) | multi-hop (142) | temporal (156) | open-domain (46) |
 |---|---|---|---|---|---|---|
-| Varve locomo10-with-summaries-dev-noise1 | J | 90.6% | 91.4% | 90.8% | 92.9% | 73.9% |
+| Superhistory locomo10-with-summaries-dev-noise1 | J | 90.6% | 91.4% | 90.8% | 92.9% | 73.9% |
 |  | F1 | 66.1 | 71.4 | 54.9 | 69.8 | 39.7 |
 
-| Run | rows | stores | empty stores | items summarized | summary failures | check searched | check made no search | lookup errors | lookup added records | searched, added nothing | answers that ran kb tools | empty replies asked again | empty answers | evidence in lookup | evidence in lookup or tools | lookup p50 s |
+| Run | rows | stores | empty stores | items summarized | summary failures | check searched | check made no search | lookup errors | lookup added records | searched, added nothing | answers that ran superhistory tools | empty replies asked again | empty answers | evidence in lookup | evidence in lookup or tools | lookup p50 s |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
 | locomo10-with-summaries-dev-noise1 | 762 | 5 | 0 | 28 | 1 | 736 | 25 | 1 | 612 | 124 | 762 | 22 | 0 | 55.1% | 96.8% | 3.8 |
 

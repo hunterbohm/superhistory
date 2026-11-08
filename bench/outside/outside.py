@@ -59,7 +59,7 @@ from mem0_locomo import LocomoMem0
 
 OUT = os.path.join(HERE, "results")
 # Mem0's stores take the longest to build, so they are kept between runs; see mem0_locomo.py.
-STORES = os.path.expanduser(os.environ.get("BENCH_OUTSIDE_STORES", "~/.cache/kb-bench/outside-stores"))
+STORES = os.path.expanduser(os.environ.get("BENCH_OUTSIDE_STORES", "~/.cache/superhistory-bench/outside-stores"))
 JUDGE_MODEL = "gpt-6.1-sol"
 EMBEDDER = "BAAI/bge-base-en-v1.5"
 TOOLS = ("none", "oracle", "check", "mem0", "supermemory")
@@ -195,8 +195,8 @@ def post(path, body, timeout=300):
 
 def install_limits():
     """Route every model call this run makes through LIMITS: the answer loop and judges (gateway.post), the check's
-    query writer and picker (kb's ask_model, with its 3-second hedge sent only when a slot is free), and kb's
-    summaries while a store is built (2 workers, none of kb's own retries). Mem0's calls go through it in
+    query writer and picker (superhistory's ask_model, with its 3-second hedge sent only when a slot is free), and superhistory's
+    summaries while a store is built (2 workers, none of superhistory's own retries). Mem0's calls go through it in
     mem0_locomo.py."""
     gateway.post = post
     _, context, summarize = check.modules()
