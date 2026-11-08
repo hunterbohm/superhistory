@@ -334,6 +334,20 @@ class DecisionTest(Store):
         self.assertIn(old, self.ids("Composio connected app accounts"))
         self.assertEqual(self.db.execute("SELECT count(*) FROM decision_proposals").fetchone()[0], 0)
 
+    def test_many_late_older_decisions_reach_the_judge_a_few_at_a_time(self):
+        self.session("new", "2026-10-24T10:00:00Z", ["Composio switched off; Executor replaces it for app accounts."])
+        self.run_pass(Model(lambda text, older, _: answer()))
+        for n in range(decisions.CANDIDATES * 2 + 1):
+            self.session(f"old{n}", f"2026-06-{n + 1:02d}T10:00:00Z", [f"Composio CLI {n} is the default for connected app accounts."])
+        seen = []
+
+        def judge(text, older, _):
+            if "switched" in text:
+                seen.append(len(older))
+            return answer(replaces=older if "switched" in text else ())
+        self.run_pass(Model(judge))
+        self.assertTrue(seen and max(seen) <= decisions.CANDIDATES)
+
     def test_a_late_pair_waits_when_the_judge_call_fails(self):
         self.session("new", "2026-10-24T10:00:00Z", ["Composio switched off; Executor replaces it for app accounts."])
         self.run_pass(Model(lambda text, older, _: answer()))
@@ -450,6 +464,17 @@ class DecisionTest(Store):
         found = self.ids("Composio app accounts")
         self.assertIn("Composio CLI is the default for connected app accounts.", found)
         self.assertNotIn("Composio switched off for good; app accounts go to Executor.", found)
+
+    def test_a_confirmed_decision_is_owned_again_once_its_replacement_is_rewritten(self):
+        old = "Composio CLI is the default for connected app accounts."
+        self.session("old", "2026-06-12T10:00:00Z", [old])
+        self.session("new", "2026-10-24T10:00:00Z", ["Composio switched off; Executor replaces it for app accounts."])
+        self.run_pass(Model(lambda text, older, _: answer(replaces=older if "switched" in text else ())))
+        for d in self.db.execute("SELECT id FROM docs WHERE kind='atom'").fetchall():
+            decisions.answer(self.db, d[0], "confirmed")
+        self.assertNotIn(old, [d.text for d, *_ in decisions.owned(self.db, "2026-01-01")])
+        self.session("new", "2026-10-24T10:00:00Z", ["Executor holds the app logins now."])
+        self.assertIn(old, [d.text for d, *_ in decisions.owned(self.db, "2026-01-01")])
 
     def test_review_lists_unanswered_agent_decisions_that_matter_once_per_wording(self):
         self.session("a", "2026-11-04T10:00:00Z", ["Merge trains approved by Hunter: one worker merges all green PRs."])

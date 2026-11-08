@@ -540,8 +540,9 @@ def propose_late(db, ask, owner, kind_of, index, current, log, workers=WORKERS):
             waiting.setdefault(new.ref, (new, []))[1].append(old)
     if not waiting:
         return 0, 0
-    work = [(n, waiting[n.ref][1], *rest) for n, _, *rest in
-            prepare(db, [n for n, _ in waiting.values()], index, owner, kind_of)]
+    work = [(n, olds[i:i + CANDIDATES], *rest) for n, _, *rest in
+            prepare(db, [n for n, _ in waiting.values()], index, owner, kind_of)
+            for olds in [waiting[n.ref][1]] for i in range(0, len(olds), CANDIDATES)]
     batches = [work[i:i + BATCH] for i in range(0, len(work), BATCH)]
     proposed = 0
     with ThreadPoolExecutor(max(1, workers)) as pool:
@@ -565,9 +566,18 @@ def propose_late(db, ask, owner, kind_of, index, current, log, workers=WORKERS):
 
 
 def _out_of_view(db):
+    """The (source, source_id, key) of every decision out of view, as `hidden()` decides it: a mark whose replacing
+    decision is gone hides nothing."""
     if not has_table(db):
         return set()
-    return {tuple(r[:3]) for r in db.execute(HIDING)}
+    out, alive = set(), {}
+    for r in db.execute(HIDING).fetchall():
+        by = tuple(r[3:6])
+        if r[6] != "rejected" and by not in alive:
+            alive[by] = _find(db, by) is not None
+        if r[6] == "rejected" or alive[by]:
+            out.add(tuple(r[:3]))
+    return out
 
 
 def due(db, every_hours):
