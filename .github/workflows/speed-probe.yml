@@ -16,7 +16,7 @@ jobs:
       fail-fast: false
       matrix:
         python: ["3.9", "3.12"]
-        sample: [1, 2]
+        sample: [1, 2, 3, 4]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

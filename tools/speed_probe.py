@@ -25,6 +25,8 @@ def load(name):
 
 
 old = load("main_mask")
+from kb import mask as current  # noqa: E402
+LINES = [row[0] for row in current._COMMANDS]
 today = load("main_mask_68506d9")
 
 
@@ -86,22 +88,34 @@ def frozen_old_work():
     return [len(old.mask(t)) for t in (LARGE, LARGE, RUN, COLOUR) * 2]
 
 
-def frozen_today_work():
-    return [len(today.mask(t)) for t in (LARGE, RUN)]
+def old_large_work():
+    return [len(old.mask(t)) for t in (LARGE,) * 6]
 
 
-from kb import mask as current  # noqa: E402
-LINES = [row[0] for row in current._COMMANDS]
+def old_run_work():
+    return [len(old.mask(t)) for t in (RUN, RUN, COLOUR, COLOUR)]
 
 
-def mask_regex_only():
-    """Only the current mask's command-line patterns, run over the inputs: regex engine time of the mask's own kind."""
+def lines_work():
     count = 0
-    for text in (LARGE, RUN) * 3:
+    for text in (LARGE, RUN) * 9:
         for pattern in LINES:
             for m in pattern.finditer(text):
                 count += 1
     return count
+
+
+def old_plus_lines_work():
+    count = [len(old.mask(t)) for t in (LARGE, RUN, COLOUR)]
+    for text in (LARGE, RUN) * 5:
+        for pattern in LINES:
+            for m in pattern.finditer(text):
+                count.append(m.start())
+    return count
+
+
+def frozen_today_work():
+    return [len(today.mask(t)) for t in (LARGE, RUN)]
 
 
 def best(fn, runs=5):
@@ -118,11 +132,12 @@ CASES = {
     "mask_run": lambda: mask(RUN),
     "mask_colour": lambda: mask(COLOUR),
     "mask_small": lambda: mask(SMALL),
-    "mask_regex_only": mask_regex_only,
     "strings_ref": speed._workload,
-    "regex": regex_work,
-    "python": python_work,
     "frozen_old": frozen_old_work,
+    "old_large": old_large_work,
+    "old_run": old_run_work,
+    "lines": lines_work,
+    "old_plus_lines": old_plus_lines_work,
     "frozen_today": frozen_today_work,
 }
 
