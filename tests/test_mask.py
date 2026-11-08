@@ -5011,6 +5011,13 @@ class Base64ReviewTwentyEighthTest(unittest.TestCase):
             text = "intro notes" + nl + "[masked]" + nl + body + nl + "walrus moved today" + nl + nl + "next paragraph"
             self.check_rows(text, text, "intro notes" + nl + "[masked]" + nl + "walrus moved today" + nl + nl
                             + "next paragraph")
+        # a line that starts with "+", a character of base64, is as wide as the run, and the next one goes on with it
+        plus = [lines[0], "+" + lines[1][1:], piece(20) + "/" + piece(43), lines[2]]
+        for mark in ("", "[masked] ", "+ "):
+            body = nl.join((mark if k else "") + line.replace("/", bs + "/") for k, line in enumerate(plus))
+            text = "intro notes" + nl + "[masked]" + nl + body + nl + "walrus moved today" + nl + nl + "next paragraph"
+            self.check_rows(text, text, "intro notes" + nl + "[masked]" + nl + "walrus moved today" + nl + nl
+                            + "next paragraph")
 
     def test_a_key_encoded_whole_and_cut_before_its_header_is_masked_from_its_paragraphs_start(self):
         # A key's body and footer, or its footer alone, encoded as base64 with no header above them, are masked from
