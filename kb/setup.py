@@ -7,7 +7,7 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, List, NamedTuple, Tuple
 
-from kb import NAME, agents, ai, config, sources
+from kb import COMMAND, NAME, agents, ai, config, sources
 from kb.agents import write as write_file
 from kb.ai import cli as ai_cli
 from kb.mask import KEY_WORD, holds_secret
@@ -46,8 +46,8 @@ class Plan:
         return f"file:{paths.keys_dir / filename}"
 
     def text(self):
-        lines = [f"# {NAME} config, written by `kb setup`.",
-                 "# Edit it freely. `kb setup` keeps a backup beside it before it replaces this file.",
+        lines = [f"# {NAME} config, written by `{COMMAND} setup`.",
+                 f"# Edit it freely. `{COMMAND} setup` keeps a backup beside it before it replaces this file.",
                  "# Keys and passwords are not here: each is a file under the keys folder that a key line names.",
                  "", f"machine = {_toml(self.machine)}"]
         for header, values in self.tables:
@@ -112,7 +112,7 @@ def _offers(home, platform, which):
         Offer("hermes", "Hermes sessions (~/.hermes/state.db)", os.path.isfile(under(".hermes", "state.db"))),
         Offer("imessage", "iMessage (~/Library/Messages/chat.db)",
               platform == "darwin" and _present(under("Library", "Messages", "chat.db")),
-              f"iMessage needs Full Disk Access for the Python program that runs kb: {mac_python}. Add it in "
+              f"iMessage needs Full Disk Access for the Python program that runs {COMMAND}: {mac_python}. Add it in "
               "System Settings, Privacy & Security, Full Disk Access."),
         Offer("git", "your git commits", os.path.isdir(under("code"))),
         Offer("github", "your GitHub issues and pull requests (gh)", bool(which("gh"))),
@@ -228,7 +228,7 @@ def run(paths, ask, secret, home=None, platform=None, which=shutil.which):
         if not config.NAME_RE.match(machine):
             print(f"  {NAME_RULE}")
         elif KEY_WORD.fullmatch(machine) or holds_secret(machine):
-            print("  That name reads like a word for a secret, such as a password or token, which kb would take its"
+            print(f"  That name reads like a word for a secret, such as a password or token, which {COMMAND} would take its"
                   " records' ids for. Pick another.")
         else:
             break
@@ -280,7 +280,7 @@ def run(paths, ask, secret, home=None, platform=None, which=shutil.which):
     labels = [agents.load(n).label for n in agents.names() if agents.load(n).detect(home)]
     hooks = schedule = ingest_now = False
     if labels:
-        hooks = _yes(ask, f"Install the hook in {', '.join(labels)}, so each prompt can see what kb has read?", "yes")
+        hooks = _yes(ask, f"Install the hook in {', '.join(labels)}, so each prompt can see what {COMMAND} has read?", "yes")
         print(f"  Hook: {'will install' if hooks else 'skipped'}.")
     else:
         print("No agent to hook into was found.")
@@ -290,7 +290,7 @@ def run(paths, ask, secret, home=None, platform=None, which=shutil.which):
         ingest_now = _yes(ask, "Read everything now? The first read can take a while", "yes")
         print(f"  First read: {'will start' if ingest_now else 'later'}.")
     else:
-        print("No source was chosen. Add one to the config, then run `kb ingest`.")
+        print(f"No source was chosen. Add one to the config, then run `{COMMAND} ingest`.")
 
     for filename, value in plan.secrets.items():
         _save_secret(paths, filename, value)

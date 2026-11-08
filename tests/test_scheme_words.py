@@ -285,12 +285,12 @@ class SchemeWordTest(unittest.TestCase):
             with open(os.path.join(home, "config.toml"), "w", encoding="utf-8") as fh:
                 fh.write(f'machine = "studio"\n[sources.notes]\npath = "{os.path.join(home, "notes")}"\n')
             out = io.StringIO()
-            with mock.patch.dict(os.environ, {"KB_HOME": home}), contextlib.redirect_stdout(out), \
+            with mock.patch.dict(os.environ, {"SUPERHISTORY_HOME": home}), contextlib.redirect_stdout(out), \
                     contextlib.redirect_stderr(io.StringIO()):
                 self.assertEqual(cli.main(["ingest", "--no-summaries"]), 0)
                 self.assertEqual(cli.main(["search", "pelican"]), 0)
             self.assertIn("Basic Statistics", out.getvalue())
-            db = store.connect(os.path.join(home, "data", "kb.sqlite"))
+            db = store.connect(os.path.join(home, "data", "superhistory.sqlite"))
             try:
                 (sid, meta), = db.execute("SELECT source_id, metadata FROM docs").fetchall()
             finally:

@@ -30,8 +30,8 @@ import splits  # noqa: E402
 
 OUT = os.path.join(HERE, "results", "hillclimb")
 FREEZE = os.path.join(splits.FOLDER, "paired-freeze.json")
-CHECKOUT = os.path.expanduser(os.environ.get("BENCH_PAIRED_BASELINE", "~/.cache/kb-bench/paired-baseline"))
-LOGS = os.path.expanduser(os.environ.get("BENCH_LOGS", "~/.cache/kb-bench/logs/hillclimb"))
+CHECKOUT = os.path.expanduser(os.environ.get("BENCH_PAIRED_BASELINE", "~/.cache/superhistory-bench/paired-baseline"))
+LOGS = os.path.expanduser(os.environ.get("BENCH_LOGS", "~/.cache/superhistory-bench/logs/hillclimb"))
 LABELS = ("final", "baseline-paired")
 # Per test half: the command, the run name it logs, and the results it writes, as each runner names them. The month's
 # are the check's own files, since the rivals' month B rows share b-final/.
@@ -161,7 +161,7 @@ def copy_baseline_results(test, checkout, out):
 def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--tests", default=",".join(TESTS))
-    # One question at a time: the run's two model-call slots then go to that question's calls and kb's hedge copy,
+    # One question at a time: the run's two model-call slots then go to that question's calls and superhistory's hedge copy,
     # as they would in use, rather than to another question's.
     p.add_argument("--workers", type=int, default=1)
     p.add_argument("--dry-run", action="store_true")
@@ -184,7 +184,7 @@ def main(argv=None):
                                         "--label", label, "--workers", str(args.workers)])
                        for label, folder in zip(LABELS, (ROOT, CHECKOUT))] for test in tests}
     if args.dry_run:
-        print(f"final {final} at {head}; baseline-paired {baseline}, kb from {base}, in {CHECKOUT}")
+        print(f"final {final} at {head}; baseline-paired {baseline}, superhistory from {base}, in {CHECKOUT}")
         for test in tests:
             for label, folder, command in commands[test]:
                 print(f"{test} {label} logs {TESTS[test][1].format(label=label)}: {' '.join(command)}")

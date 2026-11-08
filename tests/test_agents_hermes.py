@@ -49,11 +49,11 @@ class HermesCase(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.home = os.path.join(self.tmp.name, "home")
-        self.folder = os.path.join(self.home, ".hermes", "plugins", "kb-context")
+        self.folder = os.path.join(self.home, ".hermes", "plugins", "superhistory")
         self.init = os.path.join(self.folder, "__init__.py")
         self.bin = os.path.join(self.tmp.name, "bin")
         os.makedirs(self.bin)
-        self.kb = script(os.path.join(self.tmp.name, "kb"), FAKE_KB)
+        self.kb = script(os.path.join(self.tmp.name, "superhistory"), FAKE_KB)
         self.command = agents.command(self.kb, "hermes")
         patch = mock.patch.dict(os.environ, {"PATH": self.bin})
         patch.start()
@@ -66,7 +66,7 @@ class HermesCase(unittest.TestCase):
         return sorted(os.listdir(self.folder)) if os.path.isdir(self.folder) else []
 
     def backups(self):
-        return [f for f in self.files() if ".bak-kb-" in f]
+        return [f for f in self.files() if ".bak-superhistory-" in f]
 
     def plugin(self):
         spec = importlib.util.spec_from_file_location("kb_context_plugin_under_test", self.init)
@@ -111,7 +111,7 @@ class PluginFileTest(HermesCase):
     def test_a_kb_path_with_spaces_still_runs(self):
         folder = os.path.join(self.tmp.name, "my tools")
         os.makedirs(folder)
-        spaced = script(os.path.join(folder, "kb"), FAKE_KB)
+        spaced = script(os.path.join(folder, "superhistory"), FAKE_KB)
         hermes.AGENT.install(self.home, agents.command(spaced, "hermes"))
         _, self.hook = self.plugin()
         put(spaced + ".answer", "from a spaced path")
@@ -123,7 +123,7 @@ class PluginFileTest(HermesCase):
         for name in ("tools-🙂", "tools-@TIMEOUT@"):
             folder = os.path.join(self.tmp.name, name)
             os.makedirs(folder)
-            kb = script(os.path.join(folder, "kb"), FAKE_KB)
+            kb = script(os.path.join(folder, "superhistory"), FAKE_KB)
             hermes.AGENT.install(self.home, agents.command(kb, "hermes"))
             _, self.hook = self.plugin()
             put(kb + ".answer", f"from {name}")
@@ -226,7 +226,7 @@ class InstallTest(HermesCase):
         self.assertEqual([(c.path, c.action) for c in changes],
                          [(self.init, "added"), (os.path.join(self.folder, "plugin.yaml"), "added")])
         self.assertEqual(self.files(), ["__init__.py", "plugin.yaml"])
-        self.assertIn("name: kb-context", get(os.path.join(self.folder, "plugin.yaml")))
+        self.assertIn("name: superhistory", get(os.path.join(self.folder, "plugin.yaml")))
         self.assertIn("pre_llm_call", get(os.path.join(self.folder, "plugin.yaml")))
         self.assertIn(shlex.quote(self.kb), get(self.init))
 
@@ -239,12 +239,12 @@ class InstallTest(HermesCase):
         self.assertEqual(self.backups(), [])
 
     def test_install_over_a_plugin_for_another_kb_path_updates_it_and_backs_it_up(self):
-        old = agents.command("/old/place/kb", "hermes")
+        old = agents.command("/old/place/superhistory", "hermes")
         self.install(old)
         old_text = get(self.init)
         changes = self.install()
         self.assertEqual([c.action for c in changes], ["updated", "unchanged"])
-        self.assertNotIn("/old/place/kb", get(self.init))
+        self.assertNotIn("/old/place/superhistory", get(self.init))
         self.assertIn(self.kb, get(self.init))
         backups = self.backups()
         self.assertEqual(len(backups), 1)
@@ -253,7 +253,7 @@ class InstallTest(HermesCase):
 
     def test_a_foreign_plugin_with_an_empty_init_is_left_alone(self):
         os.makedirs(self.folder)
-        yaml = "name: kb-context\nversion: \"99\"\nprovides_hooks: []\n"
+        yaml = "name: superhistory\nversion: \"99\"\nprovides_hooks: []\n"
         put(self.init, "")
         put(os.path.join(self.folder, "plugin.yaml"), yaml)
         changes = hermes.AGENT.install(self.home, self.command)
@@ -287,7 +287,7 @@ class InstallTest(HermesCase):
     def test_uninstall_leaves_a_foreign_plugin_of_the_same_name_alone(self):
         os.makedirs(self.folder)
         put(self.init, "# someone else's plugin\n")
-        put(os.path.join(self.folder, "plugin.yaml"), "name: kb-context\n")
+        put(os.path.join(self.folder, "plugin.yaml"), "name: superhistory\n")
         self.fake_hermes()
         changes = hermes.AGENT.uninstall(self.home)
         self.assertEqual([c.action for c in changes], ["skipped"])
@@ -307,14 +307,14 @@ class HermesBinaryTest(HermesCase):
     def test_install_enables_the_plugin_and_says_hermes_picks_it_up_on_its_next_start(self):
         self.fake_hermes()
         changes = hermes.AGENT.install(self.home, self.command)
-        self.assertEqual(self.calls(), ["plugins", "enable", "kb-context"])
+        self.assertEqual(self.calls(), ["plugins", "enable", "superhistory"])
         self.assertIn("next start", changes[-1].note)
         self.assertIn("enabled", changes[-1].note)
 
     def test_install_without_hermes_on_path_says_how_to_enable_it(self):
         changes = hermes.AGENT.install(self.home, self.command)
         note = changes[-1].note
-        self.assertIn("hermes plugins enable kb-context", note)
+        self.assertIn("hermes plugins enable superhistory", note)
         self.assertIn("next start", note)
         self.assertTrue(os.path.exists(self.init))
 
@@ -329,14 +329,14 @@ class HermesBinaryTest(HermesCase):
         hermes.AGENT.install(self.home, self.command)
         self.fake_hermes()
         hermes.AGENT.uninstall(self.home)
-        self.assertEqual(self.calls(), ["plugins", "disable", "kb-context"])
+        self.assertEqual(self.calls(), ["plugins", "disable", "superhistory"])
         self.assertFalse(os.path.exists(self.folder))
 
     def test_nothing_restarts_hermes(self):
         self.fake_hermes()
         hermes.AGENT.install(self.home, self.command)
         hermes.AGENT.uninstall(self.home)
-        self.assertEqual(self.calls(), ["plugins", "enable", "kb-context", "plugins", "disable", "kb-context"])
+        self.assertEqual(self.calls(), ["plugins", "enable", "superhistory", "plugins", "disable", "superhistory"])
 
 
 if __name__ == "__main__":

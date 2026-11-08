@@ -10,7 +10,7 @@ from unittest import mock
 from kb import cli, config, ingest, remote, search, store
 from kb.sources import Gone, Item, Progress
 
-LOG = logging.getLogger("kb-test")
+LOG = logging.getLogger("superhistory-test")
 FAKE_SSH = """#!{python}
 import subprocess, sys
 args = sys.argv[1:]
@@ -56,7 +56,7 @@ class RemoteTest(unittest.TestCase):
         self.addCleanup(patcher.stop)
         self.notes = os.path.join(self.tmp, "notes")
         os.makedirs(self.notes)
-        self.db = store.connect(os.path.join(self.tmp, "kb.sqlite"))
+        self.db = store.connect(os.path.join(self.tmp, "superhistory.sqlite"))
         self.addCleanup(self.db.close)
 
     def note(self, rel, text):

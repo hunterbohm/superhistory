@@ -33,7 +33,7 @@ from kb.store import chunk  # noqa: E402
 
 RESULTS = os.path.join(BENCH, "results", "public")
 SPLIT_RESULTS = os.path.join(BENCH, "results", "hillclimb")
-DATA = os.path.expanduser(os.environ.get("BENCH_DATA", "~/.cache/kb-bench/data"))
+DATA = os.path.expanduser(os.environ.get("BENCH_DATA", "~/.cache/superhistory-bench/data"))
 # Past this many summary calls, a set runs without summaries or on a labelled sample with them.
 MAX_SUMMARY_CALLS = 3000
 SOURCE = "chat"
@@ -334,7 +334,7 @@ def work_checks(rows):
         "lookup errors": sum(bool(r["lookup_error"]) for r in rows),
         "lookup added records": sum(bool(r["context"]) for r in rows),
         "searched, added nothing": sum(bool(r["query"]) and not r["context"] for r in rows),
-        "answers that ran kb tools": sum(bool(r["tool_calls"]) for r in rows),
+        "answers that ran superhistory tools": sum(bool(r["tool_calls"]) for r in rows),
         "empty replies asked again": sum(len(r.get("empty_replies", [])) for r in rows),
         "empty answers": sum(not r["answer"].strip() for r in rows),
         "evidence in lookup": pct(seen_lookup, len(answered)),
