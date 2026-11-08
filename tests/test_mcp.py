@@ -83,11 +83,11 @@ class StoreCase(unittest.TestCase):
         folder = os.path.join(self.tmp.name, "crashed")
         os.makedirs(folder)
         for suffix in ("", "-wal"):
-            with open(str(self.paths.db) + suffix, "rb") as src, open(os.path.join(folder, "kb.sqlite" + suffix),
+            with open(str(self.paths.db) + suffix, "rb") as src, open(os.path.join(folder, "superhistory.sqlite" + suffix),
                                                                      "wb") as dst:
                 dst.write(src.read())
         writer.close()
-        self.assertEqual(sorted(os.listdir(folder)), ["kb.sqlite", "kb.sqlite-wal"])
+        self.assertEqual(sorted(os.listdir(folder)), ["superhistory.sqlite", "superhistory.sqlite-wal"])
         self.paths = Paths(self.paths.config_file, type(self.paths.data_dir)(folder), self.paths.log_dir,
                            self.paths.cache_dir)
         return folder
@@ -100,7 +100,7 @@ class StoreCase(unittest.TestCase):
 
     def copies(self):
         cache = self.paths.cache_dir
-        return sorted(n for n in os.listdir(cache) if n.startswith("kb-read-")) if os.path.isdir(cache) else []
+        return sorted(n for n in os.listdir(cache) if n.startswith("superhistory-read-")) if os.path.isdir(cache) else []
 
     def talk(self, *requests, raw=None):
         sink = io.StringIO()
@@ -242,11 +242,11 @@ class ToolTest(StoreCase):
         db.close()
         hit, = self.talk(tool(1, "search", query="word"))
         rid = int(re.search(r"raw #(\d+)", hit["result"]["content"][0]["text"]).group(1))
-        self.assertNotRegex(hit["result"]["content"][0]["text"], r"`(kb|superhistory) get")
+        self.assertNotRegex(hit["result"]["content"][0]["text"], r"`superhistory get")
         page, = self.talk(tool(2, "get", id=rid))
         text = page["result"]["content"][0]["text"]
         self.assertRegex(text, r"For the next page, run the get tool with id \d+ and offset \d+")
-        self.assertNotRegex(text, r"`(kb|superhistory) get")
+        self.assertNotRegex(text, r"`superhistory get")
 
     def test_bad_arguments_are_a_tool_error_that_says_what_to_fix(self):
         cases = [("get", {"id": "x"}), ("get", {"id": True}), ("get", {"id": 0}), ("get", {"id": 1.5}),
@@ -325,7 +325,7 @@ class ReadOnlyTest(StoreCase):
         self.assertEqual(len(replies), 5)
         self.assertFalse(replies[0]["result"]["isError"])
         self.assertEqual(snapshot(self.tmp.name), before)
-        self.assertEqual(sorted(os.listdir(self.paths.data_dir)), ["kb.sqlite"])
+        self.assertEqual(sorted(os.listdir(self.paths.data_dir)), ["superhistory.sqlite"])
 
     def test_case_2_a_writer_open_with_its_wal_and_shm_is_read_with_no_file_made_and_nothing_copied(self):
         self.forbid_copies()
@@ -336,7 +336,7 @@ class ReadOnlyTest(StoreCase):
         writer.commit()
         self.assertGreater(os.path.getsize(str(self.paths.db) + "-wal"), 0)
         listing = sorted(os.listdir(self.paths.data_dir))
-        self.assertEqual(listing, ["kb.sqlite", "kb.sqlite-shm", "kb.sqlite-wal"])
+        self.assertEqual(listing, ["superhistory.sqlite", "superhistory.sqlite-shm", "superhistory.sqlite-wal"])
         before = snapshot(self.tmp.name)
         reply, got = self.talk(tool(1, "search", query="walrus"), tool(2, "get", id=1))
         self.assertIn("Walrus", reply["result"]["content"][0]["text"], "a row only the -wal file holds is read")
@@ -409,7 +409,7 @@ class ReadOnlyTest(StoreCase):
         self.addCleanup(setattr, store, "_stamp", original)
         reply, = self.talk(tool(1, "search", query="heron"))
         self.assertIn("Heron", reply["result"]["content"][0]["text"])
-        self.assertEqual(sorted(os.listdir(self.paths.data_dir)), ["kb.sqlite"])
+        self.assertEqual(sorted(os.listdir(self.paths.data_dir)), ["superhistory.sqlite"])
 
     def hold_writer_for(self, rows="walrus"):
         writer = store.connect(self.paths.db)
@@ -437,7 +437,7 @@ class ReadOnlyTest(StoreCase):
         reply, = self.talk(tool(1, "search", query="pangolin"))
         self.assertIn("Pangolin plan", reply["result"]["content"][0]["text"])
         self.assertEqual(snapshot(self.tmp.name), before)
-        self.assertEqual(sorted(os.listdir(self.paths.data_dir)), ["kb.sqlite"])
+        self.assertEqual(sorted(os.listdir(self.paths.data_dir)), ["superhistory.sqlite"])
 
     @unittest.skipIf(hasattr(os, "geteuid") and os.geteuid() == 0, "root writes wherever it likes")
     def test_case_1_in_a_folder_the_user_cannot_write_is_the_same(self):
@@ -478,7 +478,7 @@ class ReadOnlyTest(StoreCase):
         self.assertFalse(reply["result"]["isError"], text)
         self.assertIn("Walrus", text, "the rows read are right")
         names = sorted(os.listdir(self.paths.data_dir))
-        self.assertLessEqual(set(names), {"kb.sqlite", "kb.sqlite-shm", "kb.sqlite-wal"})
+        self.assertLessEqual(set(names), {"superhistory.sqlite", "superhistory.sqlite-shm", "superhistory.sqlite-wal"})
         wal = str(self.paths.db) + "-wal"
         self.assertEqual(os.path.getsize(wal) if os.path.exists(wal) else 0, 0, "the files hold no rows")
 
@@ -499,7 +499,7 @@ class ReadOnlyTest(StoreCase):
         reply, = self.talk(tool(1, "search", query="walrus"))
         self.assertFalse(reply["result"]["isError"], reply)
         self.assertIn("Walrus", reply["result"]["content"][0]["text"])
-        self.assertEqual(sorted(os.listdir(self.paths.data_dir)), ["kb.sqlite"], "nothing was made")
+        self.assertEqual(sorted(os.listdir(self.paths.data_dir)), ["superhistory.sqlite"], "nothing was made")
 
     def test_case_3_a_writer_gone_between_the_look_and_the_connection_starts_the_read_again(self):
         self.forbid_copies()
@@ -517,7 +517,7 @@ class ReadOnlyTest(StoreCase):
         self.addCleanup(setattr, store, "_connect", original)
         reply, = self.talk(tool(1, "search", query="walrus"))
         self.assertIn("Walrus", reply["result"]["content"][0]["text"])
-        self.assertEqual(sorted(os.listdir(self.paths.data_dir)), ["kb.sqlite"], "the second look saw it gone")
+        self.assertEqual(sorted(os.listdir(self.paths.data_dir)), ["superhistory.sqlite"], "the second look saw it gone")
 
     def test_case_4_a_dead_writers_wal_in_a_writable_folder_is_read_in_place_and_makes_only_an_shm_file(self):
         self.forbid_copies()
@@ -525,9 +525,9 @@ class ReadOnlyTest(StoreCase):
         before = snapshot(folder)
         reply, = self.talk(tool(1, "search", query="osprey"))
         self.assertIn("Osprey", reply["result"]["content"][0]["text"])
-        self.assertEqual(sorted(os.listdir(folder)), ["kb.sqlite", "kb.sqlite-shm", "kb.sqlite-wal"])
+        self.assertEqual(sorted(os.listdir(folder)), ["superhistory.sqlite", "superhistory.sqlite-shm", "superhistory.sqlite-wal"])
         after = snapshot(folder)
-        for name in ("kb.sqlite", "kb.sqlite-wal"):
+        for name in ("superhistory.sqlite", "superhistory.sqlite-wal"):
             self.assertEqual(after[os.path.join(folder, name)], before[os.path.join(folder, name)])
 
     @unittest.skipIf(hasattr(os, "geteuid") and os.geteuid() == 0, "root writes wherever it likes")
@@ -538,13 +538,13 @@ class ReadOnlyTest(StoreCase):
         reply, = self.talk(tool(1, "search", query="osprey"))
         self.assertIn("Osprey", reply["result"]["content"][0]["text"])
         self.assertEqual(snapshot(folder), before, "the store's folder is as it was")
-        self.assertEqual(copied, ["kb.sqlite", "kb.sqlite-wal"])
+        self.assertEqual(copied, ["superhistory.sqlite", "superhistory.sqlite-wal"])
         kept, = self.copies()
         where = os.path.join(self.paths.cache_dir, kept)
         self.assertEqual(stat.S_IMODE(os.stat(where).st_mode), 0o700)
         for name in os.listdir(where):
             self.assertEqual(stat.S_IMODE(os.stat(os.path.join(where, name)).st_mode) & 0o077, 0, name)
-        for name in ("kb.sqlite", "kb.sqlite-wal"):
+        for name in ("superhistory.sqlite", "superhistory.sqlite-wal"):
             self.assertEqual(stat.S_IMODE(os.stat(os.path.join(where, name)).st_mode), 0o600)
 
     @unittest.skipIf(hasattr(os, "geteuid") and os.geteuid() == 0, "root writes wherever it likes")
@@ -555,12 +555,12 @@ class ReadOnlyTest(StoreCase):
         first, = self.copies()
         replies = self.talk(tool(2, "search", query="osprey"), tool(3, "get", id=1), tool(4, "search", query="osprey"))
         self.assertTrue(all("Osprey" in r["result"]["content"][0]["text"] or r["id"] == 3 for r in replies))
-        self.assertEqual(copied, ["kb.sqlite", "kb.sqlite-wal"], "copied once, for four calls")
+        self.assertEqual(copied, ["superhistory.sqlite", "superhistory.sqlite-wal"], "copied once, for four calls")
         self.assertEqual(self.copies(), [first])
-        wal = os.path.join(folder, "kb.sqlite-wal")
+        wal = os.path.join(folder, "superhistory.sqlite-wal")
         os.utime(wal, ns=(1, 1))  # a writer that appended to it would move its modification time
         self.talk(tool(5, "search", query="osprey"))
-        self.assertEqual(copied, ["kb.sqlite", "kb.sqlite-wal"] * 2, "copied again")
+        self.assertEqual(copied, ["superhistory.sqlite", "superhistory.sqlite-wal"] * 2, "copied again")
         self.assertEqual(len(self.copies()), 1, "and the old copy is gone")
         self.assertNotEqual(self.copies(), [first])
 
@@ -615,11 +615,11 @@ class ReadOnlyTest(StoreCase):
                 break
             except OSError:
                 dead += 1
-        gone, alive = os.path.join(cache, f"kb-read-{dead}-x"), os.path.join(cache, f"kb-read-{os.getppid()}-y")
+        gone, alive = os.path.join(cache, f"superhistory-read-{dead}-x"), os.path.join(cache, f"superhistory-read-{os.getppid()}-y")
         other = os.path.join(cache, "something-else")
         for d in (gone, alive, other):
             os.mkdir(d)
-            open(os.path.join(d, "kb.sqlite"), "w").close()
+            open(os.path.join(d, "superhistory.sqlite"), "w").close()
         self.talk(tool(1, "search", query="osprey"))
         self.assertFalse(os.path.exists(gone))
         self.assertTrue(os.path.exists(alive))
@@ -635,7 +635,7 @@ class ReadOnlyTest(StoreCase):
             original(src, dst)
             if not moved:
                 moved.append(1)
-                os.utime(os.path.join(folder, "kb.sqlite-wal"), ns=(2, 2))
+                os.utime(os.path.join(folder, "superhistory.sqlite-wal"), ns=(2, 2))
 
         store._copy_file = while_copying
         self.addCleanup(setattr, store, "_copy_file", original)
@@ -666,7 +666,7 @@ class ProcessTest(StoreCase):
     """The real command, as an app runs it: a child process with pipes."""
 
     def run_server(self, text, extra=()):
-        env = {**os.environ, "KB_HOME": self.tmp.name}
+        env = {**os.environ, "SUPERHISTORY_HOME": self.tmp.name}
         env.pop("PYTHONPATH", None)
         root = os.path.dirname(os.path.dirname(os.path.abspath(mcp.__file__)))
         return subprocess.run([sys.executable, "-m", "kb", *extra, "mcp"], input=text.encode(), env=env, cwd=root,

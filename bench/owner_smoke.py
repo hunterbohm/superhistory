@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""A real-client smoke test of `kb mcp`: does Claude Code call the tools unprompted, and what do they cost?
+"""A real-client smoke test of `superhistory mcp`: does Claude Code call the tools unprompted, and what do they cost?
 
     python3 bench/owner_smoke.py [--questions 10] [--out DIR]
 
@@ -25,7 +25,7 @@ import gateway
 import run
 
 ROOT = os.path.dirname(HERE)
-SCRATCH = os.path.expanduser(os.environ.get("OWNER_SCRATCH", "~/.cache/kb-bench/owner-questions"))
+SCRATCH = os.path.expanduser(os.environ.get("OWNER_SCRATCH", "~/.cache/superhistory-bench/owner-questions"))
 OUT = os.path.join(HERE, "results", "owner-questions", "smoke")
 MODEL = "claude-sonnet-5-5"
 PERSONA = "You work for Jules Marlow, who runs Marlow Works, a one-person automation business in Denver. Today is " \
@@ -89,14 +89,14 @@ def main(argv=None):
         shutil.copytree(store_dir, kb_home, ignore=shutil.ignore_patterns("stats.json"))
         config = os.path.join(work, "mcp.json")
         with open(config, "w", encoding="utf-8") as fh:
-            json.dump({"mcpServers": {"kb": {"command": sys.executable, "args": ["-m", "kb", "mcp"],
-                                             "env": {"KB_HOME": kb_home, "PYTHONPATH": ROOT}}}}, fh)
+            json.dump({"mcpServers": {"superhistory": {"command": sys.executable, "args": ["-m", "kb", "mcp"],
+                                             "env": {"SUPERHISTORY_HOME": kb_home, "PYTHONPATH": ROOT}}}}, fh)
         empty, home = os.path.join(work, "empty"), os.path.join(work, "claude-home")
         os.makedirs(empty)
         os.makedirs(home)
         os.makedirs(args.out, exist_ok=True)
         rows = []
-        tools = ("mcp__kb__search", "mcp__kb__get")
+        tools = ("mcp__superhistory__search", "mcp__superhistory__get")
         for q in picked:
             events, code, err = claude(q["question"], empty, home, config, tools)
             row = {"id": q["id"], "kind": q["kind"], "question": q["question"], "exit": code, **summarize(events)}

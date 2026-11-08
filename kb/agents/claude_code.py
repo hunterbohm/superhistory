@@ -19,8 +19,12 @@ def installed(home):
     return agents.has_json_hook(_settings(home), EVENT, "claude-code")
 
 
+def in_background(home):
+    return agents.has_json_hook(_settings(home), EVENT, "claude-code", background=True)
+
+
 def install(home, kb_command):
-    return [agents.add_json_hook(_settings(home), EVENT, "claude-code", kb_command)[3]]
+    return [agents.add_json_hook(_settings(home), EVENT, "claude-code", kb_command, background=True)[3]]
 
 
 def uninstall(home):
@@ -40,4 +44,4 @@ def reply(text):
     return json.dumps({"hookSpecificOutput": {"hookEventName": EVENT, "additionalContext": text}})
 
 
-AGENT = Agent("Claude Code", detect, installed, install, uninstall, request, reply)
+AGENT = Agent("Claude Code", detect, installed, install, uninstall, request, reply, in_background)

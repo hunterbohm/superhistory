@@ -9,7 +9,7 @@ Both parts run on month A, the dev month. Rows go to bench/results/owner-questio
 question, and a rerun runs only the questions with no row. Every model call is added to
 bench/results/owner-questions/ledger.jsonl with the stage that made it. The first rate limit stops the run with exit
 status 3 and keeps every row; running the same command again resumes it. OWNER_SLOTS=1 holds a run to one call at a
-time. Stores live under OWNER_SCRATCH (default ~/.cache/kb-bench/owner-questions) and are kept between runs, since a
+time. Stores live under OWNER_SCRATCH (default ~/.cache/superhistory-bench/owner-questions) and are kept between runs, since a
 new store would hold different summaries; `clean` removes them.
 """
 import argparse
@@ -34,7 +34,7 @@ import run
 from tools import check as ct, owner as arms
 
 OUT = os.path.expanduser(os.environ.get("OWNER_OUT") or os.path.join(HERE, "results", "owner-questions"))
-SCRATCH = os.path.expanduser(os.environ.get("OWNER_SCRATCH", "~/.cache/kb-bench/owner-questions"))
+SCRATCH = os.path.expanduser(os.environ.get("OWNER_SCRATCH", "~/.cache/superhistory-bench/owner-questions"))
 SUMMARY_MODEL = "claude-haiku-5-5"
 PARTS = {"part-a": ("push-pull", "pull", "pull-lookup", "push"),
          "part-b": ("haiku", "sonnet", "notes", "facts", "facts-all")}
@@ -85,7 +85,7 @@ LEDGER = Ledger()
 
 def install_ledger():
     """Route every model call through the ledger: the answer and judge calls through gateway.post, the check's and the
-    summarizer's through kb's plug-in."""
+    summarizer's through superhistory's plug-in."""
     post = gateway.post
 
     def ledgered(path, body, timeout=300):

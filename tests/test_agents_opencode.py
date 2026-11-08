@@ -16,11 +16,11 @@ JS_RUNTIME = shutil.which("bun") or shutil.which("node")
 
 FAKE_KB = """#!{python}
 import json, os, sys, time
-with open(os.environ["FAKE_KB_LOG"], "a", encoding="utf-8") as fh:
+with open(os.environ["FAKE_SUPERHISTORY_LOG"], "a", encoding="utf-8") as fh:
     fh.write(json.dumps({{"argv": sys.argv[1:], "stdin": json.loads(sys.stdin.read())}}) + "\\n")
-time.sleep(float(os.environ.get("FAKE_KB_SLEEP") or 0))
-sys.stdout.write(os.environ.get("FAKE_KB_OUTPUT", ""))
-sys.exit(int(os.environ.get("FAKE_KB_EXIT") or 0))
+time.sleep(float(os.environ.get("FAKE_SUPERHISTORY_SLEEP") or 0))
+sys.stdout.write(os.environ.get("FAKE_SUPERHISTORY_OUTPUT", ""))
+sys.exit(int(os.environ.get("FAKE_SUPERHISTORY_EXIT") or 0))
 """
 
 DRIVER = """import { pathToFileURL } from "node:url";
@@ -47,8 +47,8 @@ class OpenCodeCase(unittest.TestCase):
         patch.start()
         self.addCleanup(patch.stop)
         self.plugins = os.path.join(self.home, ".config", "opencode", "plugins")
-        self.plugin = os.path.join(self.plugins, "kb-context.js")
-        self.kb = self.fake_kb("kb")
+        self.plugin = os.path.join(self.plugins, "superhistory.js")
+        self.kb = self.fake_kb("superhistory")
 
     def fake_kb(self, name):
         path = os.path.join(self.tmp.name, name)
@@ -73,19 +73,19 @@ class InstallTest(OpenCodeCase):
         self.assertFalse(AGENT.installed(self.home))
         self.assertEqual(AGENT.install(self.home, self.command()), [agents.Change(self.plugin, "added")])
         self.assertTrue(AGENT.installed(self.home))
-        self.assertEqual(self.files(), ["kb-context.js"])
+        self.assertEqual(self.files(), ["superhistory.js"])
 
     def test_install_twice_changes_nothing_and_makes_no_backup(self):
         AGENT.install(self.home, self.command())
         before = self.read()
         self.assertEqual(AGENT.install(self.home, self.command()), [agents.Change(self.plugin, "unchanged")])
         self.assertEqual(self.read(), before)
-        self.assertEqual(self.files(), ["kb-context.js"])
+        self.assertEqual(self.files(), ["superhistory.js"])
 
     def test_install_over_an_older_kb_plugin_updates_it_and_backs_it_up(self):
-        AGENT.install(self.home, self.command(self.fake_kb("old-kb")))
+        AGENT.install(self.home, self.command(self.fake_kb("old-superhistory")))
         self.assertEqual(AGENT.install(self.home, self.command()), [agents.Change(self.plugin, "updated")])
-        self.assertEqual(len([f for f in self.files() if f.startswith("kb-context.js.bak-kb-")]), 1)
+        self.assertEqual(len([f for f in self.files() if f.startswith("superhistory.js.bak-superhistory-")]), 1)
         self.assertTrue(AGENT.installed(self.home))
 
     def test_a_timeout_change_updates_the_plugin(self):
@@ -97,7 +97,7 @@ class InstallTest(OpenCodeCase):
         xdg = os.path.join(self.tmp.name, "xdg")
         with mock.patch.dict(os.environ, {"XDG_CONFIG_HOME": xdg}):
             self.assertEqual(AGENT.install(self.home, self.command()),
-                             [agents.Change(os.path.join(xdg, "opencode", "plugins", "kb-context.js"), "added")])
+                             [agents.Change(os.path.join(xdg, "opencode", "plugins", "superhistory.js"), "added")])
             self.assertTrue(AGENT.installed(self.home))
         self.assertFalse(os.path.exists(self.plugins))
 
@@ -119,12 +119,12 @@ class InstallTest(OpenCodeCase):
         self.assertFalse(AGENT.installed(self.home))
         self.assertEqual([c.action for c in AGENT.uninstall(self.home)], ["skipped"])
         self.assertEqual(self.read(), theirs)
-        self.assertEqual(self.files(), ["kb-context.js"])
+        self.assertEqual(self.files(), ["superhistory.js"])
 
 
 class RenderTest(unittest.TestCase):
     def test_a_kb_path_holding_a_placeholder_is_kept_as_it_is(self):
-        path = "/opt/tools-__TIMEOUT_MS__/kb"
+        path = "/opt/tools-__TIMEOUT_MS__/superhistory"
         rendered = opencode._render(agents.command(path, "opencode"))
         self.assertIn(json.dumps([path, "hook", "opencode"]), rendered)
         self.assertIn(f"const TIMEOUT_MS = {agents.HOOK_TIMEOUT * 1000};", rendered)
@@ -177,7 +177,7 @@ class RequestReplyTest(unittest.TestCase):
         self.assertIsNone(AGENT.request({}))
 
     def test_reply_is_the_records_as_they_are(self):
-        self.assertEqual(AGENT.reply("[kb] a record\nline two"), "[kb] a record\nline two")
+        self.assertEqual(AGENT.reply("[superhistory] a record\nline two"), "[superhistory] a record\nline two")
 
 
 @unittest.skipUnless(JS_RUNTIME, "needs bun or node to run the plugin")
@@ -191,7 +191,7 @@ class PluginTest(OpenCodeCase):
         AGENT.install(self.home, self.command())
 
     def chat(self, parts, session="ses_main", events=(), **fake):
-        env = {"FAKE_KB_LOG": self.log, **{f"FAKE_KB_{k.upper()}": str(v) for k, v in fake.items()}}
+        env = {"FAKE_SUPERHISTORY_LOG": self.log, **{f"FAKE_SUPERHISTORY_{k.upper()}": str(v) for k, v in fake.items()}}
         proc = subprocess.run([JS_RUNTIME, self.driver, self.plugin, json.dumps(list(events)),
                                json.dumps({"sessionID": session}), json.dumps({"message": {}, "parts": parts})],
                               capture_output=True, text=True, timeout=60, env={**os.environ, **env})
@@ -208,10 +208,10 @@ class PluginTest(OpenCodeCase):
         parts = [{"type": "text", "text": "What date did the launch move to?"},
                  {"type": "file", "url": "file:///notes.md"},
                  {"type": "text", "text": "file contents", "synthetic": True}]
-        got = self.chat(parts, output="[kb] the launch moved to November 14\n")
+        got = self.chat(parts, output="[superhistory] the launch moved to November 14\n")
         self.assertEqual(got["exports"], ["KbContext"])
         self.assertEqual(got["parts"][0]["text"],
-                         "What date did the launch move to?\n\n[kb] the launch moved to November 14")
+                         "What date did the launch move to?\n\n[superhistory] the launch moved to November 14")
         self.assertEqual(got["parts"][1:], parts[1:])
         self.assertEqual(self.calls(), [{"argv": ["hook", "opencode"],
                                          "stdin": {"session_id": "ses_main",

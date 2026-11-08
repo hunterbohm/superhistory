@@ -48,11 +48,11 @@ def text_reply(text, stop="end_turn"):
 class AnthropicPluginTest(unittest.TestCase):
     def setUp(self):
         self.server = FakeAnthropic(self)
-        os.environ["KB_TEST_API_KEY"] = "test-key-123"
-        self.addCleanup(os.environ.pop, "KB_TEST_API_KEY", None)
+        os.environ["SUPERHISTORY_TEST_API_KEY"] = "test-key-123"
+        self.addCleanup(os.environ.pop, "SUPERHISTORY_TEST_API_KEY", None)
 
     def model(self, extra=""):
-        c = config.parse(f'[ai]\nplugin = "anthropic"\nbase_url = "{self.server.url}"\nkey = "env:KB_TEST_API_KEY"\n'
+        c = config.parse(f'[ai]\nplugin = "anthropic"\nbase_url = "{self.server.url}"\nkey = "env:SUPERHISTORY_TEST_API_KEY"\n'
                          + extra)
         return ai.load(c.ai)
 
@@ -68,12 +68,12 @@ class AnthropicPluginTest(unittest.TestCase):
         self.assertEqual(sent["body"]["max_tokens"], 123)
         self.assertEqual(sent["body"]["model"], "claude-haiku-5-5")
         self.assertEqual(sent["body"]["output_config"], {"effort": "low"})
-        self.assertTrue(sent["headers"]["user-agent"].startswith("kb/"))
+        self.assertTrue(sent["headers"]["user-agent"].startswith("superhistory/"))
 
     def test_bearer_auth_and_no_effort_for_a_compatible_server(self):
         self.server.reply(payload=text_reply("ok"))
         c = config.parse(f'[ai]\nplugin = "anthropic-compatible"\nbase_url = "{self.server.url}/"\n'
-                         'key = "env:KB_TEST_API_KEY"\neffort = "none"\nmodel = "local-small"\n')
+                         'key = "env:SUPERHISTORY_TEST_API_KEY"\neffort = "none"\nmodel = "local-small"\n')
         self.assertEqual(ai.load(c.ai).ask(Prompt("s", "u"), timeout=5), "ok")
         sent = self.server.requests[0]
         self.assertEqual(sent["headers"]["authorization"], "Bearer test-key-123")
@@ -109,7 +109,7 @@ class AnthropicPluginTest(unittest.TestCase):
             self.model().ask(Prompt("s", "u"), timeout=5)
 
     def test_an_unreachable_server_is_busy(self):
-        c = config.parse('[ai]\nplugin = "anthropic"\nbase_url = "http://127.0.0.1:9"\nkey = "env:KB_TEST_API_KEY"\n')
+        c = config.parse('[ai]\nplugin = "anthropic"\nbase_url = "http://127.0.0.1:9"\nkey = "env:SUPERHISTORY_TEST_API_KEY"\n')
         with self.assertRaises(Busy):
             ai.load(c.ai).ask(Prompt("s", "u"), timeout=2)
 
@@ -137,11 +137,11 @@ class AnthropicPluginTest(unittest.TestCase):
 class OtherApiPluginTest(unittest.TestCase):
     def setUp(self):
         self.server = FakeAnthropic(self)
-        os.environ["KB_TEST_API_KEY"] = "test-key-123"
-        self.addCleanup(os.environ.pop, "KB_TEST_API_KEY", None)
+        os.environ["SUPERHISTORY_TEST_API_KEY"] = "test-key-123"
+        self.addCleanup(os.environ.pop, "SUPERHISTORY_TEST_API_KEY", None)
 
     def model(self, plugin, extra=""):
-        text = f'[ai]\nplugin = "{plugin}"\nbase_url = "{self.server.url}/v9"\nkey = "env:KB_TEST_API_KEY"\n{extra}'
+        text = f'[ai]\nplugin = "{plugin}"\nbase_url = "{self.server.url}/v9"\nkey = "env:SUPERHISTORY_TEST_API_KEY"\n{extra}'
         return ai.load(config.parse(text).ai)
 
     def test_openai_sends_chat_completions_with_a_bearer_key(self):

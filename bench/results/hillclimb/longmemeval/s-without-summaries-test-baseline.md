@@ -1,8 +1,8 @@
 | Run | Questions | Overall | Task-averaged | single-session-user | single-session-assistant | single-session-preference | multi-session | knowledge-update | temporal-reasoning | Abstention |
 |---|---|---|---|---|---|---|---|---|---|---|
-| Varve s-without-summaries-test-baseline | 250 | 92.0% | 93.1% | 100.0% | 100.0% | 86.7% | 80.3% | 97.4% | 94.0% | 93.3% |
+| Superhistory s-without-summaries-test-baseline | 250 | 92.0% | 93.1% | 100.0% | 100.0% | 86.7% | 80.3% | 97.4% | 94.0% | 93.3% |
 
-| Run | rows | stores | empty stores | items summarized | summary failures | check searched | check made no search | lookup errors | lookup added records | searched, added nothing | answers that ran kb tools | empty replies asked again | empty answers | evidence in lookup | evidence in lookup or tools | lookup p50 s |
+| Run | rows | stores | empty stores | items summarized | summary failures | check searched | check made no search | lookup errors | lookup added records | searched, added nothing | answers that ran superhistory tools | empty replies asked again | empty answers | evidence in lookup | evidence in lookup or tools | lookup p50 s |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
 | s-without-summaries-test-baseline | 250 | 250 | 0 | 0 | 0 | 245 | 5 | 0 | 165 | 80 | 250 | 3 | 0 | 65.6% | 100.0% | 2.9 |
 

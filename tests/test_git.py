@@ -16,7 +16,7 @@ from kb.sources import Excludes, Item, Progress, Run, git
 DAY = 86400
 ME = ("Sam Rivera", "sam@example.com")
 OTHER = ("Dana Okoye", "dana@example.org")
-LOG = logging.getLogger("varve-test-git")
+LOG = logging.getLogger("superhistory-test-git")
 LOG.addHandler(logging.NullHandler())
 LOG.propagate = False
 
@@ -141,10 +141,10 @@ class GitSourceTest(GitCase):
         self.sh(clone, "remote", "set-url", "origin", "https://github.com/acme-co/dash.git")
         self.sh(self.home, "clone", "-q", main, os.path.join(self.home, "code/archive/dash-copy"))
         self.sh(main, "worktree", "add", "-q", "-b", "linked", os.path.join(self.home, "code/.worktrees/dash-linked"))
-        local = self.repo("code/tools/kb")
+        local = self.repo("code/tools/superhistory")
         own = self.commit(local, "Index commits")
         found = {i.source_id: i for i in items(self.read())}
-        self.assertEqual(set(found), {f"acme-co/dash@{sha}", f"~/code/tools/kb@{own}"})
+        self.assertEqual(set(found), {f"acme-co/dash@{sha}", f"~/code/tools/superhistory@{own}"})
 
     def test_agent_checkpoints_and_stashes_are_not_read_but_tags_are(self):
         path = self.repo("code/projects/app", "https://github.com/acme-co/app.git")
@@ -285,7 +285,7 @@ class GitIngestTest(GitCase):
         self.commit(path, "Not mine", who=OTHER)
         self.commit(self.repo("code/projects/demo/node_modules/dep"), "Vendored")
         self.commit(self.repo("elsewhere/other"), "Outside the roots")
-        db = store.connect(os.path.join(self.home, "kb.sqlite"))
+        db = store.connect(os.path.join(self.home, "superhistory.sqlite"))
         self.addCleanup(db.close)
         cfg = self.parse()
         started = time.time()
@@ -308,7 +308,7 @@ class GitIngestTest(GitCase):
         self.commit(self.repo("work/live/node_modules/dep"), "Vendored")
         self.commit(self.repo("work/live", None), "By a teammate", who=("Sam at Work", "sam@work.example.net"))
         cfg = self.parse('roots = ["~/work"]\nidentities = ["sam@work.example.net"]\nexclude = ["~/work/old-client"]\n')
-        db = store.connect(os.path.join(self.home, "kb.sqlite"))
+        db = store.connect(os.path.join(self.home, "superhistory.sqlite"))
         self.addCleanup(db.close)
         ingest.run(db, cfg, LOG, with_summaries=False)
         self.assertEqual({r[2] for r in self.rows(db)}, {"~/work/live: Live repo commit", "~/work/live: By a teammate"})

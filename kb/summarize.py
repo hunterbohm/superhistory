@@ -151,7 +151,7 @@ def item_text(db, item):
     rows = db.execute("SELECT id, content FROM docs WHERE source=? AND source_id=? AND kind='raw' "
                       "ORDER BY json_extract(metadata, '$.chunk')", (item.source, item.source_id)).fetchall()
     if store.unversioned(db, [r[0] for r in rows]):
-        return ""  # an older kb's rows, which no reader shows
+        return ""  # an older superhistory's rows, which no reader shows
     return mask("".join(r[1] for r in rows))  # masked whole, before any cut, in case rows are of another version
 
 

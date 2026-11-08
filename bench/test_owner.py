@@ -54,7 +54,7 @@ class NotesTest(unittest.TestCase):
             self.assertEqual(stats["rows"], {"atom": 1})
             tool = arms.Facts()
             tool.store = cut
-            text, ids = tool.call("kb_get", {"id": 2})
+            text, ids = tool.call("superhistory_get", {"id": 2})
             self.assertIn("pangolin launches Friday", text)
             self.assertEqual(ids, ["s1"])
 

@@ -7,7 +7,7 @@ import hashlib
 import json
 import os
 
-from kb import agents
+from kb import COMMAND, agents
 from kb.config import read_toml
 from kb.agents import Agent, claude_code
 
@@ -168,9 +168,9 @@ def _moved(text, old_key, new_key):
 
 
 def _view(hooks_json, hooks, config, kb_keys):
-    """What the user's Codex does, apart from kb: every hook that is not kb's, in order, with its group's other
+    """What the user's Codex does, apart from superhistory: every hook that is not superhistory's, in order, with its group's other
     fields and the trust entry at the position it sits in now; every other hook event; every other setting. Trust
-    entries at `kb_keys`, the positions kb's hook holds before or after the edit, are kb's unless a user hook sits
+    entries at `kb_keys`, the positions superhistory's hook holds before or after the edit, are superhistory's unless a user hook sits
     there."""
     state = dict(((config.get("hooks") or {}).get("state") or {}))
     prefix = f"{os.path.realpath(hooks_json)}:{CODEX_EVENT}:"
@@ -203,8 +203,8 @@ def _kb_hooks(hooks):
 
 def _guard(hooks_json, old, new, kb_after, kb_trust):
     """Why the edit must not be written, or None. `old` and `new` are (hooks.json text, config.toml text). It is safe
-    when both new files parse, the user's Codex does exactly what it did apart from kb (_view), kb's hooks are
-    `kb_after` ([(group, position, handler)]), and kb's trust entries are `kb_trust` ({key: hash})."""
+    when both new files parse, the user's Codex does exactly what it did apart from superhistory (_view), superhistory's hooks are
+    `kb_after` ([(group, position, handler)]), and superhistory's trust entries are `kb_trust` ({key: hash})."""
     try:
         old_hooks, old_config = agents._parse(old[0], hooks_json), read_toml(old[1])
     except ValueError as exc:
@@ -215,16 +215,16 @@ def _guard(hooks_json, old, new, kb_after, kb_trust):
         return f"the edit would not parse ({exc})"
     kb_keys = {_key(hooks_json, gi, hi) for gi, hi, _ in _kb_hooks(old_hooks) + _kb_hooks(hooks)}
     if _view(hooks_json, hooks, config, kb_keys) != _view(hooks_json, old_hooks, old_config, kb_keys):
-        return "the edit would change more than kb's own entries"
+        return f"the edit would change more than {COMMAND}'s own entries"
     # Parsing drops comments, so they are checked as text: every whole-line comment stays, in order.
     kept = iter(_comments(new[1]))
     if not all(comment in kept for comment in _comments(old[1])):
         return "the edit would drop a comment from config.toml"
     if _kb_hooks(hooks) != kb_after:
-        return "kb's hook did not come out as intended"
+        return f"{COMMAND}'s hook did not come out as intended"
     state = (config.get("hooks") or {}).get("state") or {}
     if any((state.get(key) or {}).get("trusted_hash") != digest for key, digest in kb_trust.items()):
-        return "kb's trust entry did not come out as intended"
+        return f"{COMMAND}'s trust entry did not come out as intended"
     return None
 
 
@@ -252,6 +252,14 @@ def _find(hooks_json):
                  if agents.is_kb_command(handler.get("command", ""), "codex")), None)
 
 
+def in_background(home):
+    try:
+        found = _find(_hooks_json(home))
+    except (ValueError, OSError):
+        return False
+    return bool(found) and found[2].get("async") is True
+
+
 def installed(home):
     try:
         found = _find(_hooks_json(home))
@@ -269,16 +277,17 @@ def install(home, kb_command):
     hooks_json, config = _hooks_json(home), _config(home)
     old = (agents.read(hooks_json), agents.read(config))
     by_hand = (f"To add the hook by hand, put {{\"type\": \"command\", \"command\": {json.dumps(kb_command)}, "
-               f"\"timeout\": {agents.HOOK_TIMEOUT}}} under hooks.UserPromptSubmit in {hooks_json}, then trust it "
-               "once with /hooks in Codex.")
+               f"\"timeout\": {agents.BACKGROUND_HOOK_TIMEOUT}, \"async\": true}} under hooks.UserPromptSubmit in {hooks_json}, "
+               "then trust it once with /hooks in Codex.")
     try:
-        new_hooks, gi, hi, handler, action = agents.json_hook_added(old[0], hooks_json, EVENT, "codex", kb_command)
+        new_hooks, gi, hi, handler, action = agents.json_hook_added(old[0], hooks_json, EVENT, "codex", kb_command,
+                                                                    background=True)
     except ValueError as exc:
         return [agents.Change(hooks_json, "skipped", f"{exc}; left as it is")]
     key = _key(hooks_json, gi, hi)
     if set(handler) - CODEX_FIELDS:
         new, kb_trust, trust_change = (new_hooks, old[1]), {}, agents.Change(
-            config, "skipped", f"the hook has fields kb cannot hash; trust it once with /hooks in Codex ({key})")
+            config, "skipped", f"the hook has fields {COMMAND} cannot hash; trust it once with /hooks in Codex ({key})")
     else:
         digest = codex_hook_hash(CODEX_EVENT, handler)
         new_config, trust_action = _trusted(old[1], key, digest)
@@ -312,7 +321,7 @@ def uninstall(home):
     for gi, hi in mine:
         new_config, gone = _untrusted(new_config, _key(hooks_json, gi, hi))
         removed = removed or gone
-    # Codex keys trust by position, so a user hook that moved up when kb's left keeps its trust only if its table
+    # Codex keys trust by position, so a user hook that moved up when superhistory's left keeps its trust only if its table
     # moves with it. Moving up, in order, each one lands on a key the one before it has just left.
     others = [p for p in before if not agents.is_kb_command(p[2].get("command", ""), "codex")]
     moved = 0
@@ -323,7 +332,7 @@ def uninstall(home):
     problem = _guard(hooks_json, old, (new_hooks, new_config), [], {})
     if problem:
         return [agents.Change(hooks_json, "skipped", f"{problem}; wrote nothing. To remove the hook by hand, delete "
-                                                     f"the kb hook codex entry under hooks.UserPromptSubmit in "
+                                                     f"the {COMMAND} hook codex entry under hooks.UserPromptSubmit in "
                                                      f"{hooks_json}; Codex asks you to trust the hooks after it again."),
                 agents.Change(config, "skipped", problem)]
     _write(hooks_json, config, old, (new_hooks, new_config))
@@ -331,4 +340,4 @@ def uninstall(home):
     return [agents.Change(hooks_json, action), agents.Change(config, "removed" if removed else "unchanged", note)]
 
 
-AGENT = Agent("Codex", detect, installed, install, uninstall, request, reply)
+AGENT = Agent("Codex", detect, installed, install, uninstall, request, reply, in_background)

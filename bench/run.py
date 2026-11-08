@@ -387,7 +387,7 @@ def main(argv=None):
     rj.add_argument("--only", help="comma-separated question ids to grade again; every other verdict stays")
     rj.add_argument("--why", help="the reason, logged with each regrade")
     lv = sub.add_parser("live", help="ask questions of an existing knowledge base, read-only")
-    lv.add_argument("--db", required=True, help="the kb.sqlite to read")
+    lv.add_argument("--db", required=True, help="the superhistory.sqlite to read")
     lv.add_argument("--questions", required=True)
     lv.add_argument("--out", required=True)
     lv.add_argument("--tools", default="none,check")
