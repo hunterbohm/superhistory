@@ -27,7 +27,7 @@ ME = "me@example.com"
 PASSWORD = "abcdefghijklmnop"
 NOW = datetime.now(timezone.utc).replace(microsecond=0)
 PRICING, PROMO, OTHER = "1781000000000000001", "1781000000000000002", "1781000000000000003"
-LOG = logging.getLogger("varve-test-gmail")
+LOG = logging.getLogger("superhistory-test-gmail")
 LOG.addHandler(logging.NullHandler())
 LOG.propagate = False
 
@@ -168,12 +168,12 @@ class GmailCase(unittest.TestCase):
     def setUp(self):
         self.gmail = FakeGmail()
         for patch in (mock.patch.object(gmail, "connect", lambda: self.gmail),
-                      mock.patch.dict(os.environ, {"KB_TEST_GMAIL_PASSWORD": PASSWORD})):
+                      mock.patch.dict(os.environ, {"SUPERHISTORY_TEST_GMAIL_PASSWORD": PASSWORD})):
             patch.start()
             self.addCleanup(patch.stop)
 
     def extract(self, since=None, model=None, exclude=(), **options):
-        options.setdefault("password", Secret("env:KB_TEST_GMAIL_PASSWORD"))
+        options.setdefault("password", Secret("env:SUPERHISTORY_TEST_GMAIL_PASSWORD"))
         run = Run(gmail.Options(address=ME, **options), Excludes(exclude), since, model or keeps())
         return list(gmail.TYPE.extract(run))
 
@@ -404,7 +404,7 @@ class SortingTest(GmailCase):
 
 class SignInTest(GmailCase):
     def test_a_refused_app_password_says_to_create_one_and_never_shows_it(self):
-        os.environ["KB_TEST_GMAIL_PASSWORD"] = "wrong-password-1234"
+        os.environ["SUPERHISTORY_TEST_GMAIL_PASSWORD"] = "wrong-password-1234"
         with self.assertRaises(RuntimeError) as caught:
             self.extract()
         self.assertIn("app password", str(caught.exception))
@@ -459,11 +459,11 @@ class OAuthTest(GmailCase):
     def setUp(self):
         super().setUp()
         self.tokens = TokenServer(self)
-        os.environ.update(KB_TEST_CLIENT_SECRET="client-secret-1", KB_TEST_REFRESH="refresh-1")
+        os.environ.update(SUPERHISTORY_TEST_CLIENT_SECRET="client-secret-1", SUPERHISTORY_TEST_REFRESH="refresh-1")
 
     def oauth(self):
         return {"auth": "oauth", "password": None, "client_id": "client-1.apps.example.com",
-                "client_secret": Secret("env:KB_TEST_CLIENT_SECRET"), "refresh_token": Secret("env:KB_TEST_REFRESH")}
+                "client_secret": Secret("env:SUPERHISTORY_TEST_CLIENT_SECRET"), "refresh_token": Secret("env:SUPERHISTORY_TEST_REFRESH")}
 
     def test_oauth_refreshes_an_access_token_and_signs_in_with_xoauth2(self):
         self.gmail.add(OTHER, ago(1), "Dana <dana@example.com>", "See the plan.", subject="Plan")
@@ -475,7 +475,7 @@ class OAuthTest(GmailCase):
                                               "grant_type": "refresh_token"}])
 
     def test_a_revoked_refresh_token_says_to_check_the_client_and_never_shows_secrets(self):
-        os.environ["KB_TEST_REFRESH"] = "revoked-refresh"
+        os.environ["SUPERHISTORY_TEST_REFRESH"] = "revoked-refresh"
         with self.assertRaises(RuntimeError) as caught:
             self.extract(**self.oauth())
         message = str(caught.exception)
@@ -525,7 +525,7 @@ class IngestTest(GmailCase):
         db = store.connect(os.path.join(tmp.name, "kb.db"))
         self.addCleanup(db.close)
         self.promo_thread(ago(2))
-        table = f'machine = "m1"\n[sources.mail]\ntype = "gmail"\naddress = "{ME}"\npassword = "env:KB_TEST_GMAIL_PASSWORD"\n'
+        table = f'machine = "m1"\n[sources.mail]\ntype = "gmail"\naddress = "{ME}"\npassword = "env:SUPERHISTORY_TEST_GMAIL_PASSWORD"\n'
         self.assertEqual(ingest.run(db, config.parse(table + "sort = false\n"), LOG, with_summaries=False), 0)
         self.assertEqual(db.execute("SELECT count(DISTINCT source_id) FROM docs").fetchone()[0], 1)
         db.execute("DELETE FROM ingest_state")
@@ -538,7 +538,7 @@ class IngestTest(GmailCase):
         db = store.connect(os.path.join(tmp.name, "kb.db"))
         self.addCleanup(db.close)
         cfg = config.parse(f'machine = "m1"\n[sources.mail]\ntype = "gmail"\naddress = "{ME}"\n'
-                           'password = "env:KB_TEST_GMAIL_PASSWORD"\nabout = "I build furniture."\n')
+                           'password = "env:SUPERHISTORY_TEST_GMAIL_PASSWORD"\nabout = "I build furniture."\n')
         self.promo_thread(ago(2))
         self.pricing_thread()
         self.assertEqual(ingest.run(db, cfg, LOG, with_summaries=False, model_factory=lambda: keeps(skip=())), 0)

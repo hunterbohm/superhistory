@@ -103,6 +103,12 @@ The first read can take many minutes on a long history, and it is safe to run ag
 
 Ask the person for a word they know is in something they read, then run `superhistory search "that word"`. A hit prints its text and a number: `superhistory get NUMBER` prints the whole record. If nothing is found, say so and show `stats`.
 
-## 7. Tell the person what you did
+## 7. Optional, only if the person asks
+
+- Apps that take no hooks (Claude Desktop, Cursor, Grok) can ask on purpose through the local, read-only MCP server. The README's "Ask from other apps (MCP)" table has each app's line, such as `claude mcp add --scope user superhistory -- superhistory mcp` for Claude Code. Desktop apps need the full path from `which superhistory`.
+- A source this page does not list can be a plug-in, one executable file in the plug-ins folder (`superhistory paths` prints it). `docs/plugins.md` in the repo is the whole format.
+- `superhistory backup DIR` writes one encrypted copy of the history. The passphrase is the person's: they type it at the terminal, never in chat.
+
+## 8. Tell the person what you did
 
 List what you installed, the config path, the agents hooked, whether the schedule is on, and the sources read. To undo: `superhistory hooks uninstall`, `superhistory schedule off`, and `superhistory forget NAME --yes` to delete one source's stored records.

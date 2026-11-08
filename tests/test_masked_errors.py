@@ -1,4 +1,4 @@
-"""A planted secret must not reach exception text on any path where kb builds an error from text it did not write:
+"""A planted secret must not reach exception text on any path where superhistory builds an error from text it did not write:
 an AI provider's answer, a CLI's or ssh's error output, a `cmd:` secret, a remote line, Gmail and Google answers."""
 import io
 import os
@@ -106,7 +106,7 @@ class MaskedErrorsTest(unittest.TestCase):
 
     def test_a_sync_failure_stays_inside_the_ingest_and_is_stored_masked(self):
         hook = mock.Mock(side_effect=RuntimeError(f"relay refused {TOKEN}"))
-        db = store.connect(os.path.join(self.tmp, "kb.sqlite"))
+        db = store.connect(os.path.join(self.tmp, "superhistory.sqlite"))
         self.addCleanup(db.close)
         with mock.patch.dict(sys.modules, {"kb.sync": mock.Mock(after_ingest=hook)}):
             self.assertEqual(ingest.after(None, config.parse("[sync]\n"), db, mock.Mock()), 1)

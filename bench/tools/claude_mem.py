@@ -25,7 +25,7 @@ PLATFORM = {"claude_code": "claude-code", "codex": "codex", "hermes": "hermes"}
 TURN = re.compile(r"\n\n(?=(?:USER|ASSISTANT|RESULT|ERROR|TOOL [\w.:-]+): )")
 SESSION_SECONDS = 15 * 60
 
-HOME_DIR = os.path.expanduser(os.environ.get("CLAUDE_MEM_HOME", "~/.cache/kb-bench/claude-mem/home"))
+HOME_DIR = os.path.expanduser(os.environ.get("CLAUDE_MEM_HOME", "~/.cache/superhistory-bench/claude-mem/home"))
 
 
 def worker_url():

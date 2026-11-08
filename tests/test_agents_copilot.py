@@ -7,7 +7,7 @@ from unittest import mock
 from kb import agents
 
 AGENT = agents.load("copilot")
-KB = agents.command("/opt/kb/bin/kb", "copilot")
+KB = agents.command("/opt/superhistory/bin/superhistory", "copilot")
 EVENT = "userPromptSubmitted"
 
 
@@ -41,7 +41,7 @@ class CopilotCase(unittest.TestCase):
             return json.load(fh)
 
     def backups(self):
-        return [f for f in os.listdir(self.folder) if f.startswith("config.json.bak-kb-")]
+        return [f for f in os.listdir(self.folder) if f.startswith("config.json.bak-superhistory-")]
 
 
 class InstallTest(CopilotCase):
@@ -72,7 +72,7 @@ class InstallTest(CopilotCase):
 
     def test_an_older_kb_entry_is_updated_in_place(self):
         theirs = {"type": "command", "bash": "./after.sh"}
-        self.write({"hooks": {EVENT: [kb_entry("'/old/kb' hook copilot", 12), theirs]}})
+        self.write({"hooks": {EVENT: [kb_entry("'/old/superhistory' hook copilot", 12), theirs]}})
         self.assertEqual(AGENT.install(self.home, KB), [agents.Change(self.config, "updated")])
         self.assertEqual(self.read(), {"hooks": {EVENT: [kb_entry(), theirs]}})
 
@@ -150,8 +150,8 @@ class RequestReplyTest(unittest.TestCase):
         self.assertIsNone(AGENT.request({}))
 
     def test_reply_is_json_with_the_records_as_additional_context(self):
-        self.assertEqual(json.loads(AGENT.reply("[kb] a record\nline two")),
-                         {"additionalContext": "[kb] a record\nline two"})
+        self.assertEqual(json.loads(AGENT.reply("[superhistory] a record\nline two")),
+                         {"additionalContext": "[superhistory] a record\nline two"})
 
 
 if __name__ == "__main__":

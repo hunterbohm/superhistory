@@ -11,6 +11,7 @@ import threading
 import time
 from typing import Any, Callable, NamedTuple, Optional
 
+from kb import COMMAND
 from kb.mask import mask
 
 
@@ -96,7 +97,7 @@ class _Masked:
 def load(settings):
     """The model for the config's [ai] table, masking what it is sent. Raises NotReady when there is none."""
     if settings is None:
-        raise NotReady("no AI plug-in is set up; run `kb setup`")
+        raise NotReady(f"no AI plug-in is set up; run `{COMMAND} setup`")
     from kb.config import secret_looking
     if secret_looking(settings.options):
         raise NotReady(f"[ai] {', '.join(secret_looking(settings.options))} looks like a secret; give a key as key")

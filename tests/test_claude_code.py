@@ -14,7 +14,7 @@ from kb.sources.claude_code import TYPE, Options
 
 FIXTURES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures", "claude_code", "projects")
 SESSION = "3f1c2d4e-0000-4000-8000-00000000aa01"
-LOG = logging.getLogger("varve-test-claude-code")
+LOG = logging.getLogger("superhistory-test-claude-code")
 LOG.addHandler(logging.NullHandler())
 LOG.propagate = False
 
@@ -131,7 +131,7 @@ class ReadingTest(ClaudeCodeCase):
         self.assertIn(" …", content)
 
     def test_a_tool_input_written_as_json_shows_no_secret(self):
-        # An input with no field kb shows is written as JSON, where a line break reads "\\n" and a quote \\".
+        # An input with no field superhistory shows is written as JSON, where a line break reads "\\n" and a quote \\".
         records = turns("j", "go")
         records.insert(1, {"type": "assistant", "message": {"content": [
             {"type": "tool_use", "name": "mcp__notes__create", "input": {
@@ -284,7 +284,7 @@ class RunnerTest(ClaudeCodeCase):
         super().setUp()
         shutil.copytree(FIXTURES, self.root, dirs_exist_ok=True)
         self.write("q/other.jsonl", turns("other", "Plan the giraffe feeder", cwd=self.home + "/code/private-client"))
-        self.db = store.connect(os.path.join(self.tmp.name, "kb.sqlite"))
+        self.db = store.connect(os.path.join(self.tmp.name, "superhistory.sqlite"))
         self.addCleanup(self.db.close)
 
     def ingest(self, extra=""):

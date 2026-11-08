@@ -1,6 +1,6 @@
 #!/bin/sh
-# Installs kb for the current user on a Mac or Linux: no root, no pip, no virtual environment. It needs Python 3.9 or
-# newer, then copies kb into your data folder and puts the `kb` command in ~/.local/bin.
+# Installs superhistory for the current user on a Mac or Linux: no root, no pip, no virtual environment. It needs Python 3.9 or
+# newer, then copies superhistory into your data folder and puts the `superhistory` command in ~/.local/bin.
 #
 #   sh install.sh --from /path/to/a/checkout
 #   curl -fsSL https://github.com/hunterbohm/superhistory/releases/latest/download/install.sh | sh
@@ -54,7 +54,7 @@ sys.exit(sys.version_info < (3, 9))' 2>/dev/null; then
 }
 
 if ! PY="$(find_python)"; then
-  echo "install.sh: kb needs Python 3.9 or newer with SQLite full-text search." >&2
+  echo "install.sh: superhistory needs Python 3.9 or newer with SQLite full-text search." >&2
   echo "Install Python 3 (on a Mac: xcode-select --install, or brew install python), then run this again." >&2
   exit 1
 fi
@@ -102,7 +102,7 @@ PYEOF
 fi
 
 if [ ! -f "$SRC/kb/__init__.py" ]; then
-  echo "install.sh: $SRC does not hold kb's source (no kb/__init__.py)." >&2
+  echo "install.sh: $SRC does not hold superhistory's source (no kb/__init__.py)." >&2
   exit 1
 fi
 

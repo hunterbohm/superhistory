@@ -1,17 +1,17 @@
-"""Agent hooks: on every prompt, an agent runs `kb hook <agent>`, which prints the check's records in the form that
+"""Agent hooks: on every prompt, an agent runs `superhistory hook <agent>`, which prints the check's records in the form that
 agent reads, or nothing.
 
 An agent is a module here that defines AGENT, an Agent:
 
     detect(home) -> bool                      the agent is installed for this user
-    installed(home) -> bool                   kb's hook is in place
+    installed(home) -> bool                   superhistory's hook is in place
     install(home, command) -> [Change]        adds the hook that runs `command`; running it twice changes nothing
-    uninstall(home) -> [Change]               removes only kb's hook
+    uninstall(home) -> [Change]               removes only superhistory's hook
     request(event) -> (message, before, session) or None
                                               reads the agent's hook input; None when the check should stay out
     reply(text) -> str                        wraps the records the way the agent reads them on stdout
 
-The module's name, with "-" for "_", is the agent's name in `kb hook` and `kb hooks`.
+The module's name, with "-" for "_", is the agent's name in `superhistory hook` and `superhistory hooks`.
 """
 import importlib
 import copy
@@ -26,12 +26,15 @@ import tempfile
 import time
 from typing import Callable, List, NamedTuple, Optional
 
-from kb import check
+from kb import COMMAND, check
+from kb.agents import _turns
 from kb.config import MAX_CHECK_BUDGET
 from kb.ai.cli import NESTED_ENV
 
 # A few seconds above the check's longest budget, so the agent never cuts the check off.
 HOOK_TIMEOUT = int(MAX_CHECK_BUDGET) + 5
+# A hook run in the background also waits for a model request that reads its records (_turns.WAIT_SECONDS).
+BACKGROUND_HOOK_TIMEOUT = 60
 # Grok runs the hooks in Claude Code's settings file too, but drops what a prompt hook prints.
 GROK_ENV = "GROK_HOOK_EVENT"
 
@@ -50,6 +53,9 @@ class Agent(NamedTuple):
     uninstall: Callable[[str], List[Change]]
     request: Callable[[dict], Optional[tuple]]
     reply: Callable[[str], str]
+    # in_background(home): whether the installed hook runs without the agent waiting for it ("async"), giving its
+    # records to the next model request (see run). None for agents that always wait.
+    in_background: Optional[Callable[[str], bool]] = None
 
 
 def names():
@@ -67,12 +73,12 @@ def command(kb_path, name):
 
 
 def is_kb_command(text, name):
-    """Whether a hook command is exactly the one command() writes for this agent: a program named kb, "hook", name."""
+    """Whether a hook command is exactly the one command() writes for this agent: a program named superhistory, "hook", name."""
     try:
         argv = shlex.split(str(text))
     except ValueError:
         return False
-    return len(argv) == 3 and argv[1:] == ["hook", name] and os.path.basename(argv[0]) == "kb"
+    return len(argv) == 3 and argv[1:] == ["hook", name] and os.path.basename(argv[0]) == COMMAND
 
 
 def run(paths, config, name, stdin_text):
@@ -85,12 +91,30 @@ def run(paths, config, name, stdin_text):
     if not found:
         return ""
     message, before, session = found
-    text = check.answer(paths, config, json.dumps({"message": message, "before": before}), session or "")
+    started = time.monotonic()
+    event = json.loads(stdin_text)
+    transcript = event.get("transcript_path") if isinstance(event, dict) else None
+    offset = _turns.size(transcript) or 0
+    wanted = None
+    agent = load(name)
+    # Asked of the installed entry, not assumed: an entry from before background hooks still makes the agent wait,
+    # and waiting there for a tool call would hold every message up.
+    try:
+        background = bool(agent.in_background and agent.in_background(os.path.expanduser("~")))
+    except Exception:
+        return ""
+    if background:
+        # Printed while the model writes its last answer, records would come with the next message, which is about
+        # something else. They go out only while a tool call runs, since the request after it reads them.
+        def wanted():
+            return _turns.await_reader(transcript, message, offset, started + _turns.WAIT_SECONDS) == "ready"
+    text = check.answer(paths, config, json.dumps({"message": message, "before": before}), session or "",
+                        still_wanted=wanted)
     return load(name).reply(text) if text else ""
 
 
 def fill(template, values):
-    """Puts each value in for its placeholder in one pass, so a value that holds a placeholder, such as a kb path
+    """Puts each value in for its placeholder in one pass, so a value that holds a placeholder, such as a superhistory path
     with one in a folder name, stays as it is."""
     return re.sub("|".join(map(re.escape, values)), lambda m: values[m.group()], template)
 
@@ -109,11 +133,11 @@ def write(path, text):
     exists = os.path.exists(path)
     if exists:
         stamp = time.strftime("%Y%m%d-%H%M%S")
-        backup, n = f"{path}.bak-kb-{stamp}", 1
+        backup, n = f"{path}.bak-{COMMAND}-{stamp}", 1
         while os.path.exists(backup):
-            backup, n = f"{path}.bak-kb-{stamp}-{n}", n + 1
+            backup, n = f"{path}.bak-{COMMAND}-{stamp}-{n}", n + 1
         shutil.copy2(path, backup)
-    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path), prefix=".kb-")
+    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path), prefix=f".{COMMAND}-")
     with os.fdopen(fd, "w", encoding="utf-8") as fh:
         fh.write(text)
     if exists:
@@ -151,14 +175,14 @@ def _parse(text, path):
     try:
         data = json.loads(text, parse_float=_finite, parse_constant=_not_json) if text.strip() else {}
     except ValueError:
-        raise Unreadable(f"{path} is not valid JSON kb can write back; fix it, then run this again") from None
+        raise Unreadable(f"{path} is not valid JSON {COMMAND} can write back; fix it, then run this again") from None
     if not isinstance(data, dict):
         raise Unreadable(f"{path} does not hold a JSON object")
     return data
 
 
 def without_kb(data, event, is_kb, grouped=True):
-    """The parsed file as the agent sees it apart from kb: kb's entries out, a group they alone filled out too, and
+    """The parsed file as the agent sees it apart from superhistory: superhistory's entries out, a group they alone filled out too, and
     an empty event list or hooks table counted as absent."""
     data = copy.deepcopy(data)
     hooks = data.get("hooks")
@@ -186,7 +210,7 @@ def without_kb(data, event, is_kb, grouped=True):
 
 
 def checked_write(path, old, new, event, is_kb, kb_after, grouped=True):
-    """Writes `new` over `old` only if it parses and means what `old` did apart from kb's entries, which must come out
+    """Writes `new` over `old` only if it parses and means what `old` did apart from superhistory's entries, which must come out
     as `kb_after`. Returns None when written or unchanged, else why it was not."""
     if new == old:
         return None
@@ -195,11 +219,11 @@ def checked_write(path, old, new, event, is_kb, kb_after, grouped=True):
     except Unreadable as exc:
         return str(exc)
     if without_kb(after, event, is_kb, grouped) != without_kb(before, event, is_kb, grouped):
-        return "the edit would change more than kb's own entries"
+        return f"the edit would change more than {COMMAND}'s own entries"
     entries = (after.get("hooks") or {}).get(event) or []
     found = [h for e in entries for h in ((e.get("hooks") or []) if grouped else [e]) if is_kb(h)]
     if found != kb_after:
-        return "kb's entry did not come out as intended"
+        return f"{COMMAND}'s entry did not come out as intended"
     write(path, new)
     return None
 
@@ -208,22 +232,26 @@ def _is_kb_handler(name):
     return lambda handler: isinstance(handler, dict) and is_kb_command(handler.get("command", ""), name)
 
 
-def add_json_hook(path, event, name, kb_command):
+def add_json_hook(path, event, name, kb_command, background=False):
     text = read(path)
-    new, gi, hi, handler, action = json_hook_added(text, path, event, name, kb_command)
+    new, gi, hi, handler, action = json_hook_added(text, path, event, name, kb_command, background)
     problem = checked_write(path, text, new, event, _is_kb_handler(name), [handler])
     if problem:
         raise Unreadable(f"{problem}; wrote nothing")
     return gi, hi, handler, Change(path, action)
 
 
-def json_hook_added(text, path, event, name, kb_command):
-    """The file's text with kb's hook added or brought up to date: (text, group, position, handler, action)."""
+def json_hook_added(text, path, event, name, kb_command, background=False):
+    """The file's text with kb's hook added or brought up to date: (text, group, position, handler, action).
+    background: the agent runs the hook without waiting for it ("async") and gives its records to the next model
+    request, so the user's message goes through at once."""
     data = _parse(text, path)
     groups = data.setdefault("hooks", {}).setdefault(event, [])
     found = next(((gi, hi, handler) for gi, group in enumerate(groups) for hi, handler in enumerate(group.get("hooks") or [])
                   if is_kb_command(handler.get("command", ""), name)), None)
-    wanted = {"type": "command", "command": kb_command, "timeout": HOOK_TIMEOUT}
+    wanted = {"type": "command", "command": kb_command, "timeout": BACKGROUND_HOOK_TIMEOUT if background else HOOK_TIMEOUT}
+    if background:
+        wanted["async"] = True
     if found and all(found[2].get(k) == v for k, v in wanted.items()):
         return (text, *found, "unchanged")
     if found:
@@ -236,12 +264,14 @@ def json_hook_added(text, path, event, name, kb_command):
     return (_dump(data, text), *found, action)
 
 
-def has_json_hook(path, event, name):
+def has_json_hook(path, event, name, background=False):
+    """Whether the file holds kb's hook; with background, one the agent runs without waiting ("async")."""
     try:
         groups = (_load(path)[1].get("hooks") or {}).get(event) or []
     except Unreadable:
         return False
-    return any(is_kb_command(h.get("command", ""), name) for group in groups for h in group.get("hooks") or [])
+    return any(is_kb_command(h.get("command", ""), name) and (not background or h.get("async") is True)
+               for group in groups for h in group.get("hooks") or [])
 
 
 def remove_json_hook(path, event, name):
@@ -254,7 +284,7 @@ def remove_json_hook(path, event, name):
 
 
 def json_hook_removed(text, path, event, name):
-    """The file's text without kb's hook: (text, action)."""
+    """The file's text without superhistory's hook: (text, action)."""
     data = _parse(text, path)
     if not text.strip():
         return text, "unchanged"

@@ -17,7 +17,7 @@ new reading reads.
 
 The texts: a generator of secrets, words and invisible characters that splits some secrets and not others, the write
 fuzz's planted texts and titles, and the old-row cases with what older kbs' masks left of them. Each text runs as
-written and without its invisible characters. KB_DIFF_CASES sets how many of each.
+written and without its invisible characters. SUPERHISTORY_DIFF_CASES sets how many of each.
 """
 import importlib.util
 import os
@@ -32,7 +32,7 @@ from tests import legacy_mask, legacy_store
 from tests.test_old_rows import Case
 from tests.test_write_fuzz import Planted
 
-CASES = int(os.environ.get("KB_DIFF_CASES", "300"))
+CASES = int(os.environ.get("SUPERHISTORY_DIFF_CASES", "300"))
 PLACEHOLDER = "[masked]"
 
 
@@ -103,7 +103,8 @@ class gate9:
             links = [re.compile(p.pattern.replace("]*:)", "]+:)").replace("&])*%(?:25)?3A)", "&])+%(?:25)?3A)"),
                                 p.flags) for p in head.PREFIXED_SECRETS[1:3]]
             swap.update(PREFIXED_SECRETS=[head.PREFIXED_SECRETS[0], *links, *head.PREFIXED_SECRETS[3:]],
-                        _COMMANDS=head._COMMANDS[:5], _ANY_COMMAND=main._ANY_COMMAND)
+                        _COMMANDS=head._COMMANDS[:5], _ANY_COMMAND=main._ANY_COMMAND,
+                        _wrapping_edits=lambda text: [])
         self.saved = {name: getattr(head, name) for name in swap}
         for name, value in swap.items():
             setattr(head, name, value)
@@ -142,6 +143,14 @@ def new_readings(text):
     for pattern in head.PREFIXED_SECRETS[1:3]:
         for m in pattern.finditer(text):
             out.update(range(m.end(1), m.end()))
+    # mask-wrappings' command reading, as the pass reads it, after the secrets known by their shape: what the pass
+    # hides with it on and shows with it off.
+    wrapping, head._wrapping_edits = head._wrapping_edits, lambda text: []
+    try:
+        unwrapped = head._run(text, (head.SECRET_PATTERNS, (), "named"), list(range(len(text))))[1]
+    finally:
+        head._wrapping_edits = wrapping
+    out.update({c for c in unwrapped if c >= 0} - {c for c in origin if c >= 0})
     for line_pattern, flag, _ in head._COMMANDS[5:]:
         for line in line_pattern.finditer(text):
             for m in flag.finditer(text, line.start(), line.end()):
@@ -397,7 +406,7 @@ def corpus(cases=CASES):
         text = Case(r, n).text
         size = r.randint(40, 400)
         yield f"old row {n}", text
-        yield f"old row {n}, an older kb's mask", legacy_mask.mask(text)
+        yield f"old row {n}, an older superhistory's mask", legacy_mask.mask(text)
         yield f"old row {n}, main's token mask", legacy_store.token_mask(text)
         yield f"old row {n}, masked a chunk at a time", "".join(legacy_mask.mask(text[i:i + size])
                                                                  for i in range(0, len(text), size))
