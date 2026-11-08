@@ -85,6 +85,7 @@ roots = ["~/code"]
 | `superhistory decisions run` | Judges new decision records: whether they are your own words or an agent's report, and which older decision each one replaces. Ingest runs it once a day when `[decisions] owner` is set. |
 | `superhistory decisions review`, `confirm ID`, `reject ID` | Lists agent-reported decisions that matter and that your own words don't back, and records your answer. |
 | `superhistory decisions drift` | Lists lines in your agents' instruction files that a newer decision of yours contradicts, each with a fix. It changes nothing. |
+| `superhistory plugins list`, `superhistory plugins test NAME` | Lists the source plug-ins in your plug-ins folder, or runs one once into a scratch store and shows what would be stored, keeping nothing. |
 | `superhistory backup [PATH]` | Writes your knowledge base, config and install id to one encrypted file. |
 | `superhistory restore PATH` | Puts a backup back, after checking it, and asks before it replaces anything. |
 
@@ -130,11 +131,16 @@ this one. The layout is at the top of `kb/backup.py`, and with the passphrase th
 | `notes` | A folder of Markdown or text files, such as an Obsidian vault | the note's path in the folder |
 | `git` | Your commits in the repositories under `roots` | the repository's folder |
 | `github` | Issues and pull requests you are involved in, through `gh` | `owner/repo` |
+| `plugin` | A program of yours in the plug-ins folder (`superhistory paths` shows it), which prints items as JSON lines | the item's id |
 | `youtube` | A channel's videos, shorts and streams with their captions, through `yt-dlp` and the channel's feed | the kind and id, as `short/abc123` |
 | `eden` | Your own posts on X or another network, through Eden (eden.so) and your Eden API key | the post's id |
 
 Add as many sources of one type as you like, each in its own `[sources.NAME]` table with `type = "..."`. The table's
 name is what `superhistory search --source` takes.
+
+Any other source is a small program you, or your agent, put in the plug-ins folder and name in the config as
+`type = "plugin"`. It prints items as JSON lines, and Superhistory masks and stores them like any source's.
+[docs/plugins.md](docs/plugins.md) is the whole format.
 
 Every source only reads. Mail and texts drop 2FA codes and password resets one message at a time, and every record
 passes through a mask that replaces API keys, tokens and passwords with `[masked]` before it is stored.

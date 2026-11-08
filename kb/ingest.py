@@ -22,8 +22,9 @@ _UNBUILT = object()
 
 
 class LocalReader:
-    def __init__(self, model_factory=None):
+    def __init__(self, model_factory=None, plugins_dir=""):
         self._model_factory = model_factory or (lambda: None)
+        self._plugins_dir = plugins_dir
         self._built = _UNBUILT
 
     def _model(self):
@@ -36,7 +37,8 @@ class LocalReader:
         return self._built
 
     def _run(self, source, since):
-        return Run(source.options, Excludes(source.exclude), since, self._model() if source.type.needs_model else None)
+        return Run(source.options, Excludes(source.exclude), since, self._model() if source.type.needs_model else None,
+                   self._plugins_dir)
 
     def events(self, source, since):
         if sys.platform not in source.type.platforms:
@@ -102,13 +104,18 @@ def run_unit(db, source, host, reader, log, prefix):
                 raise TypeError(f"not an event: a {type(event).__name__}")
             if not isinstance(event, Progress) and secret_in_id(event.source_id,
                                                                  id_names(getattr(event, "meta", None))):
+                if source.type.all_or_nothing:
+                    raise ValueError("an item's id looks like it holds a secret; give it an id that does not")
                 log.warning("%s@%s: skipped %s, whose name looks like it holds a secret; rename it to index it",
                             source.name, host, mask(event.source_id))
             changed += apply(db, source.name, prefix, event, host)
         except Exception as exc:
+            if source.type.all_or_nothing:
+                raise RuntimeError(f"the store refused an item ({type(exc).__name__}: {mask(str(exc))[:100]}), so "
+                                   "nothing of this run was kept and its watermark stays") from None
             log.warning("%s@%s: skipped %s: %s", source.name, host, getattr(event, "source_id", "?"), exc)
         seen += 1
-        if seen % COMMIT_EVERY == 0:
+        if seen % COMMIT_EVERY == 0 and not source.type.all_or_nothing:
             db.commit()
     if mark is not None:
         store.set_watermark(db, source.name, host, json.dumps(mark))
@@ -143,7 +150,7 @@ def run(db, config, log, only=(), with_summaries=True, model_factory=None):
     model_factory = model_factory or (lambda: ai.load(config.ai))
     store.clean_state(db)
     db.commit()
-    local = LocalReader(model_factory)
+    local = LocalReader(model_factory, config.plugins_dir)
     remote = {h.name: SshReader(h) for h in config.hosts}
     away = set()
     failures = 0

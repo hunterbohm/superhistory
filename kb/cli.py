@@ -8,6 +8,7 @@ import os
 import shutil
 import sqlite3
 import sys
+import tempfile
 import time
 import traceback
 from datetime import datetime, timedelta, timezone
@@ -260,6 +261,61 @@ def cmd_login(paths, config, args):
         print(f"Add this line under [sources.{args.source}]:\n\nrefresh_token = \"file:{key_file}\"")
 
 
+def cmd_plugins(paths, config, args):
+    from kb.sources import plugin
+    folder = paths.plugins_dir
+    if args.action == "list":
+        used = {}
+        for source in config.sources:
+            if source.type_name == "plugin":
+                used.setdefault(source.options.plugin, []).append(source.name)
+        print(f"Plug-ins folder: {folder}")
+        names = sorted(n for n in os.listdir(folder) if not n.startswith(".")) if folder.is_dir() else []
+        for name in names:
+            try:
+                plugin.executable(folder, name)
+                state = "ready"
+            except plugin.PluginError as exc:
+                state = f"will not run: {exc}"
+            print(f"  {name:<24}{state}; used by {', '.join(used.get(name, [])) or 'no source yet'}")
+        for name in sorted(set(used) - set(names)):
+            print(f"  {name:<24}missing; used by {', '.join(used[name])}")
+        if not names and not used:
+            print("  none yet; docs/plugins.md says how to write one")
+        return 0
+    source = config.source(args.source) if args.source else None
+    if not source or source.type_name != "plugin":
+        raise Fail(f"name a source with type = \"plugin\" from {paths.config_file}, such as `{NAME.lower()} plugins "
+                   "test calendar`")
+    # The same ingest, into a store of its own that is deleted after, so what the store refuses fails here too.
+    only = dataclasses.replace(_own(paths, config), sources=(source,), ai=None)
+    log = logging.getLogger("kb.plugins-test")
+    log.addHandler(logging.NullHandler())
+    log.propagate = False
+    with tempfile.TemporaryDirectory(prefix="plugins-test-") as scratch:
+        db = store.connect(os.path.join(scratch, "test.sqlite"))
+        try:
+            failures = ingest.run(db, only, log, with_summaries=False)
+            failed = dict(store.failing(db)).get(f"{source.name}@{config.machine}", "")
+            mark = store.get_watermark(db, source.name, config.machine)
+            titles = [f"{ts[:10]}  {mask(title)}" for ts, title in db.execute(
+                "SELECT ts, title FROM docs WHERE kind IN ('doc', 'raw') AND "
+                "coalesce(json_extract(metadata, '$.chunk'), 0) = 0 ORDER BY ts DESC LIMIT 5")]
+            count = db.execute("SELECT count(DISTINCT source_id) FROM docs").fetchone()[0]
+        finally:
+            db.close()
+    if failures:
+        print(f"{source.name}: failed: {failed.split(' ', 1)[-1] if failed else 'see the ingest log'}", file=sys.stderr)
+        print("Nothing was stored.", file=sys.stderr)
+        return 1
+    print(f"watermark   {json.loads(mark) if mark else ''}")
+    print(f"{source.name}: {count} {'item' if count == 1 else 'items'} would be stored from a run from the start; "
+          "nothing was stored.")
+    for line in titles:
+        print(f"  {line}")
+    return 0
+
+
 def cmd_ai(paths, config, args):
     if args.action == "list":
         for name in ai.visible_plugins():
@@ -386,7 +442,7 @@ def cmd_schedule(paths, config, args):
 
 def cmd_paths(paths, config, args):
     for label, where in (("config", paths.config_file), ("database", paths.db), ("logs", paths.log_dir),
-                         ("cache", paths.cache_dir)):
+                         ("cache", paths.cache_dir), ("plug-ins", paths.plugins_dir)):
         print(f"{label:<10}{where}")
 
 
@@ -771,7 +827,7 @@ def cmd_restore(paths, config, args):
 
 
 def _own(paths, config):
-    return dataclasses.replace(config, install=ids.install_id(paths))
+    return dataclasses.replace(config, install=ids.install_id(paths), plugins_dir=str(paths.plugins_dir))
 
 
 def cmd_forget(paths, config, args):
@@ -954,6 +1010,10 @@ def parser():
     a = sub.add_parser("ai", help="list the AI plug-ins, or test the one in the config with one tiny call")
     a.add_argument("action", choices=("list", "test"))
     a.set_defaults(fn=cmd_ai)
+    pg = sub.add_parser("plugins", help="list the source plug-ins, or run one once without storing anything")
+    pg.add_argument("action", choices=("list", "test"))
+    pg.add_argument("source", nargs="?", help="for test: the name of a source with type = \"plugin\"")
+    pg.set_defaults(fn=cmd_plugins)
     hk = sub.add_parser("hook", help="run by an agent on each prompt: print the check's records for it")
     hk.add_argument("agent")
     hk.set_defaults(fn=cmd_hook)

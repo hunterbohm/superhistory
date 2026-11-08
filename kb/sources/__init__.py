@@ -54,6 +54,7 @@ class Run(NamedTuple):
     excludes: "Excludes"
     since: Optional[Mark]         # the last run's largest mark, or None on the first run
     model: Any = None             # the AI plug-in, for types that need one
+    plugins_dir: str = ""         # the folder source plug-ins are run from, for the plugin type
 
 
 class SourceType(NamedTuple):
@@ -71,6 +72,9 @@ class SourceType(NamedTuple):
     # the account, such as "gmail:sam@example.com", or None when the options do not say which account. One computer
     # reads each account, so its items have one writer; the Sync client uses the key to refuse a second reader.
     account: Optional[Callable[[Any], str]] = None
+    # For a source whose watermark must never pass an item that was not stored: any item the store refuses fails the run
+    # and nothing of the run is kept, instead of the item being skipped with a warning.
+    all_or_nothing: bool = False
 
 
 def type_names():
