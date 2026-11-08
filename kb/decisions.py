@@ -50,7 +50,13 @@ CREATE INDEX IF NOT EXISTS decisions_new ON decisions(new_source, new_source_id,
 CREATE TABLE IF NOT EXISTS decision_proposals(
   source TEXT NOT NULL, source_id TEXT NOT NULL, key TEXT NOT NULL,
   new_source TEXT NOT NULL, new_source_id TEXT NOT NULL, new_key TEXT NOT NULL, why TEXT,
+  PRIMARY KEY(source, source_id, key, new_source, new_source_id, new_key));
+CREATE TABLE IF NOT EXISTS decision_links(
+  source TEXT NOT NULL, source_id TEXT NOT NULL, key TEXT NOT NULL,
+  new_source TEXT NOT NULL, new_source_id TEXT NOT NULL, new_key TEXT NOT NULL, why TEXT,
   PRIMARY KEY(source, source_id, key, new_source, new_source_id, new_key));"""
+# decision_links keeps every replacement both calls agreed on, while decisions holds only the one in force, so when
+# that one is rejected, rewritten or outranked by a confirmation, the next best agreed one takes its place.
 LAST_RUN = ("_decisions", "last_run")
 AUTHORS = ("owner", "agent", "other")
 ANSWERS = ("confirmed", "rejected")
@@ -157,6 +163,9 @@ def key_of(text):
 
 def ensure(db):
     db.executescript(SCHEMA)
+    db.execute("INSERT OR IGNORE INTO decision_links SELECT source, source_id, key, new_source, new_source_id, new_key, "
+               "why FROM decisions WHERE new_key IS NOT NULL")
+    db.commit()
 
 
 def has_table(db):
@@ -369,7 +378,7 @@ def mark_replaced(db, old, new, why, at):
     row = db.execute("SELECT new_source, new_source_id, new_key FROM decisions WHERE source=? AND source_id=? AND key=?",
                      old.ref).fetchone()
     if row and row[0] is not None:
-        held = _backed(db, tuple(row))
+        held = _backed(db, tuple(row)) if _find(db, tuple(row)) else None  # a gone or rejected one holds nothing
         if held is not None and (held, _ts_of(db, row)) > (_backed(db, new.ref), new.ts):
             return False
     # The write itself checks the reject too: a reject committed after the read above still stops it.
@@ -413,7 +422,23 @@ def reconcile(db, current):
              if tuple(r[3:]) not in alive or tuple(r[3:]) in rejected]
     db.executemany("UPDATE decisions SET new_source=NULL, new_source_id=NULL, new_key=NULL, why=NULL "
                    "WHERE source=? AND source_id=? AND key=?", [r[:3] for r in stale])
+    relink(db, [r[:3] for r in stale])
     return len(stale)
+
+
+def relink(db, olds):
+    """Puts back, for each of `olds` (decision references), the best replacement both calls agreed on whose text is
+    still there and that the owner has not rejected, ranked as `mark_replaced` ranks them."""
+    at = now_iso()
+    for ref in olds:
+        old = _find(db, tuple(ref))
+        if old is None:
+            continue
+        for *new_ref, why in db.execute("SELECT new_source, new_source_id, new_key, why FROM decision_links "
+                                        "WHERE source=? AND source_id=? AND key=?", old.ref).fetchall():
+            new = _find(db, tuple(new_ref))
+            if new is not None:
+                mark_replaced(db, old, new, why, at)
 
 
 # The marks that take a decision out of view: the owner rejected it, or a newer decision replaced it and either the
@@ -521,6 +546,8 @@ def check_proposals(db, ask, owner, current, log, workers=WORKERS):
                     log.debug("decisions: #%d replaces #%d? the check says %s", new.row, old.row,
                               "yes" if yes[n] else "no")
                     if yes[n]:
+                        db.execute("INSERT OR IGNORE INTO decision_links VALUES (?,?,?,?,?,?,?)",
+                                   (*old.ref, *new.ref, mask(why)))
                         marked += mark_replaced(db, old, new, why, at)
                     db.execute("DELETE FROM decision_proposals WHERE source=? AND source_id=? AND key=? AND "
                                "new_source=? AND new_source_id=? AND new_key=?", (*old.ref, *new.ref))
@@ -648,8 +675,9 @@ def review(db, limit=10, since=None):
     rest, newest first."""
     if not has_table(db):
         return []
-    rows = db.execute("SELECT source, source_id, key FROM decisions WHERE author='agent' AND matters=1 "
-                      "AND answer IS NULL AND new_key IS NULL").fetchall()
+    out = _out_of_view(db)
+    rows = [r for r in db.execute("SELECT source, source_id, key FROM decisions WHERE author='agent' AND matters=1 "
+                                  "AND answer IS NULL").fetchall() if tuple(r) not in out]
     held = {tuple(r) for r in db.execute("SELECT new_source, new_source_id, new_key FROM decisions WHERE "
                                          "new_key IS NOT NULL AND (author='owner' OR answer='confirmed')")}
     found = [d for d in (_find(db, tuple(r)) for r in rows) if d and (since is None or d.ts >= since)]
@@ -677,10 +705,13 @@ def answer(db, rid, verdict):
     with db:
         db.execute("INSERT INTO decisions(source, source_id, key, answer, at) VALUES (?,?,?,?,?) "
                    "ON CONFLICT(source, source_id, key) DO UPDATE SET answer=excluded.answer", (*ref, verdict, now_iso()))
+        olds = db.execute("SELECT source, source_id, key FROM decision_links WHERE new_source=? AND new_source_id=? "
+                          "AND new_key=?", ref).fetchall()
         if verdict == "rejected":
             db.execute("UPDATE decisions SET new_source=NULL, new_source_id=NULL, new_key=NULL, why=NULL "
                        "WHERE new_source=? AND new_source_id=? AND new_key=?", ref)
             db.execute("DELETE FROM decision_proposals WHERE new_source=? AND new_source_id=? AND new_key=?", ref)
+        relink(db, olds)
     return ref
 
 

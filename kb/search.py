@@ -28,6 +28,7 @@ EXCERPT_CHARS = 500
 SNIPPET_CHARS = 220
 MARK, END = "\x02", "\x03"
 STALE_NOTE = "[A decision here was replaced later; see {}] "
+REJECTED_NOTE = "[A decision here was rejected by the owner] "
 
 
 def fts_terms(text):
@@ -87,9 +88,10 @@ def _grouped(db, rows, rows_arg, kinds, after, sources, n, before):
 
 
 def _stale_items(db, match, items):
-    """{item: the ids of the newer decisions} for those of `items` holding a decision that matches the search and
-    that search leaves out, so their other rows, such as the session text that still states the old choice, carry a
-    note naming what replaced it. Checked per item, whichever of its rows the search picked."""
+    """{item: (the ids of the newer decisions, whether the owner rejected one)} for those of `items` holding a decision
+    that matches the search and that search leaves out, so their other rows, such as the session text that still
+    states the old choice, carry a note naming what replaced it or saying he rejected it. Checked per item, whichever
+    of its rows the search picked."""
     found = {}
     for src, sid in items:
         if not db.execute("SELECT 1 FROM decisions WHERE source=? AND source_id=? AND (new_key IS NOT NULL "
@@ -100,13 +102,14 @@ def _stale_items(db, match, items):
         matching = {i for (i,) in db.execute(
             f"SELECT rowid FROM docs_fts WHERE docs_fts MATCH ? AND rowid IN ({','.join('?' * len(atoms))})",
             (match, *[a[0] for a in atoms]))} if atoms else set()
-        rows = []
+        rows, rejected = [], False
         for by in decisions.hidden(db, [a for a in atoms if a[0] in matching]).values():
+            rejected |= by == "rejected"
             row = decisions.describe(db, by)[0] if by != "rejected" else None
             if row and row not in rows:
                 rows.append(row)
-        if rows:
-            found[(src, sid)] = rows
+        if rows or rejected:
+            found[(src, sid)] = (rows, rejected)
     return found
 
 
@@ -224,10 +227,15 @@ def search(db, query, after=None, sources=(), limit=10, before=None, keep=None, 
             snip, marked = _snippets(hit["title"], own, match)
         hit["snippet"] = re.sub(r"\s+", " ", snip if "[" in snip else own[:SNIPPET_CHARS]).strip()
         hit["excerpt"] = excerpt(marked if MARK in marked else own)
-        newer = stale.get((hit["source"], hit["source_id"]))
+        newer, rejected = stale.get((hit["source"], hit["source_id"]), ([], False))
+        note = ""
         if newer:
             hit["replaced_in_item"] = newer
-            note = STALE_NOTE.format(", ".join(f"#{n}" for n in newer))
+            note += STALE_NOTE.format(", ".join(f"#{n}" for n in newer))
+        if rejected:
+            hit["rejected_in_item"] = True
+            note += REJECTED_NOTE
+        if note:
             hit["snippet"], hit["excerpt"] = note + hit["snippet"], note + hit["excerpt"]
     return hits
 

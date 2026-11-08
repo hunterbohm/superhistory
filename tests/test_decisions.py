@@ -228,6 +228,17 @@ class DecisionTest(Store):
         self.assertEqual(self.db.execute("SELECT count(*) FROM decisions WHERE new_key IS NOT NULL").fetchone()[0], 12)
         self.assertIn(kept, self.ids("Composio app accounts rule uses CLI"))
 
+    def test_other_hits_from_an_item_whose_decision_was_rejected_say_so(self):
+        self.session("old", "2026-06-12T10:00:00Z", ["Composio CLI is the default for connected app accounts."],
+                     text="USER: make the composio cli the default for connected app accounts\n\nASSISTANT: ok")
+        self.run_pass(Model(lambda *a: answer()))
+        rid = self.db.execute("SELECT id FROM docs WHERE content LIKE 'Composio CLI is%'").fetchone()[0]
+        decisions.answer(self.db, rid, "rejected")
+        raw = [h for h in search.search(self.db, "composio cli default connected app accounts") if h["kind"] == "raw"]
+        self.assertEqual(len(raw), 1)
+        self.assertTrue(raw[0].get("rejected_in_item"))
+        self.assertTrue(raw[0]["snippet"].startswith("[A decision here was rejected by the owner]"))
+
     def test_other_hits_from_an_item_whose_decision_was_replaced_say_so(self):
         self.session("old", "2026-06-12T10:00:00Z", ["Composio CLI is the default for connected app accounts."],
                      text="USER: make the composio cli the default for connected app accounts\n\nASSISTANT: ok")
@@ -475,6 +486,28 @@ class DecisionTest(Store):
         self.assertNotIn(old, [d.text for d, *_ in decisions.owned(self.db, "2026-01-01")])
         self.session("new", "2026-10-24T10:00:00Z", ["Executor holds the app logins now."])
         self.assertIn(old, [d.text for d, *_ in decisions.owned(self.db, "2026-01-01")])
+
+    def test_confirming_one_of_two_agreed_replacements_puts_its_mark_back(self):
+        old = "Composio CLI is the default for connected app accounts."
+        self.session("old", "2026-06-12T10:00:00Z", [old],
+                     text="USER: make the composio cli the default for connected app accounts\n\nASSISTANT: ok")
+        self.run_pass(Model(lambda *a: answer(author="owner", quote="make the composio cli the default")))
+        self.session("b", "2026-10-24T10:00:00Z", ["Composio switched off; Executor replaces it for app accounts."])
+        self.session("c", "2026-10-25T10:00:00Z", ["Composio switched off for good; Nango holds app accounts."])
+        self.run_pass(Model(lambda text, older, _: answer(replaces=older if "switched" in text else ())))
+        self.assertIn(old, self.ids("Composio app accounts"))  # agent reports alone never hide his words
+        b = self.db.execute("SELECT id FROM docs WHERE content LIKE 'Composio switched off;%'").fetchone()[0]
+        decisions.answer(self.db, b, "confirmed")
+        self.assertNotIn(old, self.ids("Composio app accounts"))
+
+    def test_review_lists_an_agent_decision_again_once_its_replacement_is_rewritten(self):
+        old = "Merge trains approved: one worker merges all green PRs."
+        self.session("a", "2026-11-04T10:00:00Z", [old])
+        self.session("b", "2026-11-05T10:00:00Z", ["Merge trains switched off; each PR merges on its own."])
+        self.run_pass(Model(lambda text, older, _: answer(matters=True, replaces=older if "switched" in text else ())))
+        self.assertNotIn(old, [d.text for d in decisions.review(self.db)])
+        self.session("b", "2026-11-05T10:00:00Z", ["Rename the CSS class run to ans."])
+        self.assertIn(old, [d.text for d in decisions.review(self.db)])
 
     def test_review_lists_unanswered_agent_decisions_that_matter_once_per_wording(self):
         self.session("a", "2026-11-04T10:00:00Z", ["Merge trains approved by Hunter: one worker merges all green PRs."])
