@@ -2,6 +2,7 @@ import unittest
 from unittest import mock
 
 from kb.mask import INVISIBLE, is_auth_code, is_auth_noise, mask, secret_in_id
+from tests.speed import scaled
 
 
 class MaskTest(unittest.TestCase):
@@ -293,7 +294,7 @@ class HeadlessKeyTest(unittest.TestCase):
             with self.subTest(quote=quote):
                 started = time.process_time()
                 mask("[masked]" + quote * (24 // len(quote)) + "MIGRATION plan")
-                self.assertLess(time.process_time() - started, 0.5)
+                self.assertLess(time.process_time() - started, scaled(0.5))
 
     def test_after_a_placeholder_and_a_line_break_other_lines_stay(self):
         for brk in ("\\n", "\n"):
@@ -334,13 +335,13 @@ class HeadlessKeyTest(unittest.TestCase):
                            ("many fields", ("DEK-Info: AES-256-CBC,0A\n") * 20000)):
             started = time.monotonic()
             mask(text)
-            self.assertLess(time.monotonic() - started, 3, name)
+            self.assertLess(time.monotonic() - started, scaled(3), name)
 
     def test_a_long_run_without_a_footer_costs_one_pass(self):
         import time
         started = time.monotonic()
         mask(("A" * 40 + "\n") * 5000)
-        self.assertLess(time.monotonic() - started, 2)
+        self.assertLess(time.monotonic() - started, scaled(2))
 
 
 class InvisibleTest(unittest.TestCase):

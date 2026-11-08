@@ -11,6 +11,7 @@ import unittest
 from kb import store
 from kb.mask import mask, mask_all, typed_secrets
 from kb.sources import claude_code, codex, hermes
+from tests.speed import scaled
 
 TOKENS = ("ghp_Zq7Lm2Xc9Vb4Nn8Kk3Jj6Hh1Gg5Ff0Dd2Ss", "sk_live_51Hq8ZtKx9Lm2Np4Qr6St8Uv", "AKIAQX7RZ2MPL4VN8KTB",
           "sk-proj-Ab3Cd5Ef7Gh9Ij1Kl3Mn5Op7Qr9St1Uv3Wx5",
@@ -1197,7 +1198,7 @@ class ReviewEighteenTest(unittest.TestCase):
                 mask(text)
                 took.append(time.process_time() - started)
             with self.subTest(unit=unit):
-                self.assertLess(took[1], 1.0, took)
+                self.assertLess(took[1], scaled(1.0), took)
 
     def test_a_redirection_or_a_substitution_does_not_end_a_command(self):
         for text in ("az login 2>&1 -u me@example.com -p Tr0ub4dor9", "mongosh --host $(hostname) -p Tr0ub4dor9",
@@ -2725,7 +2726,7 @@ class ReviewFiftyOneTest(unittest.TestCase):
             text = "aws configure set --profile " + "\\" * n + "x aws_session_token Zq7vRt2LmX9k"
             started = time.process_time()
             masked = mask(text)
-            self.assertLess(time.process_time() - started, 1.0, n)
+            self.assertLess(time.process_time() - started, scaled(1.0), n)
             self.assertTrue(masked.startswith("aws configure set --profile "), n)
 
     def test_an_options_value_after_a_long_gap_is_not_the_setting(self):
