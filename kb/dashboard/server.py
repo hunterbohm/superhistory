@@ -28,7 +28,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
-from kb import store
+from kb import COMMAND, NAME, store
 from kb.dashboard import catalog as cat, views
 from kb.mask import mask
 
@@ -41,9 +41,9 @@ POLICY = ("default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inlin
           "img-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'")
 
 
-KEY_HEADER = "X-Superhistory-Key"
-NEEDS_KEY = "This page needs this run's key. Open the address that `superhistory dashboard` printed."
-USED = ("That address has been used. Its key is good for one visit; run `superhistory dashboard` again for a new one, "
+KEY_HEADER = f"X-{NAME}-Key"
+NEEDS_KEY = f"This page needs this run's key. Open the address that `{COMMAND} dashboard` printed."
+USED = (f"That address has been used. Its key is good for one visit; run `{COMMAND} dashboard` again for a new one, "
         "or reload the tab that opened it.")
 
 
@@ -131,7 +131,7 @@ class Dashboard:
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "Superhistory"
+    server_version = NAME
     sys_version = ""
 
     def _send(self, code, body, ctype, head=False):
@@ -263,13 +263,13 @@ class Handoff:
 
     def __init__(self, dashboard):
         self.dashboard = dashboard
-        self.folder = tempfile.mkdtemp(prefix="superhistory-")  # mode 0700
+        self.folder = tempfile.mkdtemp(prefix=f"{COMMAND}-")  # mode 0700
         self.path = os.path.join(self.folder, "open.html")
         address = html.escape(dashboard.url, quote=True)
         fd = os.open(self.path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
             fh.write(f'<!doctype html><meta charset="utf-8"><meta http-equiv="refresh" content="0;url={address}">'
-                     f'<title>Superhistory</title><p><a href="{address}">Open the Superhistory dashboard</a>\n')
+                     f'<title>{NAME}</title><p><a href="{address}">Open the {NAME} dashboard</a>\n')
         threading.Thread(target=self._remove_when_spent, daemon=True).start()
 
     def open(self):

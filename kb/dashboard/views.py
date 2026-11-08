@@ -8,7 +8,7 @@ import os
 import re
 from datetime import date, datetime, timedelta, timezone
 
-from kb import search, store
+from kb import COMMAND, search, store
 from kb.dashboard import catalog as cat
 from kb.mask import mask, mask_all
 
@@ -310,7 +310,7 @@ def item(db, catalog, rid, page=None, query=""):
         return {"error": "This is a summary whose item has no stored text."}
     ids = [r[0] for r in rows]
     if store.unversioned(db, ids):
-        return {"error": "This item was written by an older version. Run `superhistory rebuild`."}
+        return {"error": f"This item was written by an older version. Run `{COMMAND} rebuild`."}
     fresh = len(store.current(db, ids)) == len(ids)
     if not fresh and store.secret_id(src, sid, store.item_names(db, src, sid)):
         return None

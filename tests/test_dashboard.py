@@ -398,8 +398,8 @@ class SafetyTest(Served):
         """The store's file with its bytes and time, and any write-ahead file beside it with its size. A read-only
         connection can leave an empty one, which holds nothing."""
         folder = Path(self.paths.db).parent
-        main = folder / "kb.sqlite"
-        wal = folder / "kb.sqlite-wal"
+        main = folder / "superhistory.sqlite"
+        wal = folder / "superhistory.sqlite-wal"
         return (hashlib.sha256(main.read_bytes()).hexdigest(), main.stat().st_mtime_ns,
                 wal.stat().st_size if wal.exists() else 0)
 
@@ -598,7 +598,7 @@ class HealthTest(Served):
 class CommandTest(unittest.TestCase):
     def run_cli(self, *args, env=None):
         out, err = io.StringIO(), io.StringIO()
-        with tempfile.TemporaryDirectory() as home, mock.patch.dict(os.environ, {"KB_HOME": home}), \
+        with tempfile.TemporaryDirectory() as home, mock.patch.dict(os.environ, {"SUPERHISTORY_HOME": home}), \
                 contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
             code = cli.main(list(args)) if env is None else env(home, args)
         return code, out.getvalue(), err.getvalue()

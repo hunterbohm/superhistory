@@ -330,7 +330,7 @@ def cmd_dashboard(paths, config, args):
         raise Fail(f"cannot listen on port {args.port}: {exc.strerror or exc}")
     # The address holds this run's key, which masking would take for a secret and mangle; it is made here, not read.
     shown = getattr(sys.stdout, "_stream", sys.stdout)
-    print(f"The Superhistory dashboard is at {dashboard.url}\n"
+    print(f"The {NAME} dashboard is at {dashboard.url}\n"
           "Open it once: the address carries a key for this run, good for one visit. "
           "It reads your knowledge base and changes nothing. Press Ctrl-C to stop.", file=shown, flush=True)
     handoff = None
