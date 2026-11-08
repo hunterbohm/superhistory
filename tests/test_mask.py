@@ -5011,6 +5011,12 @@ class Base64ReviewTwentyEighthTest(unittest.TestCase):
             text = "intro notes" + nl + "[masked]" + nl + body + nl + "walrus moved today" + nl + nl + "next paragraph"
             self.check_rows(text, text, "intro notes" + nl + "[masked]" + nl + "walrus moved today" + nl + nl
                             + "next paragraph")
+        # however far each line below is indented
+        for mark in (" " * 70, "> " * 35, chr(9) * 80):
+            body = nl.join((mark if k else "") + line for k, line in enumerate(lines))
+            text = "intro notes" + nl + "[masked]" + nl + body + nl + "walrus moved today" + nl + nl + "next paragraph"
+            self.check_rows(text, text, "intro notes" + nl + "[masked]" + nl + "walrus moved today" + nl + nl
+                            + "next paragraph")
         # a line that starts with "+", a character of base64, is as wide as the run, and the next one goes on with it
         plus = [lines[0], "+" + lines[1][1:], piece(20) + "/" + piece(43), lines[2]]
         for mark in ("", "[masked] ", "+ "):
@@ -5018,6 +5024,61 @@ class Base64ReviewTwentyEighthTest(unittest.TestCase):
             text = "intro notes" + nl + "[masked]" + nl + body + nl + "walrus moved today" + nl + nl + "next paragraph"
             self.check_rows(text, text, "intro notes" + nl + "[masked]" + nl + "walrus moved today" + nl + nl
                             + "next paragraph")
+
+    def test_what_stands_before_a_lone_runs_line_costs_time_in_proportion(self):
+        # An automated security review of 19c17b9: an escaped zero-width space read as both an escaped space and an
+        # unseen character, so a line below a lone run that starts with many of them, then fails, was tried in every
+        # way of splitting them, twice the time for each one more (22 took 4.9 s). Each now reads one way.
+        import time
+        from kb import mask as masking
+        nl, bs = chr(10), chr(92)
+        run = "Qm7Rv2Lk9Tp4Wx8Nc3Hs6Jd1Fg5Zb0Ye7Ua2Ki9Ol4Pq8Mn3Vr6Ts1Xw5Cy0Bz7Eh2Gj9D"
+        leads = {"escaped zero-width space": bs + "u200b", "twice escaped": bs * 2 + "u200b",
+                 "zero-width space": chr(0x200b), "escaped no-break space": bs + "u00a0", "a space": " ",
+                 "a quote's entity": "&quot;", "a placeholder": "[masked]", "an escaped tab": bs + "t"}
+        for name, lead in leads.items():
+            for sizes, ratio in (((10, 20), 8), ((1 << 11, 1 << 13), 8)):
+                took = {}
+                for n in sizes:
+                    text = "intro notes" + nl + "[masked]" + nl + run + nl + lead * n + "AAAA x" + nl + nl + "next"
+                    started = time.process_time()
+                    with masking.stored_row("0123456789abcdef"):
+                        masking.mask(text)
+                    took[n] = time.process_time() - started
+                with self.subTest(lead=name, sizes=sizes):
+                    self.assertLess(took[sizes[1]], ratio * max(took[sizes[0]], 0.02), took)
+                if took[sizes[1]] > 1:
+                    break
+
+    def test_a_long_run_of_escaped_space_costs_time_in_proportion(self):
+        # Found checking the review above: a run of escaped tabs or other escaped spaces, as JSON writes them, cost time
+        # in the square of its length, alone, among words or after a placeholder, as each escape's letter started a
+        # base64 block that read the whole run for a line break (_WRAPPED_BASE64); 8,192 escaped tabs took 2.4 s
+        # where main takes 0.04. A letter another escaped space follows, past only spaces or a carriage return with a
+        # line break after it, starts none: the next one reads the same.
+        import time
+        from kb import mask as masking
+        nl, bs, cr = chr(10), chr(92), chr(13)
+        units = {"escaped tab": bs + "t", "escaped no-break space": bs + "u00a0", "escaped tab, space": bs + "t ",
+                 "escaped twice": bs * 2 + "t", "escaped em space": bs + "u2003",
+                 "escaped no-break space, tab": bs + "u00a0" + bs + "t", "escaped tab, carriage return": bs + "t" + cr}
+        shapes = {"alone": lambda run: (run, False), "among words": lambda run: ("notes " + run + " today", False),
+                  "after a placeholder": lambda run: ("[masked]" + nl + run + "x", True)}
+        for name, unit in units.items():
+            for shape, around in shapes.items():
+                took = {}
+                for n in (1 << 10, 1 << 12):
+                    text, older = around(unit * n)
+                    started = time.process_time()
+                    if older:
+                        with masking.stored_row("0123456789abcdef"):
+                            masking.mask(text)
+                    else:
+                        masking.mask(text)
+                    took[n] = time.process_time() - started
+                with self.subTest(unit=name, shape=shape):
+                    # four times the run
+                    self.assertLess(took[1 << 12], 8 * max(took[1 << 10], 0.02), took)
 
     def test_a_key_encoded_whole_and_cut_before_its_header_is_masked_from_its_paragraphs_start(self):
         # A key's body and footer, or its footer alone, encoded as base64 with no header above them, are masked from
