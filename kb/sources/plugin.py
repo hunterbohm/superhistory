@@ -22,6 +22,7 @@ import re
 import selectors
 import signal
 import subprocess
+import sys
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -386,6 +387,46 @@ def extract(run):
                           "counter instead")
     yield from events
     yield Progress(final)
+
+
+BUNDLED = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "bundled_plugins")
+
+
+def bundled_names():
+    """The plug-ins that come with this install, which `plugins install` copies into the user's plug-ins folder."""
+    try:
+        return sorted(n for n in os.listdir(BUNDLED) if FILE_NAME.fullmatch(n) and "." not in n)
+    except OSError:
+        return []
+
+
+def install(plugins_dir, name, replace=False):
+    """Copies the bundled plug-in `name` into the plug-ins folder as the user's own file, readable and runnable by the
+    user alone, and returns its path and the config table that names it. It runs under the Python that runs this
+    program, when that path is safe to write in a first line. It never overwrites a file unless `replace` is true."""
+    if name not in bundled_names():
+        raise PluginError(f"there is no bundled plug-in named {name}; the bundled plug-ins are "
+                          f"{', '.join(bundled_names()) or 'none'}")
+    with open(os.path.join(BUNDLED, name), encoding="utf-8") as fh:
+        code = fh.read()
+    with open(os.path.join(BUNDLED, name + ".toml"), encoding="utf-8") as fh:
+        table = fh.read()
+    python = sys.executable
+    if python and os.path.isabs(python) and re.fullmatch(r"[A-Za-z0-9_./+-]{1,100}", python):
+        code = f"#!{python}\n" + code.split("\n", 1)[1]
+    os.makedirs(plugins_dir, mode=0o700, exist_ok=True)
+    path = os.path.join(plugins_dir, name)
+    flags = os.O_WRONLY | os.O_CREAT | (os.O_TRUNC if replace else os.O_EXCL)
+    try:
+        if replace and os.path.islink(path):
+            os.unlink(path)
+        fd = os.open(path, flags | getattr(os, "O_NOFOLLOW", 0), 0o700)
+    except FileExistsError:
+        raise PluginError(f"{path} is already there; add --force to replace it with the bundled one") from None
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        os.fchmod(fh.fileno(), 0o700)
+        fh.write(code)
+    return path, table
 
 
 TYPE = SourceType(Options, extract, summarize=True, others_wrote=True, all_or_nothing=True)

@@ -21,6 +21,6 @@ version = {attr = "kb.__version__"}
 include = ["kb*"]
 
 [tool.setuptools.package-data]
-"kb" = ["sample_month/*.jsonl"]
+"kb" = ["sample_month/*.jsonl", "bundled_plugins/*"]
 "kb.dashboard" = ["static/*"]
 "kb._vendor.tomli" = ["LICENSE"]

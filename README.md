@@ -81,11 +81,11 @@ roots = ["~/code"]
 | `superhistory mcp` | Serves `search` and `get` to an MCP app over stdio, read-only. |
 | `superhistory ai list`, `superhistory ai test` | Lists the AI plug-ins, or makes one tiny call and says which plug-in answered. |
 | `superhistory setup`, `superhistory try` | Sets Superhistory up, or shows it on a made-up month. |
-| `superhistory login NAME` | Signs a Gmail source in with your own Google OAuth client. |
+| `superhistory login NAME` | Signs a Gmail source, or the Google Calendar plug-in's source, in with your own Google OAuth client. |
 | `superhistory decisions run` | Judges new decision records: whether they are your own words or an agent's report, and which older decision each one replaces. Ingest runs it once a day when `[decisions] owner` is set. |
 | `superhistory decisions review`, `confirm ID`, `reject ID` | Lists agent-reported decisions that matter and that your own words don't back, and records your answer. |
 | `superhistory decisions drift` | Lists lines in your agents' instruction files that a newer decision of yours contradicts, each with a fix. It changes nothing. |
-| `superhistory plugins list`, `superhistory plugins test NAME` | Lists the source plug-ins in your plug-ins folder, or runs one once into a scratch store and shows what would be stored, keeping nothing. |
+| `superhistory plugins list`, `superhistory plugins install NAME`, `superhistory plugins test NAME` | Lists the source plug-ins in your plug-ins folder and the bundled ones you have not installed, copies a bundled one (`google-calendar` or `notion`) into the folder, or runs one once into a scratch store and shows what would be stored, keeping nothing. |
 | `superhistory backup [PATH]` | Writes your knowledge base, config and install id to one encrypted file. |
 | `superhistory restore PATH` | Puts a backup back, after checking it, and asks before it replaces anything. |
 
@@ -132,6 +132,8 @@ this one. The layout is at the top of `kb/backup.py`, and with the passphrase th
 | `git` | Your commits in the repositories under `roots` | the repository's folder |
 | `github` | Issues and pull requests you are involved in, through `gh` | `owner/repo` |
 | `plugin` | A program of yours in the plug-ins folder (`superhistory paths` shows it), which prints items as JSON lines | the item's id |
+| `google-calendar` (plug-in) | Google Calendar events: summary, time, attendees, place and description | the item's id, `calendar-address:event-id` |
+| `notion` (plug-in) | Notion pages the integration was shared with: title, properties and the text of the blocks | the page's id |
 | `youtube` | A channel's videos, shorts and streams with their captions, through `yt-dlp` and the channel's feed | the kind and id, as `short/abc123` |
 | `eden` | Your own posts on X or another network, through Eden (eden.so) and your Eden API key | the post's id |
 
@@ -161,6 +163,66 @@ iMessage needs Full Disk Access for the Python that runs Superhistory. The insta
 Gmail needs an app password, which needs 2-Step Verification on your Google account. `superhistory setup` saves the password
 in a file only you can read. To use your own Google OAuth client instead, set `auth = "oauth"`, `client_id` and
 `client_secret`, then run `superhistory login NAME`.
+
+### Google Calendar and Notion
+
+Calendar and Notion come with Superhistory as source plug-ins, which are programs in the plug-ins folder. Nothing runs until
+you copy one there and name it in the config. Both only read, both run on every ingest (every 15 minutes with
+`superhistory schedule on`), and both give each item a link back to the original.
+
+Copy one into your plug-ins folder, which sets it up so only you can run it. The command prints the config table to add:
+
+```sh
+superhistory plugins install google-calendar
+superhistory plugins install notion
+```
+
+**Google Calendar** signs in with your own Google OAuth client and the read-only `calendar.readonly` scope, the same sign-in
+as Gmail's. Make a client once: in the Google Cloud console create a project, turn on the Google Calendar API, set up the
+consent screen with yourself as a test user, then create an OAuth client of type "Desktop app". Save its secret in a file
+only you can read, put the id and the file in the table `plugins install` printed, and sign in:
+
+```sh
+mkdir -p ~/.config/superhistory/keys && chmod 700 ~/.config/superhistory/keys
+( umask 077; cat > ~/.config/superhistory/keys/google.client-secret )   # paste the secret, press Enter, then Ctrl-D
+superhistory login calendar
+superhistory plugins test calendar     # shows what would be stored; stores nothing
+superhistory ingest --only calendar
+```
+
+`login` opens your browser, saves the refresh token in `keys/calendar.refresh-token` readable only by you and prints the
+`refresh_token` line to add under `[sources.calendar.secrets]`. Each event is one item: its title, when, place,
+organizer, attendees with their answers, the meeting link and the description. A repeating event is one item for each
+time it happens, from `window_days` ago (365) to `future_days` ahead (365). Later runs ask Google only for events changed
+since the last run. A cancelled event leaves the knowledge base. List more calendars in `calendar_ids`.
+An event that starts later than `future_days` ahead is picked up only when it is next edited.
+
+**Notion** reads the pages an internal integration can see. Make one at notion.so/profile/integrations (type Internal, with
+only the "Read content" capability), copy its token, then open each top page you want searched, choose its `...` menu,
+Connections, and add the integration; its sub-pages come with it. Save the token in a file only you can read:
+
+```sh
+mkdir -p ~/.config/superhistory/keys && chmod 700 ~/.config/superhistory/keys
+( umask 077; cat > ~/.config/superhistory/keys/notion.token )   # paste the token, press Enter, then Ctrl-D
+superhistory plugins test notion
+superhistory ingest --only notion
+```
+
+Each page is one item: its title, its properties and the text of its blocks, dated by when it was last edited, with its
+Notion link. The first run reads at most `run_cap` pages (150) and each later run goes on from there, oldest edit first,
+so a large workspace fills in over several runs. `timeout_seconds = 600` in the table `plugins install` printed gives
+those runs room; raise `run_cap` and the timeout together to read faster. Later runs read only pages edited since the
+last run, and pages edited in the last few minutes once more in case Notion was slow to show an edit.
+
+Notion's search does not list a page you shared with the integration after its last edit, or a page that was archived.
+So once a week (`resweep_days`, 0 turns it off) the plug-in reads every page again, over as many runs as `run_cap`
+needs, and asks Notion about each page it stored earlier that the pass did not list. A page that is archived or no longer
+readable is removed then, and a page you just shared is found then. For either sooner, run `superhistory rebuild`.
+The plug-in keeps the ids it stored in a hidden file in the plug-ins folder, readable only by you; it holds no tokens
+and no text. A page's blocks are read down six levels and at most 3,000 blocks. Notion allows about three requests a second, so the
+plug-in waits between requests and obeys `Retry-After` when Notion says to slow down.
+
+Neither plug-in writes to Google or Notion. Items are masked like any source's before they are stored.
 
 YouTube needs `yt-dlp` and no key. `channel` is an `@handle`, a channel URL or a channel id. The first run reads
 every video; later runs read the channel's public feed and only the videos published since. A new video waits up to a

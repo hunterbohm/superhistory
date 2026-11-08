@@ -1,0 +1,185 @@
+#!/usr/bin/env python3
+"""Superhistory source plug-in: Google Calendar events, read-only.
+
+It signs in with your own Google OAuth client and the calendar.readonly scope, lists each calendar's events changed
+since the last run (updatedMin, so the watermark is a time), and prints one item per event and one removal per
+cancelled event. docs/plugins.md is the format this speaks. Python 3.9+, standard library only.
+"""
+import datetime
+import html
+import json
+import re
+import sys
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+
+API = "https://www.googleapis.com/calendar/v3"
+TOKEN_URL = "https://oauth2.googleapis.com/token"
+ATTEMPTS = 6
+MAX_WAIT = 120
+TIMEOUT = 30
+RETRY_STATUS = (429, 500, 502, 503, 504)
+RETRY_REASONS = ("rateLimitExceeded", "userRateLimitExceeded", "quotaExceeded")
+STAMP = "%Y-%m-%dT%H:%M:%SZ"
+
+
+class Refused(Exception):
+    def __init__(self, code, reason):
+        super().__init__(f"HTTP {code} {reason}")
+        self.code, self.reason = code, reason
+
+
+def fail(message):
+    print(message, file=sys.stderr)
+    sys.exit(1)
+
+
+def call(url, headers=None, form=None):
+    """The JSON answer of one request. A 429 or 5xx, and Google's rate-limit 403, wait as long as Retry-After says
+    (or 1, 2, 4... seconds) and try again, up to ATTEMPTS times. Any other refusal raises Refused."""
+    data = urllib.parse.urlencode(form).encode() if form is not None else None
+    for attempt in range(1, ATTEMPTS + 1):
+        request = urllib.request.Request(url, data=data, headers=headers or {})
+        try:
+            with urllib.request.urlopen(request, timeout=TIMEOUT) as resp:
+                return json.load(resp)
+        except urllib.error.HTTPError as exc:
+            try:
+                body = json.load(exc)
+            except ValueError:
+                body = {}
+            error = body.get("error", {}) if isinstance(body, dict) else {}
+            reason = error if isinstance(error, str) else (error.get("errors") or [{}])[0].get("reason", "")
+            if exc.code in RETRY_STATUS or (exc.code == 403 and reason in RETRY_REASONS):
+                wait = exc.headers.get("Retry-After", "")
+                wait = float(wait) if re.fullmatch(r"\d+(\.\d+)?", wait or "") else 2.0 ** (attempt - 1)
+                if attempt == ATTEMPTS or wait > MAX_WAIT:
+                    fail(f"Google kept answering HTTP {exc.code} ({reason or 'busy'}); "
+                         f"try again later (it asked to wait {wait:g} s)")
+                print(f"HTTP {exc.code} from Google; waiting {wait:g} s", file=sys.stderr)
+                time.sleep(wait)
+                continue
+            raise Refused(exc.code, reason or str(error)[:80])
+        except (urllib.error.URLError, OSError) as exc:
+            if attempt == ATTEMPTS:
+                fail(f"cannot reach Google: {getattr(exc, 'reason', exc)}")
+            time.sleep(2.0 ** (attempt - 1))
+
+
+def access_token(settings, secrets, token_url):
+    missing = [name for name in ("client_secret", "refresh_token") if not secrets.get(name)]
+    if not settings.get("client_id") or missing:
+        fail("google-calendar needs client_id under settings and client_secret and refresh_token under secrets; "
+             "run `superhistory login NAME` for the refresh token")
+    try:
+        answer = call(token_url, form={"client_id": settings["client_id"], "client_secret": secrets["client_secret"],
+                                       "refresh_token": secrets["refresh_token"], "grant_type": "refresh_token"})
+    except Refused as exc:
+        fail(f"Google refused the sign-in ({exc}). Check client_id and client_secret, and run "
+             "`superhistory login NAME` again for a new refresh token if it was revoked or expired.")
+    if not answer.get("access_token"):
+        fail("Google's token answer has no access_token")
+    return answer["access_token"]
+
+
+def events(base, token, calendar_id, window, since):
+    """Every event of the calendar changed since `since`, page after page. Recurring events come as single
+    occurrences, so a search by date finds the one you want."""
+    query = {"singleEvents": "true", "showDeleted": "true", "maxResults": "250",
+             "timeMin": window[0], "timeMax": window[1]}
+    if since:
+        query["updatedMin"] = since
+    url = f"{base}/calendars/{urllib.parse.quote(calendar_id, safe='')}/events"
+    page = None
+    while True:
+        params = dict(query, **({"pageToken": page} if page else {}))
+        try:
+            answer = call(url + "?" + urllib.parse.urlencode(params), {"Authorization": "Bearer " + token})
+        except Refused as exc:
+            if exc.code in (401, 403):
+                fail(f"Google refused to read calendar {calendar_id} ({exc}). Check that the Google Calendar API is "
+                     "on in your Google Cloud project and that the refresh token has the calendar.readonly scope.")
+            if exc.code == 404:
+                fail(f"Google has no calendar {calendar_id} for this account; check calendar_ids in settings")
+            fail(f"Google Calendar answered {exc} for calendar {calendar_id}")
+        for event in answer.get("items", []):
+            yield event
+        page = answer.get("nextPageToken")
+        if not page:
+            return
+
+
+def plain(text):
+    text = re.sub(r"(?i)<br\s*/?>|</p>|</div>|</li>", "\n", text or "")
+    text = re.sub(r"(?is)<a\s[^>]*href=[\"']([^\"']+)[\"'][^>]*>(.*?)</a>", r"\2 (\1)", text)
+    text = html.unescape(re.sub(r"<[^>]+>", "", text))
+    return re.sub(r"\n{3,}", "\n\n", text).strip()
+
+
+def moment(part):
+    """(ISO time, the day in words) of an event's start or end: dateTime, or date for an all-day event."""
+    part = part or {}
+    value = part.get("dateTime") or part.get("date") or ""
+    try:
+        day = datetime.date.fromisoformat(value[:10])
+        words = f"{day.strftime('%A')} {day.day} {day.strftime('%B %Y')}"
+    except ValueError:
+        words = ""
+    return value, words
+
+
+def person(who):
+    name, mail = who.get("displayName", ""), who.get("email", "")
+    return f"{name} <{mail}>" if name and mail else name or mail
+
+
+def item(calendar_id, event):
+    start, day = moment(event.get("start"))
+    end, _ = moment(event.get("end"))
+    title = event.get("summary") or "(no title)"
+    lines = [title, f"When: {day} {start}" + (f" to {end}" if end else "")]
+    if event.get("location"):
+        lines.append("Where: " + event["location"])
+    if person(event.get("organizer") or {}):
+        lines.append("Organizer: " + person(event["organizer"]))
+    attendees = [person(a) + (f" ({a['responseStatus']})" if a.get("responseStatus") else "")
+                 for a in event.get("attendees", [])]
+    if attendees:
+        lines.append("Attendees: " + ", ".join(attendees))
+    points = (event.get("conferenceData") or {}).get("entryPoints", [])
+    meeting = event.get("hangoutLink") or next((p["uri"] for p in points if p.get("uri")), "")
+    if meeting:
+        lines.append("Meeting link: " + meeting)
+    if event.get("description"):
+        lines += ["", plain(event["description"])]
+    out = {"id": f"{calendar_id}:{event['id']}", "time": start, "title": title, "text": "\n".join(lines),
+           "meta": {"calendar": calendar_id, "status": event.get("status", ""), "end": end}}
+    if event.get("htmlLink"):
+        out["url"] = event["htmlLink"]
+    return out
+
+
+def main():
+    request = json.load(sys.stdin)
+    settings, secrets, since = request["settings"], request["secrets"], request["watermark"]
+    started = datetime.datetime.now(datetime.timezone.utc)
+    window = ((started - datetime.timedelta(days=int(settings.get("window_days", 365)))).strftime(STAMP),
+              (started + datetime.timedelta(days=int(settings.get("future_days", 365)))).strftime(STAMP))
+    base = settings.get("base_url", API)
+    token = access_token(settings, secrets, settings.get("token_url", TOKEN_URL))
+    newest = since or ""
+    for calendar_id in settings.get("calendar_ids") or ["primary"]:
+        for event in events(base, token, calendar_id, window, since):
+            newest = max(newest, event.get("updated", ""))
+            if event.get("status") == "cancelled":
+                print(json.dumps({"id": f"{calendar_id}:{event['id']}", "gone": True}))
+            else:
+                print(json.dumps(item(calendar_id, event)))
+    # With nothing changed on a first run, start from just before this run: the next one reads only what changed after.
+    print(json.dumps({"watermark": newest or (started - datetime.timedelta(minutes=5)).strftime(STAMP)}))
+
+
+if __name__ == "__main__":
+    main()

@@ -5,6 +5,7 @@ import functools
 import json
 import logging
 import os
+import re
 import shutil
 import sqlite3
 import sys
@@ -242,28 +243,64 @@ def cmd_context(paths, config, args):
     return 0
 
 
+def _google_client(paths, source, name):
+    """(client id, client secret, scope) of a source that signs in to Google with the user's own OAuth client: a gmail
+    source with auth = "oauth", or a plug-in source whose settings name a read-only `google_scope`."""
+    from kb.sources import gmail
+    if source and source.type_name == "gmail" and source.options.auth == "oauth":
+        o = source.options
+        client_id, secret, scope = o.client_id, o.client_secret, gmail.SCOPE
+    elif source and source.type_name == "plugin" and source.options.settings.get("google_scope"):
+        settings = source.options.settings
+        client_id, secret = settings.get("client_id"), source.options.secrets.get("client_secret")
+        scope = settings["google_scope"]
+        if not (isinstance(scope, str) and re.fullmatch(r"https://www\.googleapis\.com/auth/[a-z.]+\.readonly", scope)):
+            raise Fail(f"google_scope under [sources.{name}.settings] must be a read-only Google scope, such as "
+                       "https://www.googleapis.com/auth/calendar.readonly")
+    else:
+        raise Fail(f"{name} is not a gmail source with auth = \"oauth\", or a plug-in source with a google_scope "
+                   f"under [sources.{name}.settings], in {paths.config_file}")
+    if not (client_id and secret):
+        raise Fail(f"set client_id and client_secret under [sources.{name}] first (a plug-in source: client_id under "
+                   "settings and client_secret under secrets)")
+    return client_id, secret, scope
+
+
 def cmd_login(paths, config, args):
     from kb.sources import gmail
     source = config.source(args.source)
-    if not source or source.type_name != "gmail" or source.options.auth != "oauth":
-        raise Fail(f"{args.source} is not a gmail source with auth = \"oauth\" in {paths.config_file}")
-    o = source.options
-    if not (o.client_id and o.client_secret):
-        raise Fail(f"set client_id and client_secret under [sources.{args.source}] first")
-    token = gmail.oauth_login(o.client_id, o.client_secret.reveal())
+    client_id, secret, scope = _google_client(paths, source, args.source)
+    if scope == gmail.SCOPE:
+        token = gmail.oauth_login(client_id, secret.reveal())
+    else:
+        token = gmail.oauth_login(client_id, secret.reveal(), scope=scope)
     os.makedirs(paths.keys_dir, mode=0o700, exist_ok=True)
     key_file = paths.keys_dir / f"{args.source}.refresh-token"
     fd = os.open(key_file, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "w") as fh:
         fh.write(token + "\n")
     print(f"Signed in. Saved the refresh token to {key_file}, readable only by you.")
-    if o.refresh_token != config_mod.Secret(f"file:{key_file}"):
+    if source.type_name == "plugin":
+        if source.options.secrets.get("refresh_token") != config_mod.Secret(f"file:{key_file}"):
+            print(f"Add this line under [sources.{args.source}.secrets]:\n\nrefresh_token = \"file:{key_file}\"")
+    elif source.options.refresh_token != config_mod.Secret(f"file:{key_file}"):
         print(f"Add this line under [sources.{args.source}]:\n\nrefresh_token = \"file:{key_file}\"")
 
 
 def cmd_plugins(paths, config, args):
     from kb.sources import plugin
     folder = paths.plugins_dir
+    if args.action == "install":
+        if not args.source:
+            raise Fail(f"name a bundled plug-in to install: {', '.join(plugin.bundled_names())}")
+        try:
+            path, table = plugin.install(folder, args.source, replace=args.force)
+        except plugin.PluginError as exc:
+            raise Fail(str(exc))
+        print(f"Installed {args.source} in {folder}, as a file only you can run.")
+        print(f"Add this to {paths.config_file}, change the values for your account, then follow the README's "
+              f"section on {args.source}:\n\n{table}")
+        return 0
     if args.action == "list":
         used = {}
         for source in config.sources:
@@ -282,6 +319,9 @@ def cmd_plugins(paths, config, args):
             print(f"  {name:<24}missing; used by {', '.join(used[name])}")
         if not names and not used:
             print("  none yet; docs/plugins.md says how to write one")
+        left = [n for n in plugin.bundled_names() if n not in names]
+        if left:
+            print(f"Bundled, not installed: {', '.join(left)}. `{COMMAND} plugins install NAME` copies one here.")
         return 0
     source = config.source(args.source) if args.source else None
     if not source or source.type_name != "plugin":
@@ -1033,15 +1073,17 @@ def parser():
     c = sub.add_parser("context", help="print records related to the message on stdin, for agent hooks")
     c.add_argument("--session", required=True, help="the agent session id; empty means no per-session state")
     c.set_defaults(fn=cmd_context)
-    lg = sub.add_parser("login", help="sign in to Gmail with your own Google OAuth client")
-    lg.add_argument("source", help="the name of a gmail source with auth = \"oauth\"")
+    lg = sub.add_parser("login", help="sign in to Gmail or Google Calendar with your own Google OAuth client")
+    lg.add_argument("source", help="the name of a gmail source with auth = \"oauth\", or a Google plug-in source")
     lg.set_defaults(fn=cmd_login)
     a = sub.add_parser("ai", help="list the AI plug-ins, or test the one in the config with one tiny call")
     a.add_argument("action", choices=("list", "test"))
     a.set_defaults(fn=cmd_ai)
-    pg = sub.add_parser("plugins", help="list the source plug-ins, or run one once without storing anything")
-    pg.add_argument("action", choices=("list", "test"))
-    pg.add_argument("source", nargs="?", help="for test: the name of a source with type = \"plugin\"")
+    pg = sub.add_parser("plugins", help="list the source plug-ins, install a bundled one, or run one without storing")
+    pg.add_argument("action", choices=("list", "install", "test"))
+    pg.add_argument("source", nargs="?", help="for test: the name of a source with type = \"plugin\"; for install: "
+                    "the name of a bundled plug-in")
+    pg.add_argument("--force", action="store_true", help="for install: replace a plug-in that is already there")
     pg.set_defaults(fn=cmd_plugins)
     hk = sub.add_parser("hook", help="run by an agent on each prompt: print the check's records for it")
     hk.add_argument("agent")
