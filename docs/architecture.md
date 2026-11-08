@@ -19,6 +19,7 @@ printed text come from them, so a rename is one edit.
 | `kb/summarize.py` | Segment and atom rows for long items. |
 | `kb/decisions.py` | The decision pass: who made each decision atom, which newer one replaces it, and instruction lines it contradicts. Its `decisions` table keys a judgment by item and text hash, and search leaves out replaced decisions. It never changes `docs`. A personal install carries a copy of it, which matches this file from the `# BODY` line on. |
 | `kb/ingest.py` | The runner that reads every source and stores what changed. |
+| `kb/backup.py` | The encrypted backup file (its layout and version are in the module's docstring), and the restore that puts it back. It needs the `openssl` command and no Python package. |
 | `kb/ids.py` | The install id and the prefix on every stored `source_id`. |
 | `kb/ai/` | AI plug-ins. Each one answers `ask(prompt, timeout)` with the model's text. |
 | `kb/sources/` | Source types. Each module defines `TYPE`, and its name is the type's name. |
