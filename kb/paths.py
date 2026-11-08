@@ -29,6 +29,10 @@ class Paths:
         return self.config_file.parent / "keys"
 
     @property
+    def plugins_dir(self):
+        return self.config_file.parent / "plugins"
+
+    @property
     def seen_dir(self):
         return self.cache_dir / "seen"
 

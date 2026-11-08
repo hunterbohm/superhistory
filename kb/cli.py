@@ -8,6 +8,7 @@ import os
 import shutil
 import sqlite3
 import sys
+import tempfile
 import time
 import traceback
 from datetime import datetime, timedelta, timezone
@@ -66,9 +67,14 @@ def header(db, config):
     return line
 
 
-def open_db(paths, readonly=True):
-    if readonly and not paths.db.exists():
+def require_store(paths):
+    if not paths.db.exists():
         raise Fail(f"No knowledge base yet at {paths.db}. Add a source to {paths.config_file}, then run `{COMMAND} ingest`.")
+
+
+def open_db(paths, readonly=True):
+    if readonly:
+        require_store(paths)
     return store.connect(paths.db, readonly=readonly)
 
 
@@ -141,6 +147,11 @@ def cmd_get(db, paths, config, args):
     print(text[start:end])
     if end < len(text):
         print(f"[{len(text) - end:,} characters remain. For the next page, run `{COMMAND} get {args.id} --offset {end}`.]")
+
+
+def cmd_mcp(paths, config, args):
+    from kb import mcp
+    return mcp.cmd_mcp(paths, config, args)
 
 
 @reads_db
@@ -248,6 +259,61 @@ def cmd_login(paths, config, args):
     print(f"Signed in. Saved the refresh token to {key_file}, readable only by you.")
     if o.refresh_token != config_mod.Secret(f"file:{key_file}"):
         print(f"Add this line under [sources.{args.source}]:\n\nrefresh_token = \"file:{key_file}\"")
+
+
+def cmd_plugins(paths, config, args):
+    from kb.sources import plugin
+    folder = paths.plugins_dir
+    if args.action == "list":
+        used = {}
+        for source in config.sources:
+            if source.type_name == "plugin":
+                used.setdefault(source.options.plugin, []).append(source.name)
+        print(f"Plug-ins folder: {folder}")
+        names = sorted(n for n in os.listdir(folder) if not n.startswith(".")) if folder.is_dir() else []
+        for name in names:
+            try:
+                plugin.executable(folder, name)
+                state = "ready"
+            except plugin.PluginError as exc:
+                state = f"will not run: {exc}"
+            print(f"  {name:<24}{state}; used by {', '.join(used.get(name, [])) or 'no source yet'}")
+        for name in sorted(set(used) - set(names)):
+            print(f"  {name:<24}missing; used by {', '.join(used[name])}")
+        if not names and not used:
+            print("  none yet; docs/plugins.md says how to write one")
+        return 0
+    source = config.source(args.source) if args.source else None
+    if not source or source.type_name != "plugin":
+        raise Fail(f"name a source with type = \"plugin\" from {paths.config_file}, such as `{NAME.lower()} plugins "
+                   "test calendar`")
+    # The same ingest, into a store of its own that is deleted after, so what the store refuses fails here too.
+    only = dataclasses.replace(_own(paths, config), sources=(source,), ai=None)
+    log = logging.getLogger("kb.plugins-test")
+    log.addHandler(logging.NullHandler())
+    log.propagate = False
+    with tempfile.TemporaryDirectory(prefix="plugins-test-") as scratch:
+        db = store.connect(os.path.join(scratch, "test.sqlite"))
+        try:
+            failures = ingest.run(db, only, log, with_summaries=False)
+            failed = dict(store.failing(db)).get(f"{source.name}@{config.machine}", "")
+            mark = store.get_watermark(db, source.name, config.machine)
+            titles = [f"{ts[:10]}  {mask(title)}" for ts, title in db.execute(
+                "SELECT ts, title FROM docs WHERE kind IN ('doc', 'raw') AND "
+                "coalesce(json_extract(metadata, '$.chunk'), 0) = 0 ORDER BY ts DESC LIMIT 5")]
+            count = db.execute("SELECT count(DISTINCT source_id) FROM docs").fetchone()[0]
+        finally:
+            db.close()
+    if failures:
+        print(f"{source.name}: failed: {failed.split(' ', 1)[-1] if failed else 'see the ingest log'}", file=sys.stderr)
+        print("Nothing was stored.", file=sys.stderr)
+        return 1
+    print(f"watermark   {json.loads(mark) if mark else ''}")
+    print(f"{source.name}: {count} {'item' if count == 1 else 'items'} would be stored from a run from the start; "
+          "nothing was stored.")
+    for line in titles:
+        print(f"  {line}")
+    return 0
 
 
 def cmd_ai(paths, config, args):
@@ -405,7 +471,7 @@ def cmd_schedule(paths, config, args):
 
 def cmd_paths(paths, config, args):
     for label, where in (("config", paths.config_file), ("database", paths.db), ("logs", paths.log_dir),
-                         ("cache", paths.cache_dir)):
+                         ("cache", paths.cache_dir), ("plug-ins", paths.plugins_dir)):
         print(f"{label:<10}{where}")
 
 
@@ -790,7 +856,7 @@ def cmd_restore(paths, config, args):
 
 
 def _own(paths, config):
-    return dataclasses.replace(config, install=ids.install_id(paths))
+    return dataclasses.replace(config, install=ids.install_id(paths), plugins_dir=str(paths.plugins_dir))
 
 
 def cmd_forget(paths, config, args):
@@ -951,6 +1017,9 @@ def parser():
     g.add_argument("id", type=int)
     g.add_argument("--offset", type=int, default=0, help="the character to start from")
     g.set_defaults(fn=cmd_get)
+    from kb import mcp
+    sub.add_parser("mcp", help="the local, read-only MCP server: serve search and get to an app on this computer over stdio", epilog=mcp.SETUP,
+                   formatter_class=argparse.RawDescriptionHelpFormatter).set_defaults(fn=cmd_mcp)
     sub.add_parser("stats", help="row counts and the health of every source").set_defaults(fn=cmd_stats)
     i = sub.add_parser("ingest", help="read every source now, then summarize new long items")
     i.add_argument("--only", nargs="*", help="source names to read")
@@ -970,6 +1039,10 @@ def parser():
     a = sub.add_parser("ai", help="list the AI plug-ins, or test the one in the config with one tiny call")
     a.add_argument("action", choices=("list", "test"))
     a.set_defaults(fn=cmd_ai)
+    pg = sub.add_parser("plugins", help="list the source plug-ins, or run one once without storing anything")
+    pg.add_argument("action", choices=("list", "test"))
+    pg.add_argument("source", nargs="?", help="for test: the name of a source with type = \"plugin\"")
+    pg.set_defaults(fn=cmd_plugins)
     hk = sub.add_parser("hook", help="run by an agent on each prompt: print the check's records for it")
     hk.add_argument("agent")
     hk.set_defaults(fn=cmd_hook)

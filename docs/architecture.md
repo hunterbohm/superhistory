@@ -24,6 +24,7 @@ printed text come from them, so a rename is one edit.
 | `kb/ai/` | AI plug-ins. Each one answers `ask(prompt, timeout)` with the model's text. |
 | `kb/dashboard/` | `superhistory dashboard`: a local page over the store, read-only. `catalog.py` finds projects and people, `views.py` shapes each page's data, `server.py` serves it on 127.0.0.1, and `static/` holds the page, its script, style and fonts. |
 | `kb/sources/` | Source types. Each module defines `TYPE`, and its name is the type's name. |
+| `kb/sources/plugin.py` | The `plugin` type: runs a program from the plug-ins folder and reads its items from JSON lines. The format is in `docs/plugins.md`. |
 | `kb/sync/` | Reserved for the Sync client. |
 
 ## The dashboard

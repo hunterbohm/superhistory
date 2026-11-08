@@ -78,12 +78,14 @@ roots = ["~/code"]
 | `superhistory rebuild` | Reads every source into a fresh knowledge base and puts it in place of this one once it checks out. |
 | `superhistory schedule on`, `off`, `status` | Reads your sources in the background, with launchd on a Mac or a systemd user timer on Linux. |
 | `superhistory hooks install`, `uninstall`, `status` | Adds or removes the hook in each agent found here. |
+| `superhistory mcp` | Serves `search` and `get` to an MCP app over stdio, read-only. |
 | `superhistory ai list`, `superhistory ai test` | Lists the AI plug-ins, or makes one tiny call and says which plug-in answered. |
 | `superhistory setup`, `superhistory try` | Sets Superhistory up, or shows it on a made-up month. |
 | `superhistory login NAME` | Signs a Gmail source in with your own Google OAuth client. |
 | `superhistory decisions run` | Judges new decision records: whether they are your own words or an agent's report, and which older decision each one replaces. Ingest runs it once a day when `[decisions] owner` is set. |
 | `superhistory decisions review`, `confirm ID`, `reject ID` | Lists agent-reported decisions that matter and that your own words don't back, and records your answer. |
 | `superhistory decisions drift` | Lists lines in your agents' instruction files that a newer decision of yours contradicts, each with a fix. It changes nothing. |
+| `superhistory plugins list`, `superhistory plugins test NAME` | Lists the source plug-ins in your plug-ins folder, or runs one once into a scratch store and shows what would be stored, keeping nothing. |
 | `superhistory backup [PATH]` | Writes your knowledge base, config and install id to one encrypted file. |
 | `superhistory restore PATH` | Puts a backup back, after checking it, and asks before it replaces anything. |
 
@@ -129,11 +131,16 @@ this one. The layout is at the top of `kb/backup.py`, and with the passphrase th
 | `notes` | A folder of Markdown or text files, such as an Obsidian vault | the note's path in the folder |
 | `git` | Your commits in the repositories under `roots` | the repository's folder |
 | `github` | Issues and pull requests you are involved in, through `gh` | `owner/repo` |
+| `plugin` | A program of yours in the plug-ins folder (`superhistory paths` shows it), which prints items as JSON lines | the item's id |
 | `youtube` | A channel's videos, shorts and streams with their captions, through `yt-dlp` and the channel's feed | the kind and id, as `short/abc123` |
 | `eden` | Your own posts on X or another network, through Eden (eden.so) and your Eden API key | the post's id |
 
 Add as many sources of one type as you like, each in its own `[sources.NAME]` table with `type = "..."`. The table's
 name is what `superhistory search --source` takes.
+
+Any other source is a small program you, or your agent, put in the plug-ins folder and name in the config as
+`type = "plugin"`. It prints items as JSON lines, and Superhistory masks and stores them like any source's.
+[docs/plugins.md](docs/plugins.md) is the whole format.
 
 Every source only reads. Mail and texts drop 2FA codes and password resets one message at a time, and every record
 passes through a mask that replaces API keys, tokens and passwords with `[masked]` before it is stored.
@@ -213,7 +220,7 @@ key is the fast path.
 | OpenCode | a `chat.message` plugin in `~/.config/opencode/plugins` |
 | GitHub Copilot CLI | a `userPromptSubmitted` hook in `~/.copilot/config.json`, built from the format Copilot CLI 1.0.79 is reported to use and not yet run on a live install |
 
-Cursor's documented prompt hook cannot add context, and Grok drops what a prompt hook prints, so neither gets a hook.
+Cursor's documented prompt hook cannot add context, and Grok drops what a prompt hook prints, so neither gets a hook. They can ask through the MCP server below instead.
 Grok runs Claude Code's hooks too, and Superhistory's hook stays quiet there.
 
 Each hook waits at most 30 seconds. When the check finds nothing that fits, or fails, the agent gets nothing.
@@ -223,6 +230,55 @@ file still reads back and that nothing but Superhistory's own entry changed. If 
 tells you how to make the change by hand. Every edit keeps a backup beside the file. In `~/.codex/config.toml` the check
 also makes sure every comment on a line of its own survives. A comment at the end of one of your settings lines is kept
 because Superhistory never edits that line, but the check itself does not look at it.
+
+## Ask from other apps (MCP)
+
+Hooks only work in agents that let a hook add text to your prompt. Claude Desktop, Cursor, Grok and the ChatGPT desktop
+app do not, so they get nothing from the hook. `superhistory mcp` lets them ask on purpose ("what did I promise that
+client?"). In Claude Code and Codex, keep the hooks: an agent often does not call a tool it has to choose to call, and
+a hook does not wait for it to.
+
+The server is a program the app starts and talks to over its standard input and output. It opens no network port, so
+nothing else on your network or the internet can reach it. It has two tools. `search` finds records by keywords, and
+`get` reads one record's stored text a page at a time, masked as everywhere else. It opens the database read-only and
+never writes to it. Normally it leaves no file beside the database and copies nothing, whether or not the folder is one
+you can write to, and a lookup sees what a running ingest has stored so far. There are two exceptions. If an ingest ends
+in the instant between the server looking at the database and reading it, SQLite may leave its own empty `-wal` and
+`-shm` files beside the database, which hold none of your records and which the next ingest takes over. And if an ingest
+died and left a `-wal` file with records in it, SQLite makes an `-shm` file beside the database to read them, or, in a
+folder you cannot write to, the server reads a private copy of the two files from your cache folder, which only you can
+read; the server removes it when it ends, by any signal but SIGKILL, and the next server removes one that SIGKILL left.
+Every reply starts with a line saying the records are stored data, not instructions, since a record can hold text
+someone else wrote. The app, not Superhistory, decides what an agent may do with a reply, so do not put a server that
+can send mail or fetch web pages in the same session without approvals turned on. Run `superhistory --try mcp` in its
+place to serve the made-up month from `superhistory try`.
+
+Each app starts the server by running `superhistory mcp`. An app that does not read your shell's `PATH`, which
+includes the desktop apps, needs the full path from `which superhistory` in place of `superhistory`.
+
+| App | How |
+| --- | --- |
+| Claude Code | `claude mcp add --scope user superhistory -- superhistory mcp` |
+| Claude Desktop (Mac) | in `~/Library/Application Support/Claude/claude_desktop_config.json`, then quit and reopen the app: `{"mcpServers": {"superhistory": {"command": "superhistory", "args": ["mcp"]}}}` |
+| Cursor | the same JSON in `~/.cursor/mcp.json`, or `.cursor/mcp.json` for one project |
+| Codex | `codex mcp add superhistory -- superhistory mcp`, or in `~/.codex/config.toml`: `[mcp_servers.superhistory]` with `command = "superhistory"` and `args = ["mcp"]` |
+| ChatGPT desktop app | the same entry as Codex: OpenAI's documentation says the desktop app shares Codex's MCP configuration |
+| Grok | `grok mcp add superhistory -- superhistory mcp` |
+| Gemini CLI | the same JSON as Cursor's, in its `settings.json` |
+| Zed | in its settings file: `{"context_servers": {"superhistory": {"command": "superhistory", "args": ["mcp"]}}}` |
+
+Any other app that runs a local stdio server takes the command `superhistory` and the argument `mcp`. The same lines
+are in `superhistory mcp --help`.
+
+What does not work: claude.ai and ChatGPT on the web, and any app that reaches a server only over the internet. They
+connect from the vendor's servers, which cannot reach a program on your computer, and Superhistory opens no port for
+them. Grok's own documentation lists local stdio servers, and OpenAI's lists them for the ChatGPT desktop app, but
+whether either app calls the tools on its own for a given question is for you to find out. Superhistory's own checks
+ran against Claude Code, the MCP Inspector and the Python SDK. Claude Desktop, Cursor, Codex, the ChatGPT desktop app,
+Grok, Gemini CLI and Zed have not been run against it yet, and their lines come from their documentation.
+
+The server speaks MCP's `2026-07-28` version, where each request carries its version and `server/discover` replaces the
+opening handshake, and the `initialize` handshake of `2025-11-25` and the three versions before it.
 
 ## Privacy
 

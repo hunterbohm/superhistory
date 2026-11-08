@@ -181,6 +181,8 @@ class Config:
     # Whose items these are: the install id kb fills in when it writes (kb.ids). A Config built elsewhere, such as a
     # hosted store's, may leave it empty; its items are then prefixed by `machine`.
     install: str = ""
+    # The folder source plug-ins are run from, which the kb command fills in from its paths.
+    plugins_dir: str = ""
     extra: Mapping[str, Any] = dataclasses.field(default_factory=dict)
 
     @property
@@ -399,7 +401,11 @@ def options_from(cls, raw, where, problems):
             problems.append(f"{where}.{name}: required")
     if len(problems) > found:
         return None
-    return cls(**values)
+    try:
+        return cls(**values)
+    except ValueError as exc:  # a dataclass may check its fields together in __post_init__, naming the key first
+        problems.append(f"{where}.{exc}")
+        return None
 
 
 def _coerce(hint, value):
@@ -421,6 +427,10 @@ def _coerce(hint, value):
         if not isinstance(value, list):
             raise TypeError(f"expected {_describe(hint)}")
         return tuple(_coerce(args[0], v) for v in value)
+    if origin is dict:
+        if not isinstance(value, dict):
+            raise TypeError(f"expected {_describe(hint)}")
+        return {k: _coerce(args[1], v) for k, v in value.items()}
     if hint is Secret:
         if not isinstance(value, str):
             raise TypeError('expected "env:NAME", "file:PATH" or "cmd:COMMAND"')
@@ -442,4 +452,6 @@ def _describe(hint):
         return " or ".join(_describe(a) for a in args if a is not type(None))
     if origin is tuple:
         return f"a list of {_describe(args[0])}s"
+    if origin is dict:
+        return f"a table of {_describe(args[1])}s"
     return {str: "text", int: "a whole number", float: "a number", bool: "true or false"}.get(hint, "a value")
