@@ -25,7 +25,7 @@ from kb.mask import mask, mask_all
 
 HEADER_CHARS = 20000
 HOME = re.compile(r"^(?:~|/(?:Users|home)/[^/]+|[A-Za-z]:[\\/]+Users[\\/]+[^\\/]+|/root)[\\/]*$")
-CATEGORY = re.compile(r"^CATEGORY_")
+CATEGORY = re.compile(r"^CATEGORY_(UPDATES|PROMOTIONS|SOCIAL|FORUMS)$")
 FAMILIES = ("agent", "text", "mail", "commit", "pr", "note")
 # What the dashboard calls each family, in the order it lists them.
 FAMILY_LABEL = {"agent": "Agent sessions", "text": "Texts", "mail": "Email", "commit": "Commits",

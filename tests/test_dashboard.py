@@ -241,6 +241,17 @@ class GroupingTest(Served):
         found = self.stored().people
         self.assertEqual({g.name: g.automated for g in found.values()}, {"Shop": True, "Kay": False})
 
+    def test_a_sender_of_personal_category_mail_is_a_person_not_automated(self):
+        self.mail("a", "From: Kay <kay@x.example>", labels=("INBOX", "CATEGORY_PERSONAL"))
+        found = self.stored().people
+        self.assertEqual({g.name: g.automated for g in found.values()}, {"Kay": False})
+
+    def test_a_sender_of_social_or_forum_mail_alone_is_automated(self):
+        self.mail("a", "From: Net <net@x.example>", labels=("INBOX", "CATEGORY_SOCIAL"))
+        self.mail("b", "From: Board <board@x.example>", labels=("INBOX", "CATEGORY_FORUMS"))
+        found = self.stored().people
+        self.assertEqual({g.name: g.automated for g in found.values()}, {"Net": True, "Board": True})
+
     def test_a_chunked_item_is_one_item(self):
         self.add("claude_code", "long", "2026-09-01T10:00:00Z", "long", "word " * 3000, {"cwd": "/w/orders"})
         found = self.stored()
