@@ -66,9 +66,14 @@ def header(db, config):
     return line
 
 
-def open_db(paths, readonly=True):
-    if readonly and not paths.db.exists():
+def require_store(paths):
+    if not paths.db.exists():
         raise Fail(f"No knowledge base yet at {paths.db}. Add a source to {paths.config_file}, then run `{COMMAND} ingest`.")
+
+
+def open_db(paths, readonly=True):
+    if readonly:
+        require_store(paths)
     return store.connect(paths.db, readonly=readonly)
 
 
@@ -141,6 +146,11 @@ def cmd_get(db, paths, config, args):
     print(text[start:end])
     if end < len(text):
         print(f"[{len(text) - end:,} characters remain. For the next page, run `{COMMAND} get {args.id} --offset {end}`.]")
+
+
+def cmd_mcp(paths, config, args):
+    from kb import mcp
+    return mcp.cmd_mcp(paths, config, args)
 
 
 @reads_db
@@ -922,6 +932,9 @@ def parser():
     g.add_argument("id", type=int)
     g.add_argument("--offset", type=int, default=0, help="the character to start from")
     g.set_defaults(fn=cmd_get)
+    from kb import mcp
+    sub.add_parser("mcp", help="the local, read-only MCP server: serve search and get to an app on this computer over stdio", epilog=mcp.SETUP,
+                   formatter_class=argparse.RawDescriptionHelpFormatter).set_defaults(fn=cmd_mcp)
     sub.add_parser("stats", help="row counts and the health of every source").set_defaults(fn=cmd_stats)
     i = sub.add_parser("ingest", help="read every source now, then summarize new long items")
     i.add_argument("--only", nargs="*", help="source names to read")
