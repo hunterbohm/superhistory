@@ -636,8 +636,16 @@ _WRAP = rf"(?:\r|{_SPACING})*{_BREAK}{_SPACING}*"
 # lines follow it. A run can start just after a backslash, so the letter of an escape such as \n can lead it. Which of
 # the lines hold a key is _key_range's to say.
 _WRAPPED_LINE = rf"{_WRAP}(?:[A-Za-z0-9+/]+={{0,2}}|={{1,2}})(?=(?:\r|{_SPACING})*(?:{_BREAK}|{_QUOTE_MARK}|<|\Z))"
+# An escaped space's letters ("\\t", "\\u00a0"), which can lead a run. Such a run alone that another escaped space
+# follows, past only spaces, or past a carriage return with a line break after it, starts no block: the next one reads
+# the same, as the block reads past the line break that run's line reads to; and each would read the whole run of
+# spaces for that line break, so a long one took time in its square.
+_SPACE_ESCAPE_TAIL = "(?:t|u(?:" + "|".join("".join(f"[{d}{d.upper()}]" if d.isalpha() else d for d in f"{ord(c):04x}")
+                                              for c in sorted(_HORIZONTAL)) + "))"
 _WRAPPED_BASE64 = re.compile(rf"(?<![A-Za-z0-9+/])(?:[A-Za-z0-9+/]{{16,}}={{0,2}}(?:{_WRAPPED_LINE})*"
-                             rf"|[A-Za-z0-9+/]+={{0,2}}(?:{_WRAPPED_LINE})+)")
+                             rf"|(?!(?<=\\){_SPACE_ESCAPE_TAIL}(?:(?:{_SPACING})*?\\+{_SPACE_ESCAPE_TAIL}"
+                             rf"|(?:\r|{_SPACING})*?\\+{_SPACE_ESCAPE_TAIL}(?=(?:\r|{_SPACING})*?{_BREAK})))"
+                             rf"[A-Za-z0-9+/]+={{0,2}}(?:{_WRAPPED_LINE})+)")
 # The same in the bytes a key's base64 decodes to: each character as UTF-8 writes it, each byte a Latin-1 character of
 # the tables, and a no-break space alone as Latin-1 writes it, too (a lone \x85 is cp1252's ellipsis, no line break).
 def _in_bytes(tokens):
@@ -3579,11 +3587,13 @@ _SPACE_RUN = re.compile(r"[ \t\r]*")
 # reads one: a character of base64 that JSON escapes (_ESCAPED_BASE64: "\\/", as PHP writes a slash) is one of its run.
 _BLOCK_CHARACTER = rf"(?:[A-Za-z0-9+/]|{_ESCAPED_BASE64})"
 _BLOCK_ESCAPED = re.compile(rf"(?:{_ESCAPED_BASE64}[A-Za-z0-9+/]*)+=*")
-# What can stand before a body's line, as main's rest reads one past it, on that line: space of any width, plain or
-# escaped, an escaped tab, a quote or its entity, list and comment marks ("+" only where no base64 follows it, as it is
-# one of base64's), "<br>", a placeholder, what a reader does not see.
-_BLOCK_LEAD = (rf"(?:\[masked\]|<br\s*/?>|{_QUOTE}|(?<!\\)\\+(?:[rt]|u(?:00[aA]0|20(?:0[0-9aAbB]|2[fF]|5[fF])|3000))"
-               rf"|{INVISIBLE.pattern}|[^\S\n]|[#>,;|*\]`-]|\+(?!{_BLOCK_CHARACTER})){{0,64}}")
+# What can stand before a body's line, as main's rest reads one past it, on that line, however much of it: space of any
+# width, plain or escaped, an escaped tab, a quote or its entity, list and comment marks ("+" only where no base64
+# follows it, as it is one of base64's), "<br>", a placeholder, what a reader does not see. Each is read one way
+# only (an escaped zero-width space is one a reader does not see, no escaped space), so a lead that fails is tried
+# once, in time in proportion.
+_BLOCK_LEAD = (rf"(?:\[masked\]|<br\s*/?>|{_QUOTE}|(?<!\\)\\+(?:[rt]|u(?:00[aA]0|20(?:0[0-9aA]|2[fF]|5[fF])|3000))"
+               rf"|{INVISIBLE.pattern}|[^\S\n]|[#>,;|*\]`-]|\+(?!{_BLOCK_CHARACTER}))*")
 _BLOCK_RUN_LINE = re.compile(rf"{_BLOCK_LEAD}({_BLOCK_CHARACTER}+=*)?[ \t\r\"',;]*")
 # A line below a run that goes on with it: base64 alone after what can stand before a line's text, up to its line's
 # end, plain or escaped, a quote, escaped or not, that ends its item, or the end.
