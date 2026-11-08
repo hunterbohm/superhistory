@@ -468,14 +468,86 @@ def _lost(before, after, config):
 
 
 def _marks_in(path, kept):
-    """How many supersede marks the store at `path` holds, read as _per_source() reads it."""
+    """The supersede marks and clears the store at `path` holds, as store.all_marks reads them."""
     if not os.path.exists(path):
-        return 0
+        return []
     try:
         with contextlib.closing(store.peek(path)) as db:
-            return store.mark_count(db)
+            return store.all_marks(db)
     except sqlite3.Error as exc:
         raise Fail(f"could not read {path} ({exc}), so {kept}") from None
+
+
+def _carry_marks(db, marks, before, config):
+    """Copies the old store's `marks` into the fresh store `db`, each item under the id this install's ingest wrote
+    for it (_rebuilt_id) and each mark with the install that made it and the time and Sync version it has: a mark from
+    another computer stays that computer's, and so never overwrites one made here. Returns the marks left behind,
+    those naming an item the fresh store lacks or one whose id reads as a secret there (store.mark_superseded)."""
+    sources = {s.name: s for s in config.sources}
+
+    def placed(source, source_id):
+        if source not in sources:
+            return None
+        host = before.get(source, (None, None, {}))[2].get(source_id)
+        new = _rebuilt_id(sources[source], source_id, config, host)
+        if new is not None and db.execute("SELECT 1 FROM docs WHERE source=? AND source_id=? LIMIT 1",
+                                          (source, new)).fetchone():
+            return (source, new)
+        return None
+
+    left, wins = [], {}
+    for mark in marks:
+        source, source_id, by, new_source, new_source_id, at, v = mark
+        item = placed(source, source_id)
+        new = placed(new_source, new_source_id) if new_source is not None else None
+        if item is None or (new_source is not None and new is None):
+            left.append(mark)
+            continue
+        # Two old items can be one item now (an older kb's id and this install's), each with a mark by the same
+        # install: the later one stands, as the later of two marks would have, and the other is left behind.
+        held = wins.get((item, by))
+        if held is not None and (held[0][5], held[0][1]) > (at, source_id):
+            left.append(mark)
+            continue
+        if held is not None:
+            left.append(held[0])
+        wins[item, by] = (mark, new)
+    for (item, by), ((_, _, _, new_source, _, at, v), new) in wins.items():
+        try:
+            if new_source is None:
+                store.clear_superseded(db, *item, by, at, v)
+            else:
+                store.mark_superseded(db, *item, new, by, at, v)
+        except ValueError:
+            left.append(wins[item, by][0])
+    return left
+
+
+def _shown(source, source_id):
+    """An item as a message names it. An id that reads as a secret, as an older kb's row can hold, is not printed."""
+    if not source:
+        return source_id  # the row an older kb's mark named, "#<id>", since gone
+    return f"{source} (an id that reads as a secret)" if store.secret_id(source, source_id) else f"{source} {source_id}"
+
+
+def _named(mark):
+    source, source_id, _, new_source, new_source_id = mark[:5]
+    return _shown(source, source_id) + (" (cleared)" if new_source is None else
+                                        f", replaced by {_shown(new_source, new_source_id)}")
+
+
+def _marks_note(marks, left, log_file):
+    """What a finished rebuild says of the supersede marks: how many it carried, and each it left behind, by its items."""
+    if not marks:
+        return ""
+    n = len(marks) - len(left)
+    note = f"; carried {n:,} supersede {'mark' if n == 1 else 'marks'} across"
+    if not left:
+        return note
+    named = [_named(mark) for mark in left]
+    more = f", and {len(named) - 10:,} more in {log_file}" if len(named) > 10 else ""
+    return (f"{note} and left {len(left):,} behind, since an item they name is not in the new knowledge base, "
+            f"or a later mark by the same install covers the same item ({'; '.join(named[:10])}{more}). The old knowledge base is gone, so those can't come back")
 
 
 def _reading_back(config, before):
@@ -569,6 +641,11 @@ def cmd_rebuild(paths, config, args):
             try:
                 failures = ingest.run(db, _reading_back(config, before), log, with_summaries=False)
                 _as_configured(db, config)
+                try:
+                    with db:
+                        left = _carry_marks(db, marks, before, config)
+                except sqlite3.Error as exc:
+                    raise Fail(f"could not carry the supersede marks over ({exc}), so {kept}") from None
                 away = [host for host, _ in store.away(db)]
                 sound = db.execute("PRAGMA integrity_check").fetchone()[0] == "ok" and not store.has_unversioned(db)
                 items = db.execute("SELECT count(*) FROM (SELECT DISTINCT source, source_id FROM docs)").fetchone()[0]
@@ -606,9 +683,10 @@ def cmd_rebuild(paths, config, args):
             raise
         _remove_store(fresh)
         _remove_store(old)
-    dropped = (f"; dropped {marks:,} supersede {'mark' if marks == 1 else 'marks'} (they aren't rebuilt from "
-               f"sources), and the old knowledge base is gone, so they can't come back" if marks else "")
-    print(f"Rebuilt {paths.db} from your sources: kept {items:,} {'item' if items == 1 else 'items'}{dropped}. "
+    for mark in left:
+        log.warning("rebuild left a supersede mark behind: %s", _named(mark))
+    print(f"Rebuilt {paths.db} from your sources: kept {items:,} {'item' if items == 1 else 'items'}"
+          f"{_marks_note(marks, left, paths.log('ingest'))}. "
           f"The next ingest writes their summaries." + (f" Lost, as --accept-loss allowed: {losses}." if lost else ""))
 
 

@@ -46,7 +46,8 @@ The Sync client goes in `kb/sync/`, imported as `kb.sync`.
   `supersedes` table, keyed by item, not row, so a mark survives a refresh. A clear keeps the row with no target, and
   deleting an item keeps the marks on it, so the result does not depend on the order records arrive in.
   Of several marks the one with no `v` (not synced yet) wins, then the highest `v`, then the highest install id, and
-  a winning clear means the item is not superseded.
+  a winning clear means the item is not superseded. A rebuild copies every mark and clear to the item's new id with
+  its `marked_by`, `at` and `v` as they were, and names the ones whose item the new store lacks.
 - For the client and the engine to import: `store.replace_rows`, `search.search_stores`, `check.lookup_with`,
   `gmail.render_thread`, and `summarize.request`, `parse` and `rows`.
 
