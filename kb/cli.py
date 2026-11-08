@@ -426,6 +426,35 @@ def cmd_try(paths, config, args):
     return 0
 
 
+def cmd_dashboard(paths, config, args):
+    from kb.dashboard import server
+    with contextlib.closing(open_db(paths)):
+        pass  # a missing or old store fails here, before anything listens
+    try:
+        dashboard = server.make_server(paths, config, args.port)
+    except OSError as exc:
+        raise Fail(f"cannot listen on port {args.port}: {exc.strerror or exc}")
+    # The address holds this run's key, which masking would take for a secret and mangle; it is made here, not read.
+    shown = getattr(sys.stdout, "_stream", sys.stdout)
+    print(f"The {NAME} dashboard is at {dashboard.url}\n"
+          "Open it once: the address carries a key for this run, good for one visit. "
+          "It reads your knowledge base and changes nothing. Press Ctrl-C to stop.", file=shown, flush=True)
+    handoff = None
+    try:
+        if not args.no_open:
+            handoff = server.Handoff(dashboard)
+            if not handoff.open():
+                print("No browser was found to open it. Open the address above.", flush=True)
+        dashboard.serve_forever()
+    except KeyboardInterrupt:
+        print("\nStopped.")
+    finally:
+        if handoff:
+            handoff.remove()
+        dashboard.server_close()
+    return 0
+
+
 def _ask(question, default=""):
     shown = f"{question} [{default}] " if default else f"{question} "
     try:
@@ -1068,6 +1097,10 @@ def parser():
     t.add_argument("--question", help="the id of one question to ask")
     t.add_argument("--month", help="a folder holding items.jsonl and questions.jsonl")
     t.set_defaults(fn=cmd_try)
+    d = sub.add_parser("dashboard", help="open a page on this computer that shows what your knowledge base holds")
+    d.add_argument("--port", type=int, default=0, help="the port to listen on, on 127.0.0.1 only; default: a free one")
+    d.add_argument("--no-open", action="store_true", help="print the address without opening a browser")
+    d.set_defaults(fn=cmd_dashboard)
     sub.add_parser("setup", help="choose your sources and an AI plug-in").set_defaults(fn=cmd_setup)
     sc = sub.add_parser("schedule", help="read your sources in the background, or stop")
     sc.add_argument("action", choices=("on", "off", "status"))
