@@ -298,7 +298,8 @@ Known limits:
   of words to the last line of its paragraph holding a token, as main's does. Where main reads no rest from the
   placeholder (an older kb's row's run of both cases, or a rest past lines that decode to words), only the run goes,
   with the lines below it that go on as a key's body is wrapped (base64 alone, as wide, to a narrower line, one
-  ending in "=" or one that ends its item), or its JSON item; all past it is read as main reads it, so a JSON list's
+  ending in "=" or one that ends its item, past what main's rest reads before a body's line, and with a slash JSON
+  escapes read as a slash), or its JSON item; all past it is read as main reads it, so a JSON list's
   later items, words, and a cut key's pieces past it, as past an OpenSSH public key, show as on main. Main leaves such
   a run readable; this masks it and shows nothing main masks. After the placeholder of a key written as base64, which
   main leaves readable, a rest is read whole, as above. As on main, a rest starts only past
