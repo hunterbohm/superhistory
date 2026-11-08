@@ -5080,6 +5080,43 @@ class Base64ReviewTwentyEighthTest(unittest.TestCase):
                     # four times the run
                     self.assertLess(took[1 << 12], 8 * max(took[1 << 10], 0.02), took)
 
+    def test_a_run_of_each_token_the_tables_hold_costs_time_in_proportion(self):
+        # Each token the readers of a line's lead and of a line break accept (_SPACE_TOKENS, _QUOTE_TOKENS,
+        # _BREAK_TOKENS), its backslashes one and two, its hex digits in lower case and in upper, as a run of 1,024 and
+        # of 8,192 below a placeholder and before a line of base64, fresh and in an older row: eight times the run takes
+        # less than sixteen times the time. A run that took time in its square took 64 times.
+        import time
+        from kb import mask as masking
+        nl, bs = chr(10), chr(92)
+        runs = {}
+        for table in (masking._SPACE_TOKENS, masking._QUOTE_TOKENS, masking._BREAK_TOKENS):
+            for token in table:
+                for backslashes in (1, 2):
+                    for upper in (False, True):
+                        runs.setdefault("".join((chars[-1] if upper else chars[0])
+                                                * (backslashes if chars == bs and most is None else max(least, 1))
+                                                for chars, least, most in token), token)
+        self.assertEqual(len(runs), 150)
+
+        def took(text, older):
+            started = time.process_time()
+            if older:
+                with masking.stored_row("0123456789abcdef"):
+                    masking.mask(text)
+            else:
+                masking.mask(text)
+            return time.process_time() - started
+
+        for unit in runs:
+            for older in (False, True):
+                small, big = ("[masked]" + nl + unit * n + "MIIEvQIBADANBgkqhkiG9w0BAQEFAASC" + nl + "walrus moved"
+                              for n in (1 << 10, 1 << 13))
+                times = took(small, older), took(big, older)
+                if times[1] >= 16 * max(times[0], 0.02):  # measured again, as a busy machine can slow one run
+                    times = took(small, older), took(big, older)
+                with self.subTest(unit=unit, older=older):
+                    self.assertLess(times[1], 16 * max(times[0], 0.02), times)
+
     def test_a_key_encoded_whole_and_cut_before_its_header_is_masked_from_its_paragraphs_start(self):
         # A key's body and footer, or its footer alone, encoded as base64 with no header above them, are masked from
         # their paragraph's start, as main's reading of a plain footer with no header masks one: a line of encoded

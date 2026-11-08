@@ -3591,7 +3591,8 @@ _BLOCK_ESCAPED = re.compile(rf"(?:{_ESCAPED_BASE64}[A-Za-z0-9+/]*)+=*")
 # width, plain or escaped, an escaped tab, a quote or its entity, list and comment marks ("+" only where no base64
 # follows it, as it is one of base64's), "<br>", a placeholder, what a reader does not see. Each is read one way
 # only (an escaped zero-width space is one a reader does not see, no escaped space), so a lead that fails is tried
-# once, in time in proportion.
+# once, in time in proportion. A colour code is read two ways, whole or its introducer alone (INVISIBLE, as main reads
+# one), but the "[" the introducer leaves ends the lead at once, so that costs no more.
 _BLOCK_LEAD = (rf"(?:\[masked\]|<br\s*/?>|{_QUOTE}|(?<!\\)\\+(?:[rt]|u(?:00[aA]0|20(?:0[0-9aA]|2[fF]|5[fF])|3000))"
                rf"|{INVISIBLE.pattern}|[^\S\n]|[#>,;|*\]`-]|\+(?!{_BLOCK_CHARACTER}))*")
 _BLOCK_RUN_LINE = re.compile(rf"{_BLOCK_LEAD}({_BLOCK_CHARACTER}+=*)?[ \t\r\"',;]*")
