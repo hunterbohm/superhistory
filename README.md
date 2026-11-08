@@ -266,8 +266,10 @@ Known limits:
   with no line break, after a byte order mark or where the line widths change; past no prose (a run a key's body could
   be, an armour header such as "Comment: ...", another header's text, a control character, or nothing), the key still
   starts on the quote's line. Cut off before its footer, it is masked while its base64 decodes to text, so a word on
-  the next line that happens to decode to text goes with it; cut off before its header, the same holds for the line
-  above. Base64 of a short label glued to a quoted header, where the label's own base64 is one word in one case as
+  the next line that happens to decode to text goes with it. Cut off before its header, it is masked upward the same
+  way, up to its paragraph's start and never past a blank line, as main masks a plain footer with no header: lines of
+  encoded words above it in that paragraph go with it, and so can the last word of a line of plain words right above
+  it. Main leaves such a key readable; this only masks more. Base64 of a short label glued to a quoted header, where the label's own base64 is one word in one case as
   long as the block's lines ("ABC" written "QUJD" at width 4), reads as a heading over a key, so the quote after it is
   masked; a key there is masked either way. Any line break wraps it, as written or escaped, and it is read with JSON's
   escapes read once and twice too, as JSON and JSON in JSON write a key with any escape (a tab, \u000a, \/). A field
@@ -292,9 +294,14 @@ Known limits:
   could be; the lines it passes over stay. It starts there whatever that line holds (base64 alone at any length, as a
   stream's short last line is, or any other line main's rest takes), and it runs on as main's does. Only that first
   line counts: a piece of 34 characters after "[masked] ", or of lines 16 wide after another key's footer, shows, even
-  with a longer line further down. A rest that starts right at its placeholder runs on past lines of words to the last
-  line of its paragraph holding a token, as main's does; one that starts past lines that decode to words, where main
-  reads none, ends where its lines of base64 end, so a piece further down shows. As on main, a rest starts only past
+  with a longer line further down. A rest that starts right at its placeholder, where main's does, runs on past lines
+  of words to the last line of its paragraph holding a token, as main's does. Where main reads no rest from the
+  placeholder (an older kb's row's run of both cases, or a rest past lines that decode to words), only the run goes,
+  with the lines below it that go on as a key's body is wrapped (base64 alone, as wide, to a narrower line, one
+  ending in "=" or one that ends its item), or its JSON item; all past it is read as main reads it, so a JSON list's
+  later items, words, and a cut key's pieces past it, as past an OpenSSH public key, show as on main. Main leaves such
+  a run readable; this masks it and shows nothing main masks. After the placeholder of a key written as base64, which
+  main leaves readable, a rest is read whole, as above. As on main, a rest starts only past
   what main reads before a key's body: after a no-break or other wide space escaped in JSON, a backtick (written or
   as a web page's entity, "&grave;"), a quote's entity padded with more than three zeros ("&#000034;") or "- ", or
   with JSON's escaped slash ("\/") in the first 40 characters of its first line, a body after a placeholder shows;
