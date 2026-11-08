@@ -51,8 +51,10 @@ class Store(unittest.TestCase):
         self.db = store.connect(self.path)
         self.addCleanup(self.db.close)
 
-    def session(self, sid, ts, decided, text="USER: carry on\n\nASSISTANT: done", source="claude_code", project=None):
-        store.store_item(self.db, source, sid, ts, "session", text + "\n" + "filler line\n" * 1200, {})
+    def session(self, sid, ts, decided, text="USER: carry on\n\nASSISTANT: done", source="claude_code", project=None,
+                cwd=None, title="session"):
+        store.store_item(self.db, source, sid, ts, title, text + "\n" + "filler line\n" * 1200,
+                         {"cwd": cwd} if cwd else {})
         meta = {"atom": "decision"}
         if project:
             meta["path"] = f"/Users/me/.claude/projects/-Users-me-{project}/{sid}.jsonl"
@@ -508,6 +510,20 @@ class DecisionTest(Store):
         self.assertNotIn(old, [d.text for d in decisions.review(self.db)])
         self.session("b", "2026-11-05T10:00:00Z", ["Rename the CSS class run to ans."])
         self.assertIn(old, [d.text for d in decisions.review(self.db)])
+
+    def test_both_calls_name_the_working_folder_of_a_codex_session(self):
+        self.session("a", "2026-06-12T10:00:00Z", ["Use SQLite for the app database."], source="codex",
+                     cwd="/Users/me/code/alpha", title="Set up database")
+        self.session("b", "2026-10-24T10:00:00Z", ["Use PostgreSQL for the app database, not SQLite."],
+                     source="codex", cwd="/Users/me/code/beta", title="Set up database")
+        model = Model(lambda text, older, _: answer(replaces=older if "PostgreSQL" in text else ()))
+        self.run_pass(model)
+        judge = [p.user for p in model.calls if not p.system.startswith("You check")]
+        check = [p.user for p in model.calls if p.system.startswith("You check")]
+        self.assertTrue(check)
+        for sent in (judge, check):
+            self.assertIn("in ~/code/alpha: Set up database)", "".join(sent))
+            self.assertIn("in ~/code/beta: Set up database)", "".join(sent))
 
     def test_review_lists_unanswered_agent_decisions_that_matter_once_per_wording(self):
         self.session("a", "2026-11-04T10:00:00Z", ["Merge trains approved by Hunter: one worker merges all green PRs."])

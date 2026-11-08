@@ -174,17 +174,20 @@ def has_table(db):
 
 def decisions(db):
     """Every decision record, oldest first."""
-    return [Decision(rid, src, sid, key_of(text), ts, text, where(path, title))
-            for rid, src, sid, ts, text, path, title in db.execute("SELECT a.id, a.source, a.source_id, a.ts, a.content, json_extract(a.metadata, '$.path'), "
-                          "(SELECT i.title FROM docs i WHERE i.source=a.source AND i.source_id=a.source_id "
-                          "AND i.kind IN ('doc', 'raw') LIMIT 1) FROM docs a WHERE a.kind='atom' "
-                          "AND json_extract(a.metadata, '$.atom') = 'decision' ORDER BY a.ts, a.id")]
+    return [Decision(rid, src, sid, key_of(text), ts, text, where(path, title, cwd))
+            for rid, src, sid, ts, text, path, title, cwd in db.execute(
+                "SELECT a.id, a.source, a.source_id, a.ts, a.content, json_extract(a.metadata, '$.path'), i.title, "
+                "json_extract(i.metadata, '$.cwd') FROM docs a LEFT JOIN docs i ON i.id = (SELECT j.id FROM docs j "
+                "WHERE j.source=a.source AND j.source_id=a.source_id AND j.kind IN ('doc', 'raw') LIMIT 1) "
+                "WHERE a.kind='atom' AND json_extract(a.metadata, '$.atom') = 'decision' ORDER BY a.ts, a.id")]
 
 
-def where(path, title):
-    """A short name for where a decision was made: an agent session's project folder, else its item's title."""
+def where(path, title, cwd=None):
+    """A short name for where a decision was made: an agent session's working folder (Claude Code and Codex record
+    it), else the project folder in a Claude Code session's path, then its item's title."""
     found = re.search(r"/\.claude/projects/-(?:Users|home)-[^-/]+-([^/]+)/", path or "")
-    name = f"{found.group(1)}: {title or ''}" if found else (title or "")
+    project = re.sub(r"^(?:/Users|/home)/[^/]+/", "~/", cwd.rstrip("/")) if cwd else found and found.group(1)
+    name = f"{project}: {title or ''}" if project else (title or "")
     return re.sub(r"[()\s]+", " ", name).strip()[:90]
 
 
