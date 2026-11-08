@@ -115,6 +115,16 @@ class CliTest(TempHome):
         self.assertEqual(code, 0, err)
         return out
 
+    def test_the_decision_commands_need_the_owner_named_and_drift_needs_files(self):
+        self.write_config('machine = "studio"\n')
+        code, _, err = self.run_kb("decisions", "drift")
+        self.assertEqual(code, 1)
+        self.assertIn("owner", err)
+        self.write_config('machine = "studio"\n[decisions]\nowner = ["Sam"]\n')
+        code, _, err = self.run_kb("decisions", "drift")
+        self.assertEqual(code, 1)
+        self.assertIn("instructions", err)
+
     def test_a_command_run_in_process_closes_the_database_it_opened(self):
         # A program that runs superhistory's commands in-process would otherwise keep a file handle open for each one, until
         # its garbage collector ran, and run out of them.

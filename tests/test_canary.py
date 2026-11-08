@@ -31,13 +31,14 @@ from kb import ai, check, cli, config, ids, ingest, remote, search, store, summa
 from kb.ai import api
 from kb.ai import cli as ai_cli
 from kb.paths import Paths
-from kb.sources import Excludes, Item, Progress, Run, SourceType, git, github, gmail, notes
+from kb.sources import Excludes, Item, Progress, Run, SourceType, eden, git, github, gmail, notes, youtube
 from tests.test_gmail import FakeGmail
 from tests.test_hermes import make_store
 
 KINDS = ("env", "cmd", "cmdfail", "cmdtimeout", "configkey", "itemtext", "itemmeta", "metakey", "notepath",
          "notepath2", "repopath", "sshout", "ssherr", "ghout", "gherr", "ghpath", "gitout", "giterr", "gitcwd", "http",
-         "httpbad", "httpstatus", "modeltext", "imap", "imapbad", "imaperr", "remoteopt", "aipath", "session")
+         "httpbad", "httpstatus", "modeltext", "imap", "imapbad", "imaperr", "remoteopt", "aipath", "session",
+         "edenkey", "edenrefuse", "ytpath", "yturl")
 CANARY = {kind: f"sk-ant-api03-canary-{kind}-" + "Z" * 24 for kind in KINDS}
 # Secrets that only their field name gives away, as in "password=...": mask() knows them by the name in front.
 KEYED = ("metapw", "metanested", "ghtail", "aitail", "turntail", "sumjoin", "syncpw", "idassign", "syncappend",
@@ -143,6 +144,13 @@ class Model(BaseHTTPRequestHandler):
         if Model.mode == "status":
             self.wfile.write(CANARY["httpstatus"].encode() + b"\r\n\r\n")
             self.close_connection = True
+            return
+        if Model.mode == "edenrefuse":
+            body = json.dumps({"ok": False, "status": "forbidden", "message": f"no {CANARY['edenrefuse']}"}).encode()
+            self.send_response(200)
+            self.send_header("content-type", "application/json")
+            self.end_headers()
+            self.wfile.write(body)
             return
         if Model.mode == "refuse":
             body = json.dumps({"error": {"message": f"invalid x-api-key {self.headers.get('x-api-key')} "
@@ -785,6 +793,16 @@ password = "cmd:echo {CANARY['cmdfail']} >&2; exit 3"
                                  "options": {"path": "/n", CANARY["remoteopt"]: 1}})
         self.call(github.run_gh, os.path.join(self.bin, "gh-fail"), ["search", "issues"])
         self.call(github.run_gh, os.path.join(self.tmp, CANARY["ghpath"], "gh"), ["search", "issues"])
+        self.call(youtube.listing, youtube.Options("@sam", yt_dlp=os.path.join(self.bin, "ghtail")))
+        self.call(youtube.read_videos, youtube.Options("@sam", yt_dlp=os.path.join(self.bin, "gh-fail")), ["v1"])
+        self.call(youtube.listing, youtube.Options("@sam", yt_dlp=os.path.join(self.tmp, CANARY["ytpath"], "yt-dlp")))
+        self.call(youtube.fetch, f"http://127.0.0.1:1/{CANARY['yturl']}")
+        with mock.patch.dict(os.environ, {"EDEN_CANARY_KEY": CANARY["edenkey"]}), \
+                mock.patch.object(eden, "API", f"http://127.0.0.1:{self.server.server_address[1]}/v1/tools/"):
+            for mode in ("refuse", "garbage", "status", "hugeerror", "edenrefuse"):
+                Model.mode = mode
+                self.call(eden.call, config.Secret("env:EDEN_CANARY_KEY"), "eden_search_social_content", {})
+            Model.mode = "ok"
         self.call(git.run_git, ["rev-parse", CANARY["giterr"]], self.tmp)
         self.call(git.run_git, ["status"], os.path.join(self.tmp, CANARY["gitcwd"]))
         for verb in ("extract", "live_ids"):

@@ -99,6 +99,14 @@ class ParseTest(unittest.TestCase):
         c = config.parse('machine = "studio"\n[sources.notes]\npath = "/n"\n')
         self.assertEqual(c.units(), ("notes@studio", "summarize"))
 
+    def test_the_decision_pass_is_off_until_the_owner_is_named(self):
+        c = config.parse('[decisions]\nowner = ["Sam Lee", "sam@example.com"]\ninstructions = ["~/code/*/AGENTS.md"]\n')
+        self.assertEqual((c.decisions.owner, c.decisions.instructions, c.decisions.every_hours),
+                         (("Sam Lee", "sam@example.com"), ("~/code/*/AGENTS.md",), 24))
+        self.assertIn("decisions", c.units())
+        self.assertNotIn("decisions", config.parse("").units())
+        self.assertIn("decisions.ownr", self.problems('[decisions]\nownr = ["Sam"]\n')[0])
+
 
 class ExtensionTest(unittest.TestCase):
     def test_sync_and_cloud_tables_are_kept_for_their_clients_and_add_a_health_unit(self):

@@ -71,7 +71,7 @@ roots = ["~/code"]
 
 | Command | What it does |
 | --- | --- |
-| `superhistory search "words"` | Searches everything. `--source`, `--after` and `--limit` narrow it. |
+| `superhistory search "words"` | Searches everything. `--source`, `--after` and `--limit` narrow it. `--history` also shows decisions a newer one replaced. |
 | `superhistory get ID` | Prints the stored text of a search hit, a page at a time. |
 | `superhistory ingest` | Reads every source now, then summarizes new long items. |
 | `superhistory stats` | Shows how many records each source has and which sources failed. |
@@ -81,6 +81,9 @@ roots = ["~/code"]
 | `superhistory ai list`, `superhistory ai test` | Lists the AI plug-ins, or makes one tiny call and says which plug-in answered. |
 | `superhistory setup`, `superhistory try` | Sets Superhistory up, or shows it on a made-up month. |
 | `superhistory login NAME` | Signs a Gmail source in with your own Google OAuth client. |
+| `superhistory decisions run` | Judges new decision records: whether they are your own words or an agent's report, and which older decision each one replaces. Ingest runs it once a day when `[decisions] owner` is set. |
+| `superhistory decisions review`, `confirm ID`, `reject ID` | Lists agent-reported decisions that matter and that your own words don't back, and records your answer. |
+| `superhistory decisions drift` | Lists lines in your agents' instruction files that a newer decision of yours contradicts, each with a fix. It changes nothing. |
 
 ## Sources
 
@@ -94,6 +97,8 @@ roots = ["~/code"]
 | `notes` | A folder of Markdown or text files, such as an Obsidian vault | the note's path in the folder |
 | `git` | Your commits in the repositories under `roots` | the repository's folder |
 | `github` | Issues and pull requests you are involved in, through `gh` | `owner/repo` |
+| `youtube` | A channel's videos, shorts and streams with their captions, through `yt-dlp` and the channel's feed | the kind and id, as `short/abc123` |
+| `eden` | Your own posts on X or another network, through Eden (eden.so) and your Eden API key | the post's id |
 
 Add as many sources of one type as you like, each in its own `[sources.NAME]` table with `type = "..."`. The table's
 name is what `superhistory search --source` takes.
@@ -117,6 +122,32 @@ iMessage needs Full Disk Access for the Python that runs Superhistory. The insta
 Gmail needs an app password, which needs 2-Step Verification on your Google account. `superhistory setup` saves the password
 in a file only you can read. To use your own Google OAuth client instead, set `auth = "oauth"`, `client_id` and
 `client_secret`, then run `superhistory login NAME`.
+
+YouTube needs `yt-dlp` and no key. `channel` is an `@handle`, a channel URL or a channel id. The first run reads
+every video; later runs read the channel's public feed and only the videos published since. A new video waits up to a
+day for its captions.
+
+```toml
+[sources.youtube]
+channel = "@yourhandle"
+languages = ["en"]          # captions in the first of these the video has
+```
+
+Eden reads your posts without an X API plan, but each call spends Eden research credits: 0.5 for a page of 50 posts,
+0.2 for your analytics and 1 for a whole post, by Eden's price list in November 2026. So it asks Eden at most once
+every `every_hours` and reads whole only new posts that Eden cut short or that start a thread, at most `full_reads` a
+run. A day's check with one long post costs about 1.7 credits. The first run reads your whole history at 0.5 per 50
+posts. Thread detection reads your Eden analytics, so it covers only accounts connected to your Eden workspace, and on the first run only your newest 100 posts, the most Eden's analytics return.
+
+```toml
+[sources.x]
+type = "eden"
+username = "yourhandle"
+key = "env:EDEN_API_KEY"    # or "file:..." or "cmd:..."
+platform = "twitter"        # or linkedin, threads, instagram, tiktok, youtube, substack
+every_hours = 24
+full_reads = 5
+```
 
 ## AI plug-ins
 
@@ -202,7 +233,9 @@ Known limits:
   kept on purpose, since what follows "\n" in the same run may be the rest of the secret.
 - A secret is read through characters you cannot see, such as a zero-width space or a NUL, but not through a vertical
   tab, a form feed or the separators from 0x1c, which part words as a line break does. A key split by one of those is
-  not masked whole.
+  not masked whole. Such a character is read raw, escaped as JSON or Python writes it ("\u200b", "\x7f", the
+  surrogate pair JSON writes for one past U+FFFF, "\udb40\udc01", and JSON's "\b" for the backspace between letters
+  or digits), and escaped twice, as JSON inside JSON holds it.
 - A private key written as base64 (as a Kubernetes secret holds one) is not masked.
 - Provider tokens Superhistory does not know by itself are masked by rules taken from gitleaks (kb/gitleaks.py, gitleaks v8.30.1,
   MIT licence), where gitleaks finds one in text, as a word of its own. An Airtable token is masked alone too, where
@@ -305,6 +338,20 @@ Known limits:
   sources into a fresh one, each as far back as its oldest item in the old one. When a source no longer has some of
   the old one's items, such as sessions an agent has since deleted, the rebuild stops, keeps the old one and says how
   many each source would lose; `superhistory rebuild --accept-loss` replaces it anyway and loses them for good.
+- A command's password flag is read on a line the shell carries on with a continuation mark ("\" at a line's end,
+  or "`" or "^" after a space), through a colour code anywhere in the line, inside the program's name too, and in a
+  list or a tuple of the command's arguments, as an item's metadata, JSON or Python's repr holds one, however long.
+  The command is read by its name, its Windows file ("keytool.exe", "aws.exe", "az.cmd"), a folder path or quotes,
+  as written or in JSON escaped up to four times. Where keytool, jarsigner, az login, mongosh and its tools, twine or
+  aws configure set has a password flag past shell grammar Superhistory does not follow ("$'...'", "<(...)", an extended
+  glob, an escaped quote, a substitution nested or escaped twice), Superhistory masks from the value after that flag to the
+  end of the line, or of the JSON string holding it, so the rest of that line, a pipe to another command included,
+  is masked with it. A newline escaped inside "$'...'" ends that line early, and the password after it shows; so
+  does a list item holding a flag and its value together ("-p ...") right after another option, whose value it may
+  be.
+- A list of a command's arguments that also holds a number of a thousand digits or more, with or without underscores
+  between them, is not read as a list, since such a number takes long to read on Python 3.9. Its text is read
+  instead, as Superhistory read such lists before, so a password after a flag in it can show.
 - A YAML list of secrets under a secret's name (`tokens:` followed by `- value` lines) is masked only where an item
   holds a provider's token shape.
 

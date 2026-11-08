@@ -9,6 +9,9 @@
     per_run = 150
     [schedule]
     every_minutes = 15
+    [decisions]                   # judge new decision records once a day; off until owner names you
+    owner = ["Sam Lee", "sam@example.com"]   # the name you go by first, then other names and addresses you write as
+    instructions = ["~/code/*/AGENTS.md"]    # files your agents load, which `superhistory decisions drift` checks against them
     [sources.notes]               # one table per source; its name is what `superhistory search --source` takes
     type = "notes"                # default: the table name
     path = "~/Notes"
@@ -153,6 +156,14 @@ class SummarizeSettings:
 
 
 @dataclass(frozen=True)
+class DecisionSettings:
+    owner: Tuple[str, ...] = ()
+    instructions: Tuple[str, ...] = ()
+    every_hours: int = 24
+    per_run: int = 2000
+
+
+@dataclass(frozen=True)
 class Schedule:
     every_minutes: int = 15
 
@@ -166,8 +177,9 @@ class Config:
     schedule: Schedule = Schedule()
     sources: Tuple[Source, ...] = ()
     hosts: Tuple[Host, ...] = ()
-    # Whose items these are: the install id superhistory fills in when it writes (kb.ids). A Config built elsewhere, such as the
-    # sync relay's, may leave it empty; its items are then prefixed by `machine`.
+    decisions: DecisionSettings = DecisionSettings()
+    # Whose items these are: the install id kb fills in when it writes (kb.ids). A Config built elsewhere, such as a
+    # hosted store's, may leave it empty; its items are then prefixed by `machine`.
     install: str = ""
     extra: Mapping[str, Any] = dataclasses.field(default_factory=dict)
 
@@ -191,6 +203,7 @@ class Config:
     def units(self):
         """Every health unit this config owns."""
         units = tuple(f"{s.name}@{h}" for s in self.sources for h in s.hosts) + ("summarize",)
+        units += ("decisions",) if self.decisions.owner else ()
         return units + (("sync",) if any(key in self.extra for key in EXTENSION_TABLES) else ())
 
 
@@ -231,7 +244,7 @@ def parse(text):
     elif holds_secret(machine):
         problems.append(SECRET_NAME.format(where="machine"))
         machine = "local"
-    tables = {key: raw.pop(key, {}) for key in ("ai", "check", "summarize", "schedule", "hosts", "sources")}
+    tables = {key: raw.pop(key, {}) for key in ("ai", "check", "summarize", "schedule", "hosts", "sources", "decisions")}
     extra = {key: raw.pop(key) for key in EXTENSION_TABLES if key in raw}
     problems += [f"{key}: unknown key" for key in raw]
     for key, value in tables.items():
@@ -243,6 +256,7 @@ def parse(text):
         problems.append(f"check.budget_seconds: must be above 0 and at most {MAX_CHECK_BUDGET:g}")
     summarize = options_from(SummarizeSettings, tables["summarize"], "summarize", problems)
     schedule = options_from(Schedule, tables["schedule"], "schedule", problems)
+    decisions = options_from(DecisionSettings, tables["decisions"], "decisions", problems)
     ai = _ai(tables["ai"], problems)
     hosts = []
     for name, table in tables["hosts"].items():
@@ -272,7 +286,7 @@ def parse(text):
                      for s in sources if s.type.account and not s.type.account(s.options)]
     if problems:
         raise ConfigError(problems)
-    return Config(machine, ai, check, summarize, schedule, tuple(sources), tuple(hosts), extra=extra)
+    return Config(machine, ai, check, summarize, schedule, tuple(sources), tuple(hosts), decisions, extra=extra)
 
 
 def _ai(table, problems):

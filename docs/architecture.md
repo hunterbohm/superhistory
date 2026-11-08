@@ -17,6 +17,7 @@ printed text come from them, so a rename is one edit.
 | `kb/search.py` | Keyword search with rank fusion, term coverage and recency. |
 | `kb/check.py` | The check: one model call writes a query, search finds candidates, a second call keeps the ones that fit. |
 | `kb/summarize.py` | Segment and atom rows for long items. |
+| `kb/decisions.py` | The decision pass: who made each decision atom, which newer one replaces it, and instruction lines it contradicts. Its `decisions` table keys a judgment by item and text hash, and search leaves out replaced decisions. It never changes `docs`. A personal install carries a copy of it, which matches this file from the `# BODY` line on. |
 | `kb/ingest.py` | The runner that reads every source and stores what changed. |
 | `kb/ids.py` | The install id and the prefix on every stored `source_id`. |
 | `kb/ai/` | AI plug-ins. Each one answers `ask(prompt, timeout)` with the model's text. |
@@ -50,7 +51,7 @@ The Sync client goes in `kb/sync/`, imported as `kb.sync`.
 - For the client and the engine to import: `store.replace_rows`, `search.search_stores`, `check.lookup_with`,
   `gmail.render_thread`, and `summarize.request`, `parse` and `rows`.
 
-Each online account has one reader. Gmail and GitHub read an account, not a computer, so two computers reading one
+Each online account has one reader. Gmail, GitHub, YouTube and Eden read an account, not a computer, so two computers reading one
 would store every thread twice under two prefixes. `config.account_keys()` names the account each source reads, one
 key however the config spells it (case, a leading `@`, dots in a gmail.com name). With `[sync]` (or `[cloud]`) on, a
 source whose config does not name its account, such as GitHub left at `"@me"`, is a config error. The Sync client

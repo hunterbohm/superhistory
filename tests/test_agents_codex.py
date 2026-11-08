@@ -10,7 +10,7 @@ from kb.agents import Change, codex
 
 AGENT = codex.AGENT
 COMMAND = "'/opt/superhistory tools/superhistory' hook codex"
-TIMEOUT = agents.HOOK_TIMEOUT
+TIMEOUT = agents.BACKGROUND_HOOK_TIMEOUT
 
 HOOKS = {"hooks": {"SessionStart": [{"hooks": [
     {"command": "bash '/home/user/.codex/agent-state.sh' session", "timeout": 10, "type": "command"}]}]}}
@@ -99,7 +99,7 @@ class Home(unittest.TestCase):
         return {p: self.text(p) for p in (self.hooks_json, self.config) if os.path.exists(p)}
 
     def handler(self, command=COMMAND, timeout=TIMEOUT):
-        return {"type": "command", "command": command, "timeout": timeout}
+        return {"type": "command", "command": command, "timeout": timeout, "async": True}
 
     def digest(self, command=COMMAND, timeout=TIMEOUT):
         return codex.codex_hook_hash("user_prompt_submit", self.handler(command, timeout))
@@ -362,6 +362,14 @@ class DetectTest(Home):
         self.assertTrue(AGENT.installed(self.home))
         AGENT.uninstall(self.home)
         self.assertFalse(AGENT.installed(self.home))
+
+    def test_only_the_current_entry_runs_in_the_background(self):
+        os.makedirs(os.path.dirname(self.hooks_json))
+        old = {k: v for k, v in self.handler().items() if k != "async"}
+        self.put(self.hooks_json, {"hooks": {"UserPromptSubmit": [{"hooks": [old]}]}})
+        self.assertFalse(AGENT.in_background(self.home), "an entry from before background hooks makes Codex wait")
+        AGENT.install(self.home, COMMAND)
+        self.assertTrue(AGENT.in_background(self.home))
 
     def test_a_changed_hook_is_no_longer_trusted(self):
         AGENT.install(self.home, COMMAND)
