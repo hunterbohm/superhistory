@@ -14,7 +14,7 @@ from kb.ai import Busy, NotReady, Prompt
 from kb.paths import Paths
 
 WATCHED = ("ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL", "CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT", "OPENAI_API_KEY",
-           "CODEX_HOME", "COPILOT_HOME", "XAI_API_KEY", "KB_NESTED", "HOME", "CURSOR_API_KEY", "SOME_VENDOR_API_KEY",
+           "CODEX_HOME", "COPILOT_HOME", "XAI_API_KEY", "SUPERHISTORY_NESTED", "HOME", "CURSOR_API_KEY", "SOME_VENDOR_API_KEY",
            "SOME_AUTH_TOKEN")
 FAKE_CLI = """#!{python}
 import json, os, subprocess, sys, time
@@ -92,11 +92,11 @@ class CliCase(unittest.TestCase):
 
 class CliPluginTest(CliCase):
     def assert_clean_call(self, call):
-        self.assertEqual(call["env"]["KB_NESTED"], "1")
+        self.assertEqual(call["env"]["SUPERHISTORY_NESTED"], "1")
         for name in ("ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL", "CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT",
                      "OPENAI_API_KEY", "XAI_API_KEY", "CURSOR_API_KEY", "SOME_VENDOR_API_KEY", "SOME_AUTH_TOKEN"):
             self.assertIsNone(call["env"][name], name)
-        self.assertTrue(os.path.basename(call["cwd"]).startswith("kb-ai-"))
+        self.assertTrue(os.path.basename(call["cwd"]).startswith("superhistory-ai-"))
         self.assertFalse(os.path.exists(call["cwd"]), "the call's folder is removed")
 
     def test_claude_code_runs_print_mode_with_no_tools_and_no_session_file(self):
@@ -233,7 +233,7 @@ class CliPluginTest(CliCase):
 
 class CheckThroughCliTest(CliCase):
     def test_the_check_runs_through_claude_code_and_adds_nothing_for_an_unrelated_message(self):
-        paths = Paths.under(os.path.join(self.tmp, "kb"))
+        paths = Paths.under(os.path.join(self.tmp, "superhistory"))
         db = store.connect(paths.db)
         store.store_item(db, "notes", "m:pelican.md", "2026-10-01T00:00:00Z", "Pelican invoice",
                          "Dana approved the pelican invoice on Tuesday.", {"path": "/notes/pelican.md"})
@@ -253,16 +253,16 @@ class CheckThroughCliTest(CliCase):
 
 class AiCommandTest(CliCase):
     def run_cli(self, *argv):
-        kb_home = os.path.join(self.tmp, "kb")
+        kb_home = os.path.join(self.tmp, "superhistory")
         out = io.StringIO()
-        with mock.patch.dict(os.environ, {"KB_HOME": kb_home}), contextlib.redirect_stdout(out), \
+        with mock.patch.dict(os.environ, {"SUPERHISTORY_HOME": kb_home}), contextlib.redirect_stdout(out), \
                 contextlib.redirect_stderr(io.StringIO()):
             code = cli.main(list(argv))
         return code, out.getvalue()
 
     def write_config(self, text):
-        os.makedirs(os.path.join(self.tmp, "kb"), exist_ok=True)
-        with open(os.path.join(self.tmp, "kb", "config.toml"), "w") as fh:
+        os.makedirs(os.path.join(self.tmp, "superhistory"), exist_ok=True)
+        with open(os.path.join(self.tmp, "superhistory", "config.toml"), "w") as fh:
             fh.write(text)
 
     def test_ai_test_says_which_plugin_answered(self):

@@ -7,9 +7,9 @@ from kb.paths import Paths
 
 class PathsTest(unittest.TestCase):
     def test_kb_home_puts_everything_in_one_folder(self):
-        paths = Paths.for_user({"KB_HOME": "/scratch/kb"}, "darwin", home="/home/sam")
+        paths = Paths.for_user({"SUPERHISTORY_HOME": "/scratch/superhistory"}, "darwin", home="/home/sam")
         for where in (paths.config_file, paths.db, paths.lock, paths.log("ingest"), paths.seen_dir):
-            self.assertTrue(str(where).startswith("/scratch/kb/"), where)
+            self.assertTrue(str(where).startswith("/scratch/superhistory/"), where)
 
     def test_mac_keeps_config_in_dot_config_and_data_in_library(self):
         paths = Paths.for_user({}, "darwin", home="/Users/sam")
@@ -28,7 +28,7 @@ class PathsTest(unittest.TestCase):
         self.assertEqual(paths.cache_dir, Path(f"/home/sam/.cache/{slug}"))
 
     def test_try_keeps_the_config_and_moves_everything_else(self):
-        paths = Paths.under("/scratch/kb")
+        paths = Paths.under("/scratch/superhistory")
         trial = paths.for_try()
         self.assertEqual(trial.config_file, paths.config_file)
         self.assertNotEqual(trial.db, paths.db)

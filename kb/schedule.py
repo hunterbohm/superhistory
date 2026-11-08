@@ -5,12 +5,12 @@ import subprocess
 import sys
 from pathlib import Path
 
-from kb import NAME
+from kb import COMMAND, NAME
 from kb.paths import HOME_ENV
 
 SLUG = NAME.lower()
-LABEL = f"{SLUG}.kb.ingest"
-UNIT = f"{SLUG}-kb-ingest"
+LABEL = f"dev.{SLUG}.ingest"
+UNIT = f"{SLUG}-ingest"
 SERVICE = f"{UNIT}.service"
 TIMER = f"{UNIT}.timer"
 FALLBACK_PATH = "/usr/local/bin:/usr/bin:/bin"
@@ -30,7 +30,7 @@ def _home(home):
 
 def _environment():
     env = {"PATH": os.environ.get("PATH") or FALLBACK_PATH}
-    # Where kb's config, database, logs and cache are; the job must find the same ones.
+    # Where superhistory's config, database, logs and cache are; the job must find the same ones.
     for name in (HOME_ENV, "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "XDG_CACHE_HOME"):
         if os.environ.get(name):
             env[name] = os.environ[name]
@@ -70,7 +70,7 @@ def _minutes(config):
 def _kb_path(kb_path):
     kb_path = str(kb_path)
     if not os.path.isabs(kb_path):
-        raise ScheduleError(f"The path to the kb command must be absolute (got {kb_path!r}).")
+        raise ScheduleError(f"The path to the {COMMAND} command must be absolute (got {kb_path!r}).")
     return kb_path
 
 
@@ -201,7 +201,7 @@ def _linux_status(home):
 
 
 def on(paths, config, kb_path, platform=None, home=None):
-    """Run `kb ingest` on the configured interval. Safe to repeat: it leaves one job with the current interval."""
+    """Run `superhistory ingest` on the configured interval. Safe to repeat: it leaves one job with the current interval."""
     kb_path = _kb_path(kb_path)
     if _is_mac(platform):
         return _mac_on(paths, config, kb_path, home)

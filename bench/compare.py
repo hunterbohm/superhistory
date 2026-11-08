@@ -6,7 +6,7 @@
     python3 bench/compare.py final baseline-paired --split test --paired
 
 Handled right: on the month, a correct answer, and for a question nothing fits, a lookup that also added nothing; on
-LongMemEval and LoCoMo, the test's own judge. Tokens: what the lookup and the agent's kb commands added to the
+LongMemEval and LoCoMo, the test's own judge. Tokens: what the lookup and the agent's superhistory commands added to the
 agent's prompt, plus the check's own model calls, per question. With --slice, each run is the slice, and the noise
 runs are cut to the same questions.
 

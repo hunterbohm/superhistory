@@ -1,9 +1,9 @@
 | Run | Score | Overall (778) | single-hop (423) | multi-hop (140) | temporal (165) | open-domain (50) |
 |---|---|---|---|---|---|---|
-| Varve locomo10-with-summaries-test-baseline | J | 90.2% | 93.9% | 90.7% | 85.5% | 74.0% |
+| Superhistory locomo10-with-summaries-test-baseline | J | 90.2% | 93.9% | 90.7% | 85.5% | 74.0% |
 |  | F1 | 65.6 | 74.5 | 49.6 | 64.6 | 37.5 |
 
-| Run | rows | stores | empty stores | items summarized | summary failures | check searched | check made no search | lookup errors | lookup added records | searched, added nothing | answers that ran kb tools | empty replies asked again | empty answers | evidence in lookup | evidence in lookup or tools | lookup p50 s |
+| Run | rows | stores | empty stores | items summarized | summary failures | check searched | check made no search | lookup errors | lookup added records | searched, added nothing | answers that ran superhistory tools | empty replies asked again | empty answers | evidence in lookup | evidence in lookup or tools | lookup p50 s |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
 | locomo10-with-summaries-test-baseline | 778 | 5 | 0 | 26 | 0 | 764 | 13 | 1 | 602 | 162 | 778 | 29 | 0 | 51.0% | 96.6% | 3.7 |
 

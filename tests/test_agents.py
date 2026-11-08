@@ -13,7 +13,7 @@ from kb.ai.cli import NESTED_ENV
 CLAUDE_TOOL = {"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "toolu_1", "name": "Bash",
                                                             "input": {}}], "stop_reason": "tool_use"}}
 
-KB = "'/opt/kb tools/kb' hook claude-code"
+KB = "'/opt/superhistory tools/superhistory' hook claude-code"
 
 
 class TempDir(unittest.TestCase):
@@ -38,10 +38,10 @@ class TempDir(unittest.TestCase):
 
     def backups(self):
         folder = os.path.dirname(self.file)
-        return sorted(f for f in os.listdir(folder) if ".bak-kb-" in f)
+        return sorted(f for f in os.listdir(folder) if ".bak-superhistory-" in f)
 
     def leftovers(self):
-        return [f for f in os.listdir(os.path.dirname(self.file)) if f.startswith(".kb-")]
+        return [f for f in os.listdir(os.path.dirname(self.file)) if f.startswith(".superhistory-")]
 
 
 class RegistryTest(unittest.TestCase):
@@ -66,16 +66,16 @@ class RegistryTest(unittest.TestCase):
                     agents.load(name)
 
     def test_command_quotes_the_path_and_names_the_agent(self):
-        self.assertEqual(agents.command("/usr/bin/kb", "codex"), "/usr/bin/kb hook codex")
-        self.assertEqual(agents.command("/opt/kb tools/kb", "claude-code"), KB)
+        self.assertEqual(agents.command("/usr/bin/superhistory", "codex"), "/usr/bin/superhistory hook codex")
+        self.assertEqual(agents.command("/opt/superhistory tools/superhistory", "claude-code"), KB)
 
     def test_is_kb_command_matches_any_kb_path_for_that_agent_only(self):
         self.assertTrue(agents.is_kb_command(KB, "claude-code"))
-        self.assertTrue(agents.is_kb_command("kb hook claude-code\n", "claude-code"))
-        self.assertTrue(agents.is_kb_command("/old/place/kb hook codex", "codex"))
+        self.assertTrue(agents.is_kb_command("superhistory hook claude-code\n", "claude-code"))
+        self.assertTrue(agents.is_kb_command("/old/place/superhistory hook codex", "codex"))
         self.assertFalse(agents.is_kb_command(KB, "codex"))
         self.assertFalse(agents.is_kb_command("tmux-signal running", "codex"))
-        self.assertFalse(agents.is_kb_command("kb hook codex --extra", "codex"))
+        self.assertFalse(agents.is_kb_command("superhistory hook codex --extra", "codex"))
         self.assertFalse(agents.is_kb_command(None, "codex"))
 
 
@@ -89,7 +89,7 @@ class RunTest(unittest.TestCase):
         answer = mock.patch.object(check, "answer", return_value="RECORDS")
         self.answer = answer.start()
         self.addCleanup(answer.stop)
-        # The installed entry runs in the background, as `kb hooks install` writes it.
+        # The installed entry runs in the background, as `superhistory hooks install` writes it.
         self.background = True
         real_load = agents.load
         load = mock.patch.object(agents, "load", side_effect=lambda name: real_load(name)._replace(
@@ -353,7 +353,7 @@ class JsonHookTest(TempDir):
         self.assertFalse(self.text().endswith("\n"))
 
     def test_an_older_kb_entry_with_another_path_or_timeout_is_updated_in_place(self):
-        old = {"type": "command", "command": "/old/kb hook claude-code", "timeout": 14, "statusMessage": "keep"}
+        old = {"type": "command", "command": "/old/superhistory hook claude-code", "timeout": 14, "statusMessage": "keep"}
         beside = {"type": "command", "command": "echo hi"}
         self.put({"hooks": {self.EVENT: [{"hooks": [beside, old]}]}})
         gi, hi, handler, change = self.add()
@@ -368,7 +368,7 @@ class JsonHookTest(TempDir):
         self.assertEqual(self.data()["hooks"][self.EVENT][0]["hooks"][0]["timeout"], agents.HOOK_TIMEOUT)
 
     def test_another_agents_kb_entry_is_not_this_ones(self):
-        self.put({"hooks": {self.EVENT: [{"hooks": [self.kb_handler("/kb hook codex")]}]}})
+        self.put({"hooks": {self.EVENT: [{"hooks": [self.kb_handler("/superhistory hook codex")]}]}})
         self.assertEqual(self.add()[3].action, "added")
         self.assertFalse(agents.has_json_hook(self.file, self.EVENT, "hermes"))
         self.assertTrue(agents.has_json_hook(self.file, self.EVENT, "codex"))
@@ -524,8 +524,8 @@ if __name__ == "__main__":
 
 
 class GuardedJsonWritesTest(unittest.TestCase):
-    """Claude Code, Codex and Copilot keep their hooks in the user's JSON. kb writes there only when the file reads
-    back exactly and nothing but kb's entry changes."""
+    """Claude Code, Codex and Copilot keep their hooks in the user's JSON. superhistory writes there only when the file reads
+    back exactly and nothing but superhistory's entry changes."""
 
     FILES = {"claude-code": (".claude", "settings.json"), "codex": (".codex", "hooks.json"),
              "copilot": (".copilot", "config.json")}
@@ -553,7 +553,7 @@ class GuardedJsonWritesTest(unittest.TestCase):
     def act(self, name, action):
         agent = agents.load(name)
         try:
-            changes = agent.install(self.home, agents.command("/opt/kb", name)) if action == "install" \
+            changes = agent.install(self.home, agents.command("/opt/superhistory", name)) if action == "install" \
                 else agent.uninstall(self.home)
         except agents.Unreadable as exc:
             return ["skipped", str(exc)]
@@ -590,7 +590,7 @@ class GuardedJsonWritesTest(unittest.TestCase):
         with mock.patch.object(agents, "json_hook_removed", also_drops_a_setting):
             result = self.act("claude-code", "uninstall")
         self.assertEqual(result[0], "skipped")
-        self.assertIn("more than kb's own entries", result[1])
+        self.assertIn("more than superhistory's own entries", result[1])
         self.assertEqual(self.text("claude-code"), before)
 
     def test_copilot_writes_only_its_own_entry(self):
@@ -611,7 +611,7 @@ class UnreadableSettingsTest(unittest.TestCase):
             with open(path, "w") as fh:
                 fh.write("{not json")
             with self.assertRaises(agents.Unreadable):
-                agents.add_json_hook(path, "UserPromptSubmit", "claude-code", "'/x/kb' hook claude-code")
+                agents.add_json_hook(path, "UserPromptSubmit", "claude-code", "'/x/superhistory' hook claude-code")
             with self.assertRaises(agents.Unreadable):
                 agents.remove_json_hook(path, "UserPromptSubmit", "claude-code")
             self.assertFalse(agents.has_json_hook(path, "UserPromptSubmit", "claude-code"))
@@ -622,9 +622,9 @@ class UnreadableSettingsTest(unittest.TestCase):
 
 class OwnershipAndBackupTest(unittest.TestCase):
     def test_only_a_kb_command_counts_as_kb_s_hook(self):
-        self.assertTrue(agents.is_kb_command("'/opt/kb tools/kb' hook claude-code", "claude-code"))
-        self.assertTrue(agents.is_kb_command(agents.command("/home/sam/.local/bin/kb", "codex"), "codex"))
-        for other in ("notify-send hook claude-code", "/usr/bin/kb hook codex", "kb hook claude-code --x", "kb 'unclosed"):
+        self.assertTrue(agents.is_kb_command("'/opt/superhistory tools/superhistory' hook claude-code", "claude-code"))
+        self.assertTrue(agents.is_kb_command(agents.command("/home/sam/.local/bin/superhistory", "codex"), "codex"))
+        for other in ("notify-send hook claude-code", "/usr/bin/superhistory hook codex", "superhistory hook claude-code --x", "superhistory 'unclosed"):
             with self.subTest(other):
                 self.assertFalse(agents.is_kb_command(other, "claude-code"))
 
@@ -634,7 +634,7 @@ class OwnershipAndBackupTest(unittest.TestCase):
             user = {"type": "command", "command": "notify-send hook claude-code"}
             with open(path, "w") as fh:
                 json.dump({"hooks": {"UserPromptSubmit": [{"hooks": [user]}]}}, fh)
-            agents.add_json_hook(path, "UserPromptSubmit", "claude-code", "'/x/kb' hook claude-code")
+            agents.add_json_hook(path, "UserPromptSubmit", "claude-code", "'/x/superhistory' hook claude-code")
             agents.remove_json_hook(path, "UserPromptSubmit", "claude-code")
             with open(path) as fh:
                 self.assertEqual(json.load(fh)["hooks"]["UserPromptSubmit"], [{"hooks": [user]}])
@@ -646,7 +646,7 @@ class OwnershipAndBackupTest(unittest.TestCase):
                 fh.write("original")
             agents.write(path, "first change")
             agents.write(path, "second change")
-            texts = sorted(open(os.path.join(tmp, f)).read() for f in os.listdir(tmp) if ".bak-kb-" in f)
+            texts = sorted(open(os.path.join(tmp, f)).read() for f in os.listdir(tmp) if ".bak-superhistory-" in f)
             self.assertEqual(texts, ["first change", "original"])
 
 
@@ -658,9 +658,9 @@ class KbPathTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             os.makedirs(os.path.join(tmp, "home", ".claude"))
             err = io.StringIO()
-            with mock.patch.dict(os.environ, {"KB_HOME": os.path.join(tmp, "kb"), "HOME": os.path.join(tmp, "home")}), \
+            with mock.patch.dict(os.environ, {"SUPERHISTORY_HOME": os.path.join(tmp, "superhistory"), "HOME": os.path.join(tmp, "home")}), \
                     contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
-                code = cli.main(["hooks", "install", "claude-code", "--kb", "/opt/tools/kb-custom"])
+                code = cli.main(["hooks", "install", "claude-code", "--command", "/opt/tools/superhistory-custom"])
             self.assertEqual(code, 1)
-            self.assertIn("named kb", err.getvalue())
+            self.assertIn("named superhistory", err.getvalue())
             self.assertFalse(os.path.exists(os.path.join(tmp, "home", ".claude", "settings.json")))

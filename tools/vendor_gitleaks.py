@@ -1,14 +1,14 @@
-"""Write kb/gitleaks.py, the provider token rules kb takes from gitleaks, from a gitleaks source tree at a release.
+"""Write kb/gitleaks.py, the provider token rules superhistory takes from gitleaks, from a gitleaks source tree at a release.
 
     python3 tools/vendor_gitleaks.py <gitleaks source tree> <release tag> <sha256 of its source tarball>
 
 It reads the tree's config/gitleaks.toml and LICENSE and runs nothing from the tree. It takes a rule that finds a
 token by its own shape, a provider's prefix or structure, and leaves:
-- a rule that finds a value by a word near it ("adafruit ... = <32 characters>"), which kb's named values cover and
+- a rule that finds a value by a word near it ("adafruit ... = <32 characters>"), which superhistory's named values cover and
   which would mask ordinary text by a word;
 - the few that read a command, a file or a document around a secret (SKIP);
 - of a rule with an old shape that ordinary code takes too, that shape (NARROW);
-- a rule whose every example kb's mask already hides whole, which kb knows;
+- a rule whose every example superhistory's mask already hides whole, which superhistory knows;
 - a rule that matches any of tests/ordinary.py's ordinary texts, which would mask them;
 - a rule with no example its own pattern matches.
 Each rule's examples are drawn from its own pattern (tests/samples.py), as gitleaks draws its own. The Go regular
@@ -32,14 +32,14 @@ except ImportError:  # Python 3.9 and 3.10
 
 # Rules that read around a secret, not a token's shape: a command line, a document, a file's markup, a link's host.
 SKIP = {
-    "curl-auth-header": "reads a curl command line, which kb's Authorization and curl readings cover",
-    "curl-auth-user": "reads a curl command line, which kb's curl -u reading covers",
+    "curl-auth-header": "reads a curl command line, which superhistory's Authorization and curl readings cover",
+    "curl-auth-user": "reads a curl command line, which superhistory's curl -u reading covers",
     "kubernetes-secret-yaml": "reads a YAML document around a secret",
-    "private-key": "kb reads private keys by their own structure",
+    "private-key": "superhistory reads private keys by their own structure",
     "nuget-config-password": "reads a file's markup around a password",
     "freemius-secret-key": "reads a PHP array around a secret",
-    "gitlab-session-cookie": "kb reads cookies by name",
-    "sidekiq-sensitive-url": "reads a link's host around a credential, which kb's link reading covers",
+    "gitlab-session-cookie": "superhistory reads cookies by name",
+    "sidekiq-sensitive-url": "reads a link's host around a credential, which superhistory's link reading covers",
     "generic-api-key": "finds any value by a word near it",
 }
 # Rules taken without a shape ordinary text takes: the rule, the part of its pattern taken out, the keywords that stay,
@@ -161,7 +161,7 @@ def main(tree, tag, digest):
     with open(os.path.join(tree, "LICENSE"), encoding="utf-8") as fh:
         licence = fh.read().strip()
     texts = ordinary.texts(ORDINARY, "vendor")
-    kb_mask._GITLEAKS = kb_mask._GITLEAKS_AFTER_A_BREAK = []  # kb's mask as it is without the table
+    kb_mask._GITLEAKS = kb_mask._GITLEAKS_AFTER_A_BREAK = []  # superhistory's mask as it is without the table
     allow = config.get("allowlist", {})
     taken, left = [], []
     for rule in config["rules"]:
@@ -188,7 +188,7 @@ def main(tree, tag, digest):
             left.append((rule_id, "no example its own pattern matches"))
             continue
         if all("[masked]" == kb_mask.mask(example) for example in examples):
-            left.append((rule_id, "kb's mask already hides each example whole"))
+            left.append((rule_id, "superhistory's mask already hides each example whole"))
             continue
         hit = next((t for t in texts for m in pattern.finditer(t) if secret(m, group)), None)
         if hit is not None:

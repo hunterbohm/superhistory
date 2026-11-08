@@ -1,9 +1,9 @@
 | Run | Score | Overall (762) | single-hop (418) | multi-hop (142) | temporal (156) | open-domain (46) |
 |---|---|---|---|---|---|---|
-| Varve locomo10-with-summaries-dev-k3 | J | 91.6% | 93.8% | 90.8% | 92.3% | 71.7% |
+| Superhistory locomo10-with-summaries-dev-k3 | J | 91.6% | 93.8% | 90.8% | 92.3% | 71.7% |
 |  | F1 | 67.2 | 70.5 | 56.8 | 76.7 | 37.4 |
 
-| Run | rows | stores | empty stores | items summarized | summary failures | check searched | check made no search | lookup errors | lookup added records | searched, added nothing | answers that ran kb tools | empty replies asked again | empty answers | evidence in lookup | evidence in lookup or tools | lookup p50 s |
+| Run | rows | stores | empty stores | items summarized | summary failures | check searched | check made no search | lookup errors | lookup added records | searched, added nothing | answers that ran superhistory tools | empty replies asked again | empty answers | evidence in lookup | evidence in lookup or tools | lookup p50 s |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
 | locomo10-with-summaries-dev-k3 | 762 | 5 | 0 | 26 | 3 | 731 | 31 | 0 | 678 | 53 | 663 | 20 | 0 | 80.0% | 98.4% | 3.7 |
 

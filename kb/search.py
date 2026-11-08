@@ -206,7 +206,7 @@ def search(db, query, after=None, sources=(), limit=10, before=None, keep=None, 
     for key, hit in best.items():
         hit["score"] = total[key]
     fresh = current(db, [h["id"] for h in best.values()])
-    skipped = unversioned(db, [h["id"] for h in best.values()])  # an older kb's rows, which no reader shows
+    skipped = unversioned(db, [h["id"] for h in best.values()])  # an older superhistory's rows, which no reader shows
     # A store from before ingest refused such ids can hold an item whose id or source looks like a secret.
     allowed = (h for h in best.values() if h["id"] not in skipped and (h["id"] in fresh
                or not secret_id(h["source"], h["source_id"], item_names(db, h["source"], h["source_id"]))))

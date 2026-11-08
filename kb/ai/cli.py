@@ -9,13 +9,14 @@ from dataclasses import dataclass
 from typing import Callable, NamedTuple, Optional
 from urllib.parse import quote
 
+from kb import COMMAND
 from kb.ai import Busy, NotReady, PluginSpec, Refused, Traits
 from kb.mask import mask
 
-NESTED_ENV = "KB_NESTED"
-WORKDIR_PREFIX = "kb-ai-"
+NESTED_ENV = f"{COMMAND.upper()}_NESTED"
+WORKDIR_PREFIX = f"{COMMAND}-ai-"
 TRAITS = Traits(check_budget=20.0, hedge_after=None, parallel=2, max_prompt_chars=150_000)
-# Variables that would point a CLI at a paid key, another server or the agent session that started kb. Any *_API_KEY or
+# Variables that would point a CLI at a paid key, another server or the agent session that started superhistory. Any *_API_KEY or
 # *_AUTH_TOKEN goes too: a call runs with no tools or MCP servers, so nothing in it needs one.
 SCRUB = re.compile(r"^(ANTHROPIC_|OPENAI_|CLAUDE_CODE_|CLAUDECODE$|XAI_|GROK_SESSION|CODEX_(?!HOME$))|_API_KEY$|_AUTH_TOKEN$")
 SIGNED_OUT = re.compile(r"(?i)not (logged|signed) in|(log|sign) ?in again|please (log|sign) ?in|authenticat|unauthori[sz]ed|"

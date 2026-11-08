@@ -1,7 +1,7 @@
 #!/bin/sh
 # Installs Superhistory for the current user on a Mac or Linux computer. It finds the newest release of the
 # open-source repo, downloads that release's source, and runs the installer inside it, which needs Python 3.9 or
-# newer and puts the `kb` command in ~/.local/bin. Nothing runs as root.
+# newer and puts the `superhistory` command in ~/.local/bin. Nothing runs as root.
 #
 #   curl -fsSL https://{{domain}}/install.sh | sh
 #

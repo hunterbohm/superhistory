@@ -17,7 +17,7 @@ DAY = 86400
 REPO = "acme-co/dash"
 HERE = os.path.dirname(os.path.abspath(__file__))
 FAKE_GH = os.path.join(HERE, "fixtures", "github", "fake_gh.py")
-LOG = logging.getLogger("varve-test-github")
+LOG = logging.getLogger("superhistory-test-github")
 LOG.addHandler(logging.NullHandler())
 LOG.propagate = False
 
@@ -237,7 +237,7 @@ class GitHubIngestTest(GitHubCase):
                             f'{extra}')
 
     def test_an_updated_thread_replaces_the_stored_one_and_the_watermark_follows_it(self):
-        db = store.connect(os.path.join(self.tmp, "kb.sqlite"))
+        db = store.connect(os.path.join(self.tmp, "superhistory.sqlite"))
         self.addCleanup(db.close)
         cfg = self.parse()
         first = self.now - 3 * 3600
@@ -261,7 +261,7 @@ class GitHubIngestTest(GitHubCase):
         at = self.now - DAY
         self.gh.add(1, at, title="Kept")
         self.gh.add(2, at, repo="acme-co/internal", title="Hidden")
-        db = store.connect(os.path.join(self.tmp, "kb.sqlite"))
+        db = store.connect(os.path.join(self.tmp, "superhistory.sqlite"))
         self.addCleanup(db.close)
         self.assertEqual(ingest.run(db, self.parse('involves = "priya"\nwindow_days = 30\n'
                                                    'exclude = ["acme-co/internal"]\n'), LOG, with_summaries=False), 0)

@@ -29,7 +29,7 @@ from kb import ai, store
 from kb.ai import BadAnswer, Prompt, Refused, find_json
 from kb.mask import mask, masked_log
 
-# The live copy of this module, in the personal kb, differs from here to the BODY line: its own imports and asker().
+# The live copy of this module, in a personal install, differs from here to the BODY line: its own imports and asker().
 TOKENIZE = store.TOKENIZE
 
 

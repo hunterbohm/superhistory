@@ -27,6 +27,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Literal
 
+from kb import COMMAND
 from kb.config import Secret
 from kb.mask import clip, mask
 from kb.sources import Item, Progress, SourceType
@@ -38,7 +39,7 @@ SETTLE = 6 * 3600
 HTTP_TIMEOUT = 120
 TEXT_CHARS = 24000
 TRANSCRIPT_CHARS = 200000
-USER_AGENT = "kb"
+USER_AGENT = COMMAND
 NETWORKS = {"twitter": "X", "linkedin": "LinkedIn", "threads": "Threads", "instagram": "Instagram",
             "tiktok": "TikTok", "youtube": "YouTube", "substack": "Substack"}
 

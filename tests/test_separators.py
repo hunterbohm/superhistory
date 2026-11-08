@@ -1,7 +1,7 @@
 """The separator harness. str.splitlines(), str.strip() and regex \\s treat U+2028, U+2029, U+0085, a vertical tab, a
 form feed and \\x1c to \\x1e as line breaks or whitespace; JSONL, YAML front matter, git output, TOML, HTML, mail and a
 secret's value do not. Each separator goes at a line's start and end, inside a token or a secret, and next to every
-marker kb reads (quotes, signatures, forwarded originals, front-matter keys, Codex and Hermes wrappers), through
+marker superhistory reads (quotes, signatures, forwarded originals, front-matter keys, Codex and Hermes wrappers), through
 every reader, the masking, secret references and the config. Nothing may be lost, split, re-dated, read as a quote or
 a marker, or left unmasked. A reader or an input this file lacks is a missing case: add it here.
 """
@@ -46,7 +46,7 @@ class MaskTest(SeparatorCase):
     def setUp(self):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
-        self.db = store.connect(os.path.join(tmp.name, "kb.sqlite"))
+        self.db = store.connect(os.path.join(tmp.name, "superhistory.sqlite"))
         self.addCleanup(self.db.close)
 
     def stored(self, text):
@@ -98,7 +98,7 @@ class ReaderToStoreTest(SeparatorCase):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         self.tmp = tmp.name
-        self.db = store.connect(os.path.join(tmp.name, "kb.sqlite"))
+        self.db = store.connect(os.path.join(tmp.name, "superhistory.sqlite"))
         self.addCleanup(self.db.close)
 
     def assert_stored_masked(self, item):
@@ -140,7 +140,7 @@ class IMessageToStoreTest(IMessageCase, SeparatorCase):
             self.add(950 + n, 1, f"{secret_split_by(sep)} {n}", None, 1, 0, apple_ns(2026, 10, 21, 9, n))
         item = self.items()["iMessage;-;+15550100123:2026-10-21"]
         with tempfile.TemporaryDirectory() as tmp:
-            db = store.connect(os.path.join(tmp, "kb.sqlite"))
+            db = store.connect(os.path.join(tmp, "superhistory.sqlite"))
             store.store_item(db, "imessage", "x", item.ts, item.title, item.content, item.meta)
             self.assertNotIn("tail9secret", db.execute("SELECT content FROM docs").fetchone()[0])
             db.close()
@@ -151,11 +151,11 @@ class SecretAndConfigTest(SeparatorCase):
         for name, sep in SEPARATORS.items():
             with self.subTest(separator=name):
                 value = f"{sep}pw{sep}word{sep}"
-                with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(os.environ, {"KB_SEP_SECRET": value}):
+                with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(os.environ, {"SUPERHISTORY_SEP_SECRET": value}):
                     path = os.path.join(tmp, "key")
                     with open(path, "w", encoding="utf-8") as fh:
                         fh.write(value + "\n")
-                    self.assertEqual(Secret("env:KB_SEP_SECRET").reveal(), value)
+                    self.assertEqual(Secret("env:SUPERHISTORY_SEP_SECRET").reveal(), value)
                     self.assertEqual(Secret(f"file:{path}").reveal(), value)
                     self.assertEqual(Secret(f"cmd:cat {path}").reveal(), value)
 
@@ -388,7 +388,7 @@ class CodexTrustTest(SeparatorCase):
                     os.makedirs(os.path.join(home, ".codex"))
                     with open(os.path.join(home, ".codex", "config.toml"), "w") as fh:
                         fh.write('# mine\nmodel = "x"\n')
-                    kb = agents.command("/opt/kb", "codex")
+                    kb = agents.command("/opt/superhistory", "codex")
                     self.assertNotIn("skipped", [c.action for c in codex_agent.AGENT.install(home, kb)])
                     self.assertTrue(codex_agent.AGENT.installed(home))
                     codex_agent.AGENT.uninstall(home)

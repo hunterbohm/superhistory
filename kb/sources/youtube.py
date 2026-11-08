@@ -29,6 +29,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Tuple
 
+from kb import COMMAND
 from kb.mask import clip, mask
 from kb.sources import Item, SourceType
 
@@ -46,7 +47,7 @@ PER_VIDEO = 30
 HTTP_TIMEOUT = 30
 TEXT_CHARS = 20000
 TRANSCRIPT_CHARS = 200000
-USER_AGENT = "Mozilla/5.0 (compatible; kb)"
+USER_AGENT = f"Mozilla/5.0 (compatible; {COMMAND})"
 NOT_READY = ("is_live", "is_upcoming", "post_live")
 ATOM = {"a": "http://www.w3.org/2005/Atom", "yt": "http://www.youtube.com/xml/schemas/2015"}
 

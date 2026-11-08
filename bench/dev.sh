@@ -10,7 +10,7 @@ set -uo pipefail
 label=${1:?usage: bench/dev.sh LABEL [--slice]}
 here=$(cd "$(dirname "$0")" && pwd)
 py=${BENCH_PYTHON:-python3}
-logs=${BENCH_LOGS:-$HOME/.cache/kb-bench/logs/hillclimb}
+logs=${BENCH_LOGS:-$HOME/.cache/superhistory-bench/logs/hillclimb}
 mkdir -p "$logs"
 lme=() loc=()
 if [[ ${2:-} == --slice ]]; then lme=(--slice 100) loc=(--slice 150); fi

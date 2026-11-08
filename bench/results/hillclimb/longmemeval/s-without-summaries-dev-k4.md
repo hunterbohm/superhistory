@@ -1,8 +1,8 @@
 | Run | Questions | Overall | Task-averaged | single-session-user | single-session-assistant | single-session-preference | multi-session | knowledge-update | temporal-reasoning | Abstention |
 |---|---|---|---|---|---|---|---|---|---|---|
-| Varve s-without-summaries-dev-k4 | 250 | 90.4% | 92.8% | 100.0% | 100.0% | 93.3% | 79.1% | 94.9% | 89.4% | 93.3% |
+| Superhistory s-without-summaries-dev-k4 | 250 | 90.4% | 92.8% | 100.0% | 100.0% | 93.3% | 79.1% | 94.9% | 89.4% | 93.3% |
 
-| Run | rows | stores | empty stores | items summarized | summary failures | check searched | check made no search | lookup errors | lookup added records | searched, added nothing | answers that ran kb tools | empty replies asked again | empty answers | evidence in lookup | evidence in lookup or tools | lookup p50 s |
+| Run | rows | stores | empty stores | items summarized | summary failures | check searched | check made no search | lookup errors | lookup added records | searched, added nothing | answers that ran superhistory tools | empty replies asked again | empty answers | evidence in lookup | evidence in lookup or tools | lookup p50 s |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
 | s-without-summaries-dev-k4 | 250 | 250 | 0 | 0 | 0 | 219 | 31 | 0 | 182 | 37 | 213 | 1 | 0 | 70.8% | 100.0% | 2.9 |
 

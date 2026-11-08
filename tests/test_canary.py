@@ -1,8 +1,8 @@
-"""The canary harness. A different secret is planted in every kind of input kb takes from outside: config secrets,
+"""The canary harness. A different secret is planted in every kind of input superhistory takes from outside: config secrets,
 an environment variable, `cmd:` secrets that fail or time out, item text and metadata, file and repository paths,
-the output and errors of ssh, gh and git, and HTTP and IMAP answers, malformed ones included. Then every kb command
-and every library entry point the Sync client and the Cloud engine call runs, and no canary may reach stdout,
-stderr, a log record, a file kb writes under its data, log or cache folders, check.log, or the text of an exception.
+the output and errors of ssh, gh and git, and HTTP and IMAP answers, malformed ones included. Then every superhistory command
+and every library entry point the Sync client and the sync relay call runs, and no canary may reach stdout,
+stderr, a log record, a file superhistory writes under its data, log or cache folders, check.log, or the text of an exception.
 
 Each canary has a secret's shape, because mask() can only mask what looks like a secret. A path this harness does
 not cover is a missing case: add the input or the call here.
@@ -49,7 +49,7 @@ NAMES = ("machinename", "hostname", "sourcename", "timestamp", "mark", "ghargs",
          "trialsource", "setupkey", "setupexclude", "imaplong", "aimodel", "oauthsecret", "oauthtoken", "cctitle",
          "cxtitle", "cxtool", "hmuser", "hmtitle", "ghbody", "gmbody", "gmurl", "sumq", "sums", "suma", "synctitle",
          "synctext", "syncmeta", "syncsplit", "syncid", "oldtitle", "oldcheck", "oldid", "oldsnip", "oldpage", "oldslice", "oldsplit", "hugeerror")
-# Each of these sits across a limit where kb cuts text, so only the 12-character check sees a cut made before masking.
+# Each of these sits across a limit where superhistory cuts text, so only the 12-character check sees a cut made before masking.
 CUT = {"cctitle": 84, "cxtitle": 84, "cxtool": 284, "hmtitle": 84, "hmuser": 2984, "ghbody": 19984, "gmbody": 19984,
        "sumq": 384, "sums": 1484, "suma": 1984, "synctitle": 74, "oldtitle": 74, "oldcheck": 104, "oldpage": cli.PAGE - 16,
        "oldslice": summarize.MAX_INPUT_CHARS // summarize.SLICES - 16, "oldsplit": 10 * store.CHUNK - 16}
@@ -209,7 +209,7 @@ class CanaryTest(unittest.TestCase):
         self.addCleanup(tmp.cleanup)
         self.tmp = os.path.realpath(tmp.name)
         self.home = os.path.join(self.tmp, "home")
-        self.paths = Paths.under(os.path.join(self.tmp, "kb"))
+        self.paths = Paths.under(os.path.join(self.tmp, "superhistory"))
         self.seen = []
         self.bin = os.path.join(self.tmp, "bin")
         os.makedirs(self.bin)
@@ -220,8 +220,8 @@ class CanaryTest(unittest.TestCase):
                                                ghout=CANARY["ghout"], updated=updated,
                                                ghbody=f"token {CANARY['ghout']} " + across("ghbody")))
         for tool in ("systemctl", "launchctl", "crontab"):
-            # Turning a job on fails, so kb shows the tool's own output, which holds a canary.
-            self._program(tool, f"#!{sys.executable}\nimport sys\nprint('unit kb-ingest {CANARY['schedout']}')\n"
+            # Turning a job on fails, so superhistory shows the tool's own output, which holds a canary.
+            self._program(tool, f"#!{sys.executable}\nimport sys\nprint('unit superhistory-ingest {CANARY['schedout']}')\n"
                                 f"sys.stderr.write('note {CANARY['schedout']}\\n')\n"
                                 "sys.exit(1 if {'enable', 'load', 'bootstrap', 'start', '-'} & set(sys.argv[1:]) else 0)\n")
         for kind in ("ghtail", "aitail"):
@@ -256,9 +256,9 @@ class CanaryTest(unittest.TestCase):
         os.makedirs(os.path.dirname(self.paths.config_file), exist_ok=True)
         with open(self.paths.config_file, "w") as fh:
             fh.write(self._config())
-        env = {"HOME": self.home, "KB_HOME": os.path.dirname(self.paths.config_file), "KB_CANARY_KEY": CANARY["env"],
+        env = {"HOME": self.home, "SUPERHISTORY_HOME": os.path.dirname(self.paths.config_file), "SUPERHISTORY_CANARY_KEY": CANARY["env"],
                "PATH": self.bin + os.pathsep + os.environ["PATH"], "GIT_CONFIG_NOSYSTEM": "1",
-               "KB_CANARY_OAUTH": CANARY["oauthsecret"]}
+               "SUPERHISTORY_CANARY_OAUTH": CANARY["oauthsecret"]}
         # create=True lets this file run on code from before the masking work, where it must find the leaks. Retries
         # skip their backoff, since the fake plug-in's failures would otherwise wait up to a minute each.
         no_wait = functools.partial(ai.with_retries, sleep=lambda seconds: None)
@@ -287,7 +287,7 @@ class CanaryTest(unittest.TestCase):
         self._connections = {}
 
     def _sessions(self):
-        """Agent sessions whose first prompt, tool call and long message each cross a limit kb cuts at."""
+        """Agent sessions whose first prompt, tool call and long message each cross a limit superhistory cuts at."""
         stamp = (NOW - timedelta(days=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
         claude = os.path.join(self.home, ".claude", "projects", "-work", "c1.jsonl")
         os.makedirs(os.path.dirname(claude))
@@ -339,7 +339,7 @@ class CanaryTest(unittest.TestCase):
 plugin = "anthropic-compatible"
 base_url = "http://127.0.0.1:{self.server.server_address[1]}"
 model = "fake"
-key = "env:KB_CANARY_KEY"
+key = "env:SUPERHISTORY_CANARY_KEY"
 [hosts.noisy]
 ssh = "noisy"
 python = "{sys.executable}"
@@ -387,7 +387,7 @@ password = "cmd:printf ok"
 {mail}address = "{ME}"
 auth = "oauth"
 client_id = "client-1"
-client_secret = "env:KB_CANARY_OAUTH"
+client_secret = "env:SUPERHISTORY_CANARY_OAUTH"
 [sources.mail_refused]
 {mail}address = "refused@example.com"
 password = "cmd:printf %s {CANARY['cmd']}"
@@ -490,7 +490,7 @@ password = "cmd:echo {CANARY['cmdfail']} >&2; exit 3"
         return "password=" + CANARY["turntail"] + " " + "." * (1499 - len(CANARY["turntail"]))
 
     def drive_setup(self):
-        """kb setup from the start, over the existing config, with answers and a typed key that hold secrets."""
+        """superhistory setup from the start, over the existing config, with answers and a typed key that hold secrets."""
         kept = open(self.paths.config_file).read()
         answers = {"Replace it": "yes", "computer's name": "desk", "Folder of notes": self.notes,
                    "leave out": f"Private, {CANARY['setupexclude']}", "Gmail address": "", "Which one": "anthropic",
@@ -507,8 +507,8 @@ password = "cmd:echo {CANARY['cmdfail']} >&2; exit 3"
             fh.write(kept)
 
     def drive_stored_rows(self):
-        """Rows that reach the store without store_item: an item another store sent, written as Sync and Cloud
-        write it, and rows an earlier version of mask() stored, which today's changes. Search, get and summarize read
+        """Rows that reach the store without store_item: an item another store sent, written as Sync
+        writes it, and rows an earlier version of mask() stored, which today's changes. Search, get and summarize read
         both, and an old row's text is cut at a title, a snippet, a page, a summarizer slice and between two chunks,
         which remask has to join to mask."""
         db = store.connect(self.paths.db)
@@ -597,7 +597,7 @@ password = "cmd:echo {CANARY['cmdfail']} >&2; exit 3"
         self.assertIn("Loaded 1 made-up records", "".join(self.seen[shown:]), "only the ordinary record loads")
 
     def drive_hooks(self):
-        """Every agent's hook gets a prompt, a session name and earlier turns that hold secrets, and kb hooks edits a
+        """Every agent's hook gets a prompt, a session name and earlier turns that hold secrets, and superhistory hooks edits a
         user's settings that hold one."""
         transcript = os.path.join(self.tmp, "session.jsonl")
         with open(transcript, "w") as fh:
@@ -623,7 +623,7 @@ password = "cmd:echo {CANARY['cmdfail']} >&2; exit 3"
             json.dump({"env": {"API_TOKEN": CANARY["hooksettings"]}}, fh)
         os.makedirs(os.path.join(self.home, ".codex"), exist_ok=True)
         for action in ("status", "install", "status", "uninstall"):
-            self.kb("hooks", action, "--kb", os.path.join(self.bin, "kb"))
+            self.kb("hooks", action, "--command", os.path.join(self.bin, "superhistory"))
 
     def test_every_command(self):
         self.kb("ingest")
@@ -675,7 +675,7 @@ password = "cmd:echo {CANARY['cmdfail']} >&2; exit 3"
         self.kb("try", "--question", "q1")
         shown = len(self.seen)
         for action in ("status", "on", "status", "off"):
-            self.kb("schedule", action, "--kb", os.path.join(self.bin, "kb"))
+            self.kb("schedule", action, "--command", os.path.join(self.bin, "superhistory"))
         self.assertIn("[masked]", "".join(self.seen[shown:]), "the scheduler's own output was shown, masked")
         self.drive_trial_month()
         self.drive_setup()
