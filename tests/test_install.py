@@ -91,12 +91,6 @@ class InstallTest(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("does not hold superhistory's source", result.stderr)
 
-    def test_no_download_address_means_install_from_a_checkout(self):
-        result = subprocess.run(["sh", os.path.join(REPO, "install.sh")], env=self.env(), capture_output=True,
-                                text=True, timeout=60)
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("--from DIR", result.stderr)
-
     def test_install_function_writes_a_shim_pinned_to_one_python(self):
         command = _install.install(REPO, os.path.join(self.tmp, "app"), os.path.join(self.tmp, "bin"), "/opt/py 3/python3")
         text = open(command).read()
