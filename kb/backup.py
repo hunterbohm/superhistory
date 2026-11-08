@@ -46,7 +46,7 @@ import unicodedata
 import zlib
 from pathlib import Path
 
-from kb import __version__, ids, store
+from kb import NAME, __version__, ids, store
 
 MAGIC = b"SUPERHISTORY BACKUP\n"
 FORMAT = 1
@@ -287,7 +287,7 @@ def make(paths, dest, passphrase, overwrite=False, iterations=None):
     live = {os.path.realpath(p) for p in (target, f"{target}-wal", f"{target}-shm", paths.config_file,
                                           paths.config_file.parent / ids.FILE_NAME)}
     if os.path.realpath(dest) in live:
-        raise BackupError(f"{dest} is one of your live Superhistory files. Name another file for the backup.")
+        raise BackupError(f"{dest} is one of your live {NAME} files. Name another file for the backup.")
     if os.path.lexists(dest) and not overwrite:
         raise BackupError(f"{dest} exists. Name another file, or add --force to replace it.")
     config = _optional(paths.config_file)
@@ -358,13 +358,13 @@ def _opened(path, fh):
     """The header of the backup in `fh`, as (iterations, salt), after the checks that need no passphrase."""
     data = fh.read(BODY)
     if not data.startswith(MAGIC[:len(data)]) or not data:
-        raise BackupError(f"{path} is not a Superhistory backup")
+        raise BackupError(f"{path} is not a {NAME} backup")
     if len(data) < BODY:
         raise BackupError(f"{path} is cut short, so it is not a whole backup")
     _, number, iterations, salt = HEADER.unpack(data[:HEADER.size])
     if number > FORMAT:
-        raise BackupError(f"{path} is a format {number} backup, made by a newer Superhistory than this one, which reads "
-                          f"up to format {FORMAT}. Update Superhistory, then restore it.")
+        raise BackupError(f"{path} is a format {number} backup, made by a newer {NAME} than this one, which reads "
+                          f"up to format {FORMAT}. Update {NAME}, then restore it.")
     if number < 1 or not 1 <= iterations <= MAX_ITERATIONS:
         raise BackupError(f"{path} is damaged: its first bytes are not a backup's")
     return data, iterations, salt
@@ -407,7 +407,7 @@ def read(path, passphrase, store_to=None):
 
 
 def _unpack(stream, store_to):
-    unreadable = "passed its check but holds something this Superhistory cannot read"
+    unreadable = f"passed its check but holds something this {NAME} cannot read"
     try:
         with gzip.GzipFile(fileobj=stream, mode="rb") as gz, tarfile.open(fileobj=gz, mode="r|") as tar:
             manifest = config = install = None

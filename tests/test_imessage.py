@@ -333,7 +333,7 @@ class RunnerTest(Case):
         return config.parse(text)
 
     def database(self):
-        db = store.connect(os.path.join(self.root, "kb", "kb.db"))
+        db = store.connect(os.path.join(self.root, "superhistory", "kb.db"))
         self.addCleanup(db.close)
         return db
 

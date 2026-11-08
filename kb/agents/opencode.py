@@ -3,17 +3,19 @@ import os
 import shlex
 import shutil
 
-from kb import agents
+from kb import COMMAND, agents
 from kb.agents import Agent, Change
 
-FILE_NAME = "kb-context.js"
-MARKER = "// kb-context: written by `kb hooks install opencode`"
+FILE_NAME = f"{COMMAND}.js"
+MARKER = f"// {COMMAND}: written by `{COMMAND} hooks install opencode`"
+
+ARGV = f"__{COMMAND.upper()}_ARGV__"
 
 # OpenCode calls every function the module exports as a plugin, so only the plugin is exported.
 PLUGIN = MARKER + """
 import { spawn } from "node:child_process";
 
-const KB = __KB_ARGV__;
+const ARGV = """ + ARGV + """;
 const TIMEOUT_MS = __TIMEOUT_MS__;
 
 function ask(payload) {
@@ -31,7 +33,7 @@ function ask(payload) {
       done("");
     }, TIMEOUT_MS);
     try {
-      child = spawn(KB[0], KB.slice(1), { stdio: ["pipe", "pipe", "ignore"] });
+      child = spawn(ARGV[0], ARGV.slice(1), { stdio: ["pipe", "pipe", "ignore"] });
       child.on("error", () => done(""));
       child.stdout.setEncoding("utf8");
       child.stdout.on("data", (chunk) => {
@@ -81,7 +83,7 @@ def _plugin(home):
 
 
 def _render(kb_command):
-    return agents.fill(PLUGIN, {"__KB_ARGV__": json.dumps(shlex.split(kb_command)),
+    return agents.fill(PLUGIN, {ARGV: json.dumps(shlex.split(kb_command)),
                                 "__TIMEOUT_MS__": str(agents.HOOK_TIMEOUT * 1000)})
 
 
@@ -99,7 +101,7 @@ def install(home, kb_command):
     if old == new:
         return [Change(path, "unchanged")]
     if os.path.exists(path) and MARKER not in old:
-        return [Change(path, "skipped", "a file kb did not write has this name")]
+        return [Change(path, "skipped", f"a file {COMMAND} did not write has this name")]
     agents.write(path, new)
     return [Change(path, "updated" if old else "added")]
 
@@ -110,7 +112,7 @@ def uninstall(home):
     if not old:
         return [Change(path, "unchanged")]
     if MARKER not in old:
-        return [Change(path, "skipped", "a file kb did not write has this name")]
+        return [Change(path, "skipped", f"a file {COMMAND} did not write has this name")]
     os.remove(path)
     return [Change(path, "removed")]
 

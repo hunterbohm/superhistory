@@ -25,10 +25,10 @@ def month_store():
     if not _month:
         tmp = tempfile.TemporaryDirectory()
         unittest.addModuleCleanup(tmp.cleanup)
-        db = store.connect(Path(tmp.name) / "kb.sqlite")
+        db = store.connect(Path(tmp.name) / "superhistory.sqlite")
         _month["items"] = trial.load(db, trial.month_dir())
         db.close()
-        _month["path"] = Path(tmp.name) / "kb.sqlite"
+        _month["path"] = Path(tmp.name) / "superhistory.sqlite"
     return _month["path"], _month["items"]
 
 
@@ -77,7 +77,7 @@ class BackupCase(unittest.TestCase):
             return db.execute("SELECT count(*) FROM docs WHERE source_id=?", (source_id,)).fetchone()[0] > 0
 
     def tree(self):
-        return sorted(str(p.relative_to(self.tmp)) for p in self.tmp.rglob("*") if p.is_file() and p.name != "kb.lock")
+        return sorted(str(p.relative_to(self.tmp)) for p in self.tmp.rglob("*") if p.is_file() and p.name != "superhistory.lock")
 
 
 class RoundTripTest(BackupCase):
@@ -190,7 +190,7 @@ class SecrecyTest(BackupCase):
     def test_no_plain_copy_is_left_behind(self):
         self.make()
         left = [p for p in self.tree() if p.endswith(".sqlite") or "partial" in p or ".backup-" in p]
-        self.assertEqual(left, [f"home/data/kb.sqlite"])
+        self.assertEqual(left, ["home/data/superhistory.sqlite"])
         self.assertEqual([p.name for p in (self.tmp / "home" / "data").iterdir() if p.name.startswith(".backup-")], [])
 
 
@@ -378,7 +378,7 @@ class ReplaceTest(BackupCase):
 
         with mock.patch.object(backup, "_check_store", check):
             self.restore()
-        self.assertIn("kb.sqlite.before-restore", seen[0])
+        self.assertIn("superhistory.sqlite.before-restore", seen[0])
 
     def test_an_interrupted_restore_puts_the_old_store_back(self):
         with mock.patch.object(backup, "_check_store", side_effect=[None, KeyboardInterrupt()]):

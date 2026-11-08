@@ -12,6 +12,7 @@ import tempfile
 import traceback
 
 import kb
+from kb import COMMAND
 from kb.mask import holds_secret, id_names, mask, mask_all, secret_in_id
 from kb.sources import Gone, Item, Progress
 
@@ -102,7 +103,7 @@ def serve(request):
 
 def _serve(request):
     if sys.version_info < (3, 9):
-        sys.stderr.write("kb needs Python 3.9 or newer on this computer\n")
+        sys.stderr.write(f"{COMMAND} needs Python 3.9 or newer on this computer\n")
         return 3
     from kb import config
     from kb.sources import Excludes, Run

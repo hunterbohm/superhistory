@@ -32,7 +32,7 @@ class TempDB(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
-        self.path = os.path.join(self.tmp.name, "data", "kb.sqlite")
+        self.path = os.path.join(self.tmp.name, "data", "superhistory.sqlite")
         self.db = store.connect(self.path)
         self.addCleanup(self.db.close)
 
@@ -72,7 +72,7 @@ class ConnectTest(TempDB):
             ro.execute("DELETE FROM docs")
 
     def test_exclusive_lock_is_held_by_one_run_at_a_time(self):
-        lock = os.path.join(self.tmp.name, "data", "kb.lock")
+        lock = os.path.join(self.tmp.name, "data", "superhistory.lock")
         with store.exclusive(lock) as first:
             self.assertTrue(first)
             with store.exclusive(lock) as second:
@@ -342,7 +342,7 @@ class HealthTest(TempDB):
 
     def test_state_an_older_kb_wrote_shows_no_secret_and_goes_at_the_next_failure(self):
         token = "ghp_" + "Zq7Lm2Xc9Vb4Nn8Rt1Yw" + "Kd5Hs3Pf"
-        # An older kb cut a failure line to 200 characters before masking it, and kept positions read from any id.
+        # An older superhistory cut a failure line to 200 characters before masking it, and kept positions read from any id.
         self.db.executemany("INSERT INTO ingest_state(source, key, watermark) VALUES (?, ?, ?)", [
             (store.STATE, "fail:notes@desk", "2026-10-28T10:00:00Z " + "r" * 170 + " and " + token[:19]),
             ("_summarize_failed", "notes|desk:token=walrus2secret9.md", "3f2a9c"),
@@ -452,7 +452,7 @@ class ItemHashTest(TempDB):
         self.assertEqual(summary, {"of_hash": item["hash"]}, "the summary follows its item; its prefix hash goes")
     def older(self, sid, size=store.CHUNK, times=1):
         """An item as an earlier version of the mask stored it, which missed the password, and the hash it recorded.
-        Its rows record that version: rows that record none are an older kb's, which remask leaves to kb rebuild."""
+        Its rows record that version: rows that record none are an older superhistory's, which remask leaves to superhistory rebuild."""
         legacy_store.store_item(self.db, "s", sid, iso(), "Office VPN", self.TEXT * times, {}, size)
         self.db.execute("UPDATE docs SET masked=? WHERE source_id=?", (STALE, sid))
         self.db.commit()
@@ -551,9 +551,9 @@ class MaskVersionTest(TempDB):
         self.add("a", "short note")
         self.old("b", "older note")
         self.db.execute("INSERT INTO docs(kind, source, source_id, ts, title, content, metadata, masked) "
-                        "VALUES ('doc', 's', 'c', ?, 't', 'an older kb', '{}', NULL)", (iso(),))
+                        "VALUES ('doc', 's', 'c', ?, 't', 'an older superhistory', '{}', NULL)", (iso(),))
         self.assertEqual(store.current(self.db, self.ids()), set(self.ids("a")))
-        self.assertEqual(store.old_rows(self.db), 1, "a row of no version is the older kb's, which a rebuild replaces")
+        self.assertEqual(store.old_rows(self.db), 1, "a row of no version is the older superhistory's, which a rebuild replaces")
 
     def test_a_chunk_is_current_only_while_every_chunk_of_its_item_is(self):
         self.add("a", long_body("kumquat"))
@@ -705,7 +705,7 @@ class MaskVersionTest(TempDB):
         self.assertNotIn("walrus2secret9", "".join(r[4] for r in self.rows()))
 
     def test_an_update_by_an_older_kb_clears_the_version(self):
-        # The statements an older kb runs: _repoint's, remask's, and a plain edit of a row's text.
+        # The statements an older superhistory runs: _repoint's, remask's, and a plain edit of a row's text.
         self.add("a", "same text", meta={"path": "/one"})
         rid = self.ids()[0]
         for sql, args in (("UPDATE docs SET metadata=? WHERE id=?", (json.dumps({"password": "walrus2secret9"}), rid)),
@@ -716,7 +716,7 @@ class MaskVersionTest(TempDB):
                 self.db.execute(sql, args)
                 self.assertEqual(store.current(self.db, [rid]), set())
         store.remask(self.db)
-        self.assertEqual(store.current(self.db, [rid]), set(), "remask leaves an older kb's row")
+        self.assertEqual(store.current(self.db, [rid]), set(), "remask leaves an older superhistory's row")
         self.db.commit()
         with self.assertRaises(store.NeedsRebuild):
             store.connect(self.path)
@@ -750,8 +750,8 @@ class MaskVersionTest(TempDB):
 
     def test_remask_deletes_an_old_item_whose_id_looks_like_a_secret(self):
         self.old(f"desk:key-{self.TOKEN}.md", "a note")
-        with self.assertLogs("varve-test-remask", "WARNING") as logs:
-            self.assertEqual(store.remask(self.db, log=logging.getLogger("varve-test-remask")), (1, 0))
+        with self.assertLogs("superhistory-test-remask", "WARNING") as logs:
+            self.assertEqual(store.remask(self.db, log=logging.getLogger("superhistory-test-remask")), (1, 0))
         self.assertIn("rename it", logs.output[0], "the deletion is logged")
         self.assertNotIn(self.TOKEN[:12], logs.output[0], "with the id masked")
         self.assertEqual(self.ids(), [])
@@ -785,7 +785,7 @@ class MaskVersionTest(TempDB):
                          ["credentials", "password", "secret", "token"], "a note with no profile is read whole")
 
     def test_an_items_names_come_from_its_own_rows_not_its_summaries(self):
-        # An older kb's summary rows copied only url, path and host, so they record no profile.
+        # An older superhistory's summary rows copied only url, path and host, so they record no profile.
         sid = "desk:secret-project:20261028_101500_a1b2c3"
         item = {"host": "desk", "profile": "secret-project", "session_id": "20261028_101500_a1b2c3"}
         for n in range(2):
@@ -821,7 +821,7 @@ class MaskVersionTest(TempDB):
 
 
 class UnversionedRowTest(TempDB):
-    """Rows that record no mask version came from an older kb. A store that holds one does not open, and a connection
+    """Rows that record no mask version came from an older superhistory. A store that holds one does not open, and a connection
     already open, when an older writer clears a row's version, reads and masks no such row."""
     SECRET = "Qx7RedisBytes2026zz"
 
@@ -836,7 +836,7 @@ class UnversionedRowTest(TempDB):
         for readonly in (True, False):
             with self.subTest(readonly=readonly), self.assertRaises(store.NeedsRebuild) as raised:
                 store.connect(self.path, readonly=readonly)
-            self.assertIn("kb rebuild", str(raised.exception))
+            self.assertIn("superhistory rebuild", str(raised.exception))
 
     def test_a_store_whose_last_writer_left_rows_in_its_wal_is_refused_untouched(self):
         from tests.support import commit_and_die, store_files
@@ -858,7 +858,7 @@ class UnversionedRowTest(TempDB):
                                   "VALUES ('doc', 's', 'in-wal', ?, 'w', 'an older row in the WAL', '{}', NULL)", iso())
         folder = os.path.dirname(self.path)
         before = store_files(folder)
-        link = os.path.join(tempfile.mkdtemp(dir=os.path.dirname(folder)), "kb.sqlite")
+        link = os.path.join(tempfile.mkdtemp(dir=os.path.dirname(folder)), "superhistory.sqlite")
         os.symlink(self.path, link)
         for readonly in (True, False):
             with self.subTest(readonly=readonly), self.assertRaises(store.NeedsRebuild):
@@ -896,7 +896,7 @@ class UnversionedRowTest(TempDB):
             with self.subTest(readonly=readonly), self.assertRaises(store.NeedsRebuild):
                 store.connect(self.path, readonly=readonly)
         with open(self.path, "rb") as fh:
-            self.assertEqual(fh.read(), before, "kb wrote nothing to it, so the older kb still opens it as it was")
+            self.assertEqual(fh.read(), before, "superhistory wrote nothing to it, so the older superhistory still opens it as it was")
 
 
 class FtsTriggerTest(TempDB):

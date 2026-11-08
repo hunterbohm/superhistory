@@ -1,6 +1,6 @@
 # The check on LongMemEval and LoCoMo
 
-Each question goes to the check as a new message, the way the product's hook sends one. The check adds what it finds ahead of the question. The answer model then answers, and it can run `kb search` and `kb get` for up to 4 turns. Each test's own scoring grades the answer. `bench/public/DEVIATIONS.md` lists every difference from the published setups, and `table.md` in each folder holds the full tables with the rivals' published numbers.
+Each question goes to the check as a new message, the way the product's hook sends one. The check adds what it finds ahead of the question. The answer model then answers, and it can run `superhistory search` and `superhistory get` for up to 4 turns. Each test's own scoring grades the answer. `bench/public/DEVIATIONS.md` lists every difference from the published setups, and `table.md` in each folder holds the full tables with the rivals' published numbers.
 
 ## Commands
 
@@ -10,7 +10,7 @@ python3 bench/public/longmemeval.py --set s --split test --label baseline|midpoi
 uv run bench/public/locomo.py --split dev --label NAME
 ```
 
-The rows in this folder ran on whole sets, before the sets were split into dev and test halves (`bench/splits.py`), and from a copy of kb's code, before the package landed. A run now names its half: `dev`, `test`, or `all` for both. A run that reaches the test half counts as one of its three runs, takes all of it, and cannot start over; `bench/splits/heldout-runs.tsv` logs each one. Split runs write to `bench/results/hillclimb/`. The check runs from this repo's package, and each run records the code's hash and commit in its `.run.json`. A run where any question failed exits 1. `--count` prints the model calls a run would make and makes none. `--table` prints the table from the rows already written. A rerun runs only questions with no row yet, unless `--fresh`.
+The rows in this folder ran on whole sets, before the sets were split into dev and test halves (`bench/splits.py`), and from a copy of Superhistory's code, before the package landed. A run now names its half: `dev`, `test`, or `all` for both. A run that reaches the test half counts as one of its three runs, takes all of it, and cannot start over; `bench/splits/heldout-runs.tsv` logs each one. Split runs write to `bench/results/hillclimb/`. The check runs from this repo's package, and each run records the code's hash and commit in its `.run.json`. A run where any question failed exits 1. `--count` prints the model calls a run would make and makes none. `--table` prints the table from the rows already written. A rerun runs only questions with no row yet, unless `--fresh`.
 
 ## Results
 
@@ -61,7 +61,7 @@ The first runs got an empty final answer on 55 questions: 51 in LoCoMo, 3 in S a
 
 The four sets ran partly at the same time on one gateway, with 8 to 10 workers each. Lookup times were measured under that load.
 
-| Run | Summary calls | Check calls | kb tool calls by the answer model | Judge calls | Wall time |
+| Run | Summary calls | Check calls | Superhistory tool calls by the answer model | Judge calls | Wall time |
 |---|---|---|---|---|---|
 | LongMemEval S | 0 (20,554 needed, over the 3,000 limit) | at most 976 | 1,625 | 505 | 13 min, plus 1 min of reruns |
 | LongMemEval S sample | 2,046 | at most 94 | 169 | 50 | 7.5 min |
@@ -85,4 +85,4 @@ Each question made 1 to 5 answer-model calls. Rows record tool calls, not turns.
 - No one has measured how often `gpt-6.1-sol` agrees with GPT-4o or with people on these prompts. LongMemEval's over-97% human agreement is for its GPT-4o judge.
 - None of the rivals' numbers was reproduced here.
 - LoCoMo's category names follow LoCoMo's code and Mem0's mapping. Some published pages use other names for the same numbers.
-- The check ran from a copy of kb's code with the product's prompt wording, not from the product package itself.
+- The check ran from a copy of Superhistory's code with the product's prompt wording, not from the product package itself.
