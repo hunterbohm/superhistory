@@ -12,9 +12,9 @@ swing the factor.
 import re
 import time
 
-# CPU seconds `measure()` takes on the reference machine: the MSI (Linux), Python 3.12, best of 5 runs. Measured
+# CPU seconds `measure()` takes on the reference machine: a Linux desktop, Python 3.12, best of 5 runs. Measured
 # six times there, it gave 0.203 to 0.215; this is the middle. The factor is this machine's time over that, and
-# never below 1, so a faster machine is held to the caps as they were set on the MSI.
+# never below 1, so a faster machine is held to the caps as they were set on the reference machine.
 REFERENCE_SECONDS = 0.21
 
 _RUNS = 5
@@ -23,7 +23,7 @@ _factor = None
 
 def _workload():
     """Fixed work of the kind the masks do: scan, substitute, split and join over repetitive text."""
-    text = ("keytool -alias \"team cert\" -storepass hunter2 \\\\\\\" key=value; Bearer abcDEF123456 "
+    text = ("keytool -alias \"team cert\" -storepass letmein \\\\\\\" key=value; Bearer abcDEF123456 "
             "-----BEGIN KEY----- line\n") * 400
     words = re.compile(r"[A-Za-z0-9_]+")
     options = re.compile(r"(?:-{1,2}[a-z][a-z-]*)\s+(\S+)")
