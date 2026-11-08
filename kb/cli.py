@@ -193,12 +193,20 @@ def _logger(paths):
     # token; and superhistory's own handlers mask again whatever reaches them from elsewhere.
     if not any(isinstance(f, MaskFilter) for f in log.filters):
         log.addFilter(MaskFilter())
+    # One process can open more than one store (a program that runs superhistory, or a test suite), so handlers made
+    # for another log folder are closed and replaced: a warning goes to the log of the store this call is for.
+    target = os.path.abspath(paths.log("ingest"))
+    for handler in [h for h in log.handlers if getattr(h, "kb_owned", False)]:
+        if getattr(handler, "kb_log", None) != target:
+            log.removeHandler(handler)
+            handler.close()
     if not any(getattr(handler, "kb_owned", False) for handler in log.handlers):
         fmt = logging.Formatter("%(asctime)s %(levelname)s %(message)s")
         for handler in (logging.FileHandler(paths.log("ingest")), logging.StreamHandler()):
             handler.setFormatter(fmt)
             handler.addFilter(MaskFilter())
             handler.kb_owned = True
+            handler.kb_log = target
             log.addHandler(handler)
     return masked_log(log)
 

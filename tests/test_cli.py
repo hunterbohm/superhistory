@@ -1129,3 +1129,30 @@ class RebuildMarksTest(TempHome):
         self.assertIn("carried 1 supersede mark across", out)
         self.assertEqual([(m[1], m[2], m[4], m[6]) for m in self.marks()],
                          [(f"{me}:plan-v1.md", "", f"{me}:plan-v2.md", 5)])
+
+
+class LoggerFollowsHomeTest(unittest.TestCase):
+    def test_a_second_store_in_one_process_logs_to_its_own_folder(self):
+        import logging
+        from pathlib import Path
+        from kb.paths import Paths
+        log = logging.getLogger("kb")
+        kept = list(log.handlers)
+        self.addCleanup(lambda: [log.removeHandler(h) or h.close() for h in list(log.handlers) if h not in kept])
+        homes = []
+        for _ in range(2):
+            home = Path(tempfile.mkdtemp())
+            self.addCleanup(lambda h=home: __import__("shutil").rmtree(h, ignore_errors=True))
+            paths = Paths(config_file=home / "config.toml", data_dir=home / "data", log_dir=home / "logs",
+                          cache_dir=home / "cache")
+            with contextlib.redirect_stderr(io.StringIO()):
+                cli._logger(paths).warning("written for %s", home.name)
+            homes.append((home, paths))
+        for home, paths in homes:
+            with open(paths.log("ingest")) as fh:
+                text = fh.read()
+            self.assertIn(f"written for {home.name}", text)
+            other = [h for h, _ in homes if h != home][0]
+            self.assertNotIn(f"written for {other.name}", text)
+        owned = [h for h in log.handlers if getattr(h, "kb_owned", False)]
+        self.assertEqual(len(owned), 2, "one file and one stream handler, for the latest folder only")

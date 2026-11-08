@@ -1750,9 +1750,9 @@ class ReviewTwentyOneTest(unittest.TestCase):
                     took = {}
                     for size in (2048, 8192):
                         text = self.shapes(keys(size))[shape]
-                        started = time.process_time()
-                        masking._parse_container(text)
-                        took[size] = time.process_time() - started
+                        # The best of three runs, as took_call measures, so one slow run on a busy machine does
+                        # not read as a cost that grows faster than the input.
+                        took[size] = took_call(lambda: masking._parse_container(text))
                     self.assertLess(took[8192], 6 * max(took[2048], 0.01), took)
 
     def test_a_refused_literal_holding_a_password_hides_what_main_hides(self):
