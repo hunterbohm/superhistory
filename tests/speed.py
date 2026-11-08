@@ -21,12 +21,13 @@ import sys
 import time
 
 # CPU seconds `measure()` takes on the reference machine, a Linux desktop, best of 5 runs, under each Python CI runs.
-# Thirty runs of each there gave 0.161 to 0.188 under 3.12 and 0.178 to 0.202 under 3.9; each is the middle. That
-# machine's 3.9 is the slower at this work, and at the masking tests too (15 to 20%), while GitHub's two run alike, so
-# each version is held to its own time. Any other version is held to the larger, which keeps its caps the stricter.
-# The factor is this machine's time over that, and never below 1, so a faster machine is held to the caps as they
-# were set on the reference machine.
-REFERENCE_SECONDS = {(3, 9): 0.184, (3, 12): 0.165}
+# Fifty runs of each there gave 0.161 to 0.188 under 3.12 and 0.178 to 0.202 under 3.9; each time here is the one
+# nine runs in ten came in under, so the factor there is 1 but on a rare slow run, and the caps are as strict as they
+# were set. That machine's 3.9 is the slower at this work, and at the masking tests too (15 to 20%), while GitHub's
+# two run alike, so each version is held to its own time. Any other version is held to the larger, which keeps its
+# caps the stricter. The factor is this machine's time over that, and never below 1, so a faster machine is held to
+# the caps as they were set.
+REFERENCE_SECONDS = {(3, 9): 0.194, (3, 12): 0.173}
 
 _FROZEN = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures", "main_mask.py")
 _RUNS = 5
