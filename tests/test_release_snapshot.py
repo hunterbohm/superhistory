@@ -1628,6 +1628,10 @@ class InstallTest(SourceCase):
                 shutil.copytree(str(origin), str(self.src / name), ignore=shutil.ignore_patterns("__pycache__"))
             else:
                 shutil.copy(str(origin), str(self.src / name))
+        # The package ships fonts, so the list that allows those files comes along: the rows for files in this tree.
+        rows = [line for line in (REPO / "tools" / "release_binaries.tsv").read_text(encoding="utf-8").splitlines(True)
+                if line.startswith("kb/")]
+        write(self.src, {"tools/release_binaries.tsv": "".join(rows)})
         git(self.src, "add", "-A")
         git(self.src, "commit", "-q", "-m", "the real package")
 

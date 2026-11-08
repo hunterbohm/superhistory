@@ -22,9 +22,43 @@ printed text come from them, so a rename is one edit.
 | `kb/backup.py` | The encrypted backup file (its layout and version are in the module's docstring), and the restore that puts it back. It needs the `openssl` command and no Python package. |
 | `kb/ids.py` | The install id and the prefix on every stored `source_id`. |
 | `kb/ai/` | AI plug-ins. Each one answers `ask(prompt, timeout)` with the model's text. |
+| `kb/dashboard/` | `superhistory dashboard`: a local page over the store, read-only. `catalog.py` finds projects and people, `views.py` shapes each page's data, `server.py` serves it on 127.0.0.1, and `static/` holds the page, its script, style and fonts. |
 | `kb/sources/` | Source types. Each module defines `TYPE`, and its name is the type's name. |
 | `kb/sources/plugin.py` | The `plugin` type: runs a program from the plug-ins folder and reads its items from JSON lines. The format is in `docs/plugins.md`. |
 | `kb/sync/` | Reserved for the Sync client. |
+
+## The dashboard
+
+`superhistory dashboard` serves a page on 127.0.0.1 only, on the port the user picks or a free one, and stops on Ctrl-C.
+It opens the store read-only (`mode=ro` and `query_only`), answers only GET and HEAD, refuses a request whose Host is
+not its own address (a web page cannot reach it by DNS rebinding), and loads nothing from outside: the fonts, script
+and style ship in `kb/dashboard/static/`, and a content-security policy blocks anything else. The fonts are under the
+SIL Open Font License, copied in `static/OFL.txt`. A read-only connection to a store in WAL mode can leave an empty
+`-wal` or `-shm` file beside it; the store's own file is never written.
+
+Every account on the computer can reach a loopback port, so the data is behind keys made for each run. The printed
+address holds a token as `?access=TOKEN`, good for one visit, and the token opens no data. That visit is swapped for a
+second, different value, the session key: the page carries it in a meta tag, its script keeps it in `sessionStorage` and
+takes the token out of the address, and every request for data sends the session key in the `X-Superhistory-Key`
+header. A second `?access=TOKEN` gets 403, and the token sent as the header gets 403, so a copy of the address read from
+a process list, a terminal's scrollback or a browser's history is worthless once it has been used. The session key is in
+no cookie and no address, so a program listening on another port of the same computer never receives it. The page and
+its static files hold no data and need no key, so a reload keeps working in the tab (its `sessionStorage`) and a tab
+without the key shows a page that says it has none. The command opens the browser on a file only the user can read, in a
+folder only the user can enter (`open.html` in a new `superhistory-*` folder of the temp directory, modes 0600 and
+0700), that redirects to the address, so the token is never in the browser's command line. The file is removed as soon
+as the address has been used, and when the dashboard stops. Opening the address is the one visit: a link scanner or
+prefetcher that fetches it first uses it up, and running the command again makes a new one. The terminal shows the
+address, which is the user's own. A program running as the same user can still read the store itself, and so can read
+this.
+
+Items are grouped from what sources record, never from a name. `kb/dashboard/catalog.py` explains the rules at its top:
+an item's family follows its metadata (`cwd` or `session_id`, `account`, `chat`, `sha`, `repo` with a `kind`), a project
+is the folder an agent session ran in or the repository of a commit or pull request (a home folder is no project), and
+a person is a text participant or a mail correspondent other than the user's own accounts, keyed by name so that one
+person texted and mailed is one page. Senders whose threads all carry Gmail's category labels are listed apart as
+lists and notifications. Text shown is masked as `get` masks it: a row of today's mask version as stored, any other
+row masked again whole first.
 
 ## Where Sync plugs in
 

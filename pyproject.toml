@@ -22,4 +22,5 @@ include = ["kb*"]
 
 [tool.setuptools.package-data]
 "kb" = ["sample_month/*.jsonl"]
+"kb.dashboard" = ["static/*"]
 "kb._vendor.tomli" = ["LICENSE"]
