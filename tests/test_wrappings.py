@@ -20,6 +20,7 @@ from unittest import mock
 
 from kb import mask as masking, store
 from kb.mask import mask, mask_all
+from tests.speed import scaled
 
 PASSWORD = "Zq7vRt2LmX9k"
 TOKEN = "ghp_Ab3dE6gH9jK2mN5pQ8sT1vW4yZ7bC0eF3hJ6"
@@ -476,9 +477,9 @@ class ReviewTwoTest(unittest.TestCase):
         self.assertGreater(len(large), 3 * len(small))
         self.assertNotIn(PASSWORD, mask(large))
         self.assertLess(took(large), 6 * took(small) + 0.3)
-        self.assertLess(took(large), 1.5)
+        self.assertLess(took(large), scaled(1.5))
         run = "\\" * 16000
-        self.assertLess(took(f"keytool -storepass {run}\"x"), 1.0)
+        self.assertLess(took(f"keytool -storepass {run}\"x"), scaled(1.0))
 
 
 class ReviewThreeTest(unittest.TestCase):
@@ -547,7 +548,7 @@ class ReviewThreeTest(unittest.TestCase):
             unit = json.dumps(unit)
         small, large = took(unit * (4000 // len(unit) + 1)), took(unit * (16000 // len(unit) + 1))
         self.assertLess(large, 6 * small + 0.3, (small, large))
-        self.assertLess(took("\\" * 16000 + "u001b[31m"), 1.0)
+        self.assertLess(took("\\" * 16000 + "u001b[31m"), scaled(1.0))
 
 
 class ReviewFourTest(unittest.TestCase):
@@ -803,7 +804,7 @@ class ReviewSevenTest(unittest.TestCase):
             with self.subTest(text=text[:12]):
                 start = time.process_time()
                 out = mask(text)
-                self.assertLess(time.process_time() - start, 1.0, len(text))
+                self.assertLess(time.process_time() - start, scaled(1.0), len(text))
                 self.assertNotIn(PASSWORD, out)
         # a command hidden behind a long digit run, and a large list, do not crash and do not leak (no tight bound,
         # as a text this large costs about the same on #29: it is the base mask cost, not a guard)
@@ -841,7 +842,7 @@ class ReviewSevenTest(unittest.TestCase):
             with self.subTest(run=run[:4]):
                 start = time.process_time()
                 found = masking._number_run(text, 0, len(text), [])
-                self.assertLess(time.process_time() - start, 1.0)
+                self.assertLess(time.process_time() - start, scaled(1.0))
                 self.assertFalse(found)
         # and it still finds a run of 1,000 among them, however it is split by underscores, but not in a string
         for run in ("9" * 1000, "9_" * 999 + "9", "12_" + "9" * 998, "x_" + "9" * 1000, "0x_" + "9" * 1000):
@@ -881,7 +882,7 @@ class ArgumentListCostTest(unittest.TestCase):
         self.assertNotIn(PASSWORD, json.dumps(mask_all(large)))
         little, lots = took_call(lambda: mask_all(small)), took_call(lambda: mask_all(large))
         self.assertLess(lots, 6 * little + 0.2, (little, lots))  # four times the list, about four times the CPU
-        self.assertLess(lots, 3.0, lots)  # a small constant per item: CPU time (process_time), not inflated by load
+        self.assertLess(lots, scaled(3.0), lots)  # a small constant per item: CPU time (process_time), not inflated by load
 
     def test_json_in_text_cost(self):
         small, large = json.dumps(self._items(500)), json.dumps(self._items(2000))
@@ -889,7 +890,7 @@ class ArgumentListCostTest(unittest.TestCase):
         self.assertNotIn(PASSWORD, mask(large))
         little, lots = took(small), took(large)
         self.assertLess(lots, 6 * little + 0.2, (little, lots))
-        self.assertLess(lots, 5.0, lots)
+        self.assertLess(lots, scaled(5.0), lots)
 
 
 class ReviewEightTest(unittest.TestCase):
@@ -982,7 +983,7 @@ class ReviewNineTest(unittest.TestCase):
         # 0.70 s against 0.2 s on main; 3.6 s before the fix).
         floor = took_call(lambda: [mask(item) for item in large])
         self.assertLess(lots, 1.5 * floor + 0.2, (floor, lots))
-        self.assertLess(lots, 2.0, lots)
+        self.assertLess(lots, scaled(2.0), lots)
 
 
 def _scanned_span(text, start):
@@ -1076,7 +1077,7 @@ class ReviewTenTest(unittest.TestCase):
                 self.assertEqual(mask(small), small)
                 little, lots = self.took_uncached(small), self.took_uncached(large)
                 self.assertLess(lots, 6 * little + 0.1, (little, lots))  # four times the text, about four times the CPU
-                self.assertLess(lots, 1.0, lots)
+                self.assertLess(lots, scaled(1.0), lots)
 
     def test_the_spans_found_are_the_scans(self):
         import random
@@ -1149,7 +1150,7 @@ class ReviewElevenTest(unittest.TestCase):
         self.assertNotIn(PASSWORD, json.dumps(mask_all(small)))
         little, lots = took_call(lambda: mask_all(small)), took_call(lambda: mask_all(large))
         self.assertLess(lots, 6 * little + 0.2, (little, lots))  # four times the list, about four times the CPU
-        self.assertLess(lots, 20.0, lots)  # each value after a secret's flag reads its line twice: a constant per value
+        self.assertLess(lots, scaled(20.0), lots)  # each value after a secret's flag reads its line twice: a constant per value
 
 
 class ReviewTwelveTest(unittest.TestCase):
@@ -1241,7 +1242,7 @@ class ReviewThirteenTest(unittest.TestCase):
         for steps, depth in ((10, 40), (12, 40)):
             text = self.nested(["keytool", "-storepass", PASSWORD], steps, depth)
             with self.subTest(steps=steps, depth=depth):
-                self.assertLess(took(text), 3.0)
+                self.assertLess(took(text), scaled(3.0))
 
     def test_a_password_two_steps_down_still_masks(self):
         for steps, depth in ((2, 1), (2, 3), (3, 2)):
