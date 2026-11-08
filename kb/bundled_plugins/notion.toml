@@ -1,0 +1,8 @@
+[sources.notion]
+type = "plugin"
+plugin = "notion"
+timeout_seconds = 600
+[sources.notion.settings]
+run_cap = 150               # pages read in one run; a big workspace is read over several runs
+[sources.notion.secrets]
+token = "file:~/.config/superhistory/keys/notion.token"

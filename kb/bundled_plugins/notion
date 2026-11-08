@@ -1,0 +1,256 @@
+#!/usr/bin/env python3
+"""Superhistory source plug-in: Notion pages, read-only.
+
+It signs in with an internal integration token you made at notion.so/profile/integrations, and reads the pages that
+integration was shared with. It lists the pages by last edit time, newest first, down to the watermark, then reads the
+oldest of them first, up to `run_cap` pages a run, so a big workspace is read over several runs. Each page is one item:
+its title, its properties and the plain text of its blocks. docs/plugins.md is the format this speaks. Python 3.9+,
+standard library only.
+"""
+import datetime
+import json
+import re
+import sys
+import time
+import urllib.error
+import urllib.request
+
+API = "https://api.notion.com/v1"
+VERSION = "2022-06-28"
+ATTEMPTS = 6
+MAX_WAIT = 120
+TIMEOUT = 30
+RETRY_STATUS = (429, 500, 502, 503, 504)
+NO_RECURSE = ("child_page", "child_database")
+STAMP = "%Y-%m-%dT%H:%M:%S.000Z"
+
+
+class Refused(Exception):
+    def __init__(self, code, reason):
+        super().__init__(f"HTTP {code} {reason}")
+        self.code, self.reason = code, reason
+
+
+def fail(message):
+    print(message, file=sys.stderr)
+    sys.exit(1)
+
+
+class Notion:
+    def __init__(self, token, base, pause):
+        self.token, self.base, self.pause, self.last = token, base, pause, 0.0
+
+    def call(self, path, body=None):
+        """The JSON answer of one request, at most one every `pause` seconds. A 429 or 5xx waits as long as
+        Retry-After says (or 1, 2, 4... seconds) and tries again, up to ATTEMPTS times. Any other refusal raises
+        Refused."""
+        data = json.dumps(body).encode() if body is not None else None
+        headers = {"Authorization": "Bearer " + self.token, "Notion-Version": VERSION,
+                   "Content-Type": "application/json"}
+        for attempt in range(1, ATTEMPTS + 1):
+            time.sleep(max(self.last + self.pause - time.monotonic(), 0))
+            self.last = time.monotonic()
+            request = urllib.request.Request(self.base + path, data=data, headers=headers,
+                                             method="POST" if data is not None else "GET")
+            try:
+                with urllib.request.urlopen(request, timeout=TIMEOUT) as resp:
+                    return json.load(resp)
+            except urllib.error.HTTPError as exc:
+                try:
+                    code = json.load(exc).get("code", "")
+                except (ValueError, AttributeError):
+                    code = ""
+                if exc.code in RETRY_STATUS:
+                    wait = exc.headers.get("Retry-After", "")
+                    wait = float(wait) if re.fullmatch(r"\d+(\.\d+)?", wait or "") else 2.0 ** (attempt - 1)
+                    if attempt == ATTEMPTS or wait > MAX_WAIT:
+                        fail(f"Notion kept answering HTTP {exc.code}; try again later (it asked to wait {wait:g} s)")
+                    print(f"HTTP {exc.code} from Notion; waiting {wait:g} s", file=sys.stderr)
+                    time.sleep(wait)
+                    continue
+                raise Refused(exc.code, code)
+            except (urllib.error.URLError, OSError) as exc:
+                if attempt == ATTEMPTS:
+                    fail(f"cannot reach Notion: {getattr(exc, 'reason', exc)}")
+                time.sleep(2.0 ** (attempt - 1))
+
+
+def parse_time(text):
+    for form in ("%Y-%m-%dT%H:%M:%S.%fZ", "%Y-%m-%dT%H:%M:%SZ"):
+        try:
+            return datetime.datetime.strptime(text, form)
+        except ValueError:
+            pass
+    fail("Notion gave a time that is not ISO 8601; this plug-in cannot read it")
+
+
+def rich(parts):
+    return "".join(part.get("plain_text", "") for part in parts or [])
+
+
+def prop(value):
+    """One page property as short text, or "" when it holds nothing worth searching."""
+    kind = value.get("type")
+    data = value.get(kind)
+    if kind in ("rich_text", "title"):
+        return rich(data)
+    if kind in ("select", "status"):
+        return (data or {}).get("name", "")
+    if kind == "multi_select":
+        return ", ".join(o.get("name", "") for o in data or [])
+    if kind == "number":
+        return "" if data is None else str(data)
+    if kind == "checkbox":
+        return "yes" if data else "no"
+    if kind == "date":
+        return " to ".join(p for p in ((data or {}).get("start"), (data or {}).get("end")) if p)
+    if kind in ("url", "email", "phone_number"):
+        return data or ""
+    if kind == "people":
+        return ", ".join(p.get("name", "") for p in data or [])
+    if kind == "formula":
+        return prop(data) if isinstance(data, dict) else ""
+    return ""
+
+
+def title_of(page):
+    for value in page.get("properties", {}).values():
+        if value.get("type") == "title":
+            return rich(value["title"]).strip()
+    return ""
+
+
+def block_text(block):
+    kind = block.get("type")
+    data = block.get(kind) or {}
+    if kind == "child_page":
+        return data.get("title", "")
+    if kind == "child_database":
+        return data.get("title", "")
+    if kind == "table_row":
+        return " | ".join(rich(cell) for cell in data.get("cells", []))
+    if kind in ("bookmark", "embed", "link_preview"):
+        return " ".join(p for p in (rich(data.get("caption")), data.get("url", "")) if p)
+    if kind == "equation":
+        return data.get("expression", "")
+    if kind == "to_do":
+        return ("[x] " if data.get("checked") else "[ ] ") + rich(data.get("rich_text"))
+    return rich(data.get("rich_text")) if isinstance(data, dict) else ""
+
+
+class Page:
+    """The text of one page's blocks, read depth first, with a cap on blocks so one huge page cannot stall a run."""
+
+    def __init__(self, notion, max_blocks, max_depth):
+        self.notion, self.room, self.max_depth, self.cut = notion, max_blocks, max_depth, False
+
+    def read(self, block_id, depth=0):
+        cursor, lines = None, []
+        while True:
+            path = f"/blocks/{block_id}/children?page_size=100" + (f"&start_cursor={cursor}" if cursor else "")
+            try:
+                answer = self.notion.call(path)
+            except Refused as exc:
+                if depth and exc.code in (403, 404):
+                    return lines
+                raise
+            for block in answer.get("results", []):
+                if self.room <= 0:
+                    self.cut = True
+                    return lines
+                self.room -= 1
+                text = block_text(block)
+                if text.strip():
+                    lines.append("  " * depth + text)
+                if block.get("has_children") and block.get("type") not in NO_RECURSE:
+                    if depth + 1 < self.max_depth:
+                        lines += self.read(block["id"], depth + 1)
+                    else:
+                        self.cut = True
+            cursor = answer.get("next_cursor") if answer.get("has_more") else None
+            if not cursor:
+                return lines
+
+
+def listing(notion, threshold):
+    """Every page edited after `threshold` (a datetime or None), newest first. The search lists by edit time, so it
+    stops at the first page that is not newer than the threshold."""
+    body = {"filter": {"property": "object", "value": "page"},
+            "sort": {"direction": "descending", "timestamp": "last_edited_time"}, "page_size": 100}
+    while True:
+        try:
+            answer = notion.call("/search", body)
+        except Refused as exc:
+            if exc.code == 401:
+                fail("Notion refused the token (HTTP 401). Check the token file, and that the integration still "
+                     "exists at notion.so/profile/integrations.")
+            fail(f"Notion's search answered {exc}")
+        for page in answer.get("results", []):
+            if threshold and parse_time(page["last_edited_time"]) <= threshold:
+                return
+            yield page
+        if not answer.get("has_more"):
+            return
+        body = dict(body, start_cursor=answer["next_cursor"])
+
+
+def item(notion, page, settings):
+    reader = Page(notion, int(settings.get("max_blocks", 3000)), int(settings.get("max_depth", 6)))
+    body = "\n".join(reader.read(page["id"]))
+    title = title_of(page) or "(untitled)"
+    props = [f"{name}: {text}" for name, value in page.get("properties", {}).items()
+             if value.get("type") != "title" and (text := prop(value)).strip()]
+    parts = [title] + ([""] + props if props else []) + ([""] + [body] if body else [])
+    out = {"id": page["id"], "time": page["last_edited_time"], "title": title, "text": "\n".join(parts),
+           "meta": {"created": page.get("created_time", ""), "cut": reader.cut}}
+    if page.get("url"):
+        out["url"] = page["url"]
+    return out
+
+
+def main():
+    request = json.load(sys.stdin)
+    settings, secrets, since = request["settings"], request["secrets"], request["watermark"]
+    if not secrets.get("token"):
+        fail("notion needs a token under secrets: the internal integration token from notion.so/profile/integrations")
+    notion = Notion(secrets["token"], settings.get("base_url", API), float(settings.get("min_interval_seconds", 0.34)))
+    cap = int(settings.get("run_cap", 150))
+    overlap = datetime.timedelta(minutes=int(settings.get("overlap_minutes", 10)))
+    started = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
+    mark = parse_time(since) if since else None
+    pages = sorted(listing(notion, mark), key=lambda p: parse_time(p["last_edited_time"]))
+    # The cap is soft at its edge: pages edited in the same minute as the last one read come with it, since the next
+    # run starts after that minute.
+    count = min(cap, len(pages))
+    while 0 < count < len(pages) and pages[count]["last_edited_time"] == pages[count - 1]["last_edited_time"]:
+        count += 1
+    done = pages[:count]
+    for page in done:
+        if page.get("archived") or page.get("in_trash"):
+            print(json.dumps({"id": page["id"], "gone": True}))
+            continue
+        try:
+            print(json.dumps(item(notion, page, settings)))
+        except Refused as exc:
+            if exc.code == 401:
+                fail("Notion refused the token (HTTP 401). Check the token file.")
+            if exc.code in (403, 404):
+                print(json.dumps({"id": page["id"], "gone": True}))
+                print(f"Notion lets the integration read no blocks of page {page['id']} ({exc}); dropped it",
+                      file=sys.stderr)
+                continue
+            fail(f"Notion answered {exc} reading page {page['id']}")
+    if count < len(pages):
+        # Pages are left, so the mark stays on the last one read, with no overlap that a busy workspace could use to
+        # stand still.
+        mark = max(mark or datetime.datetime.min, parse_time(done[-1]["last_edited_time"]))
+    elif pages:
+        # Notion's search can be a little late to show an edit, so go back a few minutes and read the newest again.
+        mark = max(mark or datetime.datetime.min, parse_time(pages[-1]["last_edited_time"]) - overlap)
+    elif not mark:
+        mark = started - overlap
+    print(json.dumps({"watermark": mark.strftime(STAMP)}))
+
+
+if __name__ == "__main__":
+    main()

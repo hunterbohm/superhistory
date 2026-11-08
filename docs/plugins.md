@@ -115,6 +115,12 @@ Every item passes through masking before it is stored: its title, its text and i
 replaced, the same as for a note or a mail. Masking is not a reason to print secrets; read only what should be in the
 knowledge base.
 
+## Bundled plug-ins
+
+Superhistory ships two: `google-calendar` and `notion`. `superhistory plugins install NAME` copies one into the plug-ins folder
+as your own file and prints its config table; the README says how to sign in to each. They are ordinary plug-ins of this format,
+written in Python's standard library only, so they are also examples to copy.
+
 ## Try it
 
 ```
