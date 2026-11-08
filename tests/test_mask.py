@@ -4985,6 +4985,26 @@ class Base64ReviewTwentyEighthTest(unittest.TestCase):
         text = "[masked]" + nl + appended + nl + words
         self.check_rows(text, text, "[masked]" + nl + words)
 
+    def test_a_lone_runs_lines_are_read_through_jsons_escaped_slash(self):
+        # The run that alone goes where main reads no rest is read as every reader of a key's fragment reads one: a
+        # slash JSON escapes ("\/", as PHP writes JSON, or by its code) is a slash of its base64, so the run's line goes
+        # on past it, and so do the lines below that go on with it as a key's body is wrapped. The run had ended at the
+        # first escaped slash, and the rest of the key's lines showed, as on main. Words past the body stay, as on
+        # main, and a fresh row reads no such rest. Made up.
+        import random
+        import string
+        nl, bs = chr(10), chr(92)
+        r = random.Random(2805)
+        piece = lambda n: "".join(r.choice(string.ascii_letters + string.digits) for _ in range(n))
+        lines = [piece(38) + "/" + piece(25), piece(10) + "/" + piece(30) + "/" + piece(22), piece(19) + "/" + piece(2) + "=="]
+        lead = "MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwgg"  # 38 before the slash: main's rest starts only past 40
+        for first in (lines[0], lead + lines[0][38:]):
+            for slash in (bs + "/", bs + "u002f", bs + "u002F"):
+                body = nl.join(line.replace("/", slash) for line in [first] + lines[1:])
+                text = "intro notes" + nl + "[masked]" + nl + body + nl + "walrus moved today" + nl + nl + "next paragraph"
+                self.check_rows(text, text, "intro notes" + nl + "[masked]" + nl + "walrus moved today" + nl + nl
+                                + "next paragraph")
+
     def test_a_key_encoded_whole_and_cut_before_its_header_is_masked_from_its_paragraphs_start(self):
         # A key's body and footer, or its footer alone, encoded as base64 with no header above them, are masked from
         # their paragraph's start, as main's reading of a plain footer with no header masks one: a line of encoded
