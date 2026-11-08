@@ -1,0 +1,3 @@
+{
+  "no_ci_reason": "No test CI on GitHub (Actions here only builds releases). Before review, the author runs the full unittest suite on the MSI under Python 3.9 and 3.12, plus the Mac checks when a change touches macOS sources."
+}
