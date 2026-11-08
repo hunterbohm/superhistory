@@ -3,6 +3,7 @@ import os
 import sqlite3
 import tempfile
 import unittest
+from unittest import mock
 from datetime import datetime, timedelta, timezone
 
 from kb import search, store
@@ -23,7 +24,7 @@ class TempDB(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
-        self.path = os.path.join(self.tmp.name, "data", "kb.sqlite")
+        self.path = os.path.join(self.tmp.name, "data", "superhistory.sqlite")
         self.db = store.connect(self.path)
         self.addCleanup(self.db.close)
 
@@ -288,7 +289,7 @@ class SearchTest(TempDB):
         self.add("fresh", "ibis", title="fresh", ts=iso())
         fresh = search.search(self.db, "ibis")[0]["score"]
         self.db.execute("UPDATE docs SET ts=?", (iso(timedelta(days=36500)),))
-        self.db.execute("UPDATE docs SET masked=?", (store.VERSION,))  # the test's edit, not an older kb's
+        self.db.execute("UPDATE docs SET masked=?", (store.VERSION,))  # the test's edit, not an older superhistory's
         old = search.search(self.db, "ibis")[0]["score"]
         self.assertAlmostEqual(fresh / old, 2.0, places=2)
 
@@ -448,11 +449,49 @@ class SearchTest(TempDB):
         self.assertEqual(search.pointer(hit["meta"], machine="laptop"), "/tmp/x.md")
 
 
+    def test_scoring_only_the_top_rows_finds_the_same_hits(self):
+        for i in range(30):
+            self.add(f"item{i}", f"deploy notes {i} " + "deploy " * (i % 7) + ("rollback" if i % 4 == 0 else ""),
+                     title=f"item{i}", ts=f"2026-10-{i % 28 + 1:02d}T00:00:00Z", source="a" if i % 2 else "b")
+        queries = [("deploy rollback", {}), ("deploy", {"after": "2026-10-15T00:00:00Z"}),
+                   ("deploy", {"sources": ("a",)}), ("rollback", {"before": "2026-10-10T00:00:00Z"})]
+        for query, kw in queries:
+            with self.subTest(query=query, **kw), mock.patch.object(search, "CANDIDATES", 4):
+                with mock.patch.object(search, "TOP_ROWS", 10 ** 9):
+                    full = [h["id"] for h in search.search(self.db, query, **kw)]
+                for top in (1, 3, 12):
+                    with mock.patch.object(search, "TOP_ROWS", top):
+                        self.assertEqual([h["id"] for h in search.search(self.db, query, **kw)], full)
+
+    def test_the_top_rows_alone_answer_a_search_whose_lists_fill(self):
+        for i in range(20):
+            self.add(f"long{i}", f"deploy step {i}. " + "deploy rollback notes " * (300 + 40 * i), title=f"long{i}")
+            self.add(f"short{i}", f"deploy rollback {i} " + "deploy " * i, title=f"short{i}")
+        with mock.patch.object(search, "CANDIDATES", 4):
+            with mock.patch.object(search, "TOP_ROWS", 10 ** 9):
+                full = [h["id"] for h in search.search(self.db, "deploy rollback")]
+            with mock.patch.object(search, "TOP_ROWS", 90), \
+                    mock.patch.object(search, "_grouped", wraps=search._grouped) as grouped:
+                self.assertEqual([h["id"] for h in search.search(self.db, "deploy rollback")], full)
+        self.assertEqual(grouped.call_count, 2, "one pass per list, no fallback to every row")
+        self.assertEqual(dict(self.db.execute("SELECT kind, count(*) FROM docs GROUP BY kind")), {"doc": 20, "raw": 84},
+                         "104 matching rows, more than the 90 kept, so the cut is real; the summaries rank below every raw row")
+
+    def test_a_tie_across_the_cut_is_not_cut(self):
+        for i in range(12):
+            self.add(f"same{i}", "zebra", title=f"same{i}", source="a")
+        with mock.patch.object(search, "CANDIDATES", 2):
+            with mock.patch.object(search, "TOP_ROWS", 10 ** 9):
+                full = [h["id"] for h in search.search(self.db, "zebra")]
+            for top in (1, 2, 5):
+                with self.subTest(top=top), mock.patch.object(search, "TOP_ROWS", top):
+                    self.assertEqual([h["id"] for h in search.search(self.db, "zebra")], full)
+
 class SupersedeMarkTest(TempDB):
     SECRET = "sk-ant-api03-" + "Q" * 40  # made up
 
     def older_row(self, sid):
-        # A row an older kb wrote under an older mask, before ingest refused an id that holds a secret.
+        # A row an older superhistory wrote under an older mask, before ingest refused an id that holds a secret.
         self.db.execute("INSERT INTO docs(kind, source, source_id, ts, title, content, metadata, masked) VALUES "
                         "('doc', 's', ?, ?, 'old', 'walrus notes', '{}', 'older-mask')", (sid, iso()))
         self.db.commit()
@@ -472,7 +511,7 @@ class SupersedeMarkTest(TempDB):
     def test_remask_deletes_the_item_and_every_mark_that_names_its_id(self):
         self.add("plain", "walrus notes")
         self.older_row(self.SECRET)
-        # Marks written before kb refused them, or synced from another computer.
+        # Marks written before superhistory refused them, or synced from another computer.
         self.db.executemany("INSERT INTO supersedes(source, source_id, marked_by, new_source, new_source_id, at, v) "
                             "VALUES (?,?,?,?,?,'2026-10-01',1)",
                             [("s", "plain", MINE, "s", self.SECRET), ("s", self.SECRET, THEIRS, "s", "plain"),

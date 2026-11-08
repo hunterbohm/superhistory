@@ -3,7 +3,7 @@
 | Superhistory locomo10-with-summaries-test-baseline-paired | J | 89.5% | 94.3% | 88.6% | 83.6% | 70.0% |
 |  | F1 | 64.4 | 73.9 | 47.8 | 63.4 | 34.1 |
 
-| Run | rows | stores | empty stores | items summarized | summary failures | check searched | check made no search | lookup errors | lookup added records | searched, added nothing | answers that ran kb tools | empty replies asked again | empty answers | evidence in lookup | evidence in lookup or tools | lookup p50 s |
+| Run | rows | stores | empty stores | items summarized | summary failures | check searched | check made no search | lookup errors | lookup added records | searched, added nothing | answers that ran superhistory tools | empty replies asked again | empty answers | evidence in lookup | evidence in lookup or tools | lookup p50 s |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
 | locomo10-with-summaries-test-baseline-paired | 778 | 5 | 0 | 25 | 1 | 765 | 13 | 0 | 593 | 172 | 778 | 37 | 0 | 51.3% | 95.5% | 3.6 |
 

@@ -18,7 +18,7 @@ from kb.paths import Paths
 from kb.sources import Gone, Item, Progress, SourceType
 
 TS = "2025-01-01T10:00:00Z"
-LOG = logging.getLogger("varve-test-ingest")
+LOG = logging.getLogger("superhistory-test-ingest")
 LOG.addHandler(logging.NullHandler())
 LOG.propagate = False
 
@@ -81,7 +81,7 @@ class IngestCase(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
-        self.db = store.connect(os.path.join(self.tmp.name, "kb.sqlite"))
+        self.db = store.connect(os.path.join(self.tmp.name, "superhistory.sqlite"))
         self.addCleanup(self.db.close)
 
     def run_unit(self, script, host="m1"):
@@ -108,7 +108,7 @@ class IngestCase(unittest.TestCase):
 
 class OlderStateTest(IngestCase):
     def test_an_ingest_drops_failure_lines_an_older_kb_wrote(self):
-        # An older kb cut this line before masking it, so the piece of a token in it is too short to know.
+        # An older superhistory cut this line before masking it, so the piece of a token in it is too short to know.
         self.db.execute("INSERT INTO ingest_state(source, key, watermark) VALUES (?, 'fail:fake@m2', ?)",
                         (store.STATE, "2026-10-28T10:00:00Z token ghp_Zq7Lm2Xc9Vb4Nn8"))
         self.db.commit()
@@ -412,10 +412,10 @@ class NoInstallIdTest(unittest.TestCase):
         reader = types.SimpleNamespace(events=lambda *_: iter([Item("secret-project:20261028_101500_a1b2c3",
                                                                      "2026-10-01", "Plan", "pelican plan",
                                                                      {"profile": "secret-project"}, 1)]))
-        db = store.connect(os.path.join(tmp.name, "kb.sqlite"))
+        db = store.connect(os.path.join(tmp.name, "superhistory.sqlite"))
         self.addCleanup(db.close)
         with mock.patch.object(ingest, "SshReader", lambda _: reader):
-            self.assertEqual(ingest.run(db, parsed, logging.getLogger("kb-test-no-install"), with_summaries=False), 0)
+            self.assertEqual(ingest.run(db, parsed, logging.getLogger("superhistory-test-no-install"), with_summaries=False), 0)
         self.assertEqual([r[0] for r in db.execute("SELECT source_id FROM docs")],
                          ["studio@desk:secret-project:20261028_101500_a1b2c3"])
 
@@ -423,7 +423,7 @@ class NoInstallIdTest(unittest.TestCase):
         sid = "studio@desk:secret-project:20261028_101500_a1b2c3"
         self.assertFalse(store.secret_id("hermes", sid, ("desk", "secret-project")))
         self.assertTrue(store.secret_id("hermes", sid, ("laptop", "secret-project")), "read whole, as any other id")
-        # A machine named like a secret's word is no prefix of kb's, so the id is read whole.
+        # A machine named like a secret's word is no prefix of superhistory's, so the id is read whole.
         self.assertTrue(store.secret_id("hermes", "password@desk:secret-project:20261028_101500_a1b2c3",
                                         ("desk", "secret-project")))
 
@@ -517,9 +517,9 @@ class CliTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
-        self.home = os.path.join(self.tmp.name, "kb-home")
+        self.home = os.path.join(self.tmp.name, "superhistory-home")
         self.paths = Paths.under(self.home)
-        env = mock.patch.dict(os.environ, {"KB_HOME": self.home})
+        env = mock.patch.dict(os.environ, {"SUPERHISTORY_HOME": self.home})
         env.start()
         self.addCleanup(env.stop)
         logger = logging.getLogger("kb")
@@ -736,7 +736,7 @@ class SettingsChangeTest(unittest.TestCase):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         self.tmp = tmp.name
-        self.db = store.connect(os.path.join(self.tmp, "kb.sqlite"))
+        self.db = store.connect(os.path.join(self.tmp, "superhistory.sqlite"))
         self.addCleanup(self.db.close)
 
     def note(self, rel, text):

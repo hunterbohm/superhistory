@@ -106,7 +106,7 @@ def store_files(folder):
     writes."""
     files = {}
     for name in sorted(os.listdir(folder)):
-        if name != "kb.lock" and not name.endswith("-shm"):
+        if name != "superhistory.lock" and not name.endswith("-shm"):
             with open(os.path.join(folder, name), "rb") as fh:
                 files[name] = (os.path.getsize(os.path.join(folder, name)), hashlib.sha256(fh.read()).hexdigest()[:16])
     return files

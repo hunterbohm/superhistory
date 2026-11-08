@@ -17,7 +17,7 @@ from kb.mask import mask
 from kb.paths import Paths
 from kb.sources import Gone, Item, Progress, plugin
 
-LOG = logging.getLogger("varve-test-plugin")
+LOG = logging.getLogger("superhistory-test-plugin")
 LOG.addHandler(logging.NullHandler())
 LOG.propagate = False
 
@@ -573,6 +573,50 @@ class RulesTest(PluginCase):
         self.assertEqual(self.ingest(linked=("linked", "")), 1)
         self.assertIn("is a link", self.failure_of("linked"))
         self.assertFalse(os.path.exists(marker))
+
+    def test_a_link_to_the_users_program_in_a_folder_others_can_write_does_not_pass(self):
+        shared = os.path.join(self.root, "shared")
+        os.makedirs(shared)
+        os.chmod(shared, 0o775)
+        target = os.path.join(shared, "real")
+        with open(target, "w") as fh:
+            fh.write(script(f"print({final('1')!r})\n"))
+        os.chmod(target, 0o755)
+        os.symlink(target, os.path.join(self.dir, "linked"))
+        os.symlink(os.path.join(self.dir, "linked"), os.path.join(self.dir, "twice"))
+        os.symlink(os.path.join(self.root, "nowhere"), os.path.join(self.dir, "dangling"))
+        for name in ("linked", "twice", "dangling"):
+            with self.assertRaises(plugin.PluginError, msg=name) as caught:
+                plugin.executable(str(self.dir), name)
+            self.assertIn("is a link", str(caught.exception))
+
+    def test_a_plug_ins_folder_that_is_a_link_is_checked_where_it_leads(self):
+        shared = os.path.join(self.root, "shared")
+        os.makedirs(shared)
+        os.chmod(shared, 0o775)
+        with open(os.path.join(shared, "notes"), "w") as fh:
+            fh.write(script(f"print({final('1')!r})\n"))
+        os.chmod(os.path.join(shared, "notes"), 0o755)
+        folder_link = os.path.join(self.root, "folder-link")
+        os.symlink(shared, folder_link)
+        with self.assertRaises(plugin.PluginError) as caught:
+            plugin.executable(folder_link, "notes")
+        self.assertIn("can be written by anyone", str(caught.exception))
+        os.chmod(shared, 0o700)
+        self.assertEqual(plugin.executable(folder_link, "notes"), os.path.join(os.path.realpath(shared), "notes"))
+
+    def test_a_link_among_the_folders_parents_leads_to_the_folder_that_is_checked_and_run(self):
+        base = os.path.join(self.root, "base")
+        os.makedirs(os.path.join(base, "plugins"), mode=0o700)
+        with open(os.path.join(base, "plugins", "notes"), "w") as fh:
+            fh.write(script(f"print({final('1')!r})\n"))
+        os.chmod(os.path.join(base, "plugins", "notes"), 0o755)
+        os.symlink(base, os.path.join(self.root, "via"))
+        reached = plugin.executable(os.path.join(self.root, "via", "plugins"), "notes")
+        self.assertEqual(reached, os.path.join(os.path.realpath(base), "plugins", "notes"))
+        os.chmod(os.path.join(base, "plugins"), 0o770)
+        with self.assertRaises(plugin.PluginError):
+            plugin.executable(os.path.join(self.root, "via", "plugins"), "notes")
 
     def test_a_folder_that_anyone_can_write_does_not_run_its_plug_ins(self):
         self.write("notes", printing(item("a"), final("1")))

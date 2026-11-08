@@ -27,13 +27,12 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Dict, NamedTuple, Optional
 
-from kb import NAME
+from kb import COMMAND
 from kb.config import Secret
 from kb.mask import ID_NAMES, holds_secret, mask
 from kb.sources import Gone, Item, Progress, SourceType
 
 PROTOCOL = 1
-COMMAND = NAME.lower()
 LOG = logging.getLogger("kb.plugin")
 
 FILE_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}")
@@ -99,7 +98,9 @@ def executable(plugins_dir, name):
     not a link, and not writable by others, in a folder others cannot write either."""
     if not plugins_dir:
         raise PluginError("this config has no plug-ins folder")
-    folder = os.path.abspath(plugins_dir)
+    # The folder as it really is, so the checks below and the program that runs are in the same folder, whichever
+    # links lead to it. A link to a folder others can write fails the folder's check, since stat reads the target.
+    folder = os.path.realpath(plugins_dir)
     path = os.path.join(folder, name)
     try:
         folder_stat, stat = os.stat(folder), os.lstat(path)

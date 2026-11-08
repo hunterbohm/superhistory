@@ -7,13 +7,13 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from kb import NAME, schedule
+from kb import schedule
 from kb.config import Config, Schedule
 from kb.paths import Paths
 
-LABEL = f"{NAME.lower()}.kb.ingest"
-TIMER = f"{NAME.lower()}-kb-ingest.timer"
-SERVICE = f"{NAME.lower()}-kb-ingest.service"
+LABEL = "dev.superhistory.ingest"
+TIMER = "superhistory-ingest.timer"
+SERVICE = "superhistory-ingest.service"
 
 # The real tools fail when a job is loaded twice or unloaded while not loaded.
 FAKE_TOOL = """#!{python}
@@ -51,8 +51,8 @@ else:
         sys.exit(0 if loaded else 3)
 """
 
-KB = "/home/sam/.local/bin/kb"
-SPACED_KB = "/home/sam/my tools/kb"
+KB = "/home/sam/.local/bin/superhistory"
+SPACED_KB = "/home/sam/my tools/superhistory"
 
 
 def unit_lines(path):
@@ -85,9 +85,9 @@ class ScheduleCase(unittest.TestCase):
             "HOME": str(self.home)})
         patcher.start()
         self.addCleanup(patcher.stop)
-        for var in ("XDG_CONFIG_HOME", "KB_HOME"):
+        for var in ("XDG_CONFIG_HOME", "SUPERHISTORY_HOME"):
             os.environ.pop(var, None)
-        self.paths = Paths.under(root / "kb-home")
+        self.paths = Paths.under(root / "superhistory-home")
 
     def calls(self):
         log = self.state / "calls"
@@ -139,12 +139,12 @@ class MacTest(ScheduleCase):
             self.on()
         env = self.read_plist()["EnvironmentVariables"]
         self.assertEqual(env["PATH"], path)
-        self.assertNotIn("KB_HOME", env)
+        self.assertNotIn("SUPERHISTORY_HOME", env)
 
-    def test_the_agent_carries_kb_home_when_it_is_set(self):
-        with mock.patch.dict(os.environ, {"KB_HOME": "/home/sam/trial"}):
+    def test_the_agent_carries_superhistory_home_when_it_is_set(self):
+        with mock.patch.dict(os.environ, {"SUPERHISTORY_HOME": "/home/sam/trial"}):
             self.on()
-        self.assertEqual(self.read_plist()["EnvironmentVariables"]["KB_HOME"], "/home/sam/trial")
+        self.assertEqual(self.read_plist()["EnvironmentVariables"]["SUPERHISTORY_HOME"], "/home/sam/trial")
 
     def test_the_agent_carries_custom_xdg_folders(self):
         folders = {"XDG_CONFIG_HOME": "/home/sam/cfg", "XDG_DATA_HOME": "/home/sam/data",
@@ -197,7 +197,7 @@ class MacTest(ScheduleCase):
 
     def test_a_relative_kb_path_or_a_zero_interval_is_refused(self):
         with self.assertRaises(schedule.ScheduleError):
-            self.on(kb_path="kb")
+            self.on(kb_path="superhistory")
         with self.assertRaises(schedule.ScheduleError):
             self.on(minutes=0)
         self.assertFalse(self.plist.exists())
@@ -240,8 +240,8 @@ class LinuxTest(ScheduleCase):
         self.assertEqual(unit_lines(self.unit_dir / SERVICE)["ExecStart"], [f'"{SPACED_KB}" ingest'])
 
     def test_percent_and_dollar_signs_in_the_path_are_escaped_for_systemd(self):
-        self.on(kb_path="/home/sam/100%/$bin/kb")
-        self.assertEqual(unit_lines(self.unit_dir / SERVICE)["ExecStart"], ['"/home/sam/100%%/$$bin/kb" ingest'])
+        self.on(kb_path="/home/sam/100%/$bin/superhistory")
+        self.assertEqual(unit_lines(self.unit_dir / SERVICE)["ExecStart"], ['"/home/sam/100%%/$$bin/superhistory" ingest'])
 
     def test_a_dollar_sign_in_an_environment_value_stays_single(self):
         with mock.patch.dict(os.environ, {"XDG_DATA_HOME": "/home/sam/$data", "XDG_STATE_HOME": "/home/sam/100%"}):
@@ -264,10 +264,10 @@ class LinuxTest(ScheduleCase):
         self.assertIn('"XDG_DATA_HOME=/home/sam/data"', env)
         self.assertIn('"XDG_STATE_HOME=/home/sam/state"', env)
 
-    def test_the_service_carries_kb_home_when_it_is_set(self):
-        with mock.patch.dict(os.environ, {"KB_HOME": "/home/sam/trial"}):
+    def test_the_service_carries_superhistory_home_when_it_is_set(self):
+        with mock.patch.dict(os.environ, {"SUPERHISTORY_HOME": "/home/sam/trial"}):
             self.on()
-        self.assertIn('"KB_HOME=/home/sam/trial"', unit_lines(self.unit_dir / SERVICE)["Environment"])
+        self.assertIn('"SUPERHISTORY_HOME=/home/sam/trial"', unit_lines(self.unit_dir / SERVICE)["Environment"])
 
     def test_units_go_under_xdg_config_home_when_it_is_set(self):
         xdg = self.home / "xdg"
@@ -316,7 +316,7 @@ class LinuxTest(ScheduleCase):
         message = str(caught.exception)
         self.assertIn("*/10 * * * * PATH=", message)
         self.assertIn(path, message)
-        self.assertIn("'/home/sam/my tools/kb' ingest", message)
+        self.assertIn("'/home/sam/my tools/superhistory' ingest", message)
         self.assertFalse((self.home / ".config").exists())
         self.assertEqual(self.calls(), ["systemctl show-environment"])
 

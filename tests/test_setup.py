@@ -31,7 +31,7 @@ class SetupCase(unittest.TestCase):
         self.addCleanup(tmp.cleanup)
         self.root = Path(tmp.name)
         self.home = self.root / "home"
-        self.paths = Paths.under(self.root / "kb")
+        self.paths = Paths.under(self.root / "superhistory")
         for folder in (".claude/projects", ".codex/sessions", "Notes/Journal", "Notes/Work"):
             (self.home / folder).mkdir(parents=True)
         host = mock.patch("kb.setup.socket.gethostname", return_value="Sams-Laptop.example.com")

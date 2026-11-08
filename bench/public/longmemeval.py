@@ -5,7 +5,7 @@
                                         [--limit N] [--workers N] [--fresh] [--count] [--table]
 
 Each question gets a fresh store of its haystack sessions, one item per session. The question goes through the
-check as a new message, the answer model answers with the check's records and kb tools, and the judge grades the
+check as a new message, the answer model answers with the check's records and superhistory tools, and the judge grades the
 answer with the prompt LongMemEval's evaluate_qa.py uses for that question type. Rows go to
 bench/results/public/longmemeval/<run>.jsonl, one per question; a rerun runs only questions with no row yet.
 --count prints the model calls the run would make, and makes none.

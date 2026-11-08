@@ -2,7 +2,7 @@
 
 These benchmarks ask one question: when an agent gets a new message, does the knowledge base's check hand it what it needs, and stay quiet when nothing fits? Every number here comes from a results file with one row per question, and every run can be repeated from this folder.
 
-The product's name lives in `bench/product.py`. This README calls it "the check", after the step it measures, and `kb`, its command.
+The product's name lives in `bench/product.py`. This README calls it "the check", after the step it measures, and `superhistory`, its command.
 
 ## Rerun the month
 
@@ -20,7 +20,7 @@ Rows go to `bench/results/month/<tool>.jsonl`, and the table to `bench/results/m
 
 Model calls go to any endpoint that speaks Anthropic's Messages API, which this README calls the gateway. `BENCH_BASE_URL` names it and has no default: a run that finds it unset stops with a message. The key is `BENCH_API_KEY`, or `BENCH_KEY_FILE`, the path of a file that holds the key; neither has a default. The judge model is a GPT model that the gateway must serve; with a plain Anthropic key, change `JUDGE_MODEL` in `run.py`. Mem0 runs need more: its model calls are OpenAI Chat Completions requests, sent to `BENCH_BASE_URL` plus `/v1/chat/completions` with the same key, so for a Mem0 run the endpoint `BENCH_BASE_URL` names must serve that OpenAI-compatible route as well as the Messages API.
 
-The check runs from this repo's package: `kb/check.py`, `kb/search.py` and `kb/summarize.py`, with the package's Anthropic-compatible plug-in pointed at `BENCH_BASE_URL`. The agent's `kb search` and `kb get` are the package's own commands, run against each scratch store. Each run records the package code's hash and the commit. The published rows below ran from a copy of kb's code at 4a884a2, before the package landed; rerun from the package, the month matches them (see "Dev and test halves").
+The check runs from this repo's package: `kb/check.py`, `kb/search.py` and `kb/summarize.py`, with the package's Anthropic-compatible plug-in pointed at `BENCH_BASE_URL`. The agent's `superhistory search` and `superhistory get` are the package's own commands, run against each scratch store. Each run records the package code's hash and the commit. The published rows below ran from a copy of Superhistory's code at 4a884a2, before the package landed; rerun from the package, the month matches them (see "Dev and test halves").
 
 The rival tools need their own setup, all local, with no account:
 
@@ -36,10 +36,10 @@ The rival tools need their own setup, all local, with no account:
 
 1. The tool loads `demo/month/items.jsonl` into a fresh store. The check stores the items with the package's code and writes its summaries for long items, as ingest does, for each source its type summarizes by default.
 2. The question arrives as a new message to an agent, with no conversation before it. The tool's lookup returns the text an agent would see before the message, or nothing.
-3. The answer model (`claude-sonnet-5-5`) answers from that text. It is told it works for the month's persona and that today is October 1, 2026. When the product gives agents commands to read more, the answer model gets them as tools: `kb search` and `kb get` for the check (its own header tells agents to run them), `search_memory` for Mem0 (OpenMemory MCP's name), a search for Supermemory, and claude-mem's three MCP search tools (`search`, `timeline`, `get_observations`), served by claude-mem's own MCP server with its own schemas and replies. It gets at most 8 tool turns.
+3. The answer model (`claude-sonnet-5-5`) answers from that text. It is told it works for the month's persona and that today is October 1, 2026. When the product gives agents commands to read more, the answer model gets them as tools: `superhistory search` and `superhistory get` for the check (its own header tells agents to run them), `search_memory` for Mem0 (OpenMemory MCP's name), a search for Supermemory, and claude-mem's three MCP search tools (`search`, `timeline`, `get_observations`), served by claude-mem's own MCP server with its own schemas and replies. It gets at most 8 tool turns.
 4. The judge (`gpt-6.1-sol`, a different model family from the answer model and from the check's own `claude-haiku-5-5`) compares the answer with the gold answer and returns correct or not, with a reason.
 
-The check's own two model calls, and the summaries at ingest, run on `claude-haiku-5-5`, as they do in kb. A run makes at most two model calls at once, kb's hedged copies included, and runs one question at a time by default. The check's model tokens count cached input too: the gateway the published runs used caches every prompt, and its `input_tokens` leaves the cached part out.
+The check's own two model calls, and the summaries at ingest, run on `claude-haiku-5-5`, as they do in Superhistory. A run makes at most two model calls at once, Superhistory's hedged copies included, and runs one question at a time by default. The check's model tokens count cached input too: the gateway the published runs used caches every prompt, and its `input_tokens` leaves the cached part out.
 
 ## What each column means
 
@@ -91,13 +91,13 @@ python3 bench/public/longmemeval.py --set s --split test --label baseline
 python3 bench/public/locomo.py --split test --label baseline
 ```
 
-Each test half ran four times: `baseline`, `midpoint`, and a final pair, `final` and `baseline-paired` side by side (`bench/public/DEVIATIONS.md`). `bench/splits/heldout-runs.tsv` logs every run. The test halves are now spent: no further change may be chosen on them, and a new change needs fresh held-out data. "Handled right" on the month counts a correct answer, and for a question nothing fits, a lookup that also added nothing. Tokens per question count the cards, the agent's `kb` commands and the check's own model calls.
+Each test half ran four times: `baseline`, `midpoint`, and a final pair, `final` and `baseline-paired` side by side (`bench/public/DEVIATIONS.md`). `bench/splits/heldout-runs.tsv` logs every run. The test halves are now spent: no further change may be chosen on them, and a new change needs fresh held-out data. "Handled right" on the month counts a correct answer, and for a question nothing fits, a lookup that also added nothing. Tokens per question count the cards, the agent's `superhistory` commands and the check's own model calls.
 
 ## The public datasets, and the rows this tree leaves out
 
 LongMemEval and LoCoMo are other people's datasets, and this repository does not redistribute them. A results file with one row per question holds the question, its gold answer and the sessions the lookup returned, so the rows that quote either dataset are listed in `bench/DATASET_ROWS.txt`, one path per line with its reason, and the public tree leaves those files out. Every table, chart and summary number stays, and so do the rows for the made-up month, which are ours. No test reads the dataset rows, so every suite passes without them. A command that reads them, such as `bench/compare.py`, needs them regenerated first.
 
-Each dataset downloads on first use into `~/.cache/kb-bench/data` (`BENCH_DATA` changes the folder), at a pinned revision whose SHA-256 the loader checks. A regenerated row file holds new model outputs, not the original bytes, and needs `BENCH_BASE_URL` and a key as above. Run in a scratch copy of the repository: a run writes its rows, tables and logs under `bench/results/` and `bench/splits/`, over the committed ones.
+Each dataset downloads on first use into `~/.cache/superhistory-bench/data` (`BENCH_DATA` changes the folder), at a pinned revision whose SHA-256 the loader checks. A regenerated row file holds new model outputs, not the original bytes, and needs `BENCH_BASE_URL` and a key as above. Run in a scratch copy of the repository: a run writes its rows, tables and logs under `bench/results/` and `bench/splits/`, over the committed ones.
 
 A run on a test half, or on both halves with `--split all`, is entered in `bench/splits/heldout-runs.tsv`, one run for each test and label. The committed log already holds every label from the original runs, so the same commands stop with "already ran as ...". Point `BENCH_HELDOUT_LOG` at a new file outside the copy and the labels are free again. The label must be `baseline`, `midpoint`, `final` or `baseline-paired` (another name is refused), and a log takes one run for each test and label, so give a second run of the same test a log file of its own. Dev runs are not logged and take any label.
 
@@ -117,7 +117,7 @@ A run on a test half, or on both halves with `--split all`, is entered in `bench
 
 ## Held-out results after the climb
 
-The final held-out pass ran two lookups on the three test halves at the same time and in the same question order (`bench/paired.py`): `final`, the lookup #16 shipped (main 4d7a130), and `baseline-paired`, the lookup it replaced (`kb/` from e66d49d). The harness, answer model and judge were the same; only `kb/` differed. Under the rule fixed before the run, the lookup that held up on all three tests would ship. The baseline's did, and varve #30 ported it back onto main with today's masking kept. The released check runs that lookup.
+The final held-out pass ran two lookups on the three test halves at the same time and in the same question order (`bench/paired.py`): `final`, the lookup #16 shipped (main 4d7a130), and `baseline-paired`, the lookup it replaced (`kb/` from e66d49d). The harness, answer model and judge were the same; only `kb/` differed. Under the rule fixed before the run, the lookup that held up on all three tests would ship. The baseline's did, and #30 ported it back onto main with today's masking kept. The released check runs that lookup.
 
 ![The released check against three rivals on held-out month B](results/hillclimb/month/b-baseline-paired/chart.png)
 
@@ -133,10 +133,10 @@ The chart's numbers are in `results/hillclimb/month/b-baseline-paired/table-with
 python3 bench/compare.py final baseline-paired --split test --paired
 ```
 
-- **What the token cut cost.** #16's agent read less: on month B it made 135 `kb get` calls to the baseline's 277 and answered 61 questions with no read at all, against 18. Its cards were longer, so its whole saving in the prompt came from reading fewer records. The month and LongMemEval losses sit on the questions where it read less; on LoCoMo, whose conversations are short, reading less cost nothing. LoCoMo token F1 is 0.644 for the baseline and 0.673 for #16. Lookup p50 was within 0.25 s between the two on every test.
+- **What the token cut cost.** #16's agent read less: on month B it made 135 `superhistory get` calls to the baseline's 277 and answered 61 questions with no read at all, against 18. Its cards were longer, so its whole saving in the prompt came from reading fewer records. The month and LongMemEval losses sit on the questions where it read less; on LoCoMo, whose conversations are short, reading less cost nothing. LoCoMo token F1 is 0.644 for the baseline and 0.673 for #16. Lookup p50 was within 0.25 s between the two on every test.
 - **Timed-out lookups.** A lookup that hit the check's 10 s budget counts as a machine failure, not an answer. Six such rows were set aside in `results/hillclimb/timeouts/` and each question was asked again once on its side; none timed out the second time.
 - **Run-to-run spread.** The same code does not score the same on another day. The baseline's code scored 161, 230 and 702 on 2026-10-27 and 166, 239 and 696 on 2026-11-02. So the LongMemEval and LoCoMo gaps sit inside that spread; the month gap is larger than any same-code move seen, but it rests on one run of each.
-- **The port.** With no model calls, the port and e66d49d show the same search hits, picker records, 677 cards, `kb search` output and 677 `kb get` pages for all 170 dev-month queries (varve #30).
+- **The port.** With no model calls, the port and e66d49d show the same search hits, picker records, 677 cards, `superhistory search` output and 677 `superhistory get` pages for all 170 dev-month queries (#30).
 - **The rivals.** The rivals' month B rows ran between 2026-10-28 and 2026-11-01, not beside the check, so the chart compares tools across days. Every lookup time in the chart comes from a month run, not from lookups timed alone; the check's were taken while the other lookup ran beside it on the same gateway.
 - **What was tried and dropped.** `results/hillclimb/attempts.tsv` holds every candidate and its dev numbers, and `results/hillclimb/decisions.tsv` every keep or drop and why.
 
@@ -148,7 +148,7 @@ All rows are in `bench/results/month/`, and `table.md` there has the full table.
 
 | Tool | Right, of 131 with an answer | Added nothing, of 40 with nothing to find | Tokens added per question, mean | Lookup, median |
 |---|---|---|---|---|
-| The check, with `kb search` and `kb get` | 122 | 37 | 2,087 | 3.52 s |
+| The check, with `superhistory search` and `superhistory get` | 122 | 37 | 2,087 | 3.52 s |
 | The check, cards only | 57 | 37 | 288 | 3.63 s |
 | Supermemory, self-hosted | 121 | 0 | 8,834 | 0.18 s |
 | Mem0, open source | 102 | 0 | 450 | 0.23 s |
@@ -161,13 +161,13 @@ Every tool's agent said it didn't know, or answered correctly, on 39 or 40 of th
 
 What limits each number:
 
-- **The check and Supermemory.** The check answers 122 and misses 9; Supermemory answers 121 and misses 10. For Supermemory, items from the right documents reached the agent in all 10 misses. For the check they reached it in 6, and in 3 neither the lookup nor the agent's own searches found them. The two differ elsewhere. Supermemory's documented harness puts its whole profile, 5 memories and 3 document chunks before every message, about 6,800 tokens at the median, so it never adds nothing. The check adds a median of 266 tokens of cards and adds nothing on 37 of the 40 no-fit questions; the agent then reads about 1,200 tokens at the median with `kb get`. The check's lookup is two `claude-haiku-5-5` calls in a row, a query writer and a picker, so it takes 3.5 s where the rivals' lookups make no model call.
-- **Cards alone.** A card is a 240-character snippet. In 59 of the 74 misses the right item was among the cards, but the snippet did not hold the answer. With `kb get` the same lookup answers 122.
+- **The check and Supermemory.** The check answers 122 and misses 9; Supermemory answers 121 and misses 10. For Supermemory, items from the right documents reached the agent in all 10 misses. For the check they reached it in 6, and in 3 neither the lookup nor the agent's own searches found them. The two differ elsewhere. Supermemory's documented harness puts its whole profile, 5 memories and 3 document chunks before every message, about 6,800 tokens at the median, so it never adds nothing. The check adds a median of 266 tokens of cards and adds nothing on 37 of the 40 no-fit questions; the agent then reads about 1,200 tokens at the median with `superhistory get`. The check's lookup is two `claude-haiku-5-5` calls in a row, a query writer and a picker, so it takes 3.5 s where the rivals' lookups make no model call.
+- **Cards alone.** A card is a 240-character snippet. In 59 of the 74 misses the right item was among the cards, but the snippet did not hold the answer. With `superhistory get` the same lookup answers 122.
 - **Mem0.** It returns 3 memories for every message. In 23 of its 29 misses, an item that holds the answer was among the memories' sources, but the extracted memory lacked the detail asked for. Its log shows 22 fact-extraction replies that did not parse, and Mem0 stores no memories for those adds.
 - **claude-mem.** It records agent sessions only. Only 37 of the 131 questions with an answer have any evidence in an agent session, and it answered 18 of those. Its per-prompt lookup, off by default, answered the same number. Its agent uses claude-mem's own MCP search tools and read about 7,000 tokens per question with them.
 - **The gold records.** With the right items handed over, the answer model and judge still miss 5 of 131. That is the ceiling for every tool.
 - **Lookup times.** These are the month run's, measured while other runs shared the gateway. Timed alone, 80 lookups each, the check's median is 3.28 s (p90 4.81 s), Supermemory's 0.17 s and claude-mem's 0.01 s (`latency.jsonl`).
-- **What this month can't show.** Each question ran once, so run-to-run spread is not measured. The month and its questions were written by the same team as the check. The rivals ran self-hosted on `claude-haiku-5-5`; Mem0 and Supermemory both say their hosted platforms extract memories better. The check ran from kb's code at 4a884a2 with the product's prompt wording, not from the released package.
+- **What this month can't show.** Each question ran once, so run-to-run spread is not measured. The month and its questions were written by the same team as the check. The rivals ran self-hosted on `claude-haiku-5-5`; Mem0 and Supermemory both say their hosted platforms extract memories better. The check ran from Superhistory's code at 4a884a2 with the product's prompt wording, not from the released package.
 
 ## Results on LongMemEval and LoCoMo
 
@@ -196,8 +196,8 @@ The check also ran on its owner's real knowledge base: 53 questions written from
 
 | | Right, of 53 | Of 42 with an answer | Of 11 with nothing to find |
 |---|---|---|---|
-| The check, kb's own code, 2026-10-27 | 51 | 40 | 11 |
+| The check, Superhistory's own code, 2026-10-27 | 51 | 40 | 11 |
 | The released check, 2026-11-02, on a re-masked copy | 46 | 35 | 11 |
 | No lookup | 11 | 0 | 11 |
 
-The questions were found with `kb search`, so every answerable one is reachable by keyword search, which favours the check. With 42 answerable questions, one question moves the score by 2.4 points. The sessions that wrote the questions were hidden from every search. On 8 of the 11 questions with nothing to find, the check added nothing. On 2026-11-02 the released check added nothing on 9 of the 11. Its 46 sits below the 49 and 50 the same lookup scored on 2026-10-27. With no model calls, the old code on a plain snapshot of the knowledge base and the released code on a re-masked copy of the same snapshot show the same search hits, picker records and cards on all 53 questions, and masking hides no word of any answer. That points to six days of change in the knowledge base, which grew by 19% and renamed an app the answer key predates, and to answer noise, rather than to the code.
+The questions were found with `superhistory search`, so every answerable one is reachable by keyword search, which favours the check. With 42 answerable questions, one question moves the score by 2.4 points. The sessions that wrote the questions were hidden from every search. On 8 of the 11 questions with nothing to find, the check added nothing. On 2026-11-02 the released check added nothing on 9 of the 11. Its 46 sits below the 49 and 50 the same lookup scored on 2026-10-27. With no model calls, the old code on a plain snapshot of the knowledge base and the released code on a re-masked copy of the same snapshot show the same search hits, picker records and cards on all 53 questions, and masking hides no word of any answer. That points to six days of change in the knowledge base, which grew by 19% and renamed an app the answer key predates, and to answer noise, rather than to the code.

@@ -8,7 +8,7 @@ import json
 import sys
 import time
 
-from kb import ai, ids, mask as mask_module, store, summarize
+from kb import ai, decisions, ids, mask as mask_module, store, summarize
 from kb.mask import holds_secret, id_names, mask, masked_log, secret_in_id
 from kb.remote import HostAway, SshReader
 from kb.sources import Excludes, Gone, Item, Progress, Run
@@ -137,6 +137,11 @@ def run_unit(db, source, host, reader, log, prefix):
              time.time() - started)
 
 
+def kind_of(config):
+    """source name -> its type's name, for the decision pass to read each item as its type writes it."""
+    return lambda name: config.source(name).type_name if config.source(name) else name
+
+
 def run(db, config, log, only=(), with_summaries=True, model_factory=None):
     """Every configured source, or those named in `only`, then summaries for new long items. Returns the number of
     failures. The caller holds the database lock."""
@@ -191,6 +196,17 @@ def run(db, config, log, only=(), with_summaries=True, model_factory=None):
         else:
             store.record_ok(db, "summarize")
             db.commit()
+    if with_summaries and config.decisions.owner and config.ai and decisions.due(db, config.decisions.every_hours):
+        try:
+            decisions.run(db, decisions.asker(model_factory()), config.decisions.owner, kind_of(config), log,
+                          config.decisions.per_run)
+        except Exception as exc:
+            log.exception("decisions failed")
+            store.record_failure(db, "decisions", exc)
+            failures += 1
+        else:
+            store.record_ok(db, "decisions")
+            db.commit()
     if mask_module.capped > capped:
         total = int(store.get_watermark(db, store.STATE, "mask_capped") or 0) + mask_module.capped - capped
         store.set_watermark(db, store.STATE, "mask_capped", total)
@@ -202,8 +218,8 @@ def run(db, config, log, only=(), with_summaries=True, model_factory=None):
 
 
 def after(paths, config, db, log):
-    """Calls kb.sync.after_ingest(paths, config, db, log) when [sync] or [cloud] is in the config. A failure is
-    recorded as the "sync" unit. Returns the number of failures."""
+    """Calls kb.sync.after_ingest(paths, config, db, log) when [sync] (or the older [cloud]) is in the config. A failure
+    is recorded as the "sync" unit. Returns the number of failures."""
     if "sync" not in config.units():
         return 0
     try:
