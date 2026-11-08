@@ -24,16 +24,6 @@ It downloads the latest release, checks it against the `SHA256SUMS` published be
 and writes the `superhistory` command to `~/.local/bin`. If that folder is not on your `PATH`, the installer prints the
 line to add. If another program with that name comes first on your `PATH`, the installer says so.
 
-While the repository is private, that download needs a GitHub login. If you were invited, accept the invitation, sign
-in once with GitHub's [gh](https://cli.github.com), and install from the release tag you were given:
-
-```sh
-gh auth login
-gh release download v0.1.0 --repo github.com/hunterbohm/superhistory --pattern install.sh --output - | sh -s -- --tag v0.1.0
-```
-
-The installer fetches that release through `gh` with your login and checks it against the same `SHA256SUMS`.
-
 To have your agent install and set it up, paste this into it. The agent asks before it connects an account or changes a
 setting, and stops for the steps only you can do, such as a Google sign-in:
 
