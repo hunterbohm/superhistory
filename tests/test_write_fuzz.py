@@ -337,21 +337,18 @@ def run_sequence(seq, root, ops=None):
     return done, problems
 
 
-def run(sequences=SEQUENCES, ops=None):
-    """Every sequence's failure, as (sequence, operations, problems)."""
-    # Memory-backed where there is such a folder, since a few thousand small databases would otherwise wait on disk.
-    root = tempfile.mkdtemp(dir="/dev/shm" if os.path.isdir("/dev/shm") else None)
-    try:
-        with mock.patch.object(store, "chunk", functools.partial(store.chunk, size=CHUNK)):
-            picked = [int(ONLY)] if ONLY else range(sequences)
-            return [(seq, *found) for seq in picked for found in [run_sequence(seq, root, ops)] if found[1]]
-    finally:
-        shutil.rmtree(root)
+def run(root, sequences=SEQUENCES, ops=None):
+    """Every sequence's failure, as (sequence, operations, problems), each sequence's store made in root."""
+    with mock.patch.object(store, "chunk", functools.partial(store.chunk, size=CHUNK)):
+        picked = [int(ONLY)] if ONLY else range(sequences)
+        return [(seq, *found) for seq in picked for found in [run_sequence(seq, root, ops)] if found[1]]
 
 
 class WriteSequenceFuzz(unittest.TestCase):
     def test_no_write_sequence_leaves_a_secret_for_a_reader_or_a_false_current_mark(self):
-        failures = run()
+        root = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, root, ignore_errors=True)
+        failures = run(root)
         if failures:
             seq, done, problems = failures[0]
             self.fail(f"{len(failures)} of {SEQUENCES} sequences fail; the first, SUPERHISTORY_FUZZ_ONLY={seq} "
