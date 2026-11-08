@@ -920,7 +920,7 @@ class RebuildMarksTest(TempHome):
 
     def setUp(self):
         super().setUp()
-        env = mock.patch.dict(os.environ, {"KB_HOME": self.home})
+        env = mock.patch.dict(os.environ, {"SUPERHISTORY_HOME": self.home})
         env.start()
         self.addCleanup(env.stop)
         self.db.close()
