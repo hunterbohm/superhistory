@@ -1,4 +1,4 @@
-"""The arms of the owner-questions benchmark (bench/results/owner-questions/README.md).
+"""The arms of the owner-questions benchmark (its recorded results and README are on the repo/owner-questions branch).
 
 Push is the hook as it ships: a lookup before the message puts up to four cards in front of the agent. Pull is an MCP
 server's reading: nothing before the message, and the agent decides whether to call the tools. The pull arms call
