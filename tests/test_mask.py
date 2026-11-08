@@ -42,8 +42,8 @@ def made_up_private_key(r):
 
 
 def as_older_row(test):
-    """The test read as a stored row from a kb before keys were masked whole (a mask version with no revision mark), as
-    remask reads one: there an older kb may have left a key's rest after a placeholder, which fails closed."""
+    """The test read as a stored row from a superhistory before keys were masked whole (a mask version with no revision mark), as
+    remask reads one: there an older superhistory may have left a key's rest after a placeholder, which fails closed."""
     def run(self):
         from kb import mask as mask_module
         with mask_module.stored_row("0123456789abcdef"):
@@ -507,7 +507,7 @@ class OtherKeyFormatTest(unittest.TestCase):
             for after in (cert, "\n".join(textwrap.wrap(cert, 76)), public):
                 with self.subTest(wrapped="\n" in k, after=after[:12]):
                     # A public key cut short is no public material (_public_material): on its own line after the
-                    # key's placeholder it reads as the rest of a key, as the next mask reads it (kb's display masks
+                    # key's placeholder it reads as the rest of a key, as the next mask reads it (superhistory's display masks
                     # stored text again) and as main reads such a line after any placeholder. So this mask hides it
                     # too, and masked text masks to itself. A certificate whole stays, and so does a JSON field.
                     shown = "" if after is public else f"{after}\n"
@@ -519,7 +519,7 @@ class OtherKeyFormatTest(unittest.TestCase):
                     self.assertEqual(mask(json.dumps({"k": k, "c": after})), json.dumps({"k": "[masked]", "c": after}))
 
     def test_a_masked_base64_key_and_the_base64_after_it_mask_to_themselves(self):
-        # kb masks stored text again when it shows it; the key's placeholder then stood before the certificate.
+        # superhistory masks stored text again when it shows it; the key's placeholder then stood before the certificate.
         import base64
         import random
         import textwrap
@@ -536,7 +536,7 @@ class OtherKeyFormatTest(unittest.TestCase):
 
     @as_older_row
     def test_after_a_placeholder_base64_stays_masked_unless_it_decodes_whole_as_public_material(self):
-        # An older kb's mask left a key's body after its placeholder, whole or in part. Only base64 that decodes whole
+        # An older superhistory's mask left a key's body after its placeholder, whole or in part. Only base64 that decodes whole
         # as a certificate, a certificate request, a public key or an OpenSSH public key is shown.
         import base64
         import random
@@ -773,12 +773,12 @@ class ReviewThreeTest(unittest.TestCase):
 
 
 class ReviewFourTest(unittest.TestCase):
-    """#34's fourth review: a key's fragment that decodes to printable text after an older kb's placeholder, encoded
+    """#34's fourth review: a key's fragment that decodes to printable text after an older superhistory's placeholder, encoded
     JSON before a one-word line after a password's placeholder, a long run of backslashes in the tail's reading, and a
     character a reader does not see between an escaped line break's backslash and its "n"."""
 
     def test_a_fragment_that_decodes_as_text_after_an_older_placeholder_stays_masked(self):
-        # an older kb's row: its placeholder came with the text
+        # an older superhistory's row: its placeholder came with the text
         for text in ("[masked]\nMHcwIG1hZGUgdXAgcHJpdmF0ZSBzZWVkIDEyMzQ1\n",
                      "notes\n[masked]\nMHcwIG1hZGUgdXAgcHJpdmF0ZSBzZWVkIDEyMzQ1\nnext steps\n"):
             with self.subTest(text=text[:20]):
@@ -824,7 +824,7 @@ class ReviewFourTest(unittest.TestCase):
 
 class ReviewFiveTest(unittest.TestCase):
     """#34's fifth review and the coordinator's rule after it: a key's rest after a placeholder fails closed only in a
-    stored row from a kb before keys were masked whole; in text read fresh a key is masked whole, so nothing of it
+    stored row from a superhistory before keys were masked whole; in text read fresh a key is masked whole, so nothing of it
     follows its placeholder."""
 
     def pem(self, body_lines):
@@ -857,7 +857,7 @@ class ReviewFiveTest(unittest.TestCase):
         encoded = base64.b64encode(b'{"note":"next steps","enabled":true,"mode":"normal"}').decode()
         text = f"password: TestValue9!\n{encoded}\nDone\n"
         with tempfile.TemporaryDirectory() as folder:
-            db = store.connect(folder + "/kb.sqlite")
+            db = store.connect(folder + "/superhistory.sqlite")
             try:
                 store.store_item(db, "notes", "example", "2026-11-03", "Plan", text, {})
                 content = db.execute("SELECT content FROM docs").fetchone()[0]
@@ -882,7 +882,7 @@ class ReviewFiveTest(unittest.TestCase):
         for version, text, kept in (("0123456789abcdef", f"[masked]\n{rest}\nnext steps\n", False),
                                     ("r20-0123456789abcdef", f"password: [masked]\n{encoded}\nDone\n", True)):
             with tempfile.TemporaryDirectory() as folder, self.subTest(version=version):
-                db = store.connect(folder + "/kb.sqlite")
+                db = store.connect(folder + "/superhistory.sqlite")
                 try:
                     store.store_item(db, "notes", "example", "2026-11-03", "Plan", "placeholder text", {})
                     db.execute("UPDATE docs SET content=?", (text,))
@@ -1274,8 +1274,8 @@ class Base64ReviewThirteenTest(unittest.TestCase):
 class Base64ReviewFourteenTest(unittest.TestCase):
     """#34's fourteenth review: a base64-encoded sentence in a language written without spaces that quotes a key's
     header where a wrapped line starts lost the header and the text after it, as only words with a space read as
-    prose; and a base64 key before a PKCS#7 certificate bundle kept the bundle once, but the next mask, as kb's store
-    makes, read the key's placeholder as an older kb's and removed the bundle. Words past ASCII read as prose too, a
+    prose; and a base64 key before a PKCS#7 certificate bundle kept the bundle once, but the next mask, as superhistory's store
+    makes, read the key's placeholder as an older superhistory's and removed the bundle. Words past ASCII read as prose too, a
     certificate bundle is public material, and masked text masks to itself."""
 
     SENTENCES = ("この文書では秘密鍵の開始マーカーを説明-----BEGIN PRIVATE KEY-----\nRead the documentation before importing.\n",
@@ -1387,7 +1387,7 @@ class Base64ReviewFourteenTest(unittest.TestCase):
         from kb import store
         bundle = base64.b64encode(self.bundle(random.Random(17))).decode()
         with tempfile.TemporaryDirectory() as tmp:
-            db = store.connect(os.path.join(tmp, "kb.sqlite"))
+            db = store.connect(os.path.join(tmp, "superhistory.sqlite"))
             try:
                 store.store_item(db, "notes", "r14", "2026-11-04T10:00:00Z", "tls", f"{self.key64()}\n{bundle}\nnext steps", {})
                 kept = "\n".join(row[0] for row in db.execute("SELECT content FROM docs"))
@@ -1678,7 +1678,7 @@ class Base64ReviewFifteenTest(unittest.TestCase):
             for older in (False, True):
                 took = {}
                 for n in (50, 200):
-                    if older:  # an older kb's row: its keys already placeholders
+                    if older:  # an older superhistory's row: its keys already placeholders
                         text = "".join(f"[masked]\n{wrapped(c)}\ndeploy on port 8080\n" for c in certificates[:n])
                     else:
                         text = "".join("-----BEGIN PRIVATE KEY-----\n" + "\n".join(textwrap.wrap(k, 64))
@@ -1709,7 +1709,7 @@ class Base64ReviewFifteenTest(unittest.TestCase):
                  f"{key}\n{base64.b64encode(made_up_crl(r, 1)).decode()}\nnext steps",
                  base64.b64encode("例：-----BEGIN PRIVATE KEY-----\nこれは説明です\n".encode()).decode())
         with tempfile.TemporaryDirectory() as tmp:
-            db = store.connect(os.path.join(tmp, "kb.sqlite"))
+            db = store.connect(os.path.join(tmp, "superhistory.sqlite"))
             try:
                 for n, text in enumerate(texts):
                     store.store_item(db, "notes", f"r15-{n}", "2026-11-04T10:00:00Z", "tls", text, {})
@@ -1893,7 +1893,7 @@ class Base64ReviewSixteenTest(unittest.TestCase):
 
     def test_a_line_of_another_stream_that_decodes_to_words_after_a_placeholder_starts_no_keys_rest(self):
         # A key, a line of another stream encoded alone that decodes to words, a second key, then a certificate: the
-        # line stays, as the sixteenth review asked, and in an older kb's row it came right after the first key's
+        # line stays, as the sixteenth review asked, and in an older superhistory's row it came right after the first key's
         # placeholder, so it read as the start of that key's rest, which took the certificate past the second key.
         import base64
         import random
@@ -1957,7 +1957,7 @@ class Base64ReviewSixteenTest(unittest.TestCase):
     def test_past_lines_that_decode_to_words_a_keys_rest_takes_no_tail_main_does_not(self):
         # Found by a comparison over random texts: a placeholder, a line of another stream that decodes to words, a
         # key encoded alone or a key's lines with no footer, "next steps", then a public key wrapped 16 wide. Main
-        # starts no rest past the line of words, so it keeps the public key; in an older kb's row, the rest read past
+        # starts no rest past the line of words, so it keeps the public key; in an older superhistory's row, the rest read past
         # that line took main's tail of tokens with it, and the public key went.
         import base64
         import random
@@ -1997,7 +1997,7 @@ class Base64ReviewSixteenTest(unittest.TestCase):
 class Base64KeyPieceLimitTest(unittest.TestCase):
     """The README's limit: a piece of a key's base64 with neither its header nor its footer shows, as on main, unless
     a key's rest after a placeholder takes it. A rest starts with base64 glued to the placeholder, or with a line right
-    after it of base64 alone, 40 characters or more, starting as a key's body does ("MII..."); in a row an older kb
+    after it of base64 alone, 40 characters or more, starting as a key's body does ("MII..."); in a row an older superhistory
     stored, 36 characters or more with a capital, a small letter and a digit, "+" or "/" are enough, and lines there
     that decode to words are passed over first, past which, where main's rest runs on, a line of base64 alone starts
     it at any length. A longer line further down does not count. A rest that starts right at its placeholder runs on past lines of words, as
@@ -2024,7 +2024,7 @@ class Base64KeyPieceLimitTest(unittest.TestCase):
                     self.assertIn(kept if outcome == "shows" else kept.split(" ", 1)[-1], masked)
 
     def test_a_piece_after_a_placeholder_shows_until_its_first_line_starts_a_rest(self):
-        # 34 characters after "[masked] ", as the comparison met one; at 36, read as an older kb's rest; at 40, which
+        # 34 characters after "[masked] ", as the comparison met one; at 36, read as an older superhistory's rest; at 40, which
         # is a key's body start and 36 more, read fresh too; glued to the placeholder, at any length
         import base64
         import random
@@ -2100,7 +2100,7 @@ class Base64RestScanToNextPlaceholderTest(unittest.TestCase):
     def test_a_keys_rest_that_runs_on_past_the_next_placeholder_is_masked_whole(self):
         # The first placeholder's reading of lines stops at the line holding the next one; the rest main reads runs on
         # past it to the paragraph's end all the same, and the next placeholder reads its own: the key goes whole, in
-        # fresh text and in an older kb's row, raw and as JSON, and so does public material before the next one
+        # fresh text and in an older superhistory's row, raw and as JSON, and so does public material before the next one
         import base64
         import random
         import textwrap
@@ -2546,7 +2546,7 @@ class Base64ReviewNineteenFindingsTest(unittest.TestCase):
     def test_a_keys_rest_in_an_older_row_ends_with_its_placeholders_paragraph(self):
         # Found by comparing the fix for a password past a line of marks with main: the password went, and so the
         # placeholder came to stand before a blank line, then a paragraph of base64 that decodes to words and quotes a
-        # header, and a certificate. In a row an older kb stored, the rest read its first line as a line of words to
+        # header, and a certificate. In a row an older superhistory stored, the rest read its first line as a line of words to
         # pass over, across the blank line, and took the lines after it; main's rest ends with its placeholder's
         # paragraph. In JSON in JSON a blank line does not end a paragraph, so depth 2 is not read here.
         import base64
@@ -2621,7 +2621,7 @@ class Base64ReviewNineteenFindingsTest(unittest.TestCase):
 class Base64KeyCutBeforeWordsTest(unittest.TestCase):
     """#34 against main 032391d before its twentieth review: a private key with its header and no footer, its body
     quoted with "> ", whose short last line runs on into words ("ei harbor deploy", "Ynu walrus moved"). Where an older
-    kb had masked the header alone, that line read as a line of words, so the body's last characters showed, which main
+    superhistory had masked the header alone, that line read as a line of words, so the body's last characters showed, which main
     masks with the rest of the paragraph. Made-up keys only."""
 
     @staticmethod
@@ -3211,7 +3211,7 @@ class Base64KeyFooterWholeLineTest(unittest.TestCase):
 
     def test_in_an_older_row_encoded_text_after_a_key_in_its_stream_goes_as_a_keys_rest(self):
         # A listed limit (README): masked text masks to itself, so the passes read it again, and in a row stored by a
-        # kb before keys were masked whole, base64 after a placeholder is an older kb's rest of a key unless it decodes
+        # superhistory before keys were masked whole, base64 after a placeholder is an older superhistory's rest of a key unless it decodes
         # as public material: the key's own placeholder is read so too, and encoded text after the key in its stream
         # goes. Read fresh, it stays.
         import base64
@@ -4042,7 +4042,7 @@ class Base64ReviewTwentyFifthTest(unittest.TestCase):
                 self.assertLess(took[1 << 20], 8 * max(took[1 << 18], 0.01), took)
 
     def test_a_body_line_led_by_a_quote_written_as_a_web_pages_entity_takes_the_characters_glued_below_it(self):
-        # Found by round 26's generators: a key's body line after an older kb's placeholder, led by a quote as a web
+        # Found by round 26's generators: a key's body line after an older superhistory's placeholder, led by a quote as a web
         # page writes one, its body cut into the line of words below; main masks the glued characters, with the words.
         import base64
         import random
@@ -4230,7 +4230,7 @@ class Base64ReviewTwentySixthTest(unittest.TestCase):
 
     @staticmethod
     def encoded_words():
-        """Lines of base64 of words, each with slashes at other places, as an older kb's rest passes over."""
+        """Lines of base64 of words, each with slashes at other places, as an older superhistory's rest passes over."""
         import base64
         out = []
         for lead in ("", "a ", "an ", "and ", "notes ", "so the "):
@@ -4489,7 +4489,7 @@ class Base64ReviewTwentySixthTest(unittest.TestCase):
                         self.assertIn("next paragraph", masked)
 
     def test_a_keys_body_cut_at_every_width_and_joined_by_any_separator_past_a_certificate_stays_masked(self):
-        # generated: each separator, each width from 4 to 16, JSON depths 0 to 2, fresh and in an older kb's row; the
+        # generated: each separator, each width from 4 to 16, JSON depths 0 to 2, fresh and in an older superhistory's row; the
         # pieces on lines of their own, and on a line of words
         import base64
         import random
@@ -4726,7 +4726,7 @@ class Base64ReviewTwentySixthTest(unittest.TestCase):
 
     def test_an_openssh_public_key_after_a_placeholder_stays_as_a_certificate_does(self):
         # Round 28 (review-pr round 8): the public material a key's rest starts with was read as DER alone, so an
-        # OpenSSH public key's base64 after an older kb's placeholder, then a word alone, was masked; main keeps it.
+        # OpenSSH public key's base64 after an older superhistory's placeholder, then a word alone, was masked; main keeps it.
         # Made up.
         import base64
         import random
@@ -4752,7 +4752,7 @@ class Base64ReviewTwentySixthTest(unittest.TestCase):
     def test_what_only_looks_like_an_openssh_public_key_after_a_placeholder_stays_masked(self):
         # Round 28: an OpenSSH public key is its type's strings, as many as the type holds, and no more. A private
         # key's blob (openssh-key-v1), a public key's blob with bytes after it, and a blob of one type with another's
-        # count of strings are no public material, so after an older kb's placeholder they fail closed. Made up.
+        # count of strings are no public material, so after an older superhistory's placeholder they fail closed. Made up.
         import base64
         import random
         import struct
@@ -4950,7 +4950,7 @@ class Base64ReviewTwentyEighthTest(unittest.TestCase):
                                      self.escaped(expected, depth))
 
     def test_where_main_reads_no_rest_an_older_rows_run_goes_alone(self):
-        # Against main alone: in a row an older kb stored, a run of 36 characters or more of both cases and a digit
+        # Against main alone: in a row an older superhistory stored, a run of 36 characters or more of both cases and a digit
         # right after a placeholder starts a key's rest where main reads none. The rest then ran on as main's reading of
         # a rest would, through a JSON list's later items, a line of words and a later placeholder, which main keeps.
         # Only the run goes now, with the lines that go on with it as a key's body is wrapped, or its item; all past it
@@ -4973,7 +4973,7 @@ class Base64ReviewTwentyEighthTest(unittest.TestCase):
         self.check_rows(text, text, held + bs + q + "}", depths=(0, 1))
 
     def test_a_cut_keys_pieces_past_an_openssh_public_key_in_an_older_row_show_as_on_main(self):
-        # Past a run that starts a rest where main reads none, all is read as main reads it: in a row an older kb
+        # Past a run that starts a rest where main reads none, all is read as main reads it: in a row an older superhistory
         # stored, a cut key's pieces past an OpenSSH public key's blob, or past a blob with bytes after it, show as
         # they do on main, which reads no rest from the placeholder. The description lists it as on main. Made up.
         nl = chr(10)
@@ -5989,7 +5989,7 @@ class KeyShapeTest(unittest.TestCase):
         """Each kind of key file, alone or after a certificate, base64 wrapped at every width from 1 to its length, in a
         field's value, a JSON string, one in JSON, under a heading and after prose: everything from the line that holds
         its header's first byte through its last line is one placeholder, and the text around it stays. One kind and
-        one line break for each width; KB_KEY_CASES of 20000 or more reads every kind with every break."""
+        one line break for each width; SUPERHISTORY_KEY_CASES of 20000 or more reads every kind with every break."""
         import base64
         import json
         import os
@@ -6016,7 +6016,7 @@ class KeyShapeTest(unittest.TestCase):
                  ("", pgp("PGP PRIVATE KEY BLOCK")), ("", pgp("PGP SECRET KEY BLOCK")), (cert, pem("PRIVATE KEY")),
                  ("\n", pem("PRIVATE KEY")), ("a\n", pem("EC PRIVATE KEY"))]
         breaks = ("\n", "\r\n", "\\n", "\n  ")
-        every = int(os.environ.get("KB_KEY_CASES", "3000")) >= 20000
+        every = int(os.environ.get("SUPERHISTORY_KEY_CASES", "3000")) >= 20000
 
         def placed(lines, brk, cut):
             """(the text, what it masks to) for the block's lines in each place, the key's from line `cut` on."""

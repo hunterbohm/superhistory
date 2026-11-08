@@ -1,7 +1,7 @@
 """This branch's mask held to main's mask as it is today, frozen byte for byte in tests/fixtures/main_mask_68506d9.py:
 main's kb/mask.py at 68506d9, where #29 merged, whose git blob, 774a4a2, a test here checks, so it is never edited.
 tests/test_mask_against_main.py holds the mask to main at 3be191e, from before #27 and #29; this holds it to main now.
-Every character today's main hides, this branch hides: over the same texts as that comparison (KB_DIFF_CASES of each
+Every character today's main hides, this branch hides: over the same texts as that comparison (SUPERHISTORY_DIFF_CASES of each
 kind, each as written and without its invisible characters), the shapes this branch's reviews found shown that main
 hides, and texts generated around them. Positions are exact: each mask reports where every character of its result
 came from (mask_with_origin).
