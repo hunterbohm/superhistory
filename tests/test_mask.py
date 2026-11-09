@@ -3969,7 +3969,8 @@ class Base64ReviewTwentyFourthTest(unittest.TestCase):
         """`form` (AROUND) for line `n` of a key, whose base64 is `line`."""
         return form.format(n=n, line=line, quote=("> ", ">> ")[n % 2], letter=chr(ord("a") + n % 26),
                            stream=("stdout", "stderr")[n % 2], node=("node-a", "node-b", "worker")[n % 3],
-                           odd="-1" if n == 5 else "")
+                           odd="-1" if n == 5 else "", turn="-*+"[n % 3], depth=">" * (1 + n // 5),
+                           level=("INFO", "DEBUG", "WARN")[n % 3])
 
     def test_a_keys_lines_among_other_text_on_each_line_are_masked(self):
         import random
@@ -3995,23 +3996,29 @@ class Base64ReviewTwentyFourthTest(unittest.TestCase):
     def test_a_marked_key_cut_short_goes_to_its_last_line_and_the_words_after_it_stay(self):
         # A key with no footer reads on to its block's end. Read as their longest run of base64 alone, a line of words
         # after it ("next steps", as "steps") and a JSON field after its last line (as "review") were lines of it, and
-        # the words went with it; its last line, shorter than a word after it, must go all the same.
+        # the words went with it; its last line, shorter than a word after it, must go all the same, under a mark that
+        # changes from line to line too, and a short key's two lines, the first after the words that open a JSON value.
+        # A GnuPG key whose armour comment holds a control byte ends at it without its footer, so its footer must read.
         import base64
         import json
         import random
         import textwrap
         der = made_up_private_key(random.Random(12))
         body = "\n".join(textwrap.wrap(base64.b64encode(der).decode(), 64))
+        ed25519 = Base64ReviewNineteenFindingsTest.fixture("openssl_ed25519")
         files = {"cut short": f"-----BEGIN PRIVATE KEY-----\n{body}\n".encode(),
-                 "whole": f"-----BEGIN PRIVATE KEY-----\n{body}\n-----END PRIVATE KEY-----\n".encode()}
+                 "whole": f"-----BEGIN PRIVATE KEY-----\n{body}\n-----END PRIVATE KEY-----\n".encode(),
+                 "ed25519 cut short": ed25519[:ed25519.rindex(b"-----END")], "ed25519 whole": ed25519,
+                 "GnuPG whole": Base64ReviewNineteenFindingsTest.fixture("gnupg_control_comment")}
         forms = ("> {line}", "{line}", "{line}  # part {n}", "{n:6}\t{line}", '  "{line}" +', "| {n} | {line} |",
-                 "//{line}", "+{line}", "&quot;{line}&quot;", "<td>{line}</td>")
+                 "//{line}", "+{line}", "&quot;{line}&quot;", "<td>{line}</td>", "{turn} {line}", "{depth} {line}",
+                 "[{level}] {line}", "{stream}: {line}")
         i = 0
         for name, data in files.items():
             for form in forms:
                 for width in range(32, 101, 6):
                     chunks = textwrap.wrap(base64.b64encode(data).decode(), width)
-                    lines = [form.format(n=n + 1, line=chunk) for n, chunk in enumerate(chunks)]
+                    lines = [self.around(form, n + 1, chunk) for n, chunk in enumerate(chunks)]
                     lines[0] = ("", "key: ", "const key = ")[i % 3] + lines[0].lstrip()
                     i += 1
                     block = "\n".join(lines)
