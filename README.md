@@ -57,11 +57,12 @@ before the pick. Run `superhistory --try search "words"` to search the made-up m
 ## Set it up
 
 > **Before you connect your data:** the mask is best effort, not a guarantee. It catches the common shapes of
-> passwords, keys and tokens, and [Privacy](#privacy) lists many shapes it misses. Your message and the records picked
-> for it are sent to the AI plug-in you choose, so with a hosted plug-in that company's servers see them, along with
-> any secret the mask missed. To keep your records off any AI company's servers, point `openai-compatible` at a model
-> you run yourself, or choose no plug-in (then the hook adds nothing). Leave out any source holding secrets you could
-> not risk reaching that provider.
+> passwords, keys and tokens, and [Privacy](#privacy) lists many shapes it misses. Records leave your computer two
+> ways, along with any secret the mask missed: your message and candidate records go to the AI plug-in you choose to
+> pick them, and the records it keeps go into your agent's prompt, so the agent's provider (Anthropic for Claude Code,
+> OpenAI for Codex) sees them too. A model you run yourself through `openai-compatible` keeps the picking local, but
+> the records still reach a hosted agent unless you leave its hook out. Leave out any source holding secrets you
+> could not risk reaching those providers.
 
 ```sh
 superhistory setup
