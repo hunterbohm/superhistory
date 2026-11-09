@@ -1429,11 +1429,12 @@ _MARKED_BASE64 = re.compile(r"(?<![A-Za-z0-9+/])(?<!&)(?<!&#)[A-Za-z0-9+/]+={0,2
 def _marked_key_spans(text):
     """Each private key in a file written as base64 in `text` whose lines each hold its base64 among other text, as
     ordered (start, end) spans: a mark before it ("> ", "# ", "// ", "-- ", "; ", "* ", "| ", a quote, written, escaped
-    or as a web page's entity, once or more), a line's number, code, markup or a table's cells around it, or a comment
-    after it, any of which ends the block on its line where _written_key_spans reads one. In each run of two lines or more
-    that each hold base64 (_MARKED_BASE64, the longest on its line, the first of the longest), where that base64,
-    joined, holds a key's word, each line is read as its base64 alone, its line break kept, but for words before it
-    that neither line next to it shares (_key_lines), and the rest of `text` as written. A mark can end in base64's own "/" or "+" ("//", a diff's "+"), which then reads as the line's base64:
+    or as a web page's entity, once or more), a line's number or a label, code, markup or a table's cells around it,
+    or a comment after it, any of which ends the block on its line where _written_key_spans reads one. In each run of
+    two lines or more that each hold base64 (_MARKED_BASE64, the longest on its line, the first of the longest), where
+    that base64, joined, holds a key's word, each line is read as its base64 alone (_key_lines: which run is its, and
+    the words that stay before it on the lines after the run's last mark), its line break kept, and the rest of `text`
+    as written. A mark can end in base64's own "/" or "+" ("//", a diff's "+"), which then reads as the line's base64:
     over lines one after another whose base64 starts with them, a second reading leaves out as many of them on each
     as most of those lines start with, or fewer where a line starts with fewer, so a line of the key whose own base64
     starts with one keeps it, and a line of other text among them changes nothing for the rest."""
@@ -1486,18 +1487,21 @@ def _key_lines(text, run):
     """The lines of `run` (_marked_key_spans) to read, each the (line, start, end, line_end) of the base64 that is its
     own, and for each whether the text before that stays. A line carries a mark where the text before its longest run
     holds no letter or digit, or is shaped as a line next to it has before its own (_lead_shape: a line's number, a
-    log's stream or node, a letter, "<td>" or "&quot;" alike). Every line through the last that carries one is read as
-    its run alone; on the lines after it, words before a line's run stay ("next " before "steps", "ca.crt: " before
-    "none"), so a line of words after a key cut short, which reads on to its block's end, is no line of it.
+    log's stream or node, a letter, "<td>" or "&quot;" alike), the line above's with words before it (_one_mark).
+    Every line through the last that carries one is read as its run alone; on the lines after it, words before a
+    line's run stay ("next " before "steps", "ca.crt: " before "none"), so a line of words after a key cut short,
+    which reads on to its block's end, is no line of it.
     On a line next to one that carries a mark it does not, where text shaped as that mark starts it, the run right
     after that text is the line's: through the last line that carries one, where its longest run is inside that text
     (a key's short last line after a longer word, "[worker] LQo=" under "[node-b] "); after it, where what follows the
     run on its line holds no letter or digit, starts as what follows that line's does, or ends a line as _WRAPPED_LINE
     reads one, and that text goes too (a key's last line, shorter than a word after it: "> Cg  # part 20",
-    '> Cg", "note": "rotate after the review"}'). Where no line carries one, words stay on every line."""
+    '> Cg", "note": "rotate after the review"}'); so does its first run there, where nothing with a letter or digit
+    stands before it and what follows it ends so, as a mark that changes from line to line leaves one ("- " under
+    "* ", ">>> " under ">> "). Where no line carries one, words stay on every line."""
     leads = [_lead_shape(text[line:start]) for line, start, _, _ in run]
-    marked = [not _WORDED.search(text, line, start) or leads[i] in leads[max(i - 1, 0):i] + leads[i + 1:i + 2]
-              for i, (line, start, _, _) in enumerate(run)]
+    marked = [not _WORDED.search(text, line, start) or i and _one_mark(leads[i - 1], leads[i])
+              or i + 1 < len(run) and _one_mark(leads[i], leads[i + 1]) for i, (line, start, _, _) in enumerate(run)]
     last = max((i for i, mark in enumerate(marked) if mark), default=-1)
     lines, kept = list(run), [i > last for i in range(len(run))]
     for i, (line, start, end, line_end) in enumerate(run):
@@ -1507,40 +1511,59 @@ def _key_lines(text, run):
                 if own and (end <= own[1] if i <= last else _ends_as(text, own, run[j])):
                     lines[i], kept[i] = own, False
                     break
+        else:
+            first = _MARKED_BASE64.search(text, line, line_end) if 0 <= last == i - 1 else None
+            if first and not _WORDED.search(text, line, first.start()) and _ends_as(
+                    text, (line, first.start(), first.end(), line_end), run[last]):
+                lines[i], kept[i] = (line, first.start(), first.end(), line_end), False
     return lines, kept
 
 
+def _one_mark(above, below):
+    """Whether the text before the base64 of a line (`above`) and of the line below it (`below`), shaped (_lead_shape),
+    is one mark: the same, or `above` that, where it is something, with words before it, as a key's first line has
+    ("key: ", '{"k": "')."""
+    return above == below or bool(below) and above.endswith(below) and bool(
+        _WORDED.search(above, 0, len(above) - len(below)))
+
+
 def _run_after(text, line, lead):
-    """The (line, start, end, line_end) of the run of base64 right after text shaped as `lead` (_lead_shape) at the start
-    of `line` (_marked_key_spans); None where none is."""
+    """The (line, start, end, line_end) of the run of base64 right after text shaped as `lead` (_lead_shape) at the
+    start of `line` (_marked_key_spans); None where none is."""
     line, _, _, line_end = line
-    mark = re.compile("".join(_LEAD_WORD.pattern if c == "a" else r"\s+" if c == " " else re.escape(c) for c in lead)
+    mark = re.compile(r"\s*" + "".join(_LEAD_WORD.pattern if c == "a" else _LEAD_NUMBER.pattern if c == "0"
+                                       else r"\s+" if c == " " else re.escape(c) for c in lead)
                       + f"(?={_MARKED_BASE64.pattern})").match(text, line, line_end)
     run = mark and _MARKED_BASE64.match(text, mark.end(), line_end)
     return (line, run.start(), run.end(), line_end) if run else None
 
 
 def _ends_as(text, line, other):
-    """Whether what follows the run on `line` (_marked_key_spans) holds no letter or digit, starts shaped as what follows
-    the run on `other` does where something does, or ends a line as _WRAPPED_LINE reads one."""
+    """Whether what follows the run on `line` (_marked_key_spans) holds no letter or digit, starts shaped as what
+    follows the run on `other` does where something does, or ends a line as _WRAPPED_LINE reads one."""
     _, _, end, line_end = line
     tail = _lead_shape(text[other[2]:other[3]])
     return (not _WORDED.search(text, end, line_end) or bool(_ENDS_A_LINE.match(text, end, line_end))
             or bool(tail) and _lead_shape(text[end:line_end]).startswith(tail))
 
 
-# A letter or a digit; a word, with the dots, hyphens and underscores inside it; and what ends a line of a block where
-# _WRAPPED_LINE reads one: a line break, a quote, a tag or the text's end.
+# A letter or a digit; a word, with the dots, hyphens and underscores inside it, and a number (_lead_shape); and what
+# ends a line of a block where _WRAPPED_LINE reads one: a line break, a quote, a tag or the text's end.
 _WORDED = re.compile(r"[^\W_]")
 _LEAD_WORD = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?")
+_LEAD_NUMBER = re.compile(r"[0-9A-Fa-f](?:[0-9A-Fa-f._-]*[0-9A-Fa-f])?")
 _WORD_OR_SPACES = re.compile(rf"({_LEAD_WORD.pattern})|\s+")
+_NUMBER = re.compile(r"(?=.*[0-9])[0-9A-Fa-f._-]+")
 _ENDS_A_LINE = re.compile(rf"(?:\r|{_SPACING})*(?:{_BREAK}|{_QUOTE_MARK}|<|\Z)")
 
 
 def _lead_shape(lead):
-    """`lead` with each word as "a" and each run of spaces as one space, so a line's number, a log's stream or node, or
-    a letter before each line of a key reads alike on each."""
-    return _WORD_OR_SPACES.sub(lambda m: "a" if m.group(1) else " ", lead)
+    """`lead` without the spaces that start it, with each word as "a", or "0" where it is a number (its digits, decimal
+    or hex, with one decimal at least), and each run of spaces as one space, so a line's number or offset, a log's
+    stream or node, or a letter before each line of a key reads alike on each, the first too where a copy starts at
+    its number, and a word ("next ") unlike a number."""
+    return _WORD_OR_SPACES.sub(lambda m: ("0" if _NUMBER.fullmatch(m.group(1)) else "a") if m.group(1) else " ",
+                               lead.lstrip())
 
 
 def _cut_view_spans(text, cut):

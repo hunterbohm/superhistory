@@ -3983,7 +3983,8 @@ class Base64ReviewTwentyFourthTest(unittest.TestCase):
                         brk = ("\n", "\r\n")[i % 2]
                         data = key.replace(b"\n", brk.encode())
                         end = data.rindex(b"-") + 1
-                        lines = [self.around(form, n + 1, line) for n, line in enumerate(encoded(data, width).split("\n"))]
+                        lines = [self.around(form, n + 1, line)
+                                 for n, line in enumerate(encoded(data, width).split("\n"))]
                         lines[0] = first + lines[0].lstrip()
                         words = [self.around(form, 0, "see /etc/ssl/private/walrus.pem"), "notes"]
                         text = brk.join(["Notes:"] + words + lines + words[::-1] + ["", "next paragraph"])
