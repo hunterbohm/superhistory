@@ -473,9 +473,20 @@ class SearchTest(TempDB):
             with mock.patch.object(search, "TOP_ROWS", 90), \
                     mock.patch.object(search, "_grouped", wraps=search._grouped) as grouped:
                 self.assertEqual([h["id"] for h in search.search(self.db, "deploy rollback")], full)
-        self.assertEqual(grouped.call_count, 2, "one pass per list, no fallback to every row")
+        self.assertEqual(grouped.call_count, 1, "one pass for both lists, no fallback to every row")
         self.assertEqual(dict(self.db.execute("SELECT kind, count(*) FROM docs GROUP BY kind")), {"doc": 20, "raw": 84},
                          "104 matching rows, more than the 90 kept, so the cut is real; the summaries rank below every raw row")
+
+    def test_one_full_text_match_feeds_both_lists(self):
+        self.add("d", "marmot sighting", title="doc item")
+        self.add("r", long_body("marmot"), title="raw item")
+        scored = []
+        self.db.set_trace_callback(lambda sql: scored.append(sql) if "bm25(" in sql and "MATCH" in sql else None)
+        try:
+            self.assertEqual(sorted(self.titles("marmot")), ["doc item", "raw item"])
+        finally:
+            self.db.set_trace_callback(None)
+        self.assertEqual(len(scored), 1, "scoring every matching row is most of a search's time; do it once")
 
     def test_a_tie_across_the_cut_is_not_cut(self):
         for i in range(12):
