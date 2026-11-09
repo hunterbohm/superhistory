@@ -531,6 +531,7 @@ _ENCODED_KEY = re.compile("|".join(re.escape(code) for word in _KEY_WORDS for co
 _KEY_PIECE = re.compile("|".join(sorted({re.escape(code[i:i + 6]) for word in _KEY_WORDS for code in _base64_of(word)
                                          for i in range(len(code) - 5)})))
 _FILE_STARTS = ("LS0tLS1CRUdJT", "LS0tLSBCRUdJT")
+_PADDED_LINE = re.compile(r"\s*=")  # a line that starts with a key's padding, as one holding only that does
 # A line break: any that Python's splitlines reads (a lone carriage return too, as an old Mac file ends its lines),
 # escaped once or more as JSON writes it, and JSON in JSON: a line feed or carriage return as \n, \r or \u000a, a form
 # feed as \f, and the others as \u000b, \u0085 or  , so a stream's lines read as one block at every depth.
@@ -1633,6 +1634,7 @@ def _chained_key_lines(text, run):
     for line, _, _, line_end in run:
         found = []  # for each run on the line that goes on: (rank, its pick, what it leaves past its groups)
         spare = None  # the first run under 8 characters that goes on, read where no other does
+        padded = _PADDED_LINE.match(text, line, line_end)  # read once a line, as each run on a long one would cost it
         for m in _MARKED_BASE64.finditer(text, line, line_end):
             signs, best = len(m.group()) - len(m.group().lstrip("+/")), None
             for k in range(max(0, signs - 3), signs + 1):
@@ -1647,7 +1649,7 @@ def _chained_key_lines(text, run):
                 elif not decodes or (len(piece) < 16 and not header if closed
                                      else len(piece) < 8 and not (piece.endswith("=") or read[1]
                                                                   or m.start() + k - line == column)):
-                    if decodes and not closed and not spare and not text[line:m.start()].lstrip().startswith("="):
+                    if decodes and not closed and not spare and not padded:
                         spare = ((), (line, m.start() + k, m.end(), line_end), read[0])
                     continue
                 rank = (bool(_KEY_PIECE.search(tail + piece)), piece.startswith(_FILE_STARTS), decodes,

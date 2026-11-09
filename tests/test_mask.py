@@ -4439,6 +4439,31 @@ class Base64ReviewTwentyFourthTest(unittest.TestCase):
                     # four times the text
                     self.assertLess(took[1 << 16], 8 * max(took[1 << 14], 0.01), took)
 
+    def test_a_long_line_of_short_runs_after_a_keys_line_costs_time_in_proportion(self):
+        # a run under 8 characters after a key's line goes on where no other on its line does, unless the line starts
+        # with a key's padding: read from the line's start for each run, a long line of short runs after "=" took time
+        # as its length squared
+        import base64
+        import textwrap
+        import time
+        from kb import mask as mask_module
+        key = b"-----BEGIN PRIVATE KEY-----\n" + b"PRIVATE KEY " * 40
+        lines = textwrap.wrap(base64.b64encode(key).decode(), 64)[:3]
+
+        def timed(text):
+            started = time.process_time()
+            mask_module._encoded_key_spans(text)
+            return time.process_time() - started
+        for line in ("= {}", "\t= {}", "// {}"):
+            for run in ("a", "ab"):
+                took = {}
+                for size in (1 << 17, 1 << 19):
+                    text = "\n".join(lines + [line.format(" ".join([run] * (size // (len(run) + 1))))]) + "\n\nnext"
+                    took[size] = min(timed(text) for _ in range(2))  # the faster of two, as a busy machine's is noisy
+                with self.subTest(line=line, run=run):
+                    # four times the line
+                    self.assertLess(took[1 << 19], 8 * max(took[1 << 17], 0.01), took)
+
     def test_horizontal_space_and_line_breaks_are_every_one_python_reads(self):
         import re
         from kb import mask as masking
