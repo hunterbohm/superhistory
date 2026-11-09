@@ -2,9 +2,12 @@ import ast
 import base64
 import bisect
 import calendar
+import codecs
+import contextlib
 import contextvars
 import functools
 import hashlib
+import itertools
 import json
 import logging
 import math
@@ -509,6 +512,189 @@ REFERENCE = re.compile(r"^(?:\$(?:[{(]|[A-Z_][A-Z0-9_]*$|[a-z_][a-z0-9_]*$|env:)
                        r"[a-z]+://|(?:env|file|cmd):|[a-z_][\w.]*\()|"
                        r"^[A-Za-z_]+(?:\.[A-Za-z_]+)+$|^[A-Z][A-Z_]{2,}$|^[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+$")
 
+# A private key in a file written as base64, as a Kubernetes secret holds a TLS key: wherever the file's header or
+# footer says "PRIVATE KEY", or a PGP block's "SECRET KEY", the run holds that word's base64 at one of the three byte
+# offsets a word can start at.
+def _base64_of(word):
+    """The base64 characters `word`'s bytes alone decide, at each of the three offsets it can start at."""
+    return [base64.b64encode(b"\0" * k + word + b"\0\0\0").decode()[-(-8 * k // 6):8 * (k + len(word)) // 6]
+            for k in range(3)]
+
+
+_KEY_WORDS = (b"PRIVATE KEY", b"SECRET KEY")
+_ENCODED_KEY = re.compile("|".join(re.escape(code) for word in _KEY_WORDS for code in _base64_of(word)))
+# A line break: any that Python's splitlines reads (a lone carriage return too, as an old Mac file ends its lines),
+# escaped once or more as JSON writes it, and JSON in JSON: a line feed or carriage return as \n, \r or \u000a, a form
+# feed as \f, and the others as \u000b, \u0085 or  , so a stream's lines read as one block at every depth.
+# JSON's other escapes are read by _json_unescaped's views.
+_BREAK_CHARACTERS = "\n\r\x0b\x0c\x1c\x1d\x1e\x85  "
+# Horizontal space: every character Python reads as space but a line break, as str.split parts words at each: a space,
+# a tab, the no-break space and Unicode's other spaces, and the unit separator. And the quotes a string is written in,
+# a backtick too, as a template literal or a code span is. Each also escaped as JSON writes it, behind any number of
+# backslashes: "\\t", or "\\uXXXX" in either case ("\\u0020", "\\u00A0", "\\u0022").
+_HORIZONTAL = frozenset("\t\x1f \xa0   　" + "".join(map(chr, range(0x2000, 0x200b))))
+_QUOTES = "\"'`"
+
+
+_BACKSLASH_PLACE = ("\\", 1, None)
+
+
+def _literal(characters):
+    """The places of a token that is `characters`, each written once."""
+    return tuple((c, 1, 1) for c in characters)
+
+
+def _escaped(character):
+    """The places of `character`'s escape as JSON writes it, behind any number of backslashes: a "u" and four hex
+    digits, in either case."""
+    return (_BACKSLASH_PLACE, ("u", 1, 1)) + tuple((d + d.upper() if d.isalpha() else d, 1, 1)
+                                               for d in f"{ord(character):04x}")
+
+
+# Every token the readers of a line's lead and of a line break accept, each as its places: the characters one place may
+# hold, and how many of it in a row, at least and at most (None: any number). Each reader below, forward or back from a
+# token's end, in a str or in the bytes a key's base64 decodes to, is built from these tables, and so is each window's
+# test of a token its edge cuts (_cuts): a token added here is read, and cut, alike, and the tests cut each one.
+# Horizontal space: each character, written; a tab as "\\t"; each escaped. A quote: written behind any number of
+# backslashes, escaped, or as a web page's entity, as main reads one (_QUOTE), and a backtick; not percent-encoded, as a
+# link writes one: there base64's own "+", "/" and "=" are encoded too, and the digits of "%22" would read as the run's.
+_SPACE_TOKENS = (tuple(_literal(c) for c in sorted(_HORIZONTAL)) + ((_BACKSLASH_PLACE, ("t", 1, 1)),)
+                 + tuple(_escaped(c) for c in sorted(_HORIZONTAL)))
+_QUOTE_TOKENS = (tuple((("\\", 0, None), (q, 1, 1)) for q in _QUOTES) + tuple(_escaped(q) for q in _QUOTES)
+                 + tuple(_literal(f"&{name};") for name in ("quot", "apos", "grave"))
+                 + tuple(_literal("&#") + (("0", 0, None),) + _literal(f"{code};") for code in ("34", "39", "96"))
+                 + tuple(_literal("&#") + (("xX", 1, 1), ("0", 0, None)) + _literal(f"{code};")
+                         for code in ("22", "27", "60")))
+_LEAD_TOKENS = _SPACE_TOKENS + _QUOTE_TOKENS
+# A line break: each written, "\\n", "\\r" and "\\f", and each escaped; a carriage return and a line feed as one.
+_BREAK_TOKENS = ((_literal("\r\n"), (_BACKSLASH_PLACE, ("r", 1, 1), _BACKSLASH_PLACE, ("n", 1, 1)),
+                  _escaped("\r") + _escaped("\n"))
+                 + tuple(_literal(c) for c in _BREAK_CHARACTERS) + tuple((_BACKSLASH_PLACE, (c, 1, 1)) for c in "nrf")
+                 + tuple(_escaped(c) for c in _BREAK_CHARACTERS))
+
+
+def _place(place):
+    """A regex of one place of a token."""
+    chars, least, most = place
+    one = re.escape(chars) if len(chars) == 1 else "[" + "".join(map(re.escape, chars)) + "]"
+    return one + {(1, 1): "", (0, 1): "?", (0, None): "*", (1, None): "+"}[least, most]
+
+
+def _pattern(tokens, searched=False):
+    """A regex of any one of `tokens`, as one tree of their places: tokens that start alike are tried once, a longer one
+    before one it starts with, and places alike but for their characters, with the same tree after them, are one
+    class. `searched`: one that starts with backslashes matches only from the first of them, so a long run of them is
+    tried once."""
+    tree = {}
+    for token in tokens:
+        node = tree
+        for place in token:
+            node = node.setdefault(place, {})
+        node[None] = {}
+
+    def alternatives(node, top=False):
+        groups = []  # (counts, the tree after, characters)
+        for place, after in node.items():
+            group = next((g for g in groups if place is not None and g[0] == place[1:] and g[1] == after), None)
+            if group:
+                group[2].append(place[0])
+            elif place is not None:
+                groups.append((place[1:], after, [place[0]]))
+        out = []
+        for (least, most), after, chars in groups:
+            rest = "|".join(alternatives(after))
+            rest = f"(?:{rest})?" if rest and None in after else f"(?:{rest})" if rest else ""
+            guard = "(?<!\\\\)" if searched and top and chars == ["\\"] else ""
+            out.append(guard + _place(("".join(chars), least, most)) + rest)
+        return out
+
+    return "(?:" + "|".join(alternatives(tree, True)) + ")"
+
+
+def _reversed(tokens):
+    """`tokens` read back from their ends."""
+    return tuple(token[::-1] for token in tokens)
+
+
+def _cuts(tokens, back=False):
+    """What a window's edge leaves of one of `tokens` where it cuts it, as tokens: its places before one, whole, then
+    fewer of that one, none too; with `back`, the edge before it: fewer of one, then the places after it, whole."""
+    out = []
+    for token in tokens:
+        for i, (chars, _, most) in enumerate(token):
+            fewer = ((chars, 0, most),)
+            out.append(fewer + token[i + 1:] if back else token[:i] + fewer)
+    return tuple(out)
+
+
+_SPACING = _pattern(_SPACE_TOKENS)
+_QUOTE_MARK = _pattern(_QUOTE_TOKENS)
+_BREAK = _pattern(_BREAK_TOKENS)
+_WRAP = rf"(?:\r|{_SPACING})*{_BREAK}{_SPACING}*"
+# A run of base64, with each line after it that it wraps onto: a line that is base64 from its indentation to its end,
+# however short, which a line break, a quote, a tag or the text's end ends. A run shorter than 16 starts one only when
+# lines follow it. A run can start just after a backslash, so the letter of an escape such as \n can lead it. Which of
+# the lines hold a key is _key_range's to say.
+_WRAPPED_LINE = rf"{_WRAP}(?:[A-Za-z0-9+/]+={{0,2}}|={{1,2}})(?=(?:\r|{_SPACING})*(?:{_BREAK}|{_QUOTE_MARK}|<|\Z))"
+# An escaped space's letters ("\\t", "\\u00a0"), which can lead a run. Such a run alone that another escaped space
+# follows, past only spaces, or past a carriage return with a line break after it, starts no block: the next one reads
+# the same, as the block reads past the line break that run's line reads to; and each would read the whole run of
+# spaces for that line break, so a long one took time in its square.
+_SPACE_ESCAPE_TAIL = "(?:t|u(?:" + "|".join("".join(f"[{d}{d.upper()}]" if d.isalpha() else d for d in f"{ord(c):04x}")
+                                              for c in sorted(_HORIZONTAL)) + "))"
+_WRAPPED_BASE64 = re.compile(rf"(?<![A-Za-z0-9+/])(?:[A-Za-z0-9+/]{{16,}}={{0,2}}(?:{_WRAPPED_LINE})*"
+                             rf"|(?!(?<=\\){_SPACE_ESCAPE_TAIL}(?:(?:{_SPACING})*?\\+{_SPACE_ESCAPE_TAIL}"
+                             rf"|(?:\r|{_SPACING})*?\\+{_SPACE_ESCAPE_TAIL}(?=(?:\r|{_SPACING})*?{_BREAK})))"
+                             rf"[A-Za-z0-9+/]+={{0,2}}(?:{_WRAPPED_LINE})+)")
+# The same in the bytes a key's base64 decodes to: each character as UTF-8 writes it, each byte a Latin-1 character of
+# the tables, and a no-break space alone as Latin-1 writes it, too (a lone \x85 is cp1252's ellipsis, no line break).
+def _in_bytes(tokens):
+    """`tokens` with each place past ASCII as the places of its UTF-8 bytes."""
+    return tuple(tuple(place for chars, least, most in token
+                       for place in (((chars, least, most),) if chars.isascii()
+                                     else _literal(chars.encode().decode("latin-1"))))
+                 for token in tokens)
+
+
+def _bytes(pattern):
+    return re.compile(pattern.encode("latin-1"))
+
+
+_LEAD_TOKENS_BYTES = _in_bytes(_LEAD_TOKENS) + (_literal("\xa0"),)
+_BREAK_TOKENS_BYTES = _in_bytes(_BREAK_TOKENS)
+_SPACE_OR_QUOTE_BYTES = _bytes(_pattern(_LEAD_TOKENS_BYTES))
+_SPACE_OR_QUOTE_RUN = _bytes(_pattern(_LEAD_TOKENS_BYTES) + "*")
+_BREAK_BYTES = _bytes(_pattern(_BREAK_TOKENS_BYTES))
+_BREAK_BYTES_RUN = _bytes(_pattern(_BREAK_TOKENS_BYTES) + "*")
+# Searched for: an escape only from the first backslash of its run, so a long run of them is tried once.
+_BREAK_BYTES_SEARCH = _bytes(_pattern(_BREAK_TOKENS_BYTES, searched=True))
+# A line's lead read back from where it ends, in a text reversed; and what a window's edge leaves of a token it cuts,
+# before the run it reads (_lead_start), and before and after a header or footer (_frame).
+_LEAD_BACK = {str: re.compile(_pattern(_reversed(_LEAD_TOKENS)) + "*"),
+              bytes: _bytes(_pattern(_reversed(_LEAD_TOKENS_BYTES)) + "*")}
+_CUT_BACK = {str: re.compile(_pattern(_cuts(_LEAD_TOKENS, back=True))),
+             bytes: _bytes(_pattern(_cuts(_LEAD_TOKENS_BYTES, back=True)))}
+_CUT_FRAME_BACK = _bytes(_pattern(_cuts(_LEAD_TOKENS_BYTES + _BREAK_TOKENS_BYTES, back=True)))
+_CUT_FRAME_AHEAD = _bytes(_pattern(_cuts(_LEAD_TOKENS_BYTES + _BREAK_TOKENS_BYTES)))
+# The longest a line break is with each run of backslashes in it one long: a longer one ends with one that long or less.
+_BREAK_REACH = max(sum(least for _, least, _ in token) for token in _BREAK_TOKENS)
+
+
+def _lead_start(text, at):
+    """Where the run of horizontal space and quotes, written or escaped (_LEAD_TOKENS), that ends at `at` in `text`
+    starts: in a str, or in the bytes a key's base64 decodes to. Read back in windows twice as wide each time while what
+    a window holds before the run is all the window's edge leaves of a token it cuts (_CUT_BACK), so a run costs time in
+    proportion to its length."""
+    kind = str if isinstance(text, str) else bytes
+    back, cut, width = _LEAD_BACK[kind], _CUT_BACK[kind], 64
+    while True:
+        lo = max(at - width, 0)
+        start = at - back.match(text[lo:at][::-1]).end()
+        if not lo or not cut.fullmatch(text, lo, start):
+            return start
+        width *= 2
+_UNWRAP = re.compile(_WRAP)
+_ESCAPE_LETTER = re.compile(r"(?<=\\)(?:[bfnrt]|u[0-9A-Fa-f]{4})")
 # Docker's config holds a registry login in an "auth" field, base64 of "user:password".
 _AUTH_FIELD = re.compile(rf"(?i)((?:(?<![A-Za-z0-9_.-])|{_AFTER_ESCAPE})auth{_QUOTE}?{_GAP}[:=]{_GAP}{_QUOTE}?)"
                          r"([A-Za-z0-9+/]{4,}={0,2})")
@@ -615,11 +801,12 @@ def _gitleaks_edits(text):
 # Which mask() a stored row was masked with. A row of another version, or of none, is masked again when read and by
 # the next ingest. The patterns change it by themselves; bump REVISION when the code that applies them changes what
 # it masks.
-REVISION = 21
-VERSION = hashlib.sha256(repr((REVISION, [p.pattern for p in SECRET_PATTERNS + PREFIXED_SECRETS], KEYED_SECRET.pattern,
+REVISION = 39
+VERSION = f"r{REVISION}-" + hashlib.sha256(repr((REVISION, [p.pattern for p in SECRET_PATTERNS + PREFIXED_SECRETS], KEYED_SECRET.pattern,
                                 ENV_KEY_SECRET.pattern, JSON_SECRET.pattern, FLAG_SECRET.pattern, AUTH_SECRET.pattern,
                                 COMMAND_FLAGS, PASSWORD_NAME.pattern, sorted(PLACEHOLDERS), REFERENCE.pattern,
-                                _AUTH_FIELD.pattern, INVISIBLE.pattern, gitleaks.VERSION,
+                                _AUTH_FIELD.pattern, INVISIBLE.pattern, _ENCODED_KEY.pattern,
+                                _WRAPPED_BASE64.pattern, gitleaks.VERSION,
                                 [rule[1] for rule in gitleaks.RULES])).encode()).hexdigest()[:16]
 
 
@@ -717,6 +904,547 @@ def _prose(sep):
     """Whether a separator reads as prose does, "is" or a space with no "=" or ":" in it, after which a value of
     letters only is a word and not a password."""
     return not _SEP_CHARACTER.search(sep) and ("is" in sep.lower() or sep[-1:].isspace())
+
+
+def _wrapped_lines(text, start, end):
+    """The (start, end) of each line of the base64 block text[start:end], without line breaks and indentation."""
+    lines, at = [], start
+    for brk in _UNWRAP.finditer(text, start, end):
+        lines.append((at, brk.start()))
+        at = brk.end()
+    return lines + [(at, end)]
+
+
+# For each encoding of a key's word, the byte of its base64 group of 4 characters the word starts at, and the character
+# its encoding starts at, which fix how the groups of the base64 around it fall.
+_KEY_WORD_AT = {code: (k, -(-8 * k // 6)) for word in _KEY_WORDS for k, code in enumerate(_base64_of(word))}
+# A key's header or footer, each label main reads written plain: a PEM key's, an OpenPGP key's, and SSH2's, its words
+# before "PRIVATE KEY" up to 200 bytes, far past any a key tool writes ("ENCRYPTED", "OPENSSH", "SSH2 ENCRYPTED"):
+# each key word reads its label back to the dashes, so a run of label words read whole by each took time in its square.
+_LABEL_CHARACTERS = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 "
+_LABEL_WORDS = b"[" + re.escape(_LABEL_CHARACTERS) + b"]{0,200}"
+_KEY_FRAME = re.compile(rb"-----(BEGIN|END) (?:" + _LABEL_WORDS + rb"PRIVATE KEY|PGP (?:PRIVATE|SECRET) KEY BLOCK)-----"
+                        rb"|---- (BEGIN|END) SSH2 " + _LABEL_WORDS + rb"PRIVATE KEY ----")
+# A header's or footer's line up to its key word: its dashes, words and spaces.
+_LABEL = b"-" + _LABEL_CHARACTERS
+# A control character, which no text holds: any but horizontal space and a line break (_HORIZONTAL, _BREAK_CHARACTERS).
+_TEXT_CONTROL = re.compile(r"[\x00-\x08\x0e-\x1b\x7f-\x84\x86-\x9f]")
+_CONTINUATION_BYTES = bytes(range(0x80, 0xc0))
+
+
+def _reads_as_text(data):
+    """Whether bytes read as words do: ASCII, or UTF-8 as any language writes it, cut anywhere inside a character at
+    either end, with no control character but a tab or a line break."""
+    start = len(data) - len(data.lstrip(_CONTINUATION_BYTES))
+    if start > 3:
+        return False
+    try:
+        text = codecs.getincrementaldecoder("utf-8")().decode(data[start:], final=False)
+    except UnicodeDecodeError:
+        return False
+    return not _TEXT_CONTROL.search(text)
+
+
+def _letters_past_ascii(data):
+    """How many letters past ASCII bytes that read as text (_reads_as_text) hold, as a sentence in a language written
+    without spaces between its words does (Japanese, Chinese, Thai)."""
+    start = len(data) - len(data.lstrip(_CONTINUATION_BYTES))
+    text = codecs.getincrementaldecoder("utf-8")().decode(data[start:], final=False)
+    return sum(1 for c in text if c > "\x7f" and c.isalpha())
+
+
+# Inside a key, past its header: text past ASCII too, as UTF-8 writes it, since an armour header such as GnuPG's
+# "Comment:" may hold any letter; another stream's bytes still hold a control character within a line or two.
+_NOT_KEY_TEXT = re.compile(rb"[^\t-\r\x1c-\x7e\x80-\xff]")
+_BYTE_ORDER_MARK = b"\xef\xbb\xbf"
+
+
+def _base64_decoded(joined, start, end):
+    """What joined[start:end], whole groups of base64, decodes to, or None when it is not base64."""
+    try:
+        return base64.b64decode(joined[start:end], validate=True)
+    except ValueError:
+        return None
+
+
+def _frame(joined, starts, found, refused=False):
+    """The key's header or footer that the encoded word `found` is in, as (b"BEGIN" or b"END", where the base64 group
+    holding its first byte starts, and the character in it that holds that byte's first bits, the character that holds
+    its last byte's last bits, and where the group after its last byte starts), or None when the word is in none, as in
+    a field's name or a sentence about keys. A header or footer is a line of its own: after a line break or where the
+    encoded text starts (a line of the block, or past another stream's padding), and before a line break or where the
+    encoded text ends, with only horizontal space and quotes between, written or escaped (_lead_start,
+    _SPACE_OR_QUOTE_RUN), and a line break written or escaped (_BREAK_BYTES), as a key file indented in a document, or
+    written in a JSON string, writes one. Its label, and the space before and after it, are read however long: the
+    bytes around its word are decoded in windows twice as wide each time while they reach a window's edge, or the edge
+    cuts a token there (_CUT_FRAME_BACK, _CUT_FRAME_AHEAD). With `refused`, also a header after text on its decoded
+    line, where a line of the block starts or inside one, which alone starts no key (_key_spans)."""
+    byte, char = _KEY_WORD_AT[found.group()]
+    group = found.start() - char
+    back, ahead = 64, 40
+    while True:
+        lo, hi, opened = max(group - back, group % 4), min(group + ahead, len(joined)), None
+        pad = joined.rfind("=", lo, group)  # another stream's end
+        if pad >= 0:
+            lo = opened = pad + 1 + (group - pad - 1) % 4
+        whole = opened is not None or lo == group % 4  # the window starts where the encoded text does
+        pad = joined.find("=", group, hi)
+        closed = pad >= 0 or hi == len(joined)
+        hi = pad + (group - pad) % 4 if pad >= 0 else hi - (hi - group) % 4
+        decoded = _base64_decoded(joined, lo, hi) or b""
+        at = (group - lo) // 4 * 3 + byte
+        m = next((m for m in _KEY_FRAME.finditer(decoded) if m.start() <= at < m.end()), None)
+        if m is None:
+            if not whole and back < 512 and not decoded[:at].rstrip(_LABEL):
+                back *= 2  # its label, up to _KEY_FRAME's 200 bytes, may start before the window
+                continue
+            return None
+        lead = _lead_start(decoded, m.start())
+        trail = _SPACE_OR_QUOTE_RUN.match(decoded, m.end()).end()
+        brk = _BREAK_BYTES.match(decoded, trail)
+        # Past an edge: more of the line's lead, the words before it (_starts_encoded_text), or a token the edge cuts.
+        more_back = not whole and (lead <= 8 or bool(_CUT_FRAME_BACK.fullmatch(decoded, 0, lead)))
+        more_ahead = not closed and not brk and bool(_CUT_FRAME_AHEAD.fullmatch(decoded, trail))
+        if not (more_back or more_ahead):
+            break
+        back, ahead = back * (1 + more_back), ahead * (1 + more_ahead)
+    first = lo + m.start() // 3 * 4
+    breaks = [b.end() for b in _BREAK_BYTES_SEARCH.finditer(decoded, 0, lead)]
+    line_start = breaks[-1] if breaks else 0
+    opens = bool(breaks) and breaks[-1] == lead  # after a line break, past its lead
+    opens = opens or _starts_encoded_text(joined, starts, lo, opened, decoded, line_start, m.start())
+    opens = opens or lead < m.start() and _starts_encoded_text(joined, starts, lo, opened, decoded, line_start, lead)
+    closes = brk is not None or trail == len(decoded) and closed
+    if not ((opens or refused) and closes):
+        return None
+    return (m.group(1) or m.group(2), first, first + m.start() % 3, lo + (8 * m.end() - 1) // 6,
+            lo + (m.end() + 2) // 3 * 4)
+
+
+def _starts_encoded_text(joined, starts, lo, opened, decoded, line_start, at):
+    """Whether the encoded text starts at byte `at` of what joined[lo:] decodes to (`decoded`, whose decoded line holding
+    `at` starts at `line_start`; `opened`, where another stream's padding ends before it, if it does): a line of the
+    block starts there, as a key under a heading's word starts, or it is past another stream's padding; but not where
+    the wrapping of encoded text only happens to break, as a sentence that quotes a header shows, its words decoding
+    before the header on its line: with a space between them, or in letters past ASCII, as a language written without
+    spaces writes them ("説明-----BEGIN ..."). Or past a byte order mark there."""
+    start = lo + at // 3 * 4
+    line = bisect.bisect_left(starts, start)
+    before = decoded[line_start:at]
+    # A header that starts a line of the block below a shorter line, another stream's last, starts a stream of its
+    # own, so the words before it, from the stream above, quote nothing. A stream's own last line is the shorter
+    # one, below a line as wide as its wrapping, as a document's that quotes a header there is.
+    own_stream = 0 < line < len(starts) and starts[line] == start and starts[line] - starts[line - 1] < (
+        starts[line + 1] if line + 1 < len(starts) else len(joined)) - starts[line]
+    continues = bool(before) and _reads_as_text(before) and not own_stream and (
+        len(before) >= 8 and (b" " in before or _letters_past_ascii(before) >= 2)
+        or before[-1:] in (b" ", b"\t"))  # "Note: -----BEGIN ..."
+    # A line of the block starts there only as its wrapping breaks, however short the text before it ("例：",
+    # "Ex:"): one stream wrapped at one width writes every line but its last as long as the next, where a key in a
+    # stream of its own starts after another's last, shorter line (_wrapping_break). A key there still ends at its
+    # footer, which a line break opens.
+    # A word alone on each line above, as written ("RENT", "Walrus"), is a heading over a key in a stream of its
+    # own, whatever its letters decode to ("DCS"): base64 of a label writes letters of both cases and digits.
+    wrapped = bool(before) and _reads_as_text(before) and 0 < line < len(starts) and starts[line] == start and (
+        _wrapping_break(starts, line, len(joined))) and not _headings(joined, starts, start - (len(before) + 2) // 3 * 4, line)
+    if at % 3 == 0 and not continues and not wrapped and (start == opened or line < len(starts) and starts[line] == start):
+        return True
+    # or after the byte order mark a file saved on Windows starts with, where the encoded text starts: the mark
+    # is a group of its own, the one before the line's. With text decoded before it on its line, as from another
+    # stream above or a heading, it starts a key alone after what no text reads in, or a heading's words, and
+    # otherwise, as a header after text does, only with its footer after it (`refused`)
+    mark = start - 4
+    mark_line = bisect.bisect_left(starts, mark)
+    words = before[:-len(_BYTE_ORDER_MARK)] if before.endswith(_BYTE_ORDER_MARK) else None
+    return words is not None and at % 3 == 0 and (
+        mark == opened or mark_line < len(starts) and starts[mark_line] == mark) and (
+        not words or not _reads_as_text(words)
+        or _headings(joined, starts, mark - (len(words) + 2) // 3 * 4, mark_line))
+
+
+def _wrapping_break(starts, line, size):
+    """Whether the break before line `line` of a joined base64 block (`starts`, each line's start; `size`, the block's
+    length) is the block's own wrapping: the line before it is as long as this one, or, for the block's last line,
+    which a wrapping leaves shorter, no shorter than it."""
+    before = starts[line] - starts[line - 1]
+    own = (starts[line + 1] if line + 1 < len(starts) else size) - starts[line]
+    return before == own or line + 1 == len(starts) and before > own
+
+
+_HEADING_WORD = re.compile(r"[a-z]+|[A-Z][a-z]*|[A-Z]+")
+
+
+def _headings(joined, starts, start, line):
+    """Whether each line of a joined base64 block from the one holding `start` up to line `line` is, as written, one
+    word in one case ("rent", "Walrus", "SENTRY"), as a heading over a key is."""
+    first = max(bisect.bisect_right(starts, max(start, 0)) - 1, 0)
+    return first < line and all(_HEADING_WORD.fullmatch(joined, starts[k], starts[k + 1]) for k in range(first, line))
+
+
+class _Frames:
+    """Each key's header and footer in a joined base64 block (_frame), read once, in order of their encoded words: for
+    any place, whether a footer comes after it before another place; and each footer's place (footers, footer_bits)."""
+
+    def __init__(self, joined, starts):
+        self.at, kinds, self.footers = [], [], []
+        for m in _ENCODED_KEY.finditer(joined):
+            frame = _frame(joined, starts, m)
+            if frame:
+                self.at.append(m.start())
+                kinds.append(frame[0])
+                if frame[0] == b"END":
+                    self.footers.append(frame[1:])
+        self.footer_bits = [footer[1] for footer in self.footers]
+        self.next_end, last = [None] * (len(self.at) + 1), None  # for each frame, where the first footer from it is
+        for i in range(len(self.at) - 1, -1, -1):
+            last = self.at[i] if kinds[i] == b"END" else last
+            self.next_end[i] = last
+
+    def footer_after(self, at, stop):
+        """Whether a footer's encoded word starts at `at` or after it and before `stop`."""
+        end = self.next_end[bisect.bisect_left(self.at, at)]
+        return end is not None and end < stop
+
+
+class _Below:
+    """What a joined base64 block decodes to below a held header's line, its first byte's group starting at `start`
+    (_key_spans): whether, up to a place, it is no prose (no_prose). Its whole lines are decoded and read once, however
+    many headers below ask, so a block's time stays in proportion to its length."""
+
+    def __init__(self, joined, start):
+        self.joined, self.start, self.at = joined, start, start  # `at`: where decoding goes on
+        self.tail, self.base = b"", 0  # the bytes decoded past the last whole line read, from this decoded offset
+        self.past = False  # whether the held header's own line break is read
+        self.key_text = self.letter = False  # what the whole lines read hold
+
+    def no_prose(self, end, lead):
+        """Whether what lies from the held header's next line up to the byte `lead` bytes into the group at `end` is
+        no prose, as a key's lines between its header and a header written into it are: it holds a control character,
+        a run a key's body could be (_token_like), as a body's line does, an armour header's line ("Comment: ...",
+        "Proc-Type: ..."), another header's or footer's text, or no word at all. What does not decode in the groups of
+        one stream is none either."""
+        if self.key_text or (end - self.start) % 4:
+            return True
+        if end + 4 > self.at:
+            more = _base64_decoded(self.joined, self.at, end + 4)
+            if more is None:
+                self.key_text = True
+                return True
+            self.tail, self.at = self.tail + more, end + 4
+        cut = max((end - self.start) // 4 * 3 + lead - self.base, 0)
+        if not self.past:
+            brk = _BREAK_BYTES_SEARCH.search(self.tail, 0, cut)
+            if brk is None:
+                return True
+            self.past, self.tail, self.base, cut = True, self.tail[brk.end():], self.base + brk.end(), cut - brk.end()
+        whole = 0  # past the last line break
+        for brk in _BREAK_BYTES_SEARCH.finditer(self.tail, 0, cut):
+            whole = brk.end()
+        if whole:
+            key_text, letter = self._holds(self.tail[:whole])
+            self.key_text, self.letter = key_text, self.letter or letter
+            self.tail, self.base, cut = self.tail[whole:], self.base + whole, cut - whole
+        key_text, letter = self._holds(self.tail[:cut])  # the line the place is on, read up to it
+        return self.key_text or key_text or not (self.letter or letter)
+
+    @staticmethod
+    def _holds(lines):
+        """Whether whole lines, or a line up to a place, hold what a key's lines hold, and whether a letter."""
+        words = lines.decode("utf-8", "replace")
+        return (not _reads_as_text(lines) or _holds_token(words, 0, len(words))
+                or bool(_ARMOUR_HEADER_LINE.search(lines) or _KEY_FRAME.search(lines))), bool(_LETTER.search(words))
+
+
+_LETTER = re.compile(r"[^\W\d_]")
+_ARMOUR_HEADER_LINE = re.compile(b"(?:^|" + _BREAK_BYTES_SEARCH.pattern + b")" + _SPACE_OR_QUOTE_RUN.pattern
+                                 + rb"[A-Za-z][A-Za-z0-9-]*: ")
+
+
+def _key_range(joined, starts, ends, found, floor, frames, stream_end, held=None):
+    """The first and last lines of a base64 block that hold the key whose header or footer holds the encoded word
+    `found`, none above line `floor`; None when no header or footer holds it. A key starts at the line with its
+    header's first byte. For a footer under a header that starts no key alone, after text on its decoded line (`held`:
+    its line, whether it starts a stream of its own, and where its first group starts; _key_spans), it starts there,
+    whatever its bytes between: its armour comment may hold a control character. So it does for a header below it,
+    where that one starts a stream of its own or what is between them is no prose (_Below): a header
+    written into its armour comments or its body starts no other key, where one under a document that quotes a header
+    in a sentence above it starts its own.
+    With none, as when the block starts inside the key, a line above is the key's while the base64
+    through it, in the groups `found` fixes, still decodes to text. A key ends at its footer and the line breaks after
+    it: where its stream holds its footer later, everything between header and footer is the key, whatever its bytes
+    (an armour comment may hold any). With none, it ends where the text it decodes to ends: a heading, a word between
+    two keys or another stream stays, however the lines are wrapped; a footer in a later stream, encoded on its own,
+    is no footer of its, so a public key between them stays.
+    Its footer is a footer _frame reads, a whole line of its own, with no other footer after it in its stream
+    (`stream_end`, _stream_end; `frames`, _Frames): a footer written into an armour comment or the body as a line of its
+    own, alone or with a header written after it, has the key's real footer after it, so the key runs on to that one.
+    Written into an armour header ("Comment: -----END PGP PRIVATE KEY BLOCK-----") it is no line of its own. Which fails
+    closed: a key's real footer with a stray one later in its stream, or another whole key after it there, runs on to
+    the last footer, and text between them goes with the key, prose that holds a control character too, at which a
+    stray footer's own reading up from it (above) stops. Also where in the block its reading ended, so a key whose
+    header shares that line is read too."""
+    frame = _frame(joined, starts, found)
+    if frame is None:
+        return None
+    kind, first, bits = frame[:3]
+    # where its stream holds its footer later, past headers written into its armour comments or its body
+    footer_ahead = kind == b"BEGIN" and frames.footer_after(found.end(), ends[stream_end[bisect.bisect_right(
+        ends, first)]])
+    phase = first % 4
+    down = lambda p: p - (p - phase) % 4  # the group boundary at or before p
+    up = lambda p: p + (phase - p) % 4  # the group boundary at or after p
+    top = bisect.bisect_right(ends, bits)  # its first byte's first bits: the line above can end inside its group
+    if held is not None and floor <= held[0] < top and (kind == b"END" or held[1] or held[2].no_prose(
+            first, bits - first)):
+        top = held[0]  # a header written between them, into its armour comments or its body, starts no other key
+    while kind == b"END" and held is None and top > floor and up(starts[top - 1]) < down(starts[top]):
+        above = _base64_decoded(joined, up(starts[top - 1]), down(starts[top]))
+        if above is None or not _reads_as_text(above):
+            break
+        top -= 1
+    bottom, at, ended = bisect.bisect_left(ends, found.end()), first, False
+    after = bisect.bisect_left(frames.footer_bits, bits)  # the footers from its first byte on, in order
+    for line in range(bisect.bisect_right(ends, first), len(ends)):
+        end = down(ends[line])
+        if end <= at:
+            continue
+        below = _base64_decoded(joined, at, end)
+        if below is None:
+            break
+        if not ended:
+            # from a footer, past the bytes before it in its group: the line it ends may hold a control character
+            other = None if footer_ahead else _NOT_KEY_TEXT.search(below, 3 if kind == b"END" and at == first else 0)
+            # a footer counts whose first byte comes before the first that no key holds, placed as _frame places one:
+            # its group, and its byte in it
+            stop = at + other.start() // 3 * 4 + other.start() % 3 if other else end
+            footer = None
+            while after < len(frames.footers) and frames.footer_bits[after] < stop:
+                start, _, last, past = frames.footers[after]
+                after += 1
+                if start % 4 != phase:
+                    continue  # another stream's, whose groups are not these
+                if frames.footer_after(past, ends[stream_end[bisect.bisect_right(ends, past - 1)]]):
+                    # another footer later in its stream: the key runs on to it, whatever its bytes
+                    footer_ahead, other, stop = True, None, end
+                    continue
+                footer = last, past
+                break
+            if footer:
+                # the key ends with the line that holds its footer's last bits: where a line is no whole number of
+                # groups, the next line can start inside that byte's group, with the bits of the bytes after it alone
+                bottom, at, ended = max(bottom, bisect.bisect_right(ends, footer[0])), footer[1], True
+                # and the line where the group holding its last byte ends, its line break's and padding's, where no
+                # other group follows on it
+                done = bisect.bisect_left(ends, at)
+                if done < len(ends) and down(ends[done]) == at:
+                    bottom = max(bottom, done)
+                if at >= end:
+                    continue
+                below = _base64_decoded(joined, at, end)
+            elif other:
+                break
+            else:
+                bottom, at = max(bottom, line), end
+                continue
+        if not _BREAK_BYTES_RUN.fullmatch(below):
+            break
+        bottom, at = max(bottom, line), end
+    return max(top, floor), bottom, at
+
+
+_BREAK_ENDS = re.compile(rf"(?:{_BREAK})\Z")
+
+
+def _starts_its_line(text, at):
+    """Whether the line of a block that starts at `at` starts its line: after the text's start or a line break,
+    written or escaped, with only horizontal space and quotes between, written or escaped, however many (_lead_start).
+    No line break ends with one of those characters, so the break, if any, ends where they start, and the characters
+    before that, as many as the longest break with one backslash to each run (_BREAK_REACH), read it, as any number of
+    backslashes before an escape's letter reads as one."""
+    start = _lead_start(text, at)
+    return not start or _BREAK_ENDS.search(text, max(start - _BREAK_REACH, 0), start) is not None
+
+
+def _stream_end(widths, padded, k, cut=False):
+    """The last line of the stream that starts at line `k` of a base64 block (`widths`, each line's width; `padded`,
+    whether it holds "="). A stream's lines are as wide as its widest so far but its last, which holds its "=" or is
+    shorter, so a line of either ends it (a blank line, or one that is not base64, ends the block). But a shorter line
+    as wide as the next, with no "=", starts a narrower stream, as a key file wrapped narrower below a stream does, and
+    a line wider than those above starts a wider one, as one below a footer encoded alone on a line of its own does:
+    there the stream ended on the line before. Where its first line is `cut`, the block's first after text on its
+    line, as narrow as what that left of it, a wider line starts one only past two or more of one width."""
+    width, run = 0, 0  # the stream's width, and how many of its lines are read
+    for j in range(k, len(widths)):
+        w = widths[j]
+        wider = w > width and (run >= 2 or not cut)
+        if width and (wider or w < width and not padded[j] and widths[j + 1:j + 2] == [w]):
+            return j - 1
+        if padded[j] or w < width:
+            return j
+        width, run = max(width, w), run + 1
+    return len(widths) - 1
+
+
+def _key_spans(text, lines):
+    """The spans to mask in a base64 block: for each key's header or footer word outside the spans before it, its key's
+    lines. The block is joined once, and each key's lines are read once."""
+    joined = "".join(text[a:b] for a, b in lines)
+    ends = list(itertools.accumulate(b - a for a, b in lines))
+    starts = [0] + ends[:-1]
+    widths = [b - a for a, b in lines]
+    padded = ["=" in joined[starts[k]:ends[k]] for k in range(len(lines))]
+    stream_end, k = [], 0  # stream_end[k]: the last line of the stream that holds line k (_stream_end)
+    cut = not _starts_its_line(text, lines[0][0])
+    while k < len(lines):
+        last = _stream_end(widths, padded, k, cut and not k)
+        stream_end += [last] * (last + 1 - k)
+        k = last + 1
+    spans, floor, done, held, held_end, frames = [], 0, 0, None, None, _Frames(joined, starts)
+    for found in _ENCODED_KEY.finditer(joined):
+        line = bisect.bisect_right(ends, found.start())
+        if line < floor or found.start() < done:  # inside the key read last, but for a header past its end on its line
+            continue
+        if held is not None and line > held_end:
+            held = None  # a header quoted in a stream that ended above starts no key in a later one
+        key = _key_range(joined, starts, ends, found, floor, frames, stream_end, held)
+        if key:
+            spans.append((lines[key[0]][0], lines[key[1]][1]))
+            floor, done, held = key[1], key[2], None
+            continue
+        # A header after text on its decoded line ("例：-----BEGIN ...", a sentence, or another stream that fills
+        # whole lines above), where a line of the block starts or inside one, starts no key alone, as a sentence
+        # quoting a header shows one; with a footer after it in its stream, the first such since the last key starts
+        # that footer's key, whatever its armour comments hold.
+        frame = _frame(joined, starts, found, refused=True)
+        if frame and frame[0] == b"BEGIN":
+            line = bisect.bisect_right(ends, frame[2])  # the line holding its first byte's first bits
+            # Where such a header starts its line, after a byte order mark or none and any horizontal space, and the
+            # line above is not as wide, the block's wrapping does not break there (_wrapping_break): a key file
+            # wrapped below another stream, in a line as wide as none above and then its short last line, starts its
+            # own stream there, though the widths alone read that line as the last of the stream above.
+            gap = frame[1] - starts[line]
+            lead = _base64_decoded(joined, starts[line], frame[1]) if gap >= 0 and not gap % 4 else None
+            marked = lead is not None and lead.startswith(_BYTE_ORDER_MARK)
+            own = bool(line) and lead is not None and bool(_SPACE_OR_QUOTE_RUN.fullmatch(
+                lead[len(_BYTE_ORDER_MARK) if marked else 0:])) and not _wrapping_break(starts, line, len(joined))
+            # One below another, past prose (_Below), takes its place where it starts a stream of its own, by the
+            # widths or after a byte order mark, as a key file's header does under a document that quotes one, unless
+            # the first starts a stream of its own; a header written after a word into the key below it takes none.
+            if held is not None and (held[1] or not (own or line and marked) or held[2].no_prose(
+                    frame[1], frame[2] - frame[1])):
+                continue
+            held, held_end = (line, own, _Below(joined, frame[1])), _stream_end(widths, padded, line) if own else (
+                stream_end[line])
+    return spans
+
+
+def _written_key_spans(text):
+    """Each private key in a file written as base64 in `text`, whole with the lines it wraps onto, as a (start, end). A
+    run on the line after a block's last, which has text after it on its line ("... next steps", or an escape that is
+    no line break), is that block's last line, as a stream's last line with words after it is: a header there, quoting
+    one in a sentence that the lines above decode to, reads as it does in the stream above."""
+    spans, block = [], []
+    for m in _WRAPPED_BASE64.finditer(text):
+        escape = _ESCAPE_LETTER.match(text, m.start())
+        lines = _wrapped_lines(text, escape.end() if escape else m.start(), m.end())
+        # a run led by an escape's letter whose line break comes right after it: a blank line escaped ("\\n\\n"),
+        # which ends the block above, as one written plain does
+        blank = escape and len(lines) > 1 and lines[0][0] == lines[0][1]
+        if blank:
+            lines = lines[1:]
+        if block and not blank and _UNWRAP.fullmatch(text, block[-1][1], lines[0][0]):
+            block += lines
+            continue
+        spans += _key_spans(text, block) if block else []
+        block = lines
+    return spans + (_key_spans(text, block) if block else [])
+
+
+# A character a reader does not see, with the backslashes before an escaped one, as JSON in JSON escapes it twice. It
+# starts where no backslash stands before it, so a long run of them is tried once, from its start, not at each of its
+# backslashes in turn, which took time in the square of its length. A colour code is tried whole first, as _CSI reads
+# its escape's own run of backslashes, so the code's "[0m" goes with its ESC.
+_UNSEEN_ESCAPED = re.compile(rf"{_CSI}|(?<!\\)\\*(?:{_CSI}|{_ESCAPED_INVISIBLE})|[\x00-\x08\x0e-\x1b\x7f-\x84\x86-\x9f{_FORMAT_CHARACTERS}]")
+
+
+def _unseen_view(text):
+    """(`text` without the characters a reader does not see, at any depth of escaping, and for each of its characters
+    where it stands in `text`), so a run one of them splits reads whole."""
+    if not INVISIBLE.search(text):
+        return text, range(len(text))
+    kept, pieces, last = [], [], 0
+    for m in _UNSEEN_ESCAPED.finditer(text):
+        # An escaped form takes only its own backslashes: one where a run of them is odd, two (an escape escaped
+        # again, as JSON in JSON writes one) where it is even; the rest escape each other, as a line break's does
+        # in "\\<ZWSP>n" written as JSON.
+        run = len(m.group()) - len(m.group().lstrip("\\"))
+        start = m.start() + (run - 1 if run % 2 else run - 2) if run else m.start()
+        pieces.append(text[last:start])
+        kept += range(last, start)
+        last = m.end()
+    pieces.append(text[last:])
+    kept += range(last, len(text))
+    return "".join(pieces), kept
+
+
+# JSON's escapes, a surrogate pair as one character.
+_JSON_ESCAPE = re.compile(r"\\(?:u([dD][89abAB][0-9a-fA-F]{2})\\u([dD][c-fC-F][0-9a-fA-F]{2})|u([0-9a-fA-F]{4})|([\"\\/bfnrt]))")
+_JSON_LETTER = {'"': '"', "\\": "\\", "/": "/", "b": "\b", "f": "\f", "n": "\n", "r": "\r", "t": "\t"}
+
+
+def _json_unescaped(text):
+    """(`text` with each of JSON's escapes read as the character it writes, and a function from a (start, end) in that
+    view to the (start, end) in `text` it was read from), or None when `text` holds no escape. An escaped backslash is
+    one backslash, so the view of JSON in JSON is JSON once."""
+    pieces, at, marks, last = [], [], [], 0  # at: where each escape's character stands in the view; marks: its escape
+    for m in _JSON_ESCAPE.finditer(text):
+        high, low, code, letter = m.groups()
+        pieces.append(text[last:m.start()])
+        at.append(sum(map(len, pieces)) if not at else at[-1] + 1 + m.start() - last)
+        marks.append((m.start(), m.end()))
+        pieces.append(chr(0x10000 + (int(high, 16) - 0xD800) * 0x400 + int(low, 16) - 0xDC00) if high
+                      else chr(int(code, 16)) if code else _JSON_LETTER[letter])
+        last = m.end()
+    if not marks:
+        return None
+    pieces.append(text[last:])
+
+    def source(i, first):  # where the view's character i comes from in `text`: its first character, or past its last
+        k = bisect.bisect_right(at, i) - 1
+        if k < 0:
+            return i + (not first)
+        if at[k] == i:
+            return marks[k][0] if first else marks[k][1]
+        return marks[k][1] + i - at[k] - 1 + (not first)
+
+    return "".join(pieces), lambda start, end: (source(start, True), source(end - 1, False))
+
+
+def _encoded_key_spans(text):
+    """Where each private key in a file written as base64 lies in `text`, as ordered (start, end) spans: read as
+    written, with JSON's escapes read once and twice (_json_unescaped), as JSON and JSON in JSON write a key with any
+    escape (an indentation's tab, a line break as \\u000a, a slash as \\/), and each of these read without the
+    characters a reader does not see (_unseen_view), so one inside a line parts nothing."""
+    spans, view, source = [], text, None
+    for depth in range(3):
+        if depth:
+            read = "\\" in view and _json_unescaped(view)
+            if not read:
+                break
+            view, inner = read
+            source = inner if source is None else (lambda outer, inner: lambda a, b: outer(*inner(a, b)))(source, inner)
+        found = _written_key_spans(view)
+        unseen, kept = _unseen_view(view)
+        if unseen is not view:
+            found += [(kept[start], kept[end - 1] + 1) for start, end in _written_key_spans(unseen)]
+        spans += found if source is None else [source(start, end) for start, end in found]
+    merged = []
+    for start, end in sorted(spans):
+        if merged and start <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+        else:
+            merged.append((start, end))
+    return merged
 
 
 def _docker_login_edits(text):
@@ -2235,20 +2963,138 @@ _GLUED_RUN = re.compile(r"\[masked\](?:[A-Za-z0-9_.-]+[ \t]*(?:[:=]|=>)[ \t]*[\"
 # How every private key's body starts: DER, a SEQUENCE in long form ("MII...", "MIG...") or in short form before an
 # INTEGER or a SEQUENCE ("MHcC...", "MC4C..."), or OpenSSH's "openssh-key-v1" ("b3Bl...").
 _KEY_BODY_START = r"(?:MI[E-P][A-Za-z0-9+/]|M[A-H][A-Za-z0-9+/][Cw]|b3Bl)"
-# The rest of a key after an older kb's placeholder: base64 glued to it and running to a line break, as main's key
-# pattern leaves when it took the line break too; or a key's body from its first line, cut anywhere, after what can
-# stand between a line's start and its text: line breaks plain or escaped at any depth, quotes, "#", ">", "+", <br> and
-# spaces. main's pattern stops at the first character that is not base64 or a space, so in escaped text, in code with
-# a string a line, behind comment or quote marks and where a chunk ended between a header and its line break, it
-# leaves exactly that. The body's first line is base64 to its end, or to a quote, a backslash or a cut's "…", so a
-# word that only starts like one, followed by more words, stays. Masked through its footer, or through the end of its
-# paragraph.
+# The rest of a key after an older kb's placeholder, which fails closed: what an older mask left of a key, whole or in
+# part, stays masked, and only base64 that decodes whole as public material is shown (_public_material). It starts
+# with base64 glued to the placeholder and running to a line break, as main's key pattern leaves when it took the line
+# break too; or with a line of base64 after what can stand between a line's start and its text (line breaks plain or
+# escaped at any depth, quotes, "#", ">", "+", <br>, spaces, or a character a reader does not see): a key's body from
+# its first line, or 36 characters or more of both cases and a digit, "+" or "/", as either part of a body split or
+# re-wrapped holds. main's pattern stops at the first character that is not base64 or a space, so in escaped text, in
+# code with a string a line, behind comment or quote marks and where a chunk ended between a header and its line break,
+# it leaves exactly that. The line is base64 to its end, or to a quote, a backslash or a cut's "…", so a word that only
+# starts like one, followed by more words, stays; a line that decodes from its start to words holds none, as a line of
+# words does not, and the rest starts past such lines where the next one starts it (_encoded_words, in _key_rests). It
+# runs through its footer, or to the end of its paragraph, but never into a line of ordinary words (_WORDS_LINE) or a
+# JSON object's next field (_NEXT_FIELD).
 # Each alternative takes a character no other does: quotes are _QUOTE's alone, as a run of them read two ways each
 # took time exponential in its length.
 _BEFORE_BODY = rf"(?:\\{{1,7}}[nrt]|{_QUOTE}|<br\s*/?>|[\s#>+,;|*\]])"
-_KEY_REST = re.compile(rf"\[masked\]((?:[A-Za-z0-9+/=]+[ \t\r]*(?=\n|\\(?:r\\)?n)"
-                       rf"|(?={_BEFORE_BODY}{{0,64}}{_KEY_BODY_START}[A-Za-z0-9+/=]{{36,}}[ \t\r]*(?:\n|[\\\"'<…]|\Z)))"
-                       rf"(?:(?!{_KEY_END}){_IN_PARAGRAPH})*(?:{_KEY_END})?)")
+_LINE_OF_BASE64 = (rf"(?:{{}})[A-Za-z0-9+/=]{{{{36,}}}}[ \t\r]*(?:\n|[\\\"'<…]|\Z)")
+_REST_START = re.compile(rf"[A-Za-z0-9+/=]+[ \t\r]*(?=\n|\\(?:r\\)?n)|(?:{_BEFORE_BODY}|{INVISIBLE.pattern}){{0,64}}"
+                         + _LINE_OF_BASE64.format(rf"{_KEY_BODY_START}|(?=[A-Za-z0-9+/=]*[A-Z])(?=[A-Za-z0-9+/=]*[a-z])"
+                                                  r"(?=[A-Za-z0-9+/=]*[0-9+/])"))
+# The run alone that starts a rest by its line of base64 (_REST_START's and _ID_REST_START's second form), as read where
+# main reads no rest from the placeholder (_key_rests): there only the run goes.
+_RUN_REST_START = re.compile(rf"(?:{_BEFORE_BODY}|{INVISIBLE.pattern}){{0,64}}"
+                             + _LINE_OF_BASE64.format(rf"{_KEY_BODY_START}|(?=[A-Za-z0-9+/=]*[A-Z])(?=[A-Za-z0-9+/=]*[a-z])"
+                                                      r"(?=[A-Za-z0-9+/=]*[0-9+/])"))
+# An item id is read more narrowly (secret_in_id): there a key's rest starts with a key's body start alone, as on main.
+_ID_REST_START = re.compile(rf"[A-Za-z0-9+/=]+[ \t\r]*(?=\n|\\(?:r\\)?n)|(?:{_BEFORE_BODY}){{0,64}}"
+                            + _LINE_OF_BASE64.format(_KEY_BODY_START))
+_ID_RUN_REST_START = re.compile(rf"(?:{_BEFORE_BODY}){{0,64}}" + _LINE_OF_BASE64.format(_KEY_BODY_START))
+# Past lines of words where main's rest from the placeholder runs on, a line of base64 alone on its line starts a key's
+# rest at any length, as a stream's last line, shorter than the rest, can: after its line break, plain or escaped, up
+# to the next or an escape, a quote or the end. A word alone on its line ("Thanks", "README") is no such line.
+_REST_PAST_WORDS = re.compile(r"(?:\r?\n|(?<!\\)\\+(?:r\\+)?n)[A-Za-z0-9+/=]+[ \t\r]*(?=\n|[\\\"'<…]|\Z)")
+_WORD_ALONE = re.compile(r"(?:\r?\n|(?<!\\)\\+(?:r\\+)?n)(?:[A-Z]?[a-z]+|[A-Z]+)[ \t\r]*(?=\n|[\\\"'<…]|\Z)")
+_PLACEHOLDER_ALONE = re.compile(r"(?:\r?\n|(?<!\\)\\+(?:r\\+)?n)\[masked\][ \t\r]*(?=\n|[\\\"'<…]|\Z)")
+
+
+# A line with no letter or digit but a placeholder's, and escapes of no line break: a rule ("---"), a list's or a
+# quote's marks before a placeholder ("  [masked]", "> [masked]"), a brace or a fence alone.
+_MARKS_LINE = re.compile(r"(?:\[masked\]|[^A-Za-z0-9\\\r\n]|\\+(?:[^A-Za-z0-9\\\r\n]|t))*")
+
+
+def _skipped_line(text, at):
+    """Where the line after the line break at `at` ends, if it is a word alone (_WORD_ALONE), a placeholder alone, a
+    line of words (_WORDS_LINE) or a line of marks (_MARKS_LINE), which a rest past lines of words passes over; None
+    otherwise. Each is read as a whole line: one that holds a run of base64 a key's could be (_holds_token) anywhere in
+    it, after an escape that is no line break, a quote, a "<", a "…" or its words, is passed over by none, so the rest
+    starts there and takes it, as main's does."""
+    brk = _LINE_BREAK.match(text, at)
+    if not brk:
+        return None
+    end = _KEY_LINE_END.search(text, brk.end()).start()
+    if _holds_token(text, brk.end(), end):
+        return None
+    if (_WORD_ALONE.match(text, at) or _PLACEHOLDER_ALONE.match(text, at) or _WORDS_LINE_AT.match(text, at)
+            or _MARKS_LINE.fullmatch(text, brk.end(), end)):
+        return end
+    return None
+
+
+# A quote as a web page writes it, one of the entities the readers of a line's lead accept (_QUOTE_TOKENS).
+_QUOTE_ENTITY = re.compile(_pattern(tuple(token for token in _QUOTE_TOKENS if token[0][0] == "&")))
+
+
+def _holds_token(text, start, end):
+    """Whether text[start:end] holds a run of base64 a key's fragment could be (_token_like), read as every reader of a
+    key's fragment reads it (_fragment_view), past placeholders."""
+    line = _rest_view(text[start:end]).replace("[masked]", " ")
+    return any(_token_like(m.group()) for m in _RUN.finditer(line))
+
+
+# A line break, plain or escaped, before a line of words, as "next steps", "tls.crt: none" or "- deploy it" are: past
+# a list's or a quote's marks, a word (a letter, then small letters, as "tls.crt" or "don't" are), then a space and
+# the next word's letter. A line of base64 is no word, even with words after it on its line, as a snippet joins it
+# ("MIIEvQ... notes deploy"), or in JSON that runs on into the next field ('...8Vk=", "note": "next steps"'). A key's
+# footer, which holds spaces, is no such line.
+_WORDS_LINE = (r"(?:\r?\n|(?<!\\)\\+(?:r\\+)?n)(?![ \t\"'#>*]*-----)[ \t\"'#>*-]*"
+               r"[A-Za-z][a-z]{0,19}(?:[.'_-][a-z]{1,20})*[,.;:!?)]*[ \t]+[(\"']?[A-Za-z]")
+# Where a JSON string that holds a key's rest ends before the object's next field's name or its end, its quotes
+# escaped at any depth: the field after it ('", "note": "next steps"}') is no part of the key. A list of strings, one
+# line of the body each, goes on, as no field's name follows its comma.
+_NEXT_FIELD = r"(?<!\\)\\*\"[ \t]*(?:\}|,[ \t]*\\*\"[\w.-]+\\*\"[ \t]*:)"
+_REST = re.compile(rf"((?:(?!{_KEY_END})(?!{_WORDS_LINE})(?!{_NEXT_FIELD}){_IN_PARAGRAPH})*)(?:{_KEY_END})?")
+_KEY_END_TEXT = re.compile(_KEY_END)
+_PEM_HEADER = re.compile("-----BEGIN ")
+# A run of backslashes is tried once, from its start: tried at each of them, a long run took time in its square.
+_KEY_LINE_END = re.compile(r"\r?\n|(?<!\\)\\+(?:r\\+)?n|\Z")
+_LINE_BREAK = re.compile(r"\r?\n|(?<!\\)\\+(?:r\\+)?n")
+_WORDS_LINE_AT = re.compile(_WORDS_LINE)
+_BASE64_CHARACTER = re.compile(r"[A-Za-z0-9+/]")
+_RUN = re.compile(r"[A-Za-z0-9+/]{2,}={1,2}|[A-Za-z0-9+/]{4,}")
+_KEY_ESCAPE = re.compile(r"(?<!\\)\\+(?:[nrt]|u[0-9A-Fa-f]{4})")
+# JSON's escape of one of base64's characters, behind any number of backslashes: a slash as PHP writes one ("\\/",
+# and "\\\\\\/" in JSON in JSON), or any of them by its code ("\\u002f", "\\u0041"), a character of the run
+# it is in. A run of backslashes is tried once, from its start.
+_ESCAPED_BASE64 = r"(?<!\\)\\+(?:/|u00(?:2[bBfF]|3[0-9dD]|4[1-9a-fA-F]|5[0-9aA]|6[1-9a-fA-F]|7[0-9aA]))"
+# What every reader of a key's fragment reads as another character (_fragment_view): an escaped character of base64's
+# as that character; any other escape of a space, a line break or a character (_KEY_ESCAPE), and a quote written as a
+# web page's entity (_QUOTE_ENTITY), as a space.
+_FRAGMENT_READS = re.compile(rf"({_ESCAPED_BASE64})|(?:{_KEY_ESCAPE.pattern})|(?:{_QUOTE_ENTITY.pattern})")
+
+
+def _fragment_read(m):
+    """What a match of _FRAGMENT_READS reads as."""
+    escape = m.group(1)
+    return " " if escape is None else "/" if escape[-1] == "/" else chr(int(escape[-2:], 16))
+
+
+def _fragment_view(text):
+    """(`text` as every reader of a key's fragment reads it, and for each of its characters where it starts in `text`,
+    then `len(text)`): without the characters a reader does not see, at any depth of escaping (_unseen_view), and with
+    each escape _FRAGMENT_READS reads as another character read so. One view for every such reader (_rest_view,
+    _holds_token, _token_tail, _encoded_words, _base64_lines, _public_rest, _cut_body_end), so a run one reads whole
+    none reads as parted. Read once, in proportion."""
+    unseen, kept = _unseen_view(text)
+    pieces, at, last = [], [], 0
+    for m in _FRAGMENT_READS.finditer(unseen):
+        pieces += (unseen[last:m.start()], _fragment_read(m))
+        at += kept[last:m.start()]
+        at.append(kept[m.start()])
+        last = m.end()
+    if not pieces:
+        return unseen, (range(len(text) + 1) if unseen is text else [*kept, len(text)])
+    pieces.append(unseen[last:])
+    at += kept[last:]
+    at.append(len(text))
+    return "".join(pieces), at
+
+
+def _rest_view(line):
+    """A line as a key's rest is read: _fragment_view's text, without its map."""
+    return _FRAGMENT_READS.sub(_fragment_read, _unseen_view(line)[0])
 
 
 def _headless_key_edits(text):
@@ -2265,9 +3111,729 @@ def _headless_key_edits(text):
     return [(start, end, "[masked]") for start, end in spans]
 
 
-def _key_rest_edits(text):
-    """The rest of a key after an older kb's placeholder, as _KEY_REST finds it, as an edit that removes it."""
-    return [(m.start(1), m.end(), "") for m in _KEY_REST.finditer(text)]
+_PLACEHOLDER = re.compile(r"\[masked\]")
+# Whether mask() reads a stored row from a kb before keys were masked whole, which may hold an older kb's rest of a
+# key after a placeholder (stored_row): only there does base64 after a placeholder count as a key's rest unless it
+# decodes as public material. In text read fresh kb masks a key whole, so a key's rest starts only at a key's body
+# start, as on main, and base64 after a password's placeholder stays.
+_STORED_ROW = contextvars.ContextVar("kb_mask_stored_row", default=False)
+# Where a placeholder stands for a private key written as base64 (_encoded_key_spans), which main leaves readable: the
+# starts of such placeholders in the text a pass reads (_passes, _KEY_PLACES), and in the text a reading of keys' rests
+# reads (_run, _KEY_HERE). After one, a key's rest is read whole, as an older kb's rest after an earlier key main leaves
+# readable is; after any other, where main reads no rest from it, only the run that starts one goes (_key_rests).
+_KEY_PLACES = contextvars.ContextVar("kb_mask_key_places", default=frozenset())
+_KEY_HERE = contextvars.ContextVar("kb_mask_key_here", default=frozenset())
+
+
+@contextlib.contextmanager
+def stored_row(*versions):
+    """Within it, mask() reads text as stored rows masked with the mask versions given (each row's `masked`): rows of
+    which any was masked before a version carried its revision ("r<revision>-...") are an older kb's."""
+    marker = _STORED_ROW.set(any(not (isinstance(v, str) and re.match(r"r\d+-", v)) for v in versions))
+    try:
+        yield
+    finally:
+        _STORED_ROW.reset(marker)
+
+
+# OpenSSH's public key types, a closed list, each with how many strings its key holds, each after its length, its
+# type's name first. A certificate's types (...-cert-v01@openssh.com) are none.
+_OPENSSH_PUBLIC = {b"ssh-ed25519": 2, b"ssh-rsa": 3, b"ssh-dss": 5, b"ecdsa-sha2-nistp256": 3,
+                   b"ecdsa-sha2-nistp384": 3, b"ecdsa-sha2-nistp521": 3, b"sk-ssh-ed25519@openssh.com": 3,
+                   b"sk-ecdsa-sha2-nistp256@openssh.com": 4}
+
+
+def _openssh_end(data, at):
+    """Where the OpenSSH public key at data[at] ends, its type's strings, each after its length, as many as the type
+    holds (_OPENSSH_PUBLIC); None while `data` is too short to say, or -1 when none starts there."""
+    count = None
+    while count != 0:
+        if at + 4 > len(data):
+            return None
+        size, at = int.from_bytes(data[at:at + 4], "big"), at + 4
+        if count is None:
+            if size > 64:  # no type's name is so long
+                return -1
+            if at + size > len(data):
+                return None
+            count = _OPENSSH_PUBLIC.get(bytes(data[at:at + size]))
+            if count is None:
+                return -1
+        at, count = at + size, count - 1
+    return at
+
+
+def _element(der, at, end):
+    """(tag, where its content starts, where it ends) of the DER element at `at`, which must end by `end`, or None."""
+    if at + 2 > end:
+        return None
+    tag, size, at = der[at], der[at + 1], at + 2
+    if size & 0x80:
+        width = size & 0x7f
+        if not 0 < width < 4 or at + width > end:
+            return None
+        size, at = int.from_bytes(der[at:at + width], "big"), at + width
+    return (tag, at, at + size) if at + size <= end else None
+
+
+def _elements(der, start, end):
+    """The DER elements that fill der[start:end] exactly, or None."""
+    out = []
+    while start < end:
+        element = _element(der, start, end)
+        if element is None:
+            return None
+        out.append(element)
+        start = element[2]
+    return out
+
+
+_PKCS7_SIGNED_DATA = bytes.fromhex("2a864886f70d010702")
+_PKCS7_DATA = bytes.fromhex("2a864886f70d010701")
+
+
+def _certificate_bundle(data, start, end):
+    """Whether data[start:end], the content of PKCS#7 signed data, is a bundle of certificates as openssl crl2pkcs7
+    writes one: a version, no digest algorithm, content that names its type and holds none, certificates or lists of
+    revoked ones, each public material but no bundle (_public_material), and no signer. Signed data that holds content,
+    as a signed message does, is no bundle, nor is a bundle inside one, which openssl never writes: read as one, a
+    bundle nested deep would recurse past Python's limit."""
+    inner = _elements(data, start, end)
+    if not inner or len(inner) != 1 or inner[0][0] != 0x30:
+        return False
+    parts = _elements(data, inner[0][1], inner[0][2])
+    if not parts or [p[0] for p in parts[:3]] != [0x02, 0x31, 0x30] or parts[-1][0] != 0x31:
+        return False
+    if parts[1][1] != parts[1][2] or parts[-1][1] != parts[-1][2]:  # no digest algorithm, no signer
+        return False
+    content = _elements(data, parts[2][1], parts[2][2])
+    if not content or len(content) != 1 or content[0][0] != 0x06 or data[content[0][1]:content[0][2]] != _PKCS7_DATA:
+        return False
+    held = parts[3:-1]
+    if [p[0] for p in held] not in ([0xa0], [0xa1], [0xa0, 0xa1]):
+        return False
+    for _, at, stop in held:
+        if at == stop:
+            return False
+        while at < stop:
+            member = _element(data, at, stop)
+            if member is None or not _public_material(data[at:member[2]], bundles=False):
+                return False
+            at = member[2]
+    return True
+
+
+def _public_material(data, bundles=True):
+    """Whether bytes decoded from base64 are, whole, public material: an X.509 certificate or a certificate request
+    (what is signed, how, and the signature, the first starting with a version or a serial number), a public key
+    (SubjectPublicKeyInfo: an algorithm and the key), a PKCS#7 bundle of certificates (_certificate_bundle; with
+    `bundles` false, not one), or an OpenSSH public key (_openssh_end: its type's strings, as many as the type holds,
+    and no byte after them). No private key's DER has any of these shapes, and one cut short has none; nor has an
+    OpenSSH private key's blob ("openssh-key-v1")."""
+    if data[:1] != b"\x30":
+        return _openssh_end(data, 0) == len(data)
+    top = _element(data, 0, len(data))
+    parts = _elements(data, top[1], top[2]) if top and top[0] == 0x30 and top[2] == len(data) else None
+    if not parts:
+        return False
+    first = [(_element(data, p[1], p[2]) or (None,))[0] for p in parts]
+    tags = [p[0] for p in parts]
+    if tags == [0x30, 0x30, 0x03]:
+        if first[1] != 0x06:
+            return False
+        if first[0] in (0xa0, 0x02):
+            return True
+        # a list of revoked certificates in version 1, which starts with how it is signed, then its issuer and when
+        signed = _elements(data, parts[0][1], parts[0][2]) or []
+        return [e[0] for e in signed[:3]] in ([0x30, 0x30, 0x17], [0x30, 0x30, 0x18])
+    if tags == [0x06, 0xa0]:
+        return bundles and data[parts[0][1]:parts[0][2]] == _PKCS7_SIGNED_DATA and _certificate_bundle(data, *parts[1][1:])
+    return tags == [0x30, 0x03] and first[0] == 0x06
+
+
+def _token_like(run):
+    """Whether a run of base64 characters could be part of a key's body: one that ends in base64's "=" padding, or
+    one of four characters or more that mixes two of capitals, small letters, and digits or "+" and "/" and is no
+    word in small letters, with a vowel, after a capital ("Next", but not "Bcsv"). A word in one case does not; a
+    camel-case name or a hash does, and is read as one, failing closed, as main's reading hides the whole paragraph."""
+    if run.endswith("="):
+        return True
+    if re.fullmatch(r"[A-Z]{2,}", run) and not re.search(r"[AEIOUY]", run):
+        return True  # "BCDF": no word, as an acronym with a vowel ("API") is
+    if re.search(r"[+/]", run) or re.fullmatch(r"[0-9]{4,}", run):
+        return True  # "0123/567", "20261103": base64's own marks, or a run of digits no word or small number holds
+    return (sum(bool(re.search(kind, run)) for kind in ("[A-Z]", "[a-z]", "[0-9+/]")) >= 2
+            and not re.fullmatch(r"[A-Z][b-df-hj-np-tv-xz]*[aeiouy][a-z]*", run))  # read one way: in proportion
+
+
+# a line's run of base64 as long as a rest's start reads one (_LINE_OF_BASE64, its padding counted): a stream's short
+# last line of 34 characters and "==" is one
+_LINE_RUN = re.compile(r"(?=[A-Za-z0-9+/=]{36})[A-Za-z0-9+/]+={0,2}")
+
+
+def _encoded_words(found):
+    """Whether the line of base64 a key's rest would start with (`found`, as _REST_START matched it) decodes, from its
+    start, to words: text a reader sees, with a space, and no run that could be part of a key's body (_token_like) or a
+    header's or footer's dashes. Such a line is another stream encoded alone, as words above a key encoded alone are
+    ("notes notes ..."), and no part of a key, whose lines decode to its PEM text."""
+    runs = _LINE_RUN.findall(_rest_view(found))  # an escaped line break a space, past its "n"
+    if not runs:
+        return False
+    run = runs[-1]
+    data = _base64_decoded(run, 0, None if run.endswith("=") else len(run) // 4 * 4)
+    try:
+        words = re.sub(r"[\t\r\n]", " ", data.decode("utf-8")) if data else ""
+    except UnicodeDecodeError:
+        return False
+    return (" " in words and words.isprintable() and "-----" not in words
+            and not any(_token_like(m.group()) for m in _RUN.finditer(words)))
+
+
+def _line_past(text, found):
+    """Where the line that a key's rest's start (`found`) matched ends, so the next line is read from there: at the line
+    break, escape or quote that ended it, or past base64 glued to the placeholder, before its line break."""
+    end = found.end()
+    return end - 1 if end > found.start() and text[end - 1] in "\n\\\"'<…" else end
+
+
+def _token_tail(text):
+    """For a key's rest stopped early, at a line of words or a JSON object's next field, where it ends instead: past
+    the last line holding a token (_token_like) before where main's reading of it ended (its paragraph's end, the next
+    header, or its footer), so that only a tail of ordinary text stays, and never past a footer, where main's ends.
+    Read once for the text: each rest then costs a lookup."""
+    # runs read as every reader of a key's fragment reads them (_fragment_view): a fragment that the characters a
+    # reader does not see or an escaped slash split reads whole, in JSON in JSON too
+    view, kept = _fragment_view(text)
+    tokens = [kept[m.start()] for m in _RUN.finditer(view) if _token_like(m.group())]
+    # and every line that is no line of words (_WORDS_LINE) but holds a run of base64's characters, as a fragment of a
+    # key alone on its line ("Bcsv") does
+    for m in _LINE_BREAK.finditer(text):
+        if not _WORDS_LINE_AT.match(text, m.start()):
+            run = _BASE64_CHARACTER.search(text, m.end(), _KEY_LINE_END.search(text, m.end()).start())
+            if run:
+                tokens.append(run.start())
+    tokens.sort()
+    footers = {m.end() for m in _KEY_END_TEXT.finditer(text)}
+    ends = sorted([m.start() for m in _BLANK_LINE.finditer(text)] + [m.start() for m in _PEM_HEADER.finditer(text)]
+                  + list(footers))
+
+    # Every line's end, found once when a rest first asks: many rests, each with a token of its own, can end on one long
+    # line, and each read on to its end took time in its square. A token's line ends at the first end at or after it;
+    # one that starts inside an escaped line break, after its letter, is read from there, once.
+    breaks, inside = None, {}
+
+    def line_end(at):
+        nonlocal breaks
+        if breaks is None:
+            found = list(_KEY_LINE_END.finditer(text))
+            breaks = [m.start() for m in found], [m.end() for m in found]
+        i = bisect.bisect_left(breaks[0], at)
+        if i and at < breaks[1][i - 1]:
+            if at not in inside:
+                inside[at] = _KEY_LINE_END.search(text, at).start()
+            return inside[at]
+        return breaks[0][i]
+
+    def through(at):
+        i = bisect.bisect_left(ends, at)
+        last = bisect.bisect_left(tokens, ends[i] if i < len(ends) else len(text)) - 1
+        if last < 0 or tokens[last] < at:
+            return at
+        # main's reading ends at a footer's end, whatever its line holds past it: the footer's own words ("RSA", "KEY")
+        # are tokens, and read on to their line's end they took what follows the footer on its line
+        stop = line_end(tokens[last])
+        return min(stop, ends[i]) if i < len(ends) and ends[i] in footers else stop
+    return through
+
+
+# A line of base64 as a key's rest or public material is written, past what can stand around it (quotes, comment and
+# quote marks, a list's punctuation), read without the characters a reader does not see.
+_BASE64_ONLY_LINE = re.compile(r"[ \t\r\"'#>*,;|\]]*([A-Za-z0-9+/]+=*)?[ \t\r\"',;]*")
+# A run of base64 of both cases, 16 characters or more, as a key's fragment is: past the public material a key's rest
+# starts with, one takes that material with the rest, failing closed (_key_rests).
+_MIXED_RUN = re.compile(r"(?<![A-Za-z0-9+/])(?=[A-Za-z0-9+/]*[A-Z])(?=[A-Za-z0-9+/]*[a-z])[A-Za-z0-9+/]{16,}")
+
+
+def _mixed_run_starts(text, spans):
+    """Where each run of base64 of both cases, 16 characters or more (_MIXED_RUN), starts in `text`, read as a key's
+    fragment is (_fragment_view), in order, outside lines that are public material of their own (`spans`,
+    _public_lines): a certificate past the next placeholder is no key's fragment. Read once for a text, so many rests
+    in one paragraph cost time in proportion."""
+    view, kept = _fragment_view(text)
+    i, starts = 0, []
+    for m in _MIXED_RUN.finditer(view):
+        at = kept[m.start()]
+        while i < len(spans) and spans[i][1] <= at:
+            i += 1
+        if i == len(spans) or at < spans[i][0]:
+            starts.append(at)
+    return starts
+
+
+def _public_lines(text):
+    """Where each run of lines of base64 in `text` that is public material of its own starts and ends, in order: the
+    whole public material a block of lines of base64 starts with (_public_prefix), or a run of its lines between lines
+    that are none a key's could be ("notes") that is all public material, as round 26's head read them; a line's part
+    past a placeholder starts a block of its own, as a rest does, where nothing but what can stand around a line of
+    base64 stands before the placeholder: a stretch is whole lines, so a line with more before it (a key's run glued to
+    the placeholder, words) is none, and only what decodes as public material stays. Each line is read once, as a
+    key's fragment is (_rest_view)."""
+    spans, block, at = [], [], 0
+
+    def close():
+        lines = [line for line, _, _ in block]
+        k = _public_prefix(lines)
+        if k:
+            spans.append((block[0][1], block[k - 1][2]))
+        while k < len(block):
+            if not _token_like(lines[k]):
+                k += 1
+                continue
+            q = k
+            while q < len(block) and _token_like(lines[q]):
+                q += 1
+            if _public_prefix(lines[k:q]) == q - k:
+                spans.append((block[k][1], block[q - 1][2]))
+            k = q
+        block.clear()
+
+    for brk in itertools.chain(_LINE_BREAK.finditer(text), [None]):
+        stop = brk.start() if brk else len(text)
+        line = _rest_view(text[at:stop])
+        held = None
+        for held in _PLACEHOLDER.finditer(line):
+            pass
+        if held is not None:
+            close()
+        found = _BASE64_ONLY_LINE.fullmatch(line, held.end() if held else 0)
+        lead = held and _BASE64_ONLY_LINE.fullmatch(line, 0, held.start())
+        if found is None or held and (lead is None or lead.group(1)):
+            close()
+        elif found.group(1):
+            block.append((found.group(1), at, stop))
+        if brk is None:
+            break
+        at = brk.end()
+    close()
+    return spans
+
+
+def _base64_lines(text, start, end):
+    """The lines of base64 that text[start:end] starts with, each as a key's rest or public material is written
+    (_BASE64_ONLY_LINE), as (its base64, where it starts, where it ends), up to the first line that is none; a line with
+    no base64 (a blank, or a quote alone) is passed. A line that holds a placeholder is none, as cleaning leaves its
+    "masked]" (a colour code can end in its "[", no more), so the lines are read only up to the next placeholder: each
+    placeholder in a long line read the rest of it, which took time in its square."""
+    lines, at = [], start
+    held = _PLACEHOLDER.search(text, start, end)
+    for brk in itertools.chain(_LINE_BREAK.finditer(text, start, held.start() if held else end), [None]):
+        if brk is None and held:
+            break  # the line that holds the next placeholder
+        stop = brk.start() if brk else end
+        line = _BASE64_ONLY_LINE.fullmatch(_rest_view(text[at:stop]))
+        if line is None:
+            break
+        if line.group(1):
+            lines.append((line.group(1), at, stop))
+        if brk is None:
+            break
+        at = brk.end()
+    return lines
+
+
+def _element_end(data, at):
+    """Where the DER element at data[at] ends, None while `data` is too short to say, or -1 when none starts there."""
+    if at + 2 > len(data):
+        return None
+    size = data[at + 1]
+    if not size & 0x80:
+        return at + 2 + size
+    width = size & 0x7f
+    if not 0 < width < 4:
+        return -1
+    if at + 2 + width > len(data):
+        return None
+    return at + 2 + width + int.from_bytes(data[at + 2:at + 2 + width], "big")
+
+
+def _public_prefix(lines):
+    """How many of `lines` (each a line's base64), from the first, are whole public material: the most after which one
+    element of it (_public_material: DER, or an OpenSSH public key, _openssh_end), or the last of a run of them as a
+    chain of certificates is, ends, each stream
+    decoded alone (one ends at base64's padding, as each element encoded alone does), where the line after is no base64
+    a key's could be (_token_like: a word alone, "notes") or there is none; 0 when none. Decoded as read, and read no
+    further than an element that is none."""
+    data, whole, pending, at, most = bytearray(), {}, "", 0, 0
+    for k, chunk in enumerate(lines):
+        pending += chunk
+        if chunk.endswith("="):
+            decoded = _base64_decoded(pending, 0, None) if len(pending) % 4 == 0 else None
+            if decoded is None:
+                break
+            data += decoded
+            pending = ""
+        else:
+            cut = len(pending) - len(pending) % 4
+            data += _base64_decoded(pending, 0, cut)
+            pending = pending[cut:]
+        if not pending:
+            whole[len(data)] = k + 1  # the data is whole groups through this line
+        while at < len(data):
+            # public material is a DER sequence, or an OpenSSH public key, which is strings, each after its length
+            stop = _element_end(data, at) if data[at] == 0x30 else _openssh_end(data, at)
+            if stop is None or stop > len(data):
+                break
+            if stop < 0 or not _public_material(bytes(data[at:stop])):
+                return most
+            at = stop
+            n = whole.get(at)
+            if n and (n == len(lines) or not _token_like(lines[n])):
+                most = n
+    return most
+
+
+def _public_end(text, start, end):
+    """Where the whole lines of base64 that text[start:end], what main reads as a key's rest after a placeholder, starts
+    with end, where they decode to public material, one element or a run of them as a chain of certificates is, ending
+    where the line after is none a key's could be (_public_prefix); None where they do not. That material is no key's
+    rest. A run of base64 lines that holds a private key's bytes too decodes to no such run."""
+    lines = _base64_lines(text, start, end)
+    n = _public_prefix([line for line, _, _ in lines])
+    return lines[n - 1][2] if n else None
+
+
+def _public_rest(rest):
+    """Whether the text after a placeholder decodes whole, as base64, to public material (_public_material)."""
+    data = None if _KEY_END_TEXT.search(rest) else _base64_decoded(
+        re.sub(r"[^A-Za-z0-9+/=]", "", _rest_view(rest)), 0, None)
+    return bool(data) and _public_material(data)
+
+
+def _rest_ends(text):
+    """Where main's reading of a key's rest (_REST) from each place in `text` ends, read once for each stretch: it
+    reads a character at a time up to the first place where one of its stops holds, whatever its start, so every start
+    before that place ends where the first did, and many placeholders in one paragraph cost time in proportion. Places
+    are asked for in order."""
+    last = [-1, -1, -1]  # where the last reading started, where its stop holds, where it ended
+
+    def end(at):
+        if not last[0] <= at <= last[1]:
+            m = _REST.match(text, at)
+            stop = m.end()
+            if stop == m.end(1) and _WORDS_LINE_AT.match(text, stop):
+                stop = _cut_body_end(text, at, stop)
+            last[:] = at, m.end(1), stop
+        return last[2]
+    return end
+
+
+# A key's body that runs on into a line of words, as a snippet cuts one: where its last line is base64 to its end with
+# no "=" and no shorter than a line of base64 above it, the body has not ended there, so the run of base64's characters
+# that starts the line of words after it is the body's short last line, however much it looks like a word ("ei harbor
+# deploy", "Ynu walrus moved"), and is masked with it; the words after it stay. Where the body's last line is shorter
+# than the one above it, or ends with "=", the body can end there, and the line of words stays whole. A line alone
+# can be a whole key, or a key cut after it: its next line's first word goes with it, which is the cost. A body line
+# after a placeholder is read so too, glued to it ("[masked]MIIC...") or after any run of what is no letter or digit:
+# space of any width, quote, comment and list marks, escapes, "<br>" and more placeholders ("[masked] \\t[masked]MIIC"),
+# as main's rest reads a body past any of them, and before any such run but "=". Each line is read as a reader sees it
+# (_rest_view): JSON's escaped slash ("\\/", as PHP writes JSON) is a slash of the base64, and other escapes are spaces.
+_CUT_LEAD = r"\[masked\]|\[(?!masked\])|<br\s*/?>|<(?!br\s*/?>)|[^A-Za-z0-9+/\[<]|[+/](?![A-Za-z0-9+/])"
+_CUT_LINE = re.compile(rf"(?:{_CUT_LEAD})*([A-Za-z0-9+/]+)[^A-Za-z0-9+/=]*")
+_CUT_ABOVE = re.compile(r"(?<![A-Za-z0-9+/=])([A-Za-z0-9+/]+)[^A-Za-z0-9+/=]*\Z")
+_CUT_WORD = re.compile(r"[ \t\"'#>*-]*([A-Za-z0-9+/]+)")
+
+
+def _cut_body_end(text, start, stop):
+    """Where a key's rest read from `start` that stops before a line of words at `stop` ends: past the first run of
+    base64's characters on that line where the rest's body has not ended (_CUT_LINE), and the rest is no public
+    material (_public_rest); otherwise at `stop`."""
+    breaks = []  # the rest's last two line breaks: each stretch's rest is read once (_rest_ends), in proportion
+    for m in _LINE_BREAK.finditer(text, start, stop):
+        breaks[:] = breaks[-1:] + [m.span()]
+    last = _CUT_LINE.fullmatch(_rest_view(text[breaks[-1][1] if breaks else start:stop]))
+    if not last:
+        return stop
+    above = breaks and _CUT_ABOVE.search(_rest_view(text[breaks[-2][1] if len(breaks) > 1 else start:breaks[-1][0]]))
+    if above and len(last.group(1)) < len(above.group(1)) or _public_rest(text[start:stop]):
+        return stop
+    brk = _LINE_BREAK.match(text, stop)
+    view, kept = _fragment_view(text[brk.end():_KEY_LINE_END.search(text, brk.end()).start()])
+    word = _CUT_WORD.match(view)
+    return brk.end() + kept[word.end(1)] if word else stop
+
+
+def _breaks_start(text, start, end):
+    """Where the run of line breaks that text[start:end] ends with starts; `end` where it ends with none."""
+    for brk in reversed([*_LINE_BREAK.finditer(text, start, end)]):
+        if brk.end() != end:
+            break
+        end = brk.start()
+    return end
+
+
+def _ends_inside_words(text, start, end):
+    """Whether a key's rest read through text[start:end] ends inside a line of words, past its first run, as main's
+    reading of a body run on into one does (_cut_body_end)."""
+    if _KEY_LINE_END.match(text, end):
+        return False
+    brk = None
+    for brk in _LINE_BREAK.finditer(text, start, end):
+        pass
+    return brk is not None and bool(_WORDS_LINE_AT.match(text, brk.start()))
+
+
+_SPACE_RUN = re.compile(r"[ \t\r]*")
+# A run's line and the lines below it that go on with it (_run_block_end) are read as every reader of a key's fragment
+# reads one: a character of base64 that JSON escapes (_ESCAPED_BASE64: "\\/", as PHP writes a slash) is one of its run.
+_BLOCK_CHARACTER = rf"(?:[A-Za-z0-9+/]|{_ESCAPED_BASE64})"
+_BLOCK_ESCAPED = re.compile(rf"(?:{_ESCAPED_BASE64}[A-Za-z0-9+/]*)+=*")
+# What can stand before a body's line, as main's rest reads one past it, on that line, however much of it: space of any
+# width, plain or escaped, an escaped tab, a quote or its entity, list and comment marks ("+" only where no base64
+# follows it, as it is one of base64's), "<br>", a placeholder, what a reader does not see. Each is read one way
+# only (an escaped zero-width space is one a reader does not see, no escaped space), so a lead that fails is tried
+# once, in time in proportion. A colour code is read two ways, whole or its introducer alone (INVISIBLE, as main reads
+# one), but the "[" the introducer leaves ends the lead at once, so that costs no more.
+_BLOCK_LEAD = (rf"(?:\[masked\]|<br\s*/?>|{_QUOTE}|(?<!\\)\\+(?:[rt]|u(?:00[aA]0|20(?:0[0-9aA]|2[fF]|5[fF])|3000))"
+               rf"|{INVISIBLE.pattern}|[^\S\n]|[#>,;|*\]`-]|\+(?!{_BLOCK_CHARACTER}))*")
+_BLOCK_RUN_LINE = re.compile(rf"{_BLOCK_LEAD}({_BLOCK_CHARACTER}+=*)?[ \t\r\"',;]*")
+# A line below a run that goes on with it: base64 alone after what can stand before a line's text, up to its line's
+# end, plain or escaped, a quote, escaped or not, that ends its item, or the end.
+_BLOCK_LINE = re.compile(rf"{_BLOCK_LEAD}({_BLOCK_CHARACTER}+=*)[ \t\r]*(?=\n|\\*[\"']|\\+(?:r\\+)?n|[<…]|\Z)")
+_ESCAPED_BASE64_CHARACTER = re.compile(_ESCAPED_BASE64)
+
+
+def _block_width(run):
+    """How many characters of base64 `run` holds, each one JSON escapes counted once."""
+    return len(_ESCAPED_BASE64_CHARACTER.sub("/", run))
+
+
+def _run_block_end(text, begin, run):
+    """Where a rest that only its run takes ends (_key_rests, where main reads no rest): at the end of the run, which
+    ends its line or, at a quote, its item, and past the lines below that go on with it as a key's body is wrapped:
+    base64 alone on its line, as wide as the run's, to the first narrower one, one ending in "=" or one that ends its
+    item, its last. A run that ends at a character of base64 that JSON escapes goes on past it (_BLOCK_ESCAPED)."""
+    end = run.end()
+    if end > begin and text[end - 1] in "\n\\\"'<…":
+        end -= 1
+    while end > begin and text[end - 1] in " \t\r":
+        end -= 1
+    escaped = end == run.end() - 1 and text[end] == "\\" and _BLOCK_ESCAPED.match(text, end)
+    if escaped:
+        end = escaped.end()
+    first = None
+    for first in _LINE_BREAK.finditer(text, begin, end):
+        pass
+    line = _BLOCK_RUN_LINE.fullmatch(text, first.end() if first else begin, end)
+    if line is None or line.group(1) is None or line.group(1).endswith("="):
+        return end
+    width = _block_width(line.group(1))
+    while True:
+        below = _LINE_BREAK.match(text, _SPACE_RUN.match(text, end).end())
+        if below is None:
+            return end
+        line = _BLOCK_LINE.match(text, below.end())
+        if line is None or _block_width(line.group(1)) > width:
+            return end
+        end = line.end(1)
+        if (_block_width(line.group(1)) < width or line.group(1).endswith("=")
+                or not _LINE_BREAK.match(text, line.end())):
+            return end
+
+
+def _main_rest_stops(text):
+    """Where main's reading of a key's rest (main's _KEY_REST) from a place ends, and whether at a footer: at the first
+    footer, which it takes, blank line or header past the place. Read once for the text: each place then costs a
+    lookup. Its `before_footer(begin, end)` is `end`, or the start of the first footer inside begin..end."""
+    stops = sorted([(m.start(), m.end(), True) for m in _KEY_END_TEXT.finditer(text)]
+                   + [(m.start(), m.start(), False) for m in _BLANK_LINE.finditer(text)]
+                   + [(m.start(), m.start(), False) for m in _PEM_HEADER.finditer(text)])
+    starts = [s[0] for s in stops]
+    footers = [s[0] for s in stops if s[2]]
+
+    def stop(at):
+        i = bisect.bisect_left(starts, at)
+        return (stops[i][1], stops[i][2]) if i < len(stops) else (len(text), False)
+
+    def before_footer(begin, end):
+        i = bisect.bisect_left(footers, begin)
+        return footers[i] if i < len(footers) and footers[i] < end else end
+    stop.before_footer = before_footer
+    return stop
+
+
+def _key_rests(text, starts=_REST_START):
+    """Each key's rest after an older kb's placeholder (`starts`, _REST) that main's reading would remove, in order, as
+    (where it starts, where it ends, whether it stays): where it starts with public material (_public_end) and no run
+    of base64 of both cases, 16 characters or more, follows it through all main's reading takes (_MIXED_RUN) but in
+    lines that are public material of their own (_public_lines), that material stays, and so do those lines, and all
+    else main's reading takes past it is removed, whatever it holds, as main removes it, failing closed; any other rest
+    is removed unless its base64 decodes whole as public material. Base64 glued to a placeholder
+    that starts no rest, as before a line break escaped twice, is read so too, but only to stay: such a run's own
+    reading (_glued_run_edits) masks it otherwise, as main's does. Where main reads a rest from the placeholder, this
+    one runs at least as far as main's (to its first footer, which it takes, blank line or header), so it shows
+    nothing main's hides but public material, lines of words and lines that decode to words included, failing
+    closed. Only where main reads none do lines that decode to words right after a placeholder (_encoded_words) stay,
+    with the rest starting past them where their next line starts one, in the placeholder's paragraph; such a rest
+    takes none of the tail of tokens main's rest takes. (The readings past such lines that follow main's rest from the
+    placeholder, _REST_PAST_WORDS and _skipped_line, so find none.) Each placeholder outside the core of the rest
+    before it is read once, and each core runs once to its end, so a paragraph of many costs time in proportion."""
+    core, covered, tail, mixed, spans, ends, main_stop = 0, 0, None, None, None, _rest_ends(text), None
+    start = _ID_REST_START if starts is _REST_START and not _STORED_ROW.get() else starts
+    keys = _KEY_HERE.get()
+    for at in _PLACEHOLDER.finditer(text):
+        if at.start() < core:
+            continue
+        begin = at.end()
+        rest, main_reach, as_main = start.match(text, begin), None, False
+        mains = _ID_REST_START.match(text, begin)  # main reads a rest from this placeholder
+        while rest and not mains and _encoded_words(rest.group()):
+            if _BLANK_LINE.search(text, begin, rest.end()):
+                # past a blank line, the line is the next paragraph's, and so is all after it: main's rest ends there
+                rest = None
+                break
+            # another stream's line of words holds no key's rest, as a line of words does not: the rest, if any,
+            # starts past it, with its next line read as one right after the placeholder is
+            begin = _line_past(text, rest)
+            rest = start.match(text, begin) if begin < len(text) else None
+            if rest is None and begin < len(text):
+                # or, where main's rest from the placeholder takes it, with its tail, as base64 alone on its line, as a
+                # stream's short last line is, past any word alone on its line, placeholder alone on its line or line
+                # of words, which main's rest takes too
+                if main_reach is None:
+                    main_reach = (_ID_REST_START.match(text, at.end()) and ends(at.end())) or -1
+                    tail = tail or _token_tail(text)
+                    main_reach = tail(main_reach) if main_reach >= 0 else -1
+                line = begin
+                while main_reach > line and (skip := _skipped_line(text, line)) is not None:
+                    line = skip
+                # past them, any other line main's rest takes starts one: base64 alone on its line, or a line that
+                # holds any other run of base64's characters, with whatever its line holds, as main's rest does
+                rest = main_reach > line and (_REST_PAST_WORDS.match(text, line) or _LINE_BREAK.match(text, line)) or None
+                if rest is None and main_reach > line and line == begin:
+                    # or the rest of a line of encoded words that ended at a quote or an escape that is no line break
+                    # (_line_past), read as a whole line is: where it holds a key's run, the rest starts there
+                    stop = _KEY_LINE_END.search(text, line).start()
+                    rest = _holds_token(text, line, stop) and _BASE64_CHARACTER.search(text, line, stop) or None
+                begin, as_main = (line, True) if rest else (begin, False)
+        if rest and begin != at.end() and not as_main:
+            # a rest that starts past lines of words at a line that starts one, where main's rest from the
+            # placeholder runs on past it, runs on as main's does too, with the run on its next line
+            if main_reach is None:
+                main_reach = (_ID_REST_START.match(text, at.end()) and ends(at.end())) or -1
+                tail = tail or _token_tail(text)
+                main_reach = tail(main_reach) if main_reach >= 0 else -1
+            as_main = main_reach > begin
+        if not rest and not _BASE64_CHARACTER.match(text, at.end()):
+            continue
+        reach = ends(begin)
+        tail = tail or _token_tail(text)
+        # a placeholder past the core, in the tail, still reads its own rest; past lines of words, main reads none,
+        # but for a rest started where main's runs on, which runs on as main's does
+        end = tail(reach) if begin == at.end() or as_main else reach
+        # A footer goes with a rest only where main's rest from the placeholder takes it: there the rest runs on to it,
+        # as main's does, so the paragraph above stays; elsewhere it stays out, and the paragraph's footer with no
+        # header is read as main reads it (_headless_key_edits), from the paragraph's start
+        if main_stop is None:
+            main_stop = _main_rest_stops(text)
+        stop, footer = main_stop(at.end())
+        if not (footer and mains):
+            end = main_stop.before_footer(begin, end)
+        if mains:  # and on to where main's rest from the placeholder ends, whatever it holds, failing closed
+            end = max(end, stop)
+        if rest and at.start() not in keys and not (stop > begin and _ID_REST_START.match(text, at.end())):
+            # where main's rest from the placeholder does not reach this one, only a run of a key's that starts it goes
+            # (in a row an older kb stored, 36 characters or more of both cases and a digit, "+" or "/"; else a key's
+            # body's start), with the lines that go on with it as a key's body is wrapped, or its item alone; all
+            # past it is read as main reads it, and any other rest stays, as main reads none
+            run = (_ID_RUN_REST_START if start is _ID_REST_START else _RUN_REST_START).match(text, begin)
+            if run is None:
+                continue
+            end = reach = min(end, _run_block_end(text, begin, run))
+        if end <= covered:  # which ends inside one already masked, read before the public material past it, which
+            core = reach if rest else core  # reads on to `end`: many such in one tail took time in its square
+            continue
+        public = _public_end(text, begin, end)
+        if public is not None:
+            if mixed is None:
+                spans = _public_lines(text)
+                mixed = _mixed_run_starts(text, spans)
+            i = bisect.bisect_left(mixed, public)
+            past = rest and _BASE64_CHARACTER.search(_rest_view(text[public:end]))
+            # with no run of a key's past it, the material is no key's rest, unless main's reading ends inside a line
+            # of words, at a body's last line run on into it (_cut_body_end): masked past the material, the line's
+            # other words would join its last line, so it goes with the rest, as on main
+            if (i == len(mixed) or mixed[i] >= end) and not (past and _ends_inside_words(text, public, end)):
+                yield begin, public, True
+                if not past:
+                    continue
+                # all main's reading takes past it is masked, as main masks it, whatever it holds, but for lines that
+                # are public material of their own, which stay as the material does, each line's lead with it
+                begin = public
+                j = bisect.bisect_left(spans, (public, public))
+                while j < len(spans) and spans[j][0] < end:
+                    first, last = spans[j]
+                    cut = None
+                    for cut in _LINE_BREAK.finditer(text, begin, first):
+                        pass
+                    if cut is not None and cut.start() > begin:
+                        yield begin, cut.start(), False
+                    yield first, last, True
+                    begin, j = last, j + 1
+                # the line breaks it ends with stay, so the next pass reads what follows as this one does: removed, a
+                # blank line before a line of words, in JSON inside JSON, left the material's last line run on into it
+                stop = _breaks_start(text, begin, end)
+                if stop > begin and not _public_rest(text[begin:stop]):
+                    yield begin, stop, False
+                core, covered = reach, max(covered, end)
+                continue
+        if not rest:
+            continue
+        core = reach
+        if not _public_rest(text[begin:end]):
+            covered = max(covered, end)
+            yield begin, end, False
+
+
+class _Rests(list):
+    """_key_rest_edits' edits, and in `stays` where the public material each rest starts with starts and ends."""
+    stays = ()
+
+
+def _key_rest_edits(text, starts=_REST_START):
+    """The rest of a key after an older kb's placeholder (_key_rests) as an edit that removes it, unless it stays; the
+    stretches of those that stay are its `stays`."""
+    edits, stays = _Rests(), []
+    for start, end, kept in _key_rests(text, starts):  # in order of their starts; one in a tail can run past it
+        if kept:
+            stays.append((start, end))
+        elif edits and start <= edits[-1][1]:
+            edits[-1] = (edits[-1][0], max(edits[-1][1], end), "")
+        else:
+            edits.append((start, end, ""))
+    edits.stays = stays
+    return edits
+
+
+def _glued_run_edits(text, rests):
+    """Each run of characters glued to a placeholder (_GLUED_RUN) as an edit that masks it with the placeholder, as
+    main's does, but for a run of whole public material (_public_prefix) inside a key's rest that the reading of keys'
+    rests in force (`rests`, _key_rest_edits) keeps as public material (its `stays`), from that run's own placeholder
+    or one before it: that rest stays only as the run's lines are public material, and the run masked alone left the
+    lines after it to read as a key's fragment, which took the rest with it. Such a run stays, and only its placeholder
+    is replaced, as main's edit replaces it. A reading that keeps no rest, as main's, masks every such run."""
+    edits, stays, i = [], None, 0
+    for m in _GLUED_RUN.finditer(text):
+        at = m.start() + len("[masked]")
+        if stays is None:
+            stays = getattr(rests(text), "stays", ())
+        while i + 1 < len(stays) and stays[i + 1][0] <= at:  # the last to start by it, which ends last
+            i += 1
+        if stays and stays[i][0] <= at < stays[i][1] and _public_prefix(
+                [line for line, _, _ in _base64_lines(text, at, stays[i][1])]):
+            edits.append((m.start(), at, "[masked]"))
+        else:
+            edits.append((m.start(), m.end(), "[masked]"))
+    return edits
 
 
 def _replace(text, spans, replacement):
@@ -2350,7 +3916,8 @@ def _run(text, rules, origin=None, named=None, fired=None, look=False):
     # takes a routable token's first part and leaves ".aa1234567", and a link's reading a webhook's start. Each token
     # found so is hidden whole at the end.
     whole = _gitleaks_spans(text) if reading in ("named", "today") else []
-    untracked = whole and origin is None
+    places = _KEY_PLACES.get()
+    untracked = bool(whole or places) and origin is None
     if untracked:
         origin = list(range(size))
     given = origin
@@ -2360,9 +3927,13 @@ def _run(text, rules, origin=None, named=None, fired=None, look=False):
         if edits and pattern is ENCODED_PRIVATE_KEY:
             note(pattern)
         text, origin = _edit(text, origin, edits)
-    for edits in (_docker_login_edits, _key_rest_edits, _headless_key_edits,
-                  lambda text: [(m.start(), m.end(), "[masked]") for m in _GLUED_RUN.finditer(text)]):
-        text, origin = _edit(text, origin, edits(text))
+    rests = (lambda text: _key_rest_edits(text, _ID_REST_START)) if reading == "plain" else _key_rest_edits
+    for edits in (_docker_login_edits, rests, _headless_key_edits, lambda text: _glued_run_edits(text, rests)):
+        here = _KEY_HERE.set(frozenset(c for c, o in enumerate(origin) if o in places) if places else frozenset())
+        try:
+            text, origin = _edit(text, origin, edits(text))
+        finally:
+            _KEY_HERE.reset(here)
     for pattern, main in zip(PREFIXED_SECRETS if reading != "main" else _MAIN_PREFIXED, _MAIN_PREFIXED):
         found = list(pattern.finditer(text))
         if pattern is not main and any(not main.fullmatch(text, m.start(), m.end()) for m in found):
@@ -2763,15 +4334,25 @@ def _main_once(text, origin):
     return masked, [origin[c] if c >= 0 else -1 for c in came]
 
 
-def _passes(text, step):
+def _passes(text, step, places=frozenset()):
     """`step`, a pass that tracks where each character came from, repeated until it changes nothing: (the text, where
-    each of its characters came from in `text`, whether it still changed after MAX_PASSES)."""
+    each of its characters came from in `text`, whether it still changed after MAX_PASSES). The pass that changes
+    nothing is counted too, as it can put a placeholder down for one, with what was glued to it kept
+    (_glued_run_edits). `places`, the starts of the placeholders in `text` that stand for a key written as base64,
+    are read as such in each pass while they stay (_KEY_PLACES)."""
     origin = list(range(len(text)))
     for _ in range(MAX_PASSES):
-        masked, came = step(text, list(range(len(text))))
+        marker = _KEY_PLACES.set(places)
+        try:
+            masked, came = step(text, list(range(len(text))))
+        finally:
+            _KEY_PLACES.reset(marker)
+        origin = [origin[c] if c >= 0 else -1 for c in came]
         if masked == text:
             return text, origin, False
-        text, origin = masked, [origin[c] if c >= 0 else -1 for c in came]
+        if places:
+            places = frozenset(c for c, o in enumerate(came) if o in places)
+        text = masked
     return text, origin, True
 
 
@@ -2942,9 +4523,53 @@ def _unwrapped_hidden(text):
     return hidden
 
 
-def _masked(text):
-    """mask()'s passes: (the text, where each of its characters came from in `text`, whether it still changed after
-    MAX_PASSES). Where a pass read otherwise than main's own could (_once's `novel`), main's own mask is made too
+def _masked(text, keys=None):
+    """mask()'s passes, and each private key written as base64 (_encoded_key_spans, or `keys`) hidden over what they
+    leave, so everything the passes hide stays hidden. The keys are hidden when the passes are still changing too, so
+    the one placeholder the limit then puts down, over what differs from `text`, covers each key. Then the passes
+    read the text again, as the next mask() reads it, kb's store among them: an older kb's rest of a key can follow a
+    key's placeholder there, so masked text masks to itself. (the text, where each of its characters came from in
+    `text`, whether it still changed after MAX_PASSES)."""
+    masked, origin, still = _passes_masked(text)
+    keys = _encoded_key_spans(text) if keys is None else keys
+    if not keys:
+        return masked, origin, still
+    hidden = bytearray(len(text))
+    for start, end in keys:
+        hidden[start:end] = b"\x01" * (end - start)
+    masked, origin = _hide(masked, origin, hidden)
+    if still:
+        return masked, origin, still
+    again, after, still = _passes_masked(masked, _key_places(masked, origin, keys, len(text)))
+    return again, [origin[c] if c >= 0 else -1 for c in after], still
+
+
+def _key_places(masked, origin, keys, size):
+    """The starts of the placeholders in `masked` (whose characters came from `origin` in a text of `size`) that took in
+    characters of a key in `keys`, ordered spans of that text."""
+    known, last = [], -1
+    for c in origin:
+        known.append(last)
+        if c >= 0:
+            last = c
+    after, nxt = [size] * (len(origin) + 1), size
+    for i in range(len(origin) - 1, -1, -1):
+        after[i] = nxt = origin[i] if origin[i] >= 0 else nxt
+    starts = [s for s, _ in keys]
+    places = set()
+    for m in _PLACEHOLDER.finditer(masked):
+        if origin[m.start()] >= 0:
+            continue  # written in the text
+        low, high = known[m.start()] + 1, after[m.end()]
+        i = bisect.bisect_left(starts, high) - 1
+        if i >= 0 and keys[i][1] > low:
+            places.add(m.start())
+    return frozenset(places)
+
+
+def _passes_masked(text, places=frozenset()):
+    """The passes of mask(): (the text, where each of its characters came from in `text`, whether it still changed
+    after MAX_PASSES). Where a pass read otherwise than main's own could (_once's `novel`), main's own mask is made too
     (_main_hidden), and every character it hides is hidden here: no reading added since can show what main hides, in
     a later pass either, where a placeholder one put down ends a value main reads on through. Where the reading of
     wrappings masked anything, the mask without it is made too (_unwrapped_hidden), and all it hides is hidden here,
@@ -2952,7 +4577,7 @@ def _masked(text):
     command's name, which the readings of commands after it read across the container ("{'password': 'keytool'}
     -storepass ..."), as main's do."""
     novel = []
-    masked, origin, still = _passes(text, lambda t, o: _once(t, _TEXT_RULES, o, novel))
+    masked, origin, still = _passes(text, lambda t, o: _once(t, _TEXT_RULES, o, novel), places)
     if not novel:
         return masked, origin, still
     unwrapped = _unwrapped_hidden(text) if any(_WRAPPINGS in fired for fired in novel) else None
@@ -2966,7 +4591,8 @@ def _masked(text):
     if not any(c >= 0 and hidden[c] for c in origin):
         return masked, origin, False
     joined, came = _hide(masked, origin, hidden)
-    masked, after, still = _passes(joined, lambda t, o: _once(t, _TEXT_RULES, o))
+    places = frozenset(c for c, o in enumerate(came) if o in places) if places else places
+    masked, after, still = _passes(joined, lambda t, o: _once(t, _TEXT_RULES, o), places)
     return masked, [came[c] if c >= 0 else -1 for c in after], still
 
 
@@ -2990,23 +4616,26 @@ def mask(text):
     the last pass, the region still changing is masked whole, and counted in `capped`. Where a pass read otherwise than
     main's own could, the text is masked again as _masked masks it, all main's own mask hides hidden too."""
     global capped
-    original, novel = text, []
-    marker = _NOVEL.set(novel)
-    try:
-        for _ in range(MAX_PASSES):
-            masked = _mask_once(text)
-            if masked == text:
-                break
+    original, novel, keys = text, [], _encoded_key_spans(text)
+    if keys:  # hidden over the passes, which then need to know where each character came from
+        text, _, still = _masked(original, keys)
+    else:
+        marker = _NOVEL.set(novel)
+        try:
+            for _ in range(MAX_PASSES):
+                masked = _mask_once(text)
+                if masked == text:
+                    break
+                text = masked
+            else:
+                text = None
+        finally:
+            _NOVEL.reset(marker)
+        still = text is None
+        if novel:
+            text, _, still = _masked(original, keys)
+        elif still:
             text = masked
-        else:
-            text = None
-    finally:
-        _NOVEL.reset(marker)
-    still = text is None
-    if novel:
-        text, _, still = _masked(original)
-    elif still:
-        text = masked
     if not still:
         return text
     # Still changing: everything between what the original and the last pass share at both ends becomes one mask.
@@ -3062,7 +4691,7 @@ def secret_in_id(text, names=()):
     if any(_basic_credential(m.group(1)) for view in (*_seen_views(text), _MAIN_INVISIBLE_RUN.sub("", text))
            for m in _BASIC_VALUE.finditer(view)):
         return True
-    return _mask_once(text, _ID_RULES) != text
+    return _mask_once(text, _ID_RULES) != text or bool(_encoded_key_spans(text))
 
 
 # The headers kb reads in text as "name: value", a cookie or a credential: a field so named, or a name and a value

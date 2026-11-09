@@ -156,12 +156,27 @@ matching, and leaves out an item whose id holds a secret. `superhistory get` and
 footer, through the end of its paragraph (the next blank line, plain or escaped), an encrypted key's past the blank line
 after its DEK-Info field, and a PGP key's past the blank line after its armor headers. PEM, PGP and ssh.com's SSH2 keys
 work this way; a PuTTY key file masks from `Private-Lines:` through its paragraph, and an age secret key by its shape. A
-Docker config written as base64 masks too, and so does Docker's "auth" field when it decodes to "user:password". A
-private key written as base64 is not masked yet. A footer with no header masks its paragraph up to it. What an older
-Superhistory's key pattern left after its placeholder masks through its footer or the end of its paragraph: base64 glued to it, or
-a key's body from its first line, which starts as every private key's does (DER's "MII", "MHcC" or "MC4C", or OpenSSH's
-"b3Bl"), after what can stand before a line's text (line breaks plain or escaped at any depth, quotes, "#", ">", "+",
-<br> and spaces). Text after a broken key in its paragraph is masked with it; that is the cost.
+PEM private key or a PGP private or secret key block written as base64, as a Kubernetes secret holds one, masks through
+the lines that wrap it, their breaks plain or escaped at any depth, as JSON in JSON writes them. It is found where its
+encoded "PRIVATE KEY" or "SECRET KEY" decodes inside the key's header or footer on a line of its own, so a field's name
+or a sentence that names one, or quotes a header, stays. It is read once over the text as written, and again with the
+characters a reader does not see taken out, and hidden over what mask()'s passes leave: no reading reads its
+placeholder, so what follows the key, such as a certificate's base64, stays, and all the passes hide stays hidden. It
+masks from the line that holds its header's first byte through the line with its footer's last byte and the line breaks
+after it, so a heading, a certificate above it or a word between two keys stays however the lines are wrapped; a key cut
+off before its footer masks while the base64 still decodes to text, and one cut before its header from where it decodes
+to text above. A Docker config written as base64 masks too, and so does Docker's "auth" field when it decodes to
+"user:password". A footer with no header masks its paragraph up to it. What an older Superhistory's key pattern left after its
+placeholder masks through its footer or the end of its paragraph: base64 glued to it, or a key's body from its first
+line, which starts as every private key's does (DER's "MII", "MHcC" or "MC4C", or OpenSSH's "b3Bl") or any line of
+base64 that mixes cases and digits, as part of a body split or re-wrapped holds, after what can stand before a line's
+text (line breaks plain or escaped at any depth, quotes, "#", ">", "+", <br> and spaces). It fails closed: such base64
+is shown only when it decodes whole as public material, a certificate, a certificate request, a public key
+(SubjectPublicKeyInfo) or an OpenSSH public key, so one cut short stays masked. Where main's reading of the
+placeholder's rest takes it, it runs at least as far as main's, through its footer or to its paragraph's end or the
+next header, whatever it holds, words included; elsewhere it stops before a line of words ("next steps") or a JSON
+object's next field. An item id starts a key's rest with a body's start
+alone, as main does. Text after a broken key in its paragraph is masked with it; that is the cost.
 
 Text can arrive escaped. In JSON text a secret right after an escape such as "\n" is masked as at the start of a
 line, and a value ends where an escape starts the next "name=" or "name:", so that name keeps its own. A percent

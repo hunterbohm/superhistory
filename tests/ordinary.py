@@ -4,6 +4,7 @@ no rule superhistory takes from another rule set may match any of it (tests/test
 import base64
 import random
 import string
+import textwrap
 
 LOWER, UPPER, DIGITS = string.ascii_lowercase, string.ascii_uppercase, string.digits
 HEX = "0123456789abcdef"
@@ -34,6 +35,33 @@ def ident(r, words=WORDS):
 
 def b64(r, n):
     return base64.b64encode(bytes(r.getrandbits(8) for _ in range(n))).decode()
+
+
+def public_block(r):
+    """A public PEM block or a PGP public key block, with a made-up body."""
+    body = "\n".join(textwrap.wrap(b64(r, r.randint(30, 120)), 64))
+    if r.random() < 0.25:
+        return f"-----BEGIN PGP PUBLIC KEY BLOCK-----\n\n{body}\n={b64(r, 3)}\n-----END PGP PUBLIC KEY BLOCK-----\n"
+    label = r.choice(("CERTIFICATE", "PUBLIC KEY", "RSA PUBLIC KEY", "CERTIFICATE REQUEST", "X509 CRL"))
+    return f"-----BEGIN {label}-----\n{body}\n-----END {label}-----\n"
+
+
+def key_prose(r):
+    """A sentence about a private or secret key, as notes about one are written, with no key in it."""
+    return r.choice((
+        "Rotate the PRIVATE KEY for the {w} {v} before {n} November.",
+        "Where is the PRIVATE KEY for {w}? The {v} PRIVATE KEY moved to the vault.",
+        "Export the PGP SECRET KEY BLOCK with gpg --export-secret-keys and keep it off the {w} {v}.",
+        "The SECRET KEY and the PRIVATE KEY of the {w} {v} are kept apart, {n} copies each.",
+        "PRIVATE KEY\nSECRET KEY\n{w} {v} {n}\n",
+        "PEM files use -----BEGIN PRIVATE KEY----- as their opening delimiter, {n} lines before the {w} {v}.",
+        "The {w} key file ends with -----END RSA PRIVATE KEY----- and a line break.",
+    )).format(w=word(r, PLAIN), v=word(r, PLAIN), n=r.randint(1, 28))
+
+
+def encoded(r):
+    """Base64 of text near a key's words and shapes that holds no key: a public block, or a sentence about keys."""
+    return base64.b64encode((public_block(r) if r.random() < 0.5 else key_prose(r)).encode()).decode()
 
 
 SHAPES = (
@@ -93,6 +121,7 @@ SHAPES = (
     lambda r: 'compiler pass%s"%s%s%s" changed=%d' % (r.choice(("=", ": ")), r.choice(("Convert", "Lower", "Fold", "")),
                                                    r.choice(("BF16", "SCF", "Affine2", "LLVM")),
                                                    r.choice(("ToF32", "2LLVM", "Pass", "To64")), r.randint(0, 1)),
+    encoded, lambda r: "%s\n%s" % (word(r, PLAIN).title(), "\n".join(textwrap.wrap(encoded(r), r.choice((64, 76))))),
     lambda r: "[masked]%s%s.md" % (r.choice(("\x1b[0m", "\x9b0m", "\\u001b[0m", "\\x1b[0m", "\\033[0m", "\x7f")),
                                    r.choice(("README", "CHANGELOG", "notes", "plan-v2"))),
 )

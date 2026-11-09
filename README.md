@@ -399,7 +399,6 @@ Known limits:
   not masked whole. Such a character is read raw, escaped as JSON or Python writes it ("\u200b", "\x7f", the
   surrogate pair JSON writes for one past U+FFFF, "\udb40\udc01", and JSON's "\b" for the backspace between letters
   or digits), and escaped twice, as JSON inside JSON holds it.
-- A private key written as base64 (as a Kubernetes secret holds one) is not masked.
 - Provider tokens Superhistory does not know by itself are masked by rules taken from gitleaks (kb/gitleaks.py, gitleaks v8.30.1,
   MIT licence), where gitleaks finds one in text, as a word of its own. An Airtable token is masked alone too, where
   gitleaks needs the provider's name near it; a Facebook token only with "facebook" in the text, as gitleaks reads it,
@@ -496,6 +495,80 @@ Known limits:
 - A private key is masked by its structure: from its header through its footer, or, if the footer is missing, through
   the end of its paragraph. So whatever follows a key cut off before its footer, up to the next blank line, is masked
   with it, and so is the paragraph before a footer with no header.
+- A private key written as base64 (as a Kubernetes secret holds one) is masked from the line with its header's first
+  byte through the line with its footer's. Its header and footer are each read as a line of their own past any
+  horizontal space and quotes around them, written, escaped as JSON escapes them or as a web page writes a quote
+  ("&quot;"), and up to any line break Python reads, so a key file indented in a document, or held in a JSON or .env
+  file, encoded whole, is masked, and so is an SSH2 key file.
+  A footer ends it only as a whole line with no other footer later in the
+  same encoded stream, so text between a key's footer and a stray footer later in that stream is masked with the key,
+  prose holding a control character included, and so is text between two whole keys in one stream. A footer encoded on
+  its own in a later stream ends no key of an earlier stream's, so a public key between them stays. A footer encoded
+  alone on a line of its own, narrower than the lines below it, is a stream of its own too, so a public key below it
+  whose lines fill the width stays. In a row an older Superhistory stored, encoded text after a key in its stream that does not
+  decode from its line's start to words reads as an older Superhistory's rest of a key after the key's placeholder, and is
+  masked too. A header after text on its decoded line, as a sentence quoting one writes it, starts a key only with a
+  footer later in its stream, and then the key starts on that line, with the words before the header and whatever lies
+  between it and the footer. A header that starts a line below a shorter one, the last of another encoded stream,
+  starts a stream of its own, so the words above it quote nothing and it starts its key, footer or none. A key file's
+  header below it, past prose, starts the key instead, on a line of its own, or, where the text runs on into the file
+  with no line break, after a byte order mark or where the line widths change; past no prose (a run a key's body could
+  be, an armour header such as "Comment: ...", another header's text, a control character, or nothing), the key still
+  starts on the quote's line. Cut off before its footer, it is masked while its base64 decodes to text, so a word on
+  the next line that happens to decode to text goes with it. Cut off before its header, it is masked upward the same
+  way, up to its paragraph's start and never past a blank line, as main masks a plain footer with no header: lines of
+  encoded words above it in that paragraph go with it, and so can the last word of a line of plain words right above
+  it. Main leaves such a key readable; this only masks more. Base64 of a short label glued to a quoted header, where the label's own base64 is one word in one case as
+  long as the block's lines ("ABC" written "QUJD" at width 4), reads as a heading over a key, so the quote after it is
+  masked; a key there is masked either way. Any line break wraps it, as written or escaped, and it is read with JSON's
+  escapes read once and twice too, as JSON and JSON in JSON write a key with any escape (a tab, \u000a, \/). A field
+  name whose base64 ends in "=" before a value is read as main reads it, which leaves that value readable. After a
+  placeholder, a key's body on the placeholder's own line followed by words ("[masked] MC4C... notes deploy") shows,
+  as on main. In a row an older Superhistory stored,
+  an OpenSSH private key's private section, re-encoded alone after a placeholder, reads as public material and shows.
+  Lines that each start with the same quote or comment mark ("> ", "# ", "// ", "-- ", "; ", "* ", "| ", a quote
+  character, written, escaped or as a web page's entity) are read as no block, so a key encoded in them shows, as on main. Whether the words before a header on its decoded line make a
+  sentence that quotes it is read from the few dozen bytes before it: a byte no text holds there starts a key where
+  the words alone would quote it, and a space further back is not seen, so a header after a long word starts its key.
+  This masks more.
+  A header or footer whose words before "PRIVATE KEY" run past 200 bytes, far past any a key tool writes, is read as
+  none, so a key encoded with one shows, as on main.
+- A lone piece of a private key's base64 with neither header nor footer shows, as on main, unless a key's rest
+  after a placeholder, as one where a key was masked, takes it. A rest starts with base64 glued to the placeholder, or
+  with a line right after it of base64 alone, 40 characters or more, starting as a key's body does ("MIIE..."); in a
+  row an older Superhistory stored, 36 characters or more with a capital, a small letter and a digit, "+" or "/" are enough, and
+  where main reads no rest from the placeholder, lines there that decode to words are passed over first, and stay.
+  Only that first line counts: a piece of 34 characters after "[masked] ", or of lines 16 wide after another key's
+  footer, shows, as on main, even with a longer line further down. A rest that starts at a placeholder where main's
+  does runs at least as far as main's, to its first footer, which it takes, a blank line or a header, whatever it
+  holds, lines of words and lines that decode to words included, so it shows nothing main's hides but public
+  material (below). Where main reads no rest from the
+  placeholder (an older Superhistory's row's run of both cases, or a rest past lines that decode to words), only the run goes,
+  with the lines below it that go on as a key's body is wrapped (base64 alone, as wide, to a narrower line, one
+  ending in "=" or one that ends its item, past what main's rest reads before a body's line, and with a slash JSON
+  escapes read as a slash), or its JSON item; all past it is read as main reads it, so a JSON list's
+  later items, words, and a cut key's pieces past it, as past an OpenSSH public key, show as on main. Main leaves such
+  a run readable; this masks it and shows nothing main masks. After the placeholder of a key written as base64, which
+  main leaves readable, a rest is read whole, as above. As on main, a rest starts only past
+  what main reads before a key's body: after a no-break or other wide space escaped in JSON, a backtick (written or
+  as a web page's entity, "&grave;"), a quote's entity padded with more than three zeros ("&#000034;") or "- ", or
+  with JSON's escaped slash ("\/") in the first 40 characters of its first line, a body after a placeholder shows;
+  and a run glued to a placeholder ends at a backslash, as main's does, so past "[masked]Abcd\/" the rest of its
+  line shows.
+- After a placeholder where a key was masked, public material (a certificate, a public key) that the key's rest starts
+  with stays, and so do later lines in that rest that are public material of their own (another certificate alone on its
+  lines); all else that main's reading of that rest takes past it is masked, as main masks it, whatever it holds, to
+  the paragraph's end, its footer or a header, as above. Where a run of base64 of both cases, 16 characters or more,
+  follows the material there outside such lines, where main's reading ends inside a line of words past it (a key's body
+  run on into that line), or where a line of base64 right after it reads as a possible fragment of a key, base64 of
+  words included ("bm90ZXMg..."), the material is masked with the rest, as on main. In JSON inside JSON, a blank line
+  does not end that paragraph, as on main. Main masks the material too; this shows only it.
+- Past a private key encoded whole as base64, which this branch masks and main leaves readable, and then a certificate,
+  what follows is that key's rest, read as main reads one after a key in plain text, where main keeps it: it is masked
+  to the paragraph's end, its footer or a header, whatever it holds, ordinary words ("Thanks, see you tomorrow.") and
+  tokens alike, but for lines that are public material of their own, which stay as the certificate does. This only
+  masks more and shows nothing; the next paragraph stays, but in JSON inside JSON, as on main, a blank line ends no
+  rest, so there it runs on to the text's end.
 - A knowledge base that an older Superhistory wrote, before each row recorded how it was masked, does not open: an older Superhistory's
   masking can leave a secret that no pattern finds afterwards. Superhistory says so and names `superhistory rebuild`, which reads your
   sources into a fresh one, each as far back as its oldest item in the old one. When a source no longer has some of
