@@ -3906,18 +3906,176 @@ class Base64ReviewTwentyFourthTest(unittest.TestCase):
                 # four times the text
                 self.assertLess(took[1 << 18], 8 * max(took[1 << 16], 0.05), took)
 
-    @unittest.expectedFailure
+    # Each mark a line of a key's base64 can carry: a quote's or a comment's, a list's or a table's, a diff's, a quote
+    # written, escaped or as a web page's entity, plain, padded with zeros or in hex; and each of these twice, as a quote
+    # of a quote writes it, and without its space.
+    MARKS = ("> ", "# ", "// ", "-- ", "; ", "* ", "| ", "+ ", '"', "'", "`", '\\"', "\\'", "\\`", "&quot;", "&apos;",
+             "&grave;", "&#34;", "&#39;", "&#96;", "&#034;", "&#039;", "&#x22;", "&#x27;", "&#X27;", "&#x60;",
+             "&#0000000034;", "&#x00000000022;")
+    EVERY_MARK = MARKS + tuple(m + m for m in MARKS) + tuple(m[:-1] for m in MARKS if m.endswith(" "))
+
+    @staticmethod
+    def key_files(r):
+        """A key file of each kind #34 reads, made up: PKCS#8, RSA, OpenSSL's, GnuPG's, OpenSSH's and SSH2's."""
+        import base64
+        import textwrap
+        fixture = Base64ReviewNineteenFindingsTest.fixture
+        openssh = b"openssh-key-v1\0" + bytes(r.randrange(256) for _ in range(400))
+        ssh2 = "\n".join(textwrap.wrap(base64.b64encode(bytes(r.randrange(256) for _ in range(500))).decode(), 70))
+        return {"pkcs8": Base64ReviewTwentyFourthTest.pem(r),
+                "rsa": Base64ReviewTwentyFourthTest.pem(r).replace(b"PRIVATE KEY", b"RSA PRIVATE KEY"),
+                "openssl ed25519": fixture("openssl_ed25519"), "openssl p256": fixture("openssl_p256"),
+                "gnupg": fixture("gnupg_control_comment"),
+                "openssh": (b"-----BEGIN OPENSSH PRIVATE KEY-----\n" + "\n".join(textwrap.wrap(
+                    base64.b64encode(openssh).decode(), 70)).encode() + b"\n-----END OPENSSH PRIVATE KEY-----\n"),
+                "ssh2": (b"---- BEGIN SSH2 ENCRYPTED PRIVATE KEY ----\nComment: \"walrus ledger\"\n" + ssh2.encode()
+                         + b"\n---- END SSH2 ENCRYPTED PRIVATE KEY ----\n")}
+
     def test_a_keys_lines_each_after_one_quote_or_comment_mark_are_masked(self):
-        # The listed limit, as on main: lines that each start with the same mark ("> ", "# ", "// ", "-- ", "; ", "* ",
-        # "| ", a quote, written or as a web page's entity) read as no block, so a key encoded in them shows.
+        # Lines that each start with the same mark read as no block, so a key encoded in them showed, on main too: each
+        # line of a run that carries one mark is read past it, and a key there is masked as one written plain is.
         import random
-        data = self.pem(random.Random(9))
-        start, end = data.index(b"\n") + 1, data.rindex(b"\n-----END")
-        lines = Base64ReviewSeventeenTest.encoded(data, 64).splitlines()
-        for prefix in ("> ", "# ", "// ", "-- ", "; ", "* ", "| ", '"', "'", "`", "&quot;", "&#39;"):
-            with self.subTest(prefix=prefix):
-                masked = mask("Notes:\n" + "\n".join(prefix + line for line in lines) + "\n\nnext paragraph")
-                self.assertEqual([k for k in self.lines_within(data, 64, start, end) if k in masked], [])
+        written, encoded, i = Base64ReviewNineteenFindingsTest.written, Base64ReviewSeventeenTest.encoded, 0
+        keys = self.key_files(random.Random(9))
+        for mark in self.EVERY_MARK:
+            for name, key in keys.items():
+                for width in (64, 76):
+                    for brk in ("\n", "\r\n"):
+                        data = key.replace(b"\n", brk.encode())
+                        end = data.rindex(b"-") + 1
+                        lines = encoded(data, width).split("\n")
+                        text = brk.join(["Notes:"] + [mark + line for line in lines] + ["", "next paragraph"])
+                        depth, older, i = i % 3, i // 3 % 2, i + 1
+                        with self.subTest(mark=mark, key=name, width=width, brk=brk, depth=depth, older=older):
+                            masked = Base64ReviewEighteenTest.masks(written(text, depth), older)
+                            self.assertEqual([k for k in self.lines_within(data, width, 0, end) if k in masked], [])
+                            self.assertIn("next paragraph", masked)
+
+    # A key's base64 lines among other text on each: a line's number, as a listing writes it; code around each line;
+    # markup; table cells; a comment after each; a first line that names it. {n}: the line's number, {line}: its base64.
+    AROUND = {"cat -n": "{n:6}\t{line}", "numbered": "{n} | {line}", "concatenated": '  "{line}" +',
+              "concatenated with escaped breaks": '  "{line}\\n" +', "continued": "{line}\\", "statement": "{line};",
+              "list item": '  "{line}",', "one-column table": "| {line} |", "two-column table": "| {n} | {line} |",
+              "markup": "<tr><td>{n}</td><td>{line}</td></tr>", "line break tag": "{line}<br>",
+              "entity after": "{line}&amp;", "comment after": "{line}  # part {n}", "quote of a quote": "{quote}{line}"}
+
+    def test_a_keys_lines_among_other_text_on_each_line_are_masked(self):
+        import random
+        written, encoded, i = Base64ReviewNineteenFindingsTest.written, Base64ReviewSeventeenTest.encoded, 0
+        keys = self.key_files(random.Random(10))
+        for shape, form in self.AROUND.items():
+            for first in ("", "const key = ", "key: "):
+                for name, key in keys.items():
+                    for width in (64, 76):
+                        brk = ("\n", "\r\n")[i % 2]
+                        data = key.replace(b"\n", brk.encode())
+                        end = data.rindex(b"-") + 1
+                        lines = [form.format(n=n + 1, line=line, quote=("> ", ">> ")[n % 2])
+                                 for n, line in enumerate(encoded(data, width).split("\n"))]
+                        lines[0] = first + lines[0].lstrip()
+                        text = brk.join(["Notes:"] + lines + ["", "next paragraph"])
+                        depth, older, i = i % 3, i // 3 % 2, i + 1
+                        with self.subTest(shape=shape, first=first, key=name, width=width, depth=depth, older=older):
+                            masked = Base64ReviewEighteenTest.masks(written(text, depth), older)
+                            self.assertEqual([k for k in self.lines_within(data, width, 0, end) if k in masked], [])
+                            self.assertIn("next paragraph", masked)
+
+    @classmethod
+    def marked_texts(cls):
+        """Prose and code, made up and holding no private key, whose lines carry the marks above or other text around
+        base64: a quoted mail, comments, Markdown, a numbered listing and tables, holding hashes, base64 of random
+        bytes, of a certificate, of a public key, and of words about keys, wrapped as a key's base64 is; and plain
+        prose."""
+        import base64
+        import random
+        import textwrap
+        r = random.Random("lines that each carry a mark")
+        words = ["notes", "harbor", "ledger", "deploy", "walrus", "today", "plan", "moved", "the", "approved", "key",
+                 "rotate", "vault", "private", "secret"]
+
+        def sentence():
+            return " ".join(r.choice(words) for _ in range(r.randrange(3, 14))).capitalize() + r.choice([".", "?", ":"])
+
+        def encoded(data):
+            return textwrap.wrap(base64.b64encode(data).decode(), r.choice([60, 64, 76]))
+
+        def pem(der, label):
+            return (f"-----BEGIN {label}-----\n" + "\n".join(textwrap.wrap(base64.b64encode(der).decode(), 64))
+                    + f"\n-----END {label}-----\n").encode()
+
+        texts = []
+        for n in range(300):
+            mark = r.choice(cls.EVERY_MARK) if n < 240 else ""
+            kind = r.randrange(6) if n < 240 else r.randrange(3, 9)
+            if kind == 0:  # a mail quoting one, a quote of a quote inside
+                lines = [mark + sentence() for _ in range(r.randrange(2, 8))] + [mark.rstrip() or mark]
+                lines += [mark + mark + sentence() for _ in range(r.randrange(1, 4))]
+            elif kind == 1:  # comments over code, with a hash or an integrity value
+                lines = [mark + sentence(), mark + "sha256: " + r.randbytes(32).hex(),
+                         mark + "integrity sha384-" + base64.b64encode(r.randbytes(48)).decode(), "deploy(ledger)"]
+            elif kind == 2:  # Markdown: a quote holding a list and a table of base64
+                lines = [mark + sentence(), mark + "* " + sentence(), mark + "| name | value |",
+                         mark + "| walrus | " + base64.b64encode(r.randbytes(24)).decode() + " |"]
+            elif kind == 3:  # base64 of random bytes, of a certificate or of a public key, each line marked
+                data = r.choice([r.randbytes(r.randrange(100, 600)), pem(made_up_certificate(r), "CERTIFICATE"),
+                                 pem(made_up_public_key(r), "PUBLIC KEY")])
+                lines = [mark + line for line in encoded(data)]
+            elif kind == 4:  # base64 of words about keys, and of a sentence that quotes a header with no key after it
+                data = (sentence() + " Rotate the PRIVATE KEY monthly; the SECRET KEY stays in the vault. "
+                        + r.choice(["", "The file starts -----BEGIN PRIVATE KEY----- as usual. "]) + sentence()).encode()
+                lines = [mark + line for line in encoded(data)]
+            elif kind == 5:  # a key's base64 cut into a sentence, a line or two alone: no header or footer of its own
+                lines = [mark + sentence()] + [mark + line for line in encoded(made_up_private_key(r))[2:4]]
+            elif kind == 6:  # a paragraph of plain prose
+                lines = [sentence() for _ in range(r.randrange(2, 9))]
+            elif kind == 7:  # a numbered listing of a certificate's base64, a comment after each line
+                lines = [f"{k + 1:6}\t{line}  # part" for k, line in enumerate(
+                    encoded(pem(made_up_certificate(r), "CERTIFICATE")))]
+            else:  # a table of words and base64 of random bytes
+                lines = ["| name | value |", "|---|---|"] + [
+                    f"| {r.choice(words)} | {base64.b64encode(r.randbytes(r.randrange(12, 60))).decode()} |"
+                    for _ in range(r.randrange(2, 6))]
+            brk = r.choice(["\n", "\r\n"])
+            texts.append(brk.join(["Notes:"] + lines + ["", "next paragraph"]))
+        return texts
+
+    def test_prose_and_code_whose_lines_carry_a_mark_mask_as_on_main(self):
+        # main's output for each of marked_texts, fresh and as an older row: only a key's base64 is read past a mark
+        import hashlib
+        import os
+        with open(os.path.join(os.path.dirname(__file__), "fixtures", "marked_lines_main.json"), encoding="utf-8") as f:
+            expected = json.load(f)["sha256"]
+        got = [hashlib.sha256(Base64ReviewEighteenTest.masks(text, older).encode()).hexdigest()[:16]
+               for text in self.marked_texts() for older in (False, True)]
+        self.assertEqual(len(got), len(expected))
+        self.assertEqual([i for i, (a, b) in enumerate(zip(got, expected)) if a != b], [])
+
+    def test_lines_that_each_carry_a_mark_cost_time_in_proportion(self):
+        # each line is read for its base64 once, and a run is read past what stands around it only where its base64
+        # holds a key's word
+        import base64
+        import random
+        import textwrap
+        import time
+        r = random.Random(2501)
+        key = self.pem(r)
+        shapes = {"random bytes": lambda size: r.randbytes(size), "words": lambda size: b"notes moved " * (size // 12),
+                  "a key's words": lambda size: b"PRIVATE KEY " * (size // 12),
+                  "headers": lambda size: b"-----BEGIN PRIVATE KEY-----\n" * (size // 28),
+                  "keys": lambda size: key * (size // len(key))}
+        for form in ("> {line}", "//{line}", "&#x00000027;{line}", "{n:6}\t{line}  # part {n}"):
+            for name, data in shapes.items():
+                took = {}
+                for size in (1 << 14, 1 << 16):
+                    lines = textwrap.wrap(base64.b64encode(data(size)).decode(), 64)
+                    text = "notes\n" + "\n".join(form.format(n=n, line=line) for n, line in enumerate(lines)) + (
+                        "\n\nnext paragraph")
+                    started = time.process_time()
+                    mask(text)
+                    took[size] = time.process_time() - started
+                with self.subTest(form=form, shape=name):
+                    # four times the text
+                    self.assertLess(took[1 << 16], 8 * max(took[1 << 14], 0.05), took)
 
     def test_horizontal_space_and_line_breaks_are_every_one_python_reads(self):
         import re
