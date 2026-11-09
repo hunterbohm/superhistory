@@ -618,6 +618,8 @@ class OwnPassagesTest(unittest.TestCase):
                  "From: kim@example.com (hunter@example.com)\nDate: 2026-10-01T10:00:00Z\n\nx")
         self.assertEqual(decisions.own_passages("gmail", spoof, OWNER), [])
         self.assertEqual(decisions.own_passages("github", "Hunter: merge trains are off\n", OWNER), [])
+        for kind in ("eden", "youtube", "plugin", "some_new_source"):
+            self.assertEqual(decisions.own_passages(kind, "Hunter: merge trains are off\n", OWNER), [])
         note = "Hunter decided: merge trains stay\n[00:12] Hunter Bohm (host): trains are off\nHunter: ok\n"
         self.assertEqual(decisions.own_passages("notes", note, OWNER),
                          ["[00:12] Hunter Bohm (host): trains are off", "Hunter: ok"])
