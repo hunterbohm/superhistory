@@ -56,6 +56,13 @@ before the pick. Run `superhistory --try search "words"` to search the made-up m
 
 ## Set it up
 
+> **Before you connect your data:** the mask is best effort, not a guarantee. It catches the common shapes of
+> passwords, keys and tokens, and [Privacy](#privacy) lists many shapes it misses. Your message and the records picked
+> for it are sent to the AI plug-in you choose, so with a hosted plug-in that company's servers see them, along with
+> any secret the mask missed. To keep your records off any AI company's servers, point `openai-compatible` at a model
+> you run yourself, or choose no plug-in (then the hook adds nothing). Leave out any source holding secrets you could
+> not risk reaching that provider.
+
 ```sh
 superhistory setup
 ```
@@ -158,7 +165,8 @@ Any other source is a small program you, or your agent, put in the plug-ins fold
 [docs/plugins.md](docs/plugins.md) is the whole format.
 
 Every source only reads. Mail and texts drop 2FA codes and password resets one message at a time, and every record
-passes through a mask that replaces API keys, tokens and passwords with `[masked]` before it is stored.
+passes through a mask that replaces API keys, tokens and passwords with `[masked]` before it is stored. The mask
+catches common shapes, not every secret: [Privacy](#privacy) lists the ones it misses.
 
 To read another computer, name it and list it in a source's `hosts`. That computer needs only Python 3.9 and SSH. Superhistory
 sends itself over `ssh <host> python3 -`, and nothing is installed or left there.
@@ -360,6 +368,9 @@ opening handshake, and the `initialize` handshake of `2025-11-25` and the three 
 Everything stays in one file on your computer. The only thing that leaves it is the AI call you chose: the plug-in
 gets your message, the two turns before it, and the start of a few candidate records, and the summarizer sends long
 items to it. With no plug-in, Superhistory still searches but adds nothing to your prompts and writes no summaries.
+
+What goes to the plug-in is masked first, but masking is best effort: a secret the mask misses is stored as written and
+can be sent to the plug-in's provider with the record it sits in. The limits below are the shapes known to get through.
 
 Known limits:
 
