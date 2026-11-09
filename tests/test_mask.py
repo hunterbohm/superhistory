@@ -4096,6 +4096,32 @@ class Base64ReviewTwentyFourthTest(unittest.TestCase):
                                 self.assertIn("next paragraph", masked)
                         i += 1  # so each form meets each depth and age
 
+    def test_a_keys_lines_beside_random_base64_as_long_as_theirs_past_a_sign_are_masked(self):
+        # Within a key, a run as long as the line above's goes on whatever it decodes to, so random base64 beside each
+        # line, one "/" or "+" longer than the key's line, was as long once past that sign, and where a label of
+        # changing length moved the key's line away from the column above, it was read for the key's, and the key's
+        # lines after it showed.
+        import base64
+        import random
+        import textwrap
+        written, i = Base64ReviewNineteenFindingsTest.written, 0
+        r = random.Random(17)
+        for name, whole, data in self.whole_and_cut(self.key_files(r)):
+            for width in (30, 64, 76):
+                chunks = textwrap.wrap(base64.b64encode(data).decode(), width)
+                for form in ("[{label}] {line} // /{junk}", "[{label}] {line} // +{junk}", "+{junk}  {label} {line}"):
+                    brk = ("\n", "\r\n")[i % 2]
+                    lines = [form.format(line=chunk, label="q" * (width + 40 if n % 2 else 3),
+                                         junk=base64.b64encode(r.randbytes(width)).decode()[:width])
+                             for n, chunk in enumerate(chunks)]
+                    text = brk.join(["Notes:"] + lines + ["", "next paragraph"])
+                    depth, older, i = i % 3, i // 3 % 2, i + 1
+                    with self.subTest(key=name, whole=whole, width=width, form=form, depth=depth, older=older):
+                        masked = Base64ReviewEighteenTest.masks(written(text, depth), older)
+                        self.assertEqual([chunk for chunk in chunks if len(chunk) >= 4 and chunk in masked], [])
+                        self.assertIn("next paragraph", masked)
+                i += 1  # so each form meets each depth and age
+
     def test_a_keys_lines_beside_another_streams_lines_are_masked(self):
         # A key's base64 and another stream's of the same width side by side, as columns, a table or a diff put them:
         # their lines are as long and decode to text alike, so the other's could be read for the key's and the key
