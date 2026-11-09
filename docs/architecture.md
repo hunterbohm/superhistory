@@ -160,8 +160,8 @@ PEM private key or a PGP private or secret key block written as base64, as a Kub
 the lines that wrap it, their breaks plain or escaped at any depth, as JSON in JSON writes them, and through lines that
 each hold its base64 among other text (a quote's or a comment's mark, a line's number, code or a table's cells around
 it): in a run of lines that each hold base64, where the longest run on each line, joined, holds a key's word, each line
-is read again as that run alone, but for words before it that neither line next to it shares. It is found where its
-encoded "PRIVATE KEY" or "SECRET KEY" decodes inside the key's header or footer on a line of its own, so a field's name
+is read again as that run alone, but for words before it on the lines after the last that carries a mark. It is found
+where its encoded "PRIVATE KEY" or "SECRET KEY" decodes inside the key's header or footer on a line of its own, so a field's name
 or a sentence that names one, or quotes a header, stays. It is read once over the text as written, and again with the
 characters a reader does not see taken out, and hidden over what mask()'s passes leave: no reading reads its
 placeholder, so what follows the key, such as a certificate's base64, stays, and all the passes hide stays hidden. It
