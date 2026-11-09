@@ -3957,7 +3957,8 @@ class Base64ReviewTwentyFourthTest(unittest.TestCase):
               "concatenated with escaped breaks": '  "{line}\\n" +', "continued": "{line}\\", "statement": "{line};",
               "list item": '  "{line}",', "one-column table": "| {line} |", "two-column table": "| {n} | {line} |",
               "markup": "<tr><td>{n}</td><td>{line}</td></tr>", "line break tag": "{line}<br>",
-              "entity after": "{line}&amp;", "comment after": "{line}  # part {n}", "quote of a quote": "{quote}{line}"}
+              "entity after": "{line}&amp;", "comment after": "{line}  # part {n}", "quote of a quote": "{quote}{line}",
+              "comment marks without a space": "//{line}", "a diff's": "+{line}"}
 
     def test_a_keys_lines_among_other_text_on_each_line_are_masked(self):
         import random
@@ -3973,7 +3974,8 @@ class Base64ReviewTwentyFourthTest(unittest.TestCase):
                         lines = [form.format(n=n + 1, line=line, quote=("> ", ">> ")[n % 2])
                                  for n, line in enumerate(encoded(data, width).split("\n"))]
                         lines[0] = first + lines[0].lstrip()
-                        text = brk.join(["Notes:"] + lines + ["", "next paragraph"])
+                        words = [form.format(n=0, line="see /etc/ssl/private/walrus.pem", quote="> "), "notes"]
+                        text = brk.join(["Notes:"] + words + lines + words[::-1] + ["", "next paragraph"])
                         depth, older, i = i % 3, i // 3 % 2, i + 1
                         with self.subTest(shape=shape, first=first, key=name, width=width, depth=depth, older=older):
                             masked = Base64ReviewEighteenTest.masks(written(text, depth), older)
@@ -4063,13 +4065,13 @@ class Base64ReviewTwentyFourthTest(unittest.TestCase):
                   "a key's words": lambda size: b"PRIVATE KEY " * (size // 12),
                   "headers": lambda size: b"-----BEGIN PRIVATE KEY-----\n" * (size // 28),
                   "keys": lambda size: key * (size // len(key))}
-        for form in ("> {line}", "//{line}", "&#x00000027;{line}", "{n:6}\t{line}  # part {n}"):
+        for form in ("> {line}", "//{line}", "&#x00000027;{line}", "{n:6}\t{line}  # part {n}", "{slashes}{line}"):
             for name, data in shapes.items():
                 took = {}
                 for size in (1 << 14, 1 << 16):
                     lines = textwrap.wrap(base64.b64encode(data(size)).decode(), 64)
-                    text = "notes\n" + "\n".join(form.format(n=n, line=line) for n, line in enumerate(lines)) + (
-                        "\n\nnext paragraph")
+                    text = "notes\n" + "\n".join(form.format(n=n, line=line, slashes="/" * (n % 64 + 1))
+                                                  for n, line in enumerate(lines)) + "\n\nnext paragraph"
                     started = time.process_time()
                     mask(text)
                     took[size] = time.process_time() - started
