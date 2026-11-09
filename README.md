@@ -540,8 +540,9 @@ Known limits:
   after the lines above, or within a key is as long as the line above's, as an armour comment may hold any byte, so a
   comment or a label longer than a line's base64, or marks of changing length, hide no line of the key. Where more
   than one run on a line of a key's goes on from the lines above (another stream of base64 beside it, a second key,
-  random base64 or words as long), which is the key's is not known, and the whole run of lines is masked. Main shows
-  such a key; this only masks more.
+  random base64 or words as long), which is the key's is not known, and all from the key's header to the last run of
+  base64 on the last of those lines whose longest is 8 characters or more is masked. Main shows such a key; this only
+  masks more.
   Whether the words before a header on its decoded line make a sentence that quotes it is read from the few dozen
   bytes before it: a byte no text holds there starts a key where the words alone would quote it, and a space further
   back is not seen, so a header after a long word starts its key. This masks more.

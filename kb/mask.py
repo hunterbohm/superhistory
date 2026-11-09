@@ -1452,7 +1452,8 @@ def _marked_key_spans(text):
     from line to line, and an armour comment past ASCII decodes to no text. Where more than one run on a line goes
     on from the lines above (another stream of base64 beside a key's, a second key, random base64 or words as long),
     which is the key's is not known, so where a line read starts a key file's header with a piece of its word just
-    after, the whole run of lines is masked."""
+    after, all from there to the last run of base64 on the run's last line whose longest is 8 characters or more is
+    masked."""
     runs, run, at = [], [], 0
     for line in text.splitlines(True):
         end = at + len(line.rstrip(_BREAK_CHARACTERS))
@@ -1482,7 +1483,8 @@ def _marked_key_spans(text):
                     cut += [(a, b) for (line, start, end, line_end), k, keep in zip(lines, skip, kept)
                             for a, b in ((start if keep else line, start + k), (end, line_end)) if a < b]
     # and each run whose lines hold a piece of a key's word, read again as the base64 each line goes on; where more
-    # than one goes on on a line of a key's, which is its is not known, so the whole run of lines goes: fail closed
+    # than one goes on on a line of a key's, which is its is not known, so all from its header to the run's last line
+    # of base64 goes: fail closed
     chained, whole = [], []
     for run in runs if _KEY_PIECE.search(text) else ():
         if len(run) < 2 or not _KEY_PIECE.search(text, run[0][0], run[-1][3]):
@@ -1491,10 +1493,14 @@ def _marked_key_spans(text):
         read = [line for line in lines if line]
         joined = _joined(text, read, [0] * len(read))
         at = itertools.accumulate((end - start for _, start, end, _ in read), initial=0)
-        # where a line read starts a key file's header, a piece of its word just after
-        if unsure and any(text.startswith(_FILE_STARTS, start) and _KEY_PIECE.search(joined, i, i + 56)
-                          for i, (_, start, _, _) in zip(at, read)):
-            whole.append((run[0][0], run[-1][3]))
+        # from the first run read that starts a key file's header with a piece of its word just after, to the last run
+        # read or the last run on the last line whose longest is 8 characters or more, as a wrong pick can end a reading
+        header = next((start for i, (_, start, _, _) in zip(at, read)
+                       if text.startswith(_FILE_STARTS, start) and _KEY_PIECE.search(joined, i, i + 56)), None)
+        if unsure and header is not None:
+            ends = [[*_MARKED_BASE64.finditer(text, line, line_end)][-1].end() for line, start, end, line_end in run
+                    if end - start >= 8]
+            whole.append((header, max([read[-1][2]] + ends)))
         elif _ENCODED_KEY.search(joined):
             chained += [(a, b) for line, start, end, line_end in read for a, b in ((line, start), (end, line_end))
                         if a < b]
