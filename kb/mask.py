@@ -1624,15 +1624,16 @@ def _chained_key_lines(text, run, nth=0):
     they end in "/" or "+" and differ in length from line to line. A key's base64 decodes to its file's text, so
     each line is read as a run that decodes to ASCII after the lines above, past as many of the "/" and "+" that
     start it as that takes (the reader finds each key's word where it is, so a line read as written starts the lines
-    below afresh). Of the ways to read a run, one holding a key's word or starting as its file's header does comes
-    first, then one as long as the line above's, then one no longer (a key's last line is as long or shorter), then
-    the longest. Across a line's runs, one holding a key's word or header comes first, then one no longer than the
-    line above's, then the one nearest that line's column, as another stream of base64 as wide beside a key's
-    decodes to text after it too; where runs still tie, as two keys side by side do, the `nth` goes on. One under 8
-    characters goes on only from the line above and to the end of a key's base64, its padding or a line break. After
-    a line where none goes on, or one shorter than the line above or padded (a key's last), one goes on only where
-    it is 16 characters or more, or starts as a key file's header does, so a word that decodes to ASCII by chance
-    does not."""
+    below afresh). Within a key, a run as long as the line above's goes on whatever it decodes to, as an armour
+    comment may hold any byte. Of the ways to read a run, one holding a key's word or starting as its file's header
+    does comes first, then one that decodes, then one as long as the line above's, then one no longer (a key's last
+    line is as long or shorter), then the longest. Across a line's runs, one holding a key's word or header comes
+    first, then one no longer than the line above's, then the one nearest that line's column, as another stream of
+    base64 as wide beside a key's decodes to text after it too; where runs still tie, as two keys side by side do,
+    the `nth` goes on. One under 8 characters goes on only from the line above and to the end of a key's base64, its
+    padding or a line break. After a line where none goes on, or one shorter than the line above or padded (a key's
+    last), one goes on only where it is 16 characters or more, or starts as a key file's header does, so a word that
+    decodes to ASCII by chance does not."""
     lines, beside, most = [], [], 1
     carry, width, closed, column = "", 0, True, 0  # carry: the characters past the last whole group of those read
     for line, _, _, line_end in run:
@@ -1643,18 +1644,22 @@ def _chained_key_lines(text, run, nth=0):
                 piece = m.group()[k:]
                 if not piece:
                     break
-                read = _reads_on(carry, piece)
-                if read is None or (len(piece) < 16 and not any(start.startswith(piece[:13]) for start in _FILE_STARTS)
-                                    if closed else len(piece) < 8 and not (piece.endswith("=") or read[1])):
+                read, header = _reads_on(carry, piece), any(start.startswith(piece[:13]) for start in _FILE_STARTS)
+                decodes = read is not None
+                if not decodes and not closed and len(piece) == width:
+                    # within a key, a run as long as the line above's goes on whatever it decodes to
+                    read = ((carry + piece)[len(carry + piece) - len(carry + piece) % 4:], False)
+                elif not decodes or (len(piece) < 16 and not header if closed
+                                     else len(piece) < 8 and not (piece.endswith("=") or read[1])):
                     continue
                 fits = not width or len(piece) <= width  # a key's lines are as long as the line above's but its last
-                rank = (piece.startswith(_FILE_STARTS) or bool(_ENCODED_KEY.search(piece)), len(piece) == width, fits,
-                        0 if width and fits else len(piece), -k)
+                rank = (piece.startswith(_FILE_STARTS) or bool(_ENCODED_KEY.search(piece)), decodes,
+                        len(piece) == width, fits, 0 if width and fits else len(piece), -k)
                 if best is None or rank > best[0]:
                     best = (rank, (line, m.start() + k, m.end(), line_end), read[0])
             if best:
                 rank, pick, left = best
-                found.append(((rank[0], rank[2], -abs(pick[1] - line - column) if width else 0, rank[1], rank[3]), pick,
+                found.append(((rank[0], rank[3], -abs(pick[1] - line - column) if width else 0, rank[2], rank[4]), pick,
                               left))
         top = max((rank for rank, _, _ in found), default=None)
         tied = [(pick, left) for rank, pick, left in found if rank == top]
