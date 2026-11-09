@@ -3952,13 +3952,24 @@ class Base64ReviewTwentyFourthTest(unittest.TestCase):
                             self.assertIn("next paragraph", masked)
 
     # A key's base64 lines among other text on each: a line's number, as a listing writes it; code around each line;
-    # markup; table cells; a comment after each; a first line that names it. {n}: the line's number, {line}: its base64.
+    # markup; table cells; a comment after each; a label that changes from line to line, as a log's stream or node, a
+    # letter or a hex offset writes one, or on one line alone; a first line that names it. {n}: the line's number,
+    # {line}: its base64; the rest, around's.
     AROUND = {"cat -n": "{n:6}\t{line}", "numbered": "{n} | {line}", "concatenated": '  "{line}" +',
               "concatenated with escaped breaks": '  "{line}\\n" +', "continued": "{line}\\", "statement": "{line};",
               "list item": '  "{line}",', "one-column table": "| {line} |", "two-column table": "| {n} | {line} |",
               "markup": "<tr><td>{n}</td><td>{line}</td></tr>", "line break tag": "{line}<br>",
               "entity after": "{line}&amp;", "comment after": "{line}  # part {n}", "quote of a quote": "{quote}{line}",
-              "comment marks without a space": "//{line}", "a diff's": "+{line}"}
+              "comment marks without a space": "//{line}", "a diff's": "+{line}", "lettered": "{letter}) {line}",
+              "two streams": "{stream}: {line}", "nodes": "[{node}] {line}", "hex offsets": "{n:08x}: {line}",
+              "one line unlike the rest": "[main{odd}] {line}"}
+
+    @staticmethod
+    def around(form, n, line):
+        """`form` (AROUND) for line `n` of a key, whose base64 is `line`."""
+        return form.format(n=n, line=line, quote=("> ", ">> ")[n % 2], letter=chr(ord("a") + n % 26),
+                           stream=("stdout", "stderr")[n % 2], node=("node-a", "node-b", "worker")[n % 3],
+                           odd="-1" if n == 5 else "")
 
     def test_a_keys_lines_among_other_text_on_each_line_are_masked(self):
         import random
@@ -3971,10 +3982,9 @@ class Base64ReviewTwentyFourthTest(unittest.TestCase):
                         brk = ("\n", "\r\n")[i % 2]
                         data = key.replace(b"\n", brk.encode())
                         end = data.rindex(b"-") + 1
-                        lines = [form.format(n=n + 1, line=line, quote=("> ", ">> ")[n % 2])
-                                 for n, line in enumerate(encoded(data, width).split("\n"))]
+                        lines = [self.around(form, n + 1, line) for n, line in enumerate(encoded(data, width).split("\n"))]
                         lines[0] = first + lines[0].lstrip()
-                        words = [form.format(n=0, line="see /etc/ssl/private/walrus.pem", quote="> "), "notes"]
+                        words = [self.around(form, 0, "see /etc/ssl/private/walrus.pem"), "notes"]
                         text = brk.join(["Notes:"] + words + lines + words[::-1] + ["", "next paragraph"])
                         depth, older, i = i % 3, i // 3 % 2, i + 1
                         with self.subTest(shape=shape, first=first, key=name, width=width, depth=depth, older=older):
