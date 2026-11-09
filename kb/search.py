@@ -49,28 +49,31 @@ def fts_query(text):
     return " OR ".join(fts_terms(text))
 
 
-def _ranked(db, match, kinds, after, sources, n, before=None):
-    """Best-first row ids of these kinds, one per item, so one long session can't fill the list."""
+def _ranked(db, match, after, sources, n, before=None):
+    """Best-first row ids for the summary list (doc, segment and atom rows) and for the raw list, one per item in each,
+    so one long session can't fill a list. One full-text match feeds both: scoring every matching row is most of a
+    search's time."""
     best = db.execute("SELECT rowid, bm25(docs_fts, 4.0, 1.0) AS score FROM docs_fts WHERE docs_fts MATCH ? "
                       "ORDER BY score, rowid LIMIT ?", (match, TOP_ROWS + 1)).fetchall()
-    # Exact when the list fills from the best rows: an item with no row among them scores below every item with one.
+    # Exact when every list fills from the best rows: an item with no row among them scores below every item with one.
     # A tie across the cut would make "the best rows" ambiguous, so it counts as not filling.
     if len(best) <= TOP_ROWS or best[TOP_ROWS - 1][1] != best[TOP_ROWS][1]:
         # json_extract, not ->>, which needs SQLite 3.38 (Ubuntu 22.04's Python has 3.37).
         rows = "SELECT json_extract(value, '$[0]') AS id, json_extract(value, '$[1]') AS score FROM json_each(?)"
-        ids = _grouped(db, rows, json.dumps(best[:TOP_ROWS]), kinds, after, sources, n, before)
-        if len(best) <= TOP_ROWS or len(ids) >= n:
-            return ids
+        lists = _grouped(db, rows, json.dumps(best[:TOP_ROWS]), after, sources, n, before)
+        if len(best) <= TOP_ROWS or min(map(len, lists)) >= n:
+            return lists
     rows = "SELECT rowid AS id, bm25(docs_fts, 4.0, 1.0) AS score FROM docs_fts WHERE docs_fts MATCH ?"
-    return _grouped(db, rows, match, kinds, after, sources, n, before)
+    return _grouped(db, rows, match, after, sources, n, before)
 
 
-def _grouped(db, rows, rows_arg, kinds, after, sources, n, before):
-    """The best row of each item among `rows`, a query of (id, score) taking one argument, best first, ties by row id
-    so every run orders them the same."""
+def _grouped(db, rows, rows_arg, after, sources, n, before):
+    """The two lists from `rows`, a query of (id, score) taking one argument: the best row of each item, best first,
+    ties by row id so every run orders them the same. Each list keeps its own `n` places."""
+    kinds = ("doc",) + SUMMARY_KINDS + ("raw",)
     # CROSS JOIN keeps the rows first; otherwise SQLite may walk every doc and run the full-text match for each.
-    sql = (f"SELECT d.id, d.source, d.source_id, r.score FROM ({rows}) r CROSS JOIN docs d ON d.id = r.id "
-           f"WHERE d.kind IN ({','.join('?' * len(kinds))})")
+    sql = (f"SELECT d.id, d.source, d.source_id, d.kind = 'raw' AS raw, r.score FROM ({rows}) r "
+           f"CROSS JOIN docs d ON d.id = r.id WHERE d.kind IN ({','.join('?' * len(kinds))})")
     args = [rows_arg, *kinds]
     if after:
         sql += " AND d.ts >= ?"
@@ -81,10 +84,16 @@ def _grouped(db, rows, rows_arg, kinds, after, sources, n, before):
     if sources:
         sql += f" AND d.source IN ({','.join('?' * len(sources))})"
         args += list(sources)
-    sql = (f"WITH m AS MATERIALIZED ({sql}) SELECT id FROM (SELECT id, score, row_number() OVER "
-           f"(PARTITION BY source, source_id ORDER BY score, id) AS nth FROM m) WHERE nth = 1 ORDER BY score, id "
-           f"LIMIT ?")
-    return [rid for (rid,) in db.execute(sql, (*args, n))]
+    # One row per item before the limit: a session with hundreds of matching rows would otherwise take every slot.
+    # MATERIALIZED keeps bm25() inside the full-text query, the only place SQLite allows it.
+    sql = (f"WITH m AS MATERIALIZED ({sql}) SELECT id, raw FROM ("
+           f"SELECT id, raw, row_number() OVER (PARTITION BY raw ORDER BY score, id) AS place FROM ("
+           f"SELECT id, raw, score, row_number() OVER (PARTITION BY raw, source, source_id ORDER BY score, id) AS nth "
+           f"FROM m) WHERE nth = 1) WHERE place <= ? ORDER BY raw, place")
+    lists = ([], [])
+    for rid, raw in db.execute(sql, (*args, n)):
+        lists[raw].append(rid)
+    return lists
 
 
 def _stale_items(db, match, items):
@@ -170,8 +179,9 @@ def search(db, query, after=None, sources=(), limit=10, before=None, keep=None, 
         return []
     match = " OR ".join(terms)
     fused = {}
-    for kinds, weight in ((("doc",) + SUMMARY_KINDS, 1.0), (("raw",), RAW_WEIGHT)):
-        for rank, rid in enumerate(_ranked(db, match, kinds, after, tuple(sources), CANDIDATES, before), 1):
+    summary, raw = _ranked(db, match, after, tuple(sources), CANDIDATES, before)
+    for ids, weight in ((summary, 1.0), (raw, RAW_WEIGHT)):
+        for rank, rid in enumerate(ids, 1):
             fused[rid] = fused.get(rid, 0.0) + weight / (RRF_K + rank)
     if not fused:
         return []
