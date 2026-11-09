@@ -4122,6 +4122,46 @@ class Base64ReviewTwentyFourthTest(unittest.TestCase):
                         self.assertIn("next paragraph", masked)
                 i += 1  # so each form meets each depth and age
 
+    def test_a_pgp_keys_comment_lines_past_ascii_beside_random_base64_as_long_are_masked(self):
+        # A line of an armour comment past ASCII goes on only by its length, as random base64 beside it, as long once
+        # past a "/" or "+", does too, so the run nearest the column above was read for the key's: where that was the
+        # other, on sides that alternate or after a label of changing length, the key's lines after it showed.
+        import base64
+        import random
+        import textwrap
+        written, i = Base64ReviewNineteenFindingsTest.written, 0
+        r = random.Random(18)
+
+        def junk(size):
+            return base64.b64encode(r.randbytes(size)).decode()[:size]
+
+        for comment in ("caf\u00e9 " * 20, "\u65e5\u672c" * 40):
+            for encoding in ("utf-8", "latin-1"):
+                data = ReviewTenTest.block(comment).replace(comment.encode(), comment.encode(encoding, "replace"))
+                for whole, key in (("whole", data), ("cut short", data[:data.rindex(b"-----END")])):
+                    for width in (30, 64, 76):
+                        chunks = textwrap.wrap(base64.b64encode(key).decode(), width)
+                        forms = {
+                            "sides that alternate": lambda n, line: ("{} {}" if n % 2 else "{1} {0}").format(
+                                line, r.choice("/+") + junk(width)),
+                            "a label of changing length": lambda n, line: "{} {} {}".format(
+                                "q" * (width + 40 if n % 2 else 3), line, r.choice("/+") + junk(width)),
+                            "random labels and comments": lambda n, line: "[{}] {} // {}".format(
+                                junk(r.randrange(1, width + 60)), line, r.choice("/+") + junk(width)
+                                if r.random() < 0.4 else junk(r.randrange(1, width + 60))),
+                        }
+                        for form, shape in forms.items():
+                            brk = ("\n", "\r\n")[i % 2]
+                            lines = [shape(n, chunk) for n, chunk in enumerate(chunks)]
+                            text = brk.join(["Notes:"] + lines + ["", "next paragraph"])
+                            depth, older, i = i % 3, i // 3 % 2, i + 1
+                            with self.subTest(comment=comment[:6], encoding=encoding, whole=whole, width=width,
+                                              form=form, depth=depth, older=older):
+                                masked = Base64ReviewEighteenTest.masks(written(text, depth), older)
+                                self.assertEqual([chunk for chunk in chunks if len(chunk) >= 4 and chunk in masked], [])
+                                self.assertIn("next paragraph", masked)
+                        i += 1  # so each form meets each depth and age
+
     def test_a_keys_lines_beside_another_streams_lines_are_masked(self):
         # A key's base64 and another stream's of the same width side by side, as columns, a table or a diff put them:
         # their lines are as long and decode to text alike, so the other's could be read for the key's and the key
