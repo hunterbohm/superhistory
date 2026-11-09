@@ -1621,19 +1621,23 @@ def _chained_key_lines(text, run):
     holding six characters of a key's word, read on from the line above, comes first, then one starting as a key
     file's header does, so a key's header is read where another file's starts beside it; then one that decodes, then
     one as long as the line above's, then, where none above is read, the longest. One under 8 characters goes on
-    only from the line above and to the end of a key's base64, its padding or a line break. After a line where none
-    goes on, or one shorter than the line above or padded (a key's last), one goes on only where it is 16 characters
-    or more, or starts as a key file's header does, so a word that decodes to ASCII by chance does not."""
+    from the line above only to the end of a key's base64 (its padding or a line break), at the column the line
+    above's starts at, or where no other run on its line goes on and no padding before it ends a key, as a key cut
+    short may end in a line that short. Signs alone are no key's line: as a key's base64 they decode past ASCII.
+    After a line where none goes on, or one shorter than the line above or padded (a key's last), one goes on only
+    where it is 16 characters or more, or starts as a key file's header does, so a word that decodes to ASCII by
+    chance does not."""
     lines, unsure = [], False
     # carry: the characters past the last whole group of those read; tail: the last five read, as a key's word goes on
-    carry, width, closed, tail = "", 0, True, ""
+    carry, width, closed, tail, column = "", 0, True, "", None  # column: where the line above's run starts on it
     for line, _, _, line_end in run:
         found = []  # for each run on the line that goes on: (rank, its pick, what it leaves past its groups)
+        spare = None  # the first run under 8 characters that goes on, read where no other does
         for m in _MARKED_BASE64.finditer(text, line, line_end):
             signs, best = len(m.group()) - len(m.group().lstrip("+/")), None
             for k in range(max(0, signs - 3), signs + 1):
                 piece = m.group()[k:]
-                if not piece:
+                if not piece.strip("+/"):
                     break
                 read, header = _reads_on(carry, piece), any(start.startswith(piece[:13]) for start in _FILE_STARTS)
                 decodes = read is not None
@@ -1641,7 +1645,10 @@ def _chained_key_lines(text, run):
                     # within a key, a run as long as the line above's goes on whatever it decodes to
                     read = ((carry + piece)[len(carry + piece) - len(carry + piece) % 4:], False)
                 elif not decodes or (len(piece) < 16 and not header if closed
-                                     else len(piece) < 8 and not (piece.endswith("=") or read[1])):
+                                     else len(piece) < 8 and not (piece.endswith("=") or read[1]
+                                                                  or m.start() + k - line == column)):
+                    if decodes and not closed and not spare and not text[line:m.start()].lstrip().startswith("="):
+                        spare = ((), (line, m.start() + k, m.end(), line_end), read[0])
                     continue
                 rank = (bool(_KEY_PIECE.search(tail + piece)), piece.startswith(_FILE_STARTS), decodes,
                         len(piece) == width, 0 if width else len(piece), -k)
@@ -1649,6 +1656,8 @@ def _chained_key_lines(text, run):
                     best = (rank, (line, m.start() + k, m.end(), line_end), read[0])
             if best:
                 found.append(best)
+        if not found and spare:
+            found = [spare]
         if not found:
             lines.append(None)
             carry, closed, tail = "", True, ""
@@ -1658,6 +1667,7 @@ def _chained_key_lines(text, run):
         unsure = unsure or not closed and len(found) > 1 and text[pick[2] - 1] != "="  # padded, a key's last line
         closed = text[pick[2] - 1] == "=" or not closed and size < width
         lines.append(pick)
+        column = pick[1] - line
         carry, width, tail = "" if closed else carry, size, "" if closed else (tail + text[pick[1]:pick[2]])[-5:]
     return lines, unsure
 

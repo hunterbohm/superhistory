@@ -4208,6 +4208,48 @@ class Base64ReviewTwentyFourthTest(unittest.TestCase):
                                 self.assertIn("next paragraph", masked)
                         i += 1  # so each form meets each depth and age
 
+    def test_a_key_cut_short_to_a_last_line_under_8_characters_beside_other_base64_is_masked(self):
+        # A run under 8 characters went on from the line above only to a key's padding or a line break, so a key cut
+        # short to a last line of 4 to 7 characters showed it: under the lines' own mark, beside random base64 that went
+        # on in its place, or under another lead than the lines above, where the masked lines ended at the last long one
+        # (and a mark of "/" alone was read for it). Main's reader shows the 1 to 3 characters past a key's last whole
+        # group of four, bare lines too, and GnuPG's key from the control byte in its comment: neither is a line-mark
+        # case.
+        import base64
+        import random
+        import re
+        import textwrap
+        written, i = Base64ReviewNineteenFindingsTest.written, 0
+        r = random.Random(20)
+
+        def junk(n):
+            return base64.b64encode(r.randbytes(n)).decode()[:n]
+
+        for name, data in self.key_files(r).items():
+            if name == "gnupg":
+                continue
+            code = base64.b64encode(data[:data.rindex(b"-----END" if b"-----END" in data else b"---- END")]).decode()
+            for width in (30, 50, 64):
+                for tail in (4, 5, 6, 7):
+                    chunks = textwrap.wrap(code[:(len(code) - 8) // width * width + tail], width)
+                    last = len(chunks) - 1
+                    forms = {"random beside": [f"// {c} // {junk(r.randrange(1, width + 40))}" for c in chunks],
+                             "as long past a sign": [f"// {c} // {r.choice('/+')}{junk(width)}" for c in chunks],
+                             "beside, then marked": [f"{r.choice('/+')}{junk(width)} {c}" if n < last else f"// {c}"
+                                                     for n, c in enumerate(chunks)],
+                             "beside, then bare": [f"{r.choice('/+')}{junk(width)} {c}" if n < last else c
+                                                   for n, c in enumerate(chunks)]}
+                    for form, lines in forms.items():
+                        brk = ("\n", "\r\n")[i % 2]
+                        text = brk.join(["Notes:"] + lines + ["", "next paragraph"])
+                        depth, older, i = i % 3, i // 3 % 2, i + 1
+                        with self.subTest(key=name, width=width, tail=tail, form=form, depth=depth, older=older):
+                            masked = Base64ReviewEighteenTest.masks(written(text, depth), older)
+                            # a line of the key, whole, as written at any depth
+                            self.assertEqual([c for c in chunks if re.search(
+                                rf"(?:(?<![A-Za-z0-9+/])|(?<=\\[nr])){re.escape(c)}(?![A-Za-z0-9+/=])", masked)], [])
+                            self.assertIn("next paragraph", masked)
+
     def test_a_keys_lines_beside_another_streams_lines_are_masked(self):
         # A key's base64 and another stream's of the same width side by side, as columns, a table or a diff put them:
         # their lines are as long and decode to text alike, so the other's could be read for the key's and the key
