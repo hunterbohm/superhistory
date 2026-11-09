@@ -1628,12 +1628,13 @@ def _chained_key_lines(text, run, nth=0):
     comment may hold any byte. Of the ways to read a run, one holding a key's word or starting as its file's header
     does comes first, then one that decodes, then one as long as the line above's, then one no longer (a key's last
     line is as long or shorter), then the longest. Across a line's runs, one holding a key's word or header comes
-    first, then one no longer than the line above's, then the one nearest that line's column, as another stream of
-    base64 as wide beside a key's decodes to text after it too; where runs still tie, as two keys side by side do,
-    the `nth` goes on. One under 8 characters goes on only from the line above and to the end of a key's base64, its
-    padding or a line break. After a line where none goes on, or one shorter than the line above or padded (a key's
-    last), one goes on only where it is 16 characters or more, or starts as a key file's header does, so a word that
-    decodes to ASCII by chance does not."""
+    first, then one no longer than the line above's, then one that decodes, so text beside a key's line that is as
+    long by chance does not win it, then the one nearest that line's column, as another stream of base64 as wide
+    beside a key's decodes to text after it too; where runs still tie, as two keys side by side do, the `nth` goes
+    on. One under 8 characters goes on only from the line above and to the end of a key's base64, its padding or a
+    line break. After a line where none goes on, or one shorter than the line above or padded (a key's last), one
+    goes on only where it is 16 characters or more, or starts as a key file's header does, so a word that decodes to
+    ASCII by chance does not."""
     lines, beside, most = [], [], 1
     carry, width, closed, column = "", 0, True, 0  # carry: the characters past the last whole group of those read
     for line, _, _, line_end in run:
@@ -1659,8 +1660,8 @@ def _chained_key_lines(text, run, nth=0):
                     best = (rank, (line, m.start() + k, m.end(), line_end), read[0])
             if best:
                 rank, pick, left = best
-                found.append(((rank[0], rank[3], -abs(pick[1] - line - column) if width else 0, rank[2], rank[4]), pick,
-                              left))
+                found.append(((rank[0], rank[3], rank[1], -abs(pick[1] - line - column) if width else 0, rank[2],
+                               rank[4]), pick, left))
         top = max((rank for rank, _, _ in found), default=None)
         tied = [(pick, left) for rank, pick, left in found if rank == top]
         if not tied:
