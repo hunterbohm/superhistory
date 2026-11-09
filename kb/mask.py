@@ -3,6 +3,7 @@ import base64
 import bisect
 import calendar
 import codecs
+import collections
 import contextlib
 import contextvars
 import functools
@@ -1433,9 +1434,9 @@ def _marked_key_spans(text):
     that each hold base64 (_MARKED_BASE64, the longest on its line, the first of the longest), where that base64,
     joined, holds a key's word, each line is read as its base64 alone, its line break kept, and the rest of `text` as
     written. A mark can end in base64's own "/" or "+" ("//", a diff's "+"), which then reads as the line's base64:
-    where lines with one mark each start with them, a second reading leaves out those they all start with too. The
-    first line of a stream that starts with text, as a key file does, starts with neither, so none of them is the
-    key's."""
+    over lines one after another whose base64 starts with them, a second reading leaves out as many of them on each
+    as most of those lines start with, or fewer where a line starts with fewer, so a line of the key whose own base64
+    starts with one keeps it, and a line of other text among them changes nothing for the rest."""
     runs, run, at = [], [], 0
     for line in text.splitlines(True):
         end = at + len(line.rstrip(_BREAK_CHARACTERS))
@@ -1455,10 +1456,11 @@ def _marked_key_spans(text):
         if len(run) < 2:
             continue
         past = []
-        for _, lines in itertools.groupby(run, lambda line: (text[line[0]:line[1]], text[line[1]] in "+/")):
-            lines = list(lines)
-            signs = os.path.commonprefix([text[start:end] for _, start, end, _ in lines]) if len(lines) > 1 else ""
-            past += [len(signs) - len(signs.lstrip("+/"))] * len(lines)
+        for signed, lines in itertools.groupby(run, lambda line: text[line[1]] in "+/"):
+            signs = [len(text[start:end]) - len(text[start:end].lstrip("+/")) for _, start, end, _ in lines]
+            counts = collections.Counter(signs)
+            most = min(counts, key=lambda k: (-counts[k], k)) if signed and len(signs) > 1 else 0
+            past += [min(k, most) for k in signs]
         for cut, skip in zip(cuts, ([0] * len(run), past)):
             if (cut is cuts[0] or any(skip)) and _ENCODED_KEY.search(
                     "".join(text[start + k:end] for (_, start, end, _), k in zip(run, skip))):
