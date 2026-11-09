@@ -530,8 +530,10 @@ Known limits:
   "-- ", "; ", "* ", "| ", a diff's "+", a quote character, written, escaped or as a web page's entity, once or
   more), after a line's number, inside code or a table's cells, or before a comment. In a run of lines that each hold
   base64, where the longest run of it on each line, joined, holds a key's word, each line is read as that run alone,
-  so text on those lines that the key's base64 then spans is masked with it. Main shows such a key; this only masks
-  more. Whether the words before a header on its decoded line make a
+  so text on those lines that the key's base64 then spans is masked with it. Words before a line's run that neither
+  line next to it has before its own stay ("next " in "next steps"), so a line of words after a key cut short is no
+  line of it; a last line shorter than a word after it is read from where its neighbours' marks end. Main shows such
+  a key; this only masks more. Whether the words before a header on its decoded line make a
   sentence that quotes it is read from the few dozen bytes before it: a byte no text holds there starts a key where
   the words alone would quote it, and a space further back is not seen, so a header after a long word starts its key.
   This masks more.

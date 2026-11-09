@@ -1432,8 +1432,8 @@ def _marked_key_spans(text):
     or as a web page's entity, once or more), a line's number, code, markup or a table's cells around it, or a comment
     after it, any of which ends the block on its line where _written_key_spans reads one. In each run of two lines or more
     that each hold base64 (_MARKED_BASE64, the longest on its line, the first of the longest), where that base64,
-    joined, holds a key's word, each line is read as its base64 alone, its line break kept, and the rest of `text` as
-    written. A mark can end in base64's own "/" or "+" ("//", a diff's "+"), which then reads as the line's base64:
+    joined, holds a key's word, each line is read as its base64 alone, its line break kept, but for words before it
+    that neither line next to it shares (_key_lines), and the rest of `text` as written. A mark can end in base64's own "/" or "+" ("//", a diff's "+"), which then reads as the line's base64:
     over lines one after another whose base64 starts with them, a second reading leaves out as many of them on each
     as most of those lines start with, or fewer where a line starts with fewer, so a line of the key whose own base64
     starts with one keeps it, and a line of other text among them changes nothing for the rest."""
@@ -1453,20 +1453,89 @@ def _marked_key_spans(text):
     runs.append(run)
     cuts = ([], [])  # what each view leaves out: around each line's base64, and in the second, "/" and "+" before it
     for run in runs:
-        if len(run) < 2:
+        if len(run) < 2 or not any(_ENCODED_KEY.search(_joined(text, run, skip))
+                                   for skip in ([0] * len(run), _signs_past(text, run))):
             continue
-        past = []
-        for signed, lines in itertools.groupby(run, lambda line: text[line[1]] in "+/"):
-            signs = [len(text[start:end]) - len(text[start:end].lstrip("+/")) for _, start, end, _ in lines]
-            counts = collections.Counter(signs)
-            most = min(counts, key=lambda k: (-counts[k], k)) if signed and len(signs) > 1 else 0
-            past += [min(k, most) for k in signs]
-        for cut, skip in zip(cuts, ([0] * len(run), past)):
-            if (cut is cuts[0] or any(skip)) and _ENCODED_KEY.search(
-                    "".join(text[start + k:end] for (_, start, end, _), k in zip(run, skip))):
-                cut += [(a, b) for (line, start, end, line_end), k in zip(run, skip)
-                        for a, b in ((line, start + k), (end, line_end)) if a < b]
+        run, kept = _key_lines(text, run)
+        for cut, skip in zip(cuts, ([0] * len(run), _signs_past(text, run))):
+            if (cut is cuts[0] or any(skip)) and _ENCODED_KEY.search(_joined(text, run, skip)):
+                cut += [(a, b) for (line, start, end, line_end), k, keep in zip(run, skip, kept)
+                        for a, b in ((start if keep else line, start + k), (end, line_end)) if a < b]
     return [span for cut in cuts if cut for span in _cut_view_spans(text, cut)]
+
+
+def _joined(text, run, skip):
+    """The base64 of each line of `run` (_marked_key_spans) joined, without the first `skip` characters of each."""
+    return "".join(text[start + k:end] for (_, start, end, _), k in zip(run, skip))
+
+
+def _signs_past(text, run):
+    """For each line of `run` (_marked_key_spans), how many of the "/" and "+" that start its base64 the second reading
+    leaves out: over lines one after another whose base64 starts with them, as many as most of those lines start with,
+    or fewer where a line starts with fewer."""
+    past = []
+    for signed, lines in itertools.groupby(run, lambda line: text[line[1]] in "+/"):
+        signs = [len(text[start:end]) - len(text[start:end].lstrip("+/")) for _, start, end, _ in lines]
+        counts = collections.Counter(signs)
+        most = min(counts, key=lambda k: (-counts[k], k)) if signed and len(signs) > 1 else 0
+        past += [min(k, most) for k in signs]
+    return past
+
+
+def _key_lines(text, run):
+    """The lines of `run` (_marked_key_spans) to read, each the (line, start, end, line_end) of the base64 that is its
+    own, and for each whether the text before that stays. Text before a line's longest run of base64 that holds a
+    letter or a digit, where neither line next to it has text shaped the same before its own (_lead_shape: not a
+    line's number, "<td>" or "&quot;"), stays ("next " before "steps", "ca.crt: " before "none"), so a line of words
+    after a key cut short, which reads on to its block's end, is no line of it. But after text shaped as a line next
+    to it has before its own, the run there is the line's, and that text goes, where what follows it on its line holds
+    no letter or digit, starts as what follows theirs does, or ends a line as _WRAPPED_LINE reads one: a key's last
+    line, shorter than a word after it ("> Cg  # part 20",
+    '> Cg", "note": "rotate after the review"}')."""
+    leads = [_lead_shape(text[line:start]) for line, start, _, _ in run]
+    tails = [_lead_shape(text[end:line_end]) for _, _, end, line_end in run]
+    lines, kept = [], []
+    for i, (line, start, end, line_end) in enumerate(run):
+        near = leads[max(i - 1, 0):i] + leads[i + 1:i + 2]
+        if _WORDED.search(text, line, start) and leads[i] not in near:
+            own = _run_after(text, line, line_end, near, tails[max(i - 1, 0):i] + tails[i + 1:i + 2])
+            lines.append(own or run[i])
+            kept.append(own is None)
+        else:
+            lines.append(run[i])
+            kept.append(False)
+    return lines, kept
+
+
+def _run_after(text, line, line_end, leads, tails):
+    """The (line, start, end, line_end) of the run of base64 on the line from `line` to `line_end` that comes right after
+    text shaped as one of `leads` (_lead_shape), where what follows it on its line holds no letter or digit, starts
+    shaped as one of `tails`, or ends a line as _WRAPPED_LINE reads one; None where none does. The shape before each run is
+    matched on from where the one before it left off, each piece once, as each run starts after a character that is
+    no base64, so the line is read once."""
+    at, last = [0] * len(leads), line  # how much of each of `leads` the text so far matches; -1: it does not
+    for m in _MARKED_BASE64.finditer(text, line, line_end):
+        piece, last = _lead_shape(text[last:m.start()]), m.start()
+        at = [k + len(piece) if k >= 0 and lead.startswith(piece, k) else -1 for lead, k in zip(leads, at)]
+        if max(at) < 0:
+            return None
+        if any(k == len(lead) for lead, k in zip(leads, at)) and (
+                not _WORDED.search(text, m.end(), line_end) or _ENDS_A_LINE.match(text, m.end(), line_end)
+                or any(tail and _lead_shape(text[m.end():line_end]).startswith(tail) for tail in tails)):
+            return line, m.start(), m.end(), line_end
+    return None
+
+
+# A letter or a digit; and a run of digits or of spaces, which a line's number or its indentation varies by.
+_WORDED = re.compile(r"[^\W_]")
+_DIGITS_OR_SPACES = re.compile(r"(\d+)|\s+")
+# What ends a line of a block where _WRAPPED_LINE reads one: a line break, a quote, a tag or the text's end.
+_ENDS_A_LINE = re.compile(rf"(?:\r|{_SPACING})*(?:{_BREAK}|{_QUOTE_MARK}|<|\Z)")
+
+
+def _lead_shape(lead):
+    """`lead` with each run of digits as one digit and each run of spaces as one space."""
+    return _DIGITS_OR_SPACES.sub(lambda m: "0" if m.group(1) else " ", lead)
 
 
 def _cut_view_spans(text, cut):
