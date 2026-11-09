@@ -3982,6 +3982,39 @@ class Base64ReviewTwentyFourthTest(unittest.TestCase):
                             self.assertEqual([k for k in self.lines_within(data, width, 0, end) if k in masked], [])
                             self.assertIn("next paragraph", masked)
 
+    def test_a_marked_key_cut_short_goes_to_its_last_line_and_the_words_after_it_stay(self):
+        # A key with no footer reads on to its block's end. Read as their longest run of base64 alone, a line of words
+        # after it ("next steps", as "steps") and a JSON field after its last line (as "review") were lines of it, and
+        # the words went with it; its last line, shorter than a word after it, must go all the same.
+        import base64
+        import json
+        import random
+        import textwrap
+        der = made_up_private_key(random.Random(12))
+        body = "\n".join(textwrap.wrap(base64.b64encode(der).decode(), 64))
+        files = {"cut short": f"-----BEGIN PRIVATE KEY-----\n{body}\n".encode(),
+                 "whole": f"-----BEGIN PRIVATE KEY-----\n{body}\n-----END PRIVATE KEY-----\n".encode()}
+        forms = ("> {line}", "{line}", "{line}  # part {n}", "{n:6}\t{line}", '  "{line}" +', "| {n} | {line} |",
+                 "//{line}", "+{line}", "&quot;{line}&quot;", "<td>{line}</td>")
+        i = 0
+        for name, data in files.items():
+            for form in forms:
+                for width in range(32, 101, 6):
+                    chunks = textwrap.wrap(base64.b64encode(data).decode(), width)
+                    lines = [form.format(n=n + 1, line=chunk) for n, chunk in enumerate(chunks)]
+                    lines[0] = ("", "key: ", "const key = ")[i % 3] + lines[0].lstrip()
+                    i += 1
+                    block = "\n".join(lines)
+                    for after, text, kept in (("words", block + "\nnext steps", "next steps"),
+                                              ("marked words", block + "\n> next steps", "next steps"),
+                                              ("comment", block + "  # end of key\nnext steps", "next steps"),
+                                              ("JSON", json.dumps({"k": block, "note": "rotate after the review"}),
+                                               '"note": "rotate after the review"')):
+                        with self.subTest(key=name, form=form, width=width, after=after):
+                            masked = mask("Plan\n" + text)
+                            self.assertEqual([chunk for chunk in chunks if len(chunk) >= 4 and chunk in masked], [])
+                            self.assertIn(kept, masked)
+
     @classmethod
     def marked_texts(cls):
         """Prose and code, made up and holding no private key, whose lines carry the marks above or other text around
