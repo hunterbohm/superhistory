@@ -4068,6 +4068,34 @@ class Base64ReviewTwentyFourthTest(unittest.TestCase):
                             self.assertIn("next paragraph", masked)
                 i += 1  # so each junk and form meets each depth and age
 
+    def test_a_pgp_keys_lines_with_a_comment_past_ascii_beside_longer_text_are_masked(self):
+        # Its comment's lines decode to letters past ASCII, as UTF-8 or as bytes of another encoding, so the lines
+        # around them were read as each line's base64 that decodes to ASCII, the comment's lines not at all, and with
+        # longer text beside each line (letters, hex, or base64 of words, which decodes to ASCII), a line of the key's
+        # body after the comment showed.
+        import base64
+        import textwrap
+        written, i = Base64ReviewNineteenFindingsTest.written, 0
+        words = base64.b64encode(b"rotate the ledger after the review, then move the plan to approved. " * 9).decode()
+        for comment in ("caf\u00e9 " * 20, "\u00fcbung \u2013 test " * 9, "\u65e5\u672c" * 40):
+            for encoding in ("utf-8", "latin-1"):
+                data = ReviewTenTest.block(comment).replace(comment.encode(), comment.encode(encoding, "replace"))
+                for whole, key in (("whole", data), ("cut short", data[:data.rindex(b"-----END")])):
+                    for width in (30, 64, 76):
+                        chunks = textwrap.wrap(base64.b64encode(key).decode(), width)
+                        for form in ("{line}  # " + "a" * 80, "a" * 90 + " {line}",
+                                     "[" + "f0" * 40 + "] {line}  // " + "x" * 90, "{words} {line}"):
+                            brk = ("\n", "\r\n")[i % 2]
+                            text = brk.join(["Notes:"] + [form.format(line=chunk, words=words[n * 7 % 40:][
+                                :width + 1 + n * 13 % 50]) for n, chunk in enumerate(chunks)] + ["", "next paragraph"])
+                            depth, older, i = i % 3, i // 3 % 2, i + 1
+                            with self.subTest(comment=comment[:6], encoding=encoding, whole=whole, width=width,
+                                              form=form[:12], depth=depth, older=older):
+                                masked = Base64ReviewEighteenTest.masks(written(text, depth), older)
+                                self.assertEqual([chunk for chunk in chunks if len(chunk) >= 4 and chunk in masked], [])
+                                self.assertIn("next paragraph", masked)
+                        i += 1  # so each form meets each depth and age
+
     def test_a_keys_lines_beside_another_streams_lines_are_masked(self):
         # A key's base64 and another stream's of the same width side by side, as columns, a table or a diff put them:
         # their lines are as long and decode to text alike, so the other's could be read for the key's and the key
