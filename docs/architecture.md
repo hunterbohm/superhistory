@@ -163,9 +163,7 @@ it): in a run of lines that each hold base64, where the longest run on each line
 is read again as that run alone, but for words before it on the lines after the last that carries a mark, and where
 a line's run lies after its longest, again with that line's longest; and where the lines hold a piece of a key's
 word, again with each line's run that decodes, after the lines above, to text (or within a key is as long as the line
-above's), nearest the line above's column, each
-of runs that tie read in a view of its own and the other runs on a line it masks masked with it, and the whole run of
-lines masked where a line's run goes on only by its length beside another. It is found
+above's), and the whole run of lines masked where more than one run on a line of a key's goes on. It is found
 where its encoded "PRIVATE KEY" or "SECRET KEY" decodes inside the key's header or footer on a line of its own, so a field's name
 or a sentence that names one, or quotes a header, stays. It is read once over the text as written, and again with the
 characters a reader does not see taken out, and hidden over what mask()'s passes leave: no reading reads its
