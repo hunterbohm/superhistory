@@ -1434,10 +1434,12 @@ def _marked_key_spans(text):
     two lines or more that each hold base64 (_MARKED_BASE64, the longest on its line, the first of the longest), where
     that base64, joined, holds a key's word, each line is read as its base64 alone (_key_lines: which run is its, and
     the words that stay before it on the lines after the run's last mark), its line break kept, and the rest of `text`
-    as written. A mark can end in base64's own "/" or "+" ("//", a diff's "+"), which then reads as the line's base64:
-    over lines one after another whose base64 starts with them, a second reading leaves out as many of them on each
-    as most of those lines start with, or fewer where a line starts with fewer, so a line of the key whose own base64
-    starts with one keeps it, and a line of other text among them changes nothing for the rest."""
+    as written. Where that picks a run after a line's longest, as a line's own base64 can read as the word of a mark
+    that words next to it carry, the run is read again with that line's longest. A mark can end in base64's own "/" or
+    "+" ("//", a diff's "+"), which then reads as the line's base64: over lines one after another whose base64 starts
+    with them, a second reading leaves out as many of them on each as most of those lines start with, or fewer where a
+    line starts with fewer, so a line of the key whose own base64 starts with one keeps it, and a line of other text
+    among them changes nothing for the rest."""
     runs, run, at = [], [], 0
     for line in text.splitlines(True):
         end = at + len(line.rstrip(_BREAK_CHARACTERS))
@@ -1452,16 +1454,20 @@ def _marked_key_spans(text):
             run = []
         at += len(line)
     runs.append(run)
-    cuts = ([], [])  # what each view leaves out: around each line's base64, and in the second, "/" and "+" before it
+    # what each view leaves out: around each line's base64 as _key_lines picks it, or the line's longest where it picks
+    # one after that, and in the second of each, "/" and "+" before it
+    cuts = ([], [], [], [])
     for run in runs:
         if len(run) < 2 or not any(_ENCODED_KEY.search(_joined(text, run, skip))
                                    for skip in ([0] * len(run), _signs_past(text, run))):
             continue
-        run, kept = _key_lines(text, run)
-        for cut, skip in zip(cuts, ([0] * len(run), _signs_past(text, run))):
-            if (cut is cuts[0] or any(skip)) and _ENCODED_KEY.search(_joined(text, run, skip)):
-                cut += [(a, b) for (line, start, end, line_end), k, keep in zip(run, skip, kept)
-                        for a, b in ((start if keep else line, start + k), (end, line_end)) if a < b]
+        picked, kept = _key_lines(text, run)
+        longest = [own if pick[1] >= own[2] else pick for own, pick in zip(run, picked)]
+        for lines, views in ((picked, cuts[:2]), (longest, cuts[2:] if longest != picked else ())):
+            for cut, skip in zip(views, ([0] * len(lines), _signs_past(text, lines))):
+                if (cut is views[0] or any(skip)) and _ENCODED_KEY.search(_joined(text, lines, skip)):
+                    cut += [(a, b) for (line, start, end, line_end), k, keep in zip(lines, skip, kept)
+                            for a, b in ((start if keep else line, start + k), (end, line_end)) if a < b]
     return [span for cut in cuts if cut for span in _cut_view_spans(text, cut)]
 
 

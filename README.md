@@ -534,10 +534,11 @@ Known limits:
   that carries a mark (no word before its run, or words shaped as a line next to it has, a log's stream, a node, a
   letter or a number alike) do words before a line's run stay, so a line of words after a key cut short ("next
   steps") is no line of it; a key's last line, shorter than a word on it, is read from where its neighbour's mark
-  ends. Main shows such a key; this only masks more. Whether the words before a header on its decoded line make a
-  sentence that quotes it is read from the few dozen bytes before it: a byte no text holds there starts a key where
-  the words alone would quote it, and a space further back is not seen, so a header after a long word starts its key.
-  This masks more.
+  ends. Where a line is read from a run after its longest, as a line of the key can read as the word of a mark that
+  words beside it carry, the lines are read again with that line's longest. Main shows such a key; this only masks
+  more. Whether the words before a header on its decoded line make a sentence that quotes it is read from the few
+  dozen bytes before it: a byte no text holds there starts a key where the words alone would quote it, and a space
+  further back is not seen, so a header after a long word starts its key. This masks more.
   A header or footer whose words before "PRIVATE KEY" run past 200 bytes, far past any a key tool writes, is read as
   none, so a key encoded with one shows, as on main.
 - A lone piece of a private key's base64 with neither header nor footer shows, as on main, unless a key's rest
