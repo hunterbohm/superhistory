@@ -161,10 +161,11 @@ the lines that wrap it, their breaks plain or escaped at any depth, as JSON in J
 each hold its base64 among other text (a quote's or a comment's mark, a line's number, code or a table's cells around
 it): in a run of lines that each hold base64, where the longest run on each line, joined, holds a key's word, each line
 is read again as that run alone, but for words before it on the lines after the last that carries a mark, and where
-a line's run lies after its longest, again with that line's longest; and where the lines hold a piece of a key's
-word, again with each line's run that decodes, after the lines above, to text (or within a key is as long as the line
-above's), and all from the key's header to the run's last line of base64 masked where more than one run on a line of a
-key's goes on. It is found
+a line's run lies after its longest, again with that line's longest; and in every run of two lines or more, again with
+each line's run that decodes, after the lines above, to text (or within a key is as long as the line above's, or holds
+a key file's header), and all from the key's header to the run's last line of base64 masked where more than one run on
+a line of a key's goes on, or, on lines that hold other text, one goes on after a key's base64 ended before its
+footer. It is found
 where its encoded "PRIVATE KEY" or "SECRET KEY" decodes inside the key's header or footer on a line of its own, so a field's name
 or a sentence that names one, or quotes a header, stays. It is read once over the text as written, and again with the
 characters a reader does not see taken out, and hidden over what mask()'s passes leave: no reading reads its

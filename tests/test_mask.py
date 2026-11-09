@@ -4464,6 +4464,87 @@ class Base64ReviewTwentyFourthTest(unittest.TestCase):
                     # four times the line
                     self.assertLess(took[1 << 19], 8 * max(took[1 << 17], 0.01), took)
 
+    def test_a_padded_value_beside_or_between_a_keys_lines_is_masked_with_them(self):
+        # A padded run read in place of one of a key's lines, beside it or on a line of its own between two of them,
+        # ended the key's base64 there, so a reading found no doubt; the key's lines after it start inside a character
+        # of its armour comment, past ASCII, so none decoded alone and they showed. A key's base64 that ends before its
+        # footer with more read after it is masked from its header on.
+        import base64
+        import textwrap
+        written, i = Base64ReviewNineteenFindingsTest.written, 0
+        for comment in ("caf\u00e9 " * 20, "\u00fcbung \u2013 test " * 6, "\u65e5\u672c " * 20, "plain words " * 8):
+            for cut in (True, False):
+                data = ReviewTenTest.block(comment)
+                data = data[:data.rindex(b"-----END")] if cut else data
+                for width in (64, 76):
+                    chunks = textwrap.wrap(base64.b64encode(data).decode(), width)
+                    for size in (10, 31, 46, 47):  # padded with "==" or "=", as long as a line or shorter
+                        value = base64.b64encode(b"b" * size).decode()
+                        for where in ("after", "before", "own line"):
+                            for at in (1, len(chunks) // 2):
+                                lines = []
+                                for n, chunk in enumerate(chunks):
+                                    line = chunk + " # " + "a" * 80
+                                    lines.append(value + " " + line if n == at and where == "before"
+                                                 else line + " " + value if n == at and where == "after" else line)
+                                    if n == at and where == "own line":
+                                        lines.append(value + " # " + "a" * 80)
+                                text = "\n".join(["Notes:"] + lines + ["", "next paragraph"])
+                                depth, older, i = i % 3, i // 3 % 2, i + 1
+                                with self.subTest(comment=comment[:6], cut=cut, width=width, size=size, where=where,
+                                                  at=at, depth=depth, older=older):
+                                    masked = Base64ReviewEighteenTest.masks(written(text, depth), older)
+                                    self.assertEqual([c for c in chunks if len(c) >= 8 and c in masked], [])
+                                    self.assertIn("next paragraph", masked)
+
+    def test_a_key_file_after_bytes_that_move_its_header_into_a_line_is_masked(self):
+        # The doubt over which run on a line is a key's masked from a key file's header only where a line's run
+        # starts with it; bytes before the file (a line break, a byte order mark, a label) move it inside a run, so
+        # beside another stream's lines and under a comment after each line, the key's lines showed, on main too.
+        # GnuPG's key, from the control byte in its comment on, is main's reader's own gap.
+        import base64
+        import random
+        import textwrap
+        r = random.Random(31)
+        keys = {name: data for name, data in self.key_files(r).items() if name != "gnupg"}
+        keys["pgp caf\u00e9"] = ReviewTenTest.block("caf\u00e9 " * 20)
+        for name, data in keys.items():
+            for cut in (True, False):
+                body = data[:data.rindex(b"-----END" if b"-----END" in data else b"---- END")] if cut else data
+                for prefix in (b"\n", b"\xef\xbb\xbf", b"key:\n", b"  "):
+                    for width in (64, 76):
+                        chunks = textwrap.wrap(base64.b64encode(prefix + body).decode(), width)
+                        for left in ("AIB4" * (width // 4), base64.b64encode(r.randbytes(width)).decode()[:width]):
+                            text = "\n".join(["Notes:"] + [f"{left} | {c} # " + "a" * 80 for c in chunks]
+                                             + ["", "next paragraph"])
+                            with self.subTest(key=name, cut=cut, prefix=prefix, width=width, left=left[:4]):
+                                masked = mask(text)
+                                self.assertEqual([c for c in chunks if len(c) >= 8 and c in masked], [])
+                                self.assertIn("next paragraph", masked)
+
+    def test_a_key_wrapped_narrower_than_six_characters_under_a_comment_is_masked(self):
+        # Lines were read again as the base64 each goes on only where the text held six characters of a key's word on
+        # one line, and a key wrapped at five characters or fewer holds none, so under a comment after each line it
+        # showed, on main too. The last group of four, the 1 to 3 bytes that end the footer ("\n", "-\n"), is no
+        # key's. GnuPG's key, whose last line at width 1 is its padding alone and no run, reads as cut short, and
+        # main's reader shows such a key from the control byte in its comment on: its own gap.
+        import base64
+        import random
+        import textwrap
+        for name, data in self.key_files(random.Random(33)).items():
+            if name == "gnupg":
+                continue
+            code = base64.b64encode(data).decode()
+            for width in range(1, 13):
+                chunks = textwrap.wrap(code, width)
+                lines = [f"{c} # note {n} " + "a" * 80 for n, c in enumerate(chunks)]
+                with self.subTest(key=name, width=width):
+                    masked = mask("\n".join(["Notes:"] + lines + ["", "next paragraph"]))
+                    kept = set(masked.split("\n"))
+                    self.assertEqual([n for n, line in enumerate(lines) if line in kept and n * width < len(code) - 4],
+                                     [])
+                    self.assertIn("next paragraph", masked)
+
     def test_horizontal_space_and_line_breaks_are_every_one_python_reads(self):
         import re
         from kb import mask as masking
