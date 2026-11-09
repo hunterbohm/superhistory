@@ -526,8 +526,12 @@ Known limits:
   placeholder, a key's body on the placeholder's own line followed by words ("[masked] MC4C... notes deploy") shows,
   as on main. In a row an older Superhistory stored,
   an OpenSSH private key's private section, re-encoded alone after a placeholder, reads as public material and shows.
-  Lines that each start with the same quote or comment mark ("> ", "# ", "// ", "-- ", "; ", "* ", "| ", a quote
-  character, written, escaped or as a web page's entity) are read as no block, so a key encoded in them shows, as on main. Whether the words before a header on its decoded line make a
+  A key encoded in lines that each hold its base64 among other text is masked too: after a mark ("> ", "# ", "// ",
+  "-- ", "; ", "* ", "| ", a diff's "+", a quote character, written, escaped or as a web page's entity, once or
+  more), after a line's number, inside code or a table's cells, or before a comment. In a run of lines that each hold
+  base64, where the longest run of it on each line, joined, holds a key's word, each line is read as that run alone,
+  so text on those lines that the key's base64 then spans is masked with it. Main shows such a key; this only masks
+  more. Whether the words before a header on its decoded line make a
   sentence that quotes it is read from the few dozen bytes before it: a byte no text holds there starts a key where
   the words alone would quote it, and a space further back is not seen, so a header after a long word starts its key.
   This masks more.

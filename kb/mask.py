@@ -801,7 +801,7 @@ def _gitleaks_edits(text):
 # Which mask() a stored row was masked with. A row of another version, or of none, is masked again when read and by
 # the next ingest. The patterns change it by themselves; bump REVISION when the code that applies them changes what
 # it masks.
-REVISION = 39
+REVISION = 40
 VERSION = f"r{REVISION}-" + hashlib.sha256(repr((REVISION, [p.pattern for p in SECRET_PATTERNS + PREFIXED_SECRETS], KEYED_SECRET.pattern,
                                 ENV_KEY_SECRET.pattern, JSON_SECRET.pattern, FLAG_SECRET.pattern, AUTH_SECRET.pattern,
                                 COMMAND_FLAGS, PASSWORD_NAME.pattern, sorted(PLACEHOLDERS), REFERENCE.pattern,
@@ -1420,6 +1420,69 @@ def _json_unescaped(text):
     return "".join(pieces), lambda start, end: (source(start, True), source(end - 1, False))
 
 
+# A line's base64 among what stands around it: each whole run of base64 on the line but a web page's entity's name or
+# number ("&quot;", "&#39;", "&#x22;"); the longest is the line's (_marked_key_spans).
+_MARKED_BASE64 = re.compile(r"(?<![A-Za-z0-9+/])(?<!&)(?<!&#)[A-Za-z0-9+/]+={0,2}(?![A-Za-z0-9+/=])")
+
+
+def _marked_key_spans(text):
+    """Each private key in a file written as base64 in `text` whose lines each hold its base64 among other text, as
+    ordered (start, end) spans: a mark before it ("> ", "# ", "// ", "-- ", "; ", "* ", "| ", a quote, written, escaped
+    or as a web page's entity, once or more), a line's number, code, markup or a table's cells around it, or a comment
+    after it, any of which ends the block on its line where _written_key_spans reads one. In each run of two lines or more
+    that each hold base64 (_MARKED_BASE64, the longest on its line, the first of the longest), where that base64,
+    joined, holds a key's word, each line is read as its base64 alone, its line break kept, and the rest of `text` as
+    written. A mark can end in base64's own "/" or "+" ("//", a diff's "+"), which then reads as the line's base64:
+    where lines with one mark each start with them, a second reading leaves out those they all start with too. The
+    first line of a stream that starts with text, as a key file does, starts with neither, so none of them is the
+    key's."""
+    runs, run, at = [], [], 0
+    for line in text.splitlines(True):
+        end = at + len(line.rstrip(_BREAK_CHARACTERS))
+        best = None
+        for m in _MARKED_BASE64.finditer(text, at, end):
+            if best is None or m.end() - m.start() > best[2] - best[1]:
+                best = (at, m.start(), m.end(), end)
+        if best:
+            run.append(best)
+        else:
+            runs.append(run)
+            run = []
+        at += len(line)
+    runs.append(run)
+    cuts = ([], [])  # what each view leaves out: around each line's base64, and in the second, "/" and "+" before it
+    for run in runs:
+        if len(run) < 2:
+            continue
+        past = []
+        for _, lines in itertools.groupby(run, lambda line: (text[line[0]:line[1]], text[line[1]] in "+/")):
+            lines = list(lines)
+            signs = os.path.commonprefix([text[start:end] for _, start, end, _ in lines]) if len(lines) > 1 else ""
+            past += [len(signs) - len(signs.lstrip("+/"))] * len(lines)
+        for cut, skip in zip(cuts, ([0] * len(run), past)):
+            if (cut is cuts[0] or any(skip)) and _ENCODED_KEY.search(
+                    "".join(text[start + k:end] for (_, start, end, _), k in zip(run, skip))):
+                cut += [(a, b) for (line, start, end, line_end), k in zip(run, skip)
+                        for a, b in ((line, start + k), (end, line_end)) if a < b]
+    return [span for cut in cuts if cut for span in _cut_view_spans(text, cut)]
+
+
+def _cut_view_spans(text, cut):
+    """_written_key_spans of `text` without each of the ordered (start, end) stretches `cut`, as spans of `text`."""
+    pieces, starts, sources, last, size = [], [], [], 0, 0  # each piece kept: where it starts in the view and in `text`
+    for start, end in cut + [(len(text), len(text))]:
+        starts.append(size)
+        sources.append(last)
+        pieces.append(text[last:start])
+        size, last = size + start - last, end
+
+    def source(i):  # where the view's character i stands in `text`
+        k = bisect.bisect_right(starts, i) - 1
+        return sources[k] + i - starts[k]
+
+    return [(source(start), source(end - 1) + 1) for start, end in _written_key_spans("".join(pieces))]
+
+
 def _encoded_key_spans(text):
     """Where each private key in a file written as base64 lies in `text`, as ordered (start, end) spans: read as
     written, with JSON's escapes read once and twice (_json_unescaped), as JSON and JSON in JSON write a key with any
@@ -1433,10 +1496,11 @@ def _encoded_key_spans(text):
                 break
             view, inner = read
             source = inner if source is None else (lambda outer, inner: lambda a, b: outer(*inner(a, b)))(source, inner)
-        found = _written_key_spans(view)
+        found = _written_key_spans(view) + _marked_key_spans(view)
         unseen, kept = _unseen_view(view)
         if unseen is not view:
-            found += [(kept[start], kept[end - 1] + 1) for start, end in _written_key_spans(unseen)]
+            found += [(kept[start], kept[end - 1] + 1)
+                      for start, end in _written_key_spans(unseen) + _marked_key_spans(unseen)]
         spans += found if source is None else [source(start, end) for start, end in found]
     merged = []
     for start, end in sorted(spans):
