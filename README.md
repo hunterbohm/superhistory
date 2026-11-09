@@ -543,10 +543,10 @@ Known limits:
   or marks of changing length, hide no line of the key. A run under 8 characters, as a key cut short may end in, goes
   on where it starts at the column of the line above's or where no other run on its line does. Where more than one run
   on a line of a key's goes on from the lines above (another stream of base64 beside it, a second key, random base64 or
-  words as long), or any run but a key's header goes on, on a line that holds other text beside it, after a key's
-  base64 ended (padded or short) before its footer (a padded value beside or between its lines read in place of one),
-  which is the key's is not known, and all from the key's header to the last run of base64 on the last of those lines
-  whose longest is 8 characters or more is masked. Main shows such a key; this only masks more.
+  words as long), or any run goes on, on a line that holds other text beside it, after a key's base64 ended (padded or
+  short) and before another key file's header (a padded value beside or between its lines read in place of one), which
+  is the key's is not known, and all from the key's header to the last run of base64 on the last of those lines whose
+  longest is 8 characters or more is masked. Main shows such a key; this only masks more.
   Whether the words before a header on its decoded line make a sentence that quotes it is read from the few dozen
   bytes before it: a byte no text holds there starts a key where the words alone would quote it, and a space further
   back is not seen, so a header after a long word starts its key. This masks more.

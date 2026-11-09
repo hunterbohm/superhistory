@@ -164,8 +164,7 @@ is read again as that run alone, but for words before it on the lines after the 
 a line's run lies after its longest, again with that line's longest; and in every run of two lines or more, again with
 each line's run that decodes, after the lines above, to text (or within a key is as long as the line above's, or holds
 a key file's header), and all from the key's header to the run's last line of base64 masked where more than one run on
-a line of a key's goes on, or, on lines that hold other text, one goes on after a key's base64 ended before its
-footer. It is found
+a line of a key's goes on, or, on lines that hold other text, one goes on after a key's base64 ended. It is found
 where its encoded "PRIVATE KEY" or "SECRET KEY" decodes inside the key's header or footer on a line of its own, so a field's name
 or a sentence that names one, or quotes a header, stays. It is read once over the text as written, and again with the
 characters a reader does not see taken out, and hidden over what mask()'s passes leave: no reading reads its
