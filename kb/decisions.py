@@ -74,7 +74,9 @@ WORKERS = 4
 MAX_TOKENS = 12000
 SESSION_TYPES = ("claude_code", "codex", "hermes", "opencode", "copilot")
 EMAIL_HEAD = re.compile(r"From: ([^\n]*)\n(?:(?:To|Cc): [^\n]*\n)*Date: \d{4}-\d\d-\d\dT[^\n]*\n\n")
-OPEN_TYPES = ("github", "git")  # anyone can write a line that starts with the owner's name there
+# The sources whose speaker labels the owner's side writes: their own notes. Every other source, such as GitHub, git,
+# X, YouTube, a plug-in or one added later, gives no passage by label, so a stranger's "Hunter: ..." never counts.
+LABEL_TYPES = ("notes",)
 STOPWORDS = set("""a an and are as at be been but by can could did do does for from had has have how i if in into is it
 its just me my no not of on or our should so than that the their them then there these they this those to was we were
 what when where which who why will with would you your about any all also get got make made say said use used using only
@@ -259,7 +261,7 @@ def own_passages(kind, text, owner):
         return [m for m in text.split("\n\n---\n\n") if (h := EMAIL_HEAD.match(m)) and _sender(h.group(1)) in addresses]
     if kind == "imessage":
         return re.findall(rf"(?m)^\d\d:\d\d (?:Me|{names}): .*$", text)
-    if kind in OPEN_TYPES:
+    if kind not in LABEL_TYPES:  # anyone can write a line that starts with the owner's name in any other source
         return []
     # A speaker label only: "Hunter:", "**Hunter Bohm:**", "[00:12] Hunter (host):", not "Hunter decided: ..."
     label = rf"(?:{names})(?-i:\s+[A-Z][\w'-]*){{0,2}}(?:\s*\([^)\n]{{0,30}}\))?[*_]*\s*:"
