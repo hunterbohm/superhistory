@@ -4033,6 +4033,31 @@ class Base64ReviewTwentyFourthTest(unittest.TestCase):
                             self.assertEqual([chunk for chunk in chunks if len(chunk) >= 4 and chunk in masked], [])
                             self.assertIn(kept, masked)
 
+    def test_a_keys_line_read_as_the_word_of_a_mark_on_the_words_next_to_it_is_masked(self):
+        # Two lines of words in the key's own shape just above it mark their lead ("plan " before "ledger"), and a line
+        # of the key with base64 after its own ("  // 1") was read past that lead, its own base64 as the lead's word:
+        # the key's first line went unread and the key showed.
+        import random
+        written, encoded, i = Base64ReviewNineteenFindingsTest.written, Base64ReviewSeventeenTest.encoded, 0
+        keys = self.key_files(random.Random(13))
+        forms = ("    {line}  // {n}", "{line} // part {n}", "{line}  /* {n} */", "{line} + // {n}",
+                 "> {line}  // {n}", "{n:6}\t{line}  // {n}", "[{level}] {line}  // {n}")
+        for form in forms:
+            for name, key in keys.items():
+                for width in (48, 64, 76):
+                    brk = ("\n", "\r\n")[i % 2]
+                    data = key.replace(b"\n", brk.encode())
+                    end = data.rindex(b"-") + 1
+                    lines = [self.around(form, n + 1, line)
+                             for n, line in enumerate(encoded(data, width).split("\n"))]
+                    words = [self.around(form, 1, line) for line in ("moved approved", "plan ledger notes")]
+                    text = brk.join(["Notes:"] + words + lines + words[::-1] + ["", "next paragraph"])
+                    depth, older, i = i % 3, i // 3 % 2, i + 1
+                    with self.subTest(form=form, key=name, width=width, depth=depth, older=older):
+                        masked = Base64ReviewEighteenTest.masks(written(text, depth), older)
+                        self.assertEqual([k for k in self.lines_within(data, width, 0, end) if k in masked], [])
+                        self.assertIn("next paragraph", masked)
+
     @classmethod
     def marked_texts(cls):
         """Prose and code, made up and holding no private key, whose lines carry the marks above or other text around
