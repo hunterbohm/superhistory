@@ -1454,7 +1454,8 @@ def _marked_key_spans(text):
     base64 (a comment, a label) takes the longest run's place, marks that end in "/" or "+" may change in length from
     line to line, and another stream of base64 can stand beside a key's: where runs on a line tie, as two keys side
     by side do, each is read in a view of its own, and where a reading masks a line's run, the other runs on that
-    line that decode on are masked with it."""
+    line that decode on are masked with it. Where a line's run goes on only by its length beside another, which is
+    the key's is not known, and the whole run of lines is masked."""
     runs, run, at = [], [], 0
     for line in text.splitlines(True):
         end = at + len(line.rstrip(_BREAK_CHARACTERS))
@@ -1492,7 +1493,10 @@ def _marked_key_spans(text):
             continue
         nth, most, found = 0, 1, False
         while nth < min(most, _CHAINED_VIEWS):
-            lines, beside, most = _chained_key_lines(text, run, nth)
+            lines, beside, most, unsure = _chained_key_lines(text, run, nth)
+            if unsure:  # which run on a line is the key's is not known: the whole run of lines goes
+                beyond.append((run[0][0], run[-1][3]))
+                break
             read = [line for line in lines if line]
             if set(read) - set(run) and _ENCODED_KEY.search(_joined(text, read, [0] * len(read))):
                 chained[nth] += [(a, b) for line, start, end, line_end in read
@@ -1619,23 +1623,23 @@ def _lead_shape(lead):
 def _chained_key_lines(text, run, nth=0):
     """For each line of `run` (_marked_key_spans), the (line, start, end, line_end) of the base64 on it that goes on
     what the lines above decode to, or None where none does and the line reads as written; for each, the other runs
-    on its line that go on; and the most runs that tie on a line. A line's longest run of base64 is not a key's
-    where other text on it is longer (a comment after it, a label before it), nor are its marks all left out where
-    they end in "/" or "+" and differ in length from line to line. A key's base64 decodes to its file's text, so
-    each line is read as a run that decodes to ASCII after the lines above, past as many of the "/" and "+" that
-    start it as that takes (the reader finds each key's word where it is, so a line read as written starts the lines
-    below afresh). Within a key, a run as long as the line above's goes on whatever it decodes to, as an armour
-    comment may hold any byte. Of the ways to read a run, one holding a key's word or starting as its file's header
-    does comes first, then one that decodes, then one as long as the line above's, then one no longer (a key's last
-    line is as long or shorter), then the longest. Across a line's runs, one holding a key's word or header comes
-    first, then one no longer than the line above's, then one that decodes, so text beside a key's line that is as
-    long by chance does not win it, then the one nearest that line's column, as another stream of base64 as wide
-    beside a key's decodes to text after it too; where runs still tie, as two keys side by side do, the `nth` goes
-    on. One under 8 characters goes on only from the line above and to the end of a key's base64, its padding or a
-    line break. After a line where none goes on, or one shorter than the line above or padded (a key's last), one
-    goes on only where it is 16 characters or more, or starts as a key file's header does, so a word that decodes to
-    ASCII by chance does not."""
-    lines, beside, most = [], [], 1
+    on its line that go on; the most runs that tie on a line; and whether, on a line, one went on only by its length
+    beside another, as random base64 beside a line of an armour comment past ASCII can, so which is the key's is not
+    known. A line's longest run of base64 is not a key's where other text on it is longer (a comment after it, a
+    label before it), nor are its marks all left out where they end in "/" or "+" and differ in length from line to
+    line. A key's base64 decodes to its file's text, so each line is read as a run that decodes to ASCII after the
+    lines above, past as many of the "/" and "+" that start it as that takes (the reader finds each key's word where
+    it is, so a line read as written starts the lines below afresh). Within a key, a run as long as the line above's
+    goes on whatever it decodes to, as an armour comment may hold any byte. Of the ways to read a run, one holding a
+    key's word or starting as its file's header does comes first, then one that decodes, then one as long as the
+    line above's, then one no longer (a key's last line is as long or shorter), then the longest. Across a line's
+    runs, one holding a key's word or header comes first, then one no longer than the line above's, then the one
+    nearest that line's column, as another stream of base64 as wide beside a key's decodes to text after it too;
+    where runs still tie, as two keys side by side do, the `nth` goes on. One under 8 characters goes on only from
+    the line above and to the end of a key's base64, its padding or a line break. After a line where none goes on,
+    or one shorter than the line above or padded (a key's last), one goes on only where it is 16 characters or more,
+    or starts as a key file's header does, so a word that decodes to ASCII by chance does not."""
+    lines, beside, most, unsure = [], [], 1, False
     carry, width, closed, column = "", 0, True, 0  # carry: the characters past the last whole group of those read
     for line, _, _, line_end in run:
         found = []  # for each run on the line that goes on: (rank, its pick, what it leaves past its groups)
@@ -1660,10 +1664,11 @@ def _chained_key_lines(text, run, nth=0):
                     best = (rank, (line, m.start() + k, m.end(), line_end), read[0])
             if best:
                 rank, pick, left = best
-                found.append(((rank[0], rank[3], rank[1], -abs(pick[1] - line - column) if width else 0, rank[2],
-                               rank[4]), pick, left))
-        top = max((rank for rank, _, _ in found), default=None)
-        tied = [(pick, left) for rank, pick, left in found if rank == top]
+                found.append(((rank[0], rank[3], -abs(pick[1] - line - column) if width else 0, rank[2], rank[4]), pick,
+                              left, rank[1]))
+        unsure = unsure or len(found) > 1 and not all(decodes for *_, decodes in found)
+        top = max((rank for rank, *_ in found), default=None)
+        tied = [(pick, left) for rank, pick, left, _ in found if rank == top]
         if not tied:
             lines.append(None)
             beside.append([])
@@ -1674,9 +1679,9 @@ def _chained_key_lines(text, run, nth=0):
         size, column = pick[2] - pick[1], pick[1] - line
         closed = text[pick[2] - 1] == "=" or not closed and size < width
         lines.append(pick)
-        beside.append([(start, end) for _, (_, start, end, _), _ in found if start != pick[1]])
+        beside.append([(start, end) for _, (_, start, end, _), *_ in found if start != pick[1]])
         carry, width = "" if closed else carry, size
-    return lines, beside, most
+    return lines, beside, most, unsure
 
 
 def _reads_on(carry, piece):

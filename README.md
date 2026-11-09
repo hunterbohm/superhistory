@@ -540,7 +540,9 @@ Known limits:
   after the lines above, or within a key is as long as the line above's, as an armour comment may hold any byte, so a
   comment or a label longer than a line's base64, or marks of changing length, hide no line of the key. Another
   stream of base64 beside a key's is told from it by its column, two keys side by side are each read, and the other
-  runs on a line whose run a key's reading masks are masked with it. Main shows such a key; this only masks more.
+  runs on a line whose run a key's reading masks are masked with it. Where a line's run goes on only by its length
+  beside another, which is the key's is not known, and the whole run of lines is masked. Main shows such a key; this
+  only masks more.
   Whether the words before a header on its decoded line make a sentence that quotes it is read from the few dozen
   bytes before it: a byte no text holds there starts a key where the words alone would quote it, and a space further
   back is not seen, so a header after a long word starts its key. This masks more.
