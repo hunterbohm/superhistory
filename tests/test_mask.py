@@ -4033,6 +4033,101 @@ class Base64ReviewTwentyFourthTest(unittest.TestCase):
                             self.assertEqual([chunk for chunk in chunks if len(chunk) >= 4 and chunk in masked], [])
                             self.assertIn(kept, masked)
 
+    @staticmethod
+    def whole_and_cut(keys):
+        """Each of `keys` whole and cut before its footer, but GnuPG's cut: its armour comment holds a control byte,
+        and that key cut so shows from there with its lines bare too, as on main."""
+        for name, key in keys.items():
+            yield name, "whole", key
+            if name != "gnupg":
+                yield name, "cut short", key[:key.rindex(b"-----END" if b"-----END" in key else b"---- END")]
+
+    def test_a_keys_lines_beside_text_longer_than_their_base64_are_masked(self):
+        # Each line was read as its longest run of base64, so a comment after each line, a label before it or both,
+        # longer than the key's own base64 there, was read instead, and the key showed, on main too.
+        import base64
+        import random
+        import textwrap
+        written, i = Base64ReviewNineteenFindingsTest.written, 0
+        # and base64 of words, which decodes to text as a key's does, longer than each line's and of changing length
+        words = base64.b64encode(b"rotate the ledger after the review, then move the plan to approved. " * 9).decode()
+        for name, whole, data in self.whole_and_cut(self.key_files(random.Random(14))):
+            for width in (24, 30, 64, 76):
+                chunks = textwrap.wrap(base64.b64encode(data).decode(), width)
+                for junk in ("a" * (width + 16), "f0" * (width // 2 + 8), "deadbeef" + "x" * width, "words"):
+                    for form in ("{line}  # {junk}", "{junk} {line}", "{junk}: {line}  // {junk}"):
+                        brk = ("\n", "\r\n")[i % 2]
+                        text = brk.join(["Notes:"] + [form.format(line=chunk, junk=junk if junk != "words" else words[
+                            n * 7 % 40:][:width + 1 + n * 13 % 50]) for n, chunk in enumerate(chunks)]
+                                        + ["", "next paragraph"])
+                        depth, older, i = i % 3, i // 3 % 2, i + 1
+                        with self.subTest(key=name, whole=whole, width=width, junk=junk[:5], form=form, depth=depth,
+                                          older=older):
+                            masked = Base64ReviewEighteenTest.masks(written(text, depth), older)
+                            self.assertEqual([chunk for chunk in chunks if len(chunk) >= 4 and chunk in masked], [])
+                            self.assertIn("next paragraph", masked)
+                i += 1  # so each junk and form meets each depth and age
+
+    def test_a_keys_lines_beside_another_streams_lines_are_masked(self):
+        # A key's base64 and another stream's of the same width side by side, as columns, a table or a diff put them:
+        # their lines are as long and decode to text alike, so the other's could be read for the key's and the key
+        # showed, on main too; and a key's last line, shorter, beside the other's full one. The other here is words, a
+        # certificate, or a second key, which must not show either.
+        import base64
+        import random
+        import textwrap
+        written, i = Base64ReviewNineteenFindingsTest.written, 0
+        r = random.Random(16)
+        keys = self.key_files(r)
+        certificate = ("-----BEGIN CERTIFICATE-----\n" + "\n".join(textwrap.wrap(base64.b64encode(r.randbytes(700))
+                                                                                .decode(), 64))
+                       + "\n-----END CERTIFICATE-----\n").encode()
+        words = b"Deploy notes for the ledger service.\nRotate after the review, then move the plan to approved.\n" * 6
+        names = list(keys)
+        forms = ("{other}\t{key}", "{key}  |  {other}", "{other:{width}} {key}", "| {key} | {other} |")
+        for name, whole, data in self.whole_and_cut(keys):
+            second = keys[names[(names.index(name) + 1) % len(names)]]
+            for width in (30, 64, 76):
+                chunks = textwrap.wrap(base64.b64encode(data).decode(), width)
+                for other_name, other in (("words", words), ("certificate", certificate), ("a second key", second)):
+                    others = textwrap.wrap(base64.b64encode(other).decode(), width)
+                    shown = chunks + (others if other_name == "a second key" else [])
+                    rows = max(len(chunks), len(others))
+                    for form in forms:
+                        brk = ("\n", "\r\n")[i % 2]
+                        lines = [form.format(key=key, other=line, width=width).rstrip() for key, line in zip(
+                            chunks + [""] * (rows - len(chunks)), others + [""] * (rows - len(others)))]
+                        text = brk.join(["Notes:"] + lines + ["", "next paragraph"])
+                        depth, older, i = i % 3, i // 3 % 2, i + 1
+                        with self.subTest(key=name, whole=whole, width=width, other=other_name, form=form, depth=depth,
+                                          older=older):
+                            masked = Base64ReviewEighteenTest.masks(written(text, depth), older)
+                            self.assertEqual([chunk for chunk in shown if len(chunk) >= 4 and chunk in masked], [])
+                            self.assertIn("next paragraph", masked)
+                i += 1  # so each other and form meets each depth and age
+
+    def test_a_keys_lines_after_slashes_or_pluses_of_changing_count_are_masked(self):
+        # The second reading left out as many "/" or "+" on each line as most lines start with, so a line with more (a
+        # first line's "///" over "//" on the rest) kept one before the key's header, and the key showed.
+        import base64
+        import random
+        import textwrap
+        written, i = Base64ReviewNineteenFindingsTest.written, 0
+        for name, whole, data in self.whole_and_cut(self.key_files(random.Random(15))):
+            for width in (64, 76):
+                chunks = textwrap.wrap(base64.b64encode(data).decode(), width)
+                for one, rest in (("///", "//"), ("//", "///"), ("+++", "+"), ("/", "//"), ("//", "/")):
+                    for every in (len(chunks) + 1, 3):
+                        brk = ("\n", "\r\n")[i % 2]
+                        lines = [(rest if n % every else one) + chunk for n, chunk in enumerate(chunks)]
+                        text = brk.join(["Notes:"] + lines + ["", "next paragraph"])
+                        depth, older, i = i % 3, i // 3 % 2, i + 1
+                        with self.subTest(key=name, whole=whole, width=width, one=one, rest=rest, every=every,
+                                          depth=depth, older=older):
+                            masked = Base64ReviewEighteenTest.masks(written(text, depth), older)
+                            self.assertEqual([chunk for chunk in chunks if len(chunk) >= 4 and chunk in masked], [])
+                            self.assertIn("next paragraph", masked)
+
     def test_a_keys_line_read_as_the_word_of_a_mark_on_the_words_next_to_it_is_masked(self):
         # Two lines of words in the key's own shape just above it mark their lead ("plan " before "ledger"), and a line
         # of the key with base64 after its own ("  // 1") was read past that lead, its own base64 as the lead's word:
@@ -4130,30 +4225,37 @@ class Base64ReviewTwentyFourthTest(unittest.TestCase):
 
     def test_lines_that_each_carry_a_mark_cost_time_in_proportion(self):
         # each line is read for its base64 once, and a run is read past what stands around it only where its base64
-        # holds a key's word
+        # holds a key's word, or its lines a piece of one, and a comment longer than each line's base64 then too. Timed
+        # is the reading of keys written as base64, which this reading adds to: mask() as a whole runs main's command
+        # readers too, which on random base64 grow near 7 times from 16 KB to 64 KB as words they read turn up by chance
         import base64
         import random
         import textwrap
         import time
+        from kb import mask as mask_module
         r = random.Random(2501)
         key = self.pem(r)
+
+        def timed(text):
+            started = time.process_time()
+            mask_module._encoded_key_spans(text)
+            return time.process_time() - started
         shapes = {"random bytes": lambda size: r.randbytes(size), "words": lambda size: b"notes moved " * (size // 12),
                   "a key's words": lambda size: b"PRIVATE KEY " * (size // 12),
                   "headers": lambda size: b"-----BEGIN PRIVATE KEY-----\n" * (size // 28),
                   "keys": lambda size: key * (size // len(key))}
-        for form in ("> {line}", "//{line}", "&#x00000027;{line}", "{n:6}\t{line}  # part {n}", "{slashes}{line}"):
+        for form in ("> {line}", "//{line}", "&#x00000027;{line}", "{n:6}\t{line}  # part {n}", "{slashes}{line}",
+                     "{line}  # " + "a" * 80):
             for name, data in shapes.items():
                 took = {}
                 for size in (1 << 14, 1 << 16):
                     lines = textwrap.wrap(base64.b64encode(data(size)).decode(), 64)
                     text = "notes\n" + "\n".join(form.format(n=n, line=line, slashes="/" * (n % 64 + 1))
                                                   for n, line in enumerate(lines)) + "\n\nnext paragraph"
-                    started = time.process_time()
-                    mask(text)
-                    took[size] = time.process_time() - started
+                    took[size] = min(timed(text) for _ in range(2))  # the faster of two, as a busy machine's is noisy
                 with self.subTest(form=form, shape=name):
                     # four times the text
-                    self.assertLess(took[1 << 16], 8 * max(took[1 << 14], 0.05), took)
+                    self.assertLess(took[1 << 16], 8 * max(took[1 << 14], 0.01), took)
 
     def test_horizontal_space_and_line_breaks_are_every_one_python_reads(self):
         import re
