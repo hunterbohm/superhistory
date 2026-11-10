@@ -54,8 +54,9 @@ def item_ts(stem, text, mtime):
     return _iso(datetime.fromtimestamp(mtime, timezone.utc))
 
 
-def walk(root, excluded, exts, since=None, complete=False):
-    """Yield (absolute path, relative posix path, stat, changed) for every wanted file.
+def walk(root, excluded, exts, since=None, complete=False, prefix=""):
+    """Yield (absolute path, relative posix path, stat, changed) for every wanted file; with `prefix`, the files read
+    as if `root` were at that path inside the folder (kb.sources.notes' mounts).
 
     A rename keeps a file's mtime, and renaming a folder touches none of the files inside, so a file also counts
     as changed when its own ctime or any ancestor folder's mtime/ctime is newer than `since`.
@@ -81,13 +82,13 @@ def walk(root, excluded, exts, since=None, complete=False):
                 st = e.stat()
                 if st.st_size <= MAX_BYTES:
                     yield e.path, erel, st, touched or newer(st, since)
-    yield from scan(root, "", newer(os.stat(root), since))
+    yield from scan(root, prefix, newer(os.stat(root), since))
 
 
-def extract_tree(root, since, excluded, exts, url=None):
+def extract_tree(root, since, excluded, exts, url=None, prefix="", label=None):
     started = time.time() - 60
-    label = os.path.basename(root.rstrip("/"))
-    for path, rel, st, changed in walk(root, excluded, exts, since):
+    label = label or os.path.basename(root.rstrip("/"))
+    for path, rel, st, changed in walk(root, excluded, exts, since, prefix=prefix):
         if not changed:
             continue
         with open(path, encoding="utf-8", errors="replace") as fh:
@@ -103,5 +104,5 @@ def extract_tree(root, since, excluded, exts, url=None):
                    meta, started)
 
 
-def live_ids(root, excluded, exts):
-    return [rel for _, rel, _, _ in walk(root, excluded, exts, complete=True)]
+def live_ids(root, excluded, exts, prefix=""):
+    return [rel for _, rel, _, _ in walk(root, excluded, exts, complete=True, prefix=prefix)]

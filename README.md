@@ -82,6 +82,7 @@ plugin = "chatgpt"          # superhistory ai list shows the choices
 path = "~/Notes"
 exclude = ["Journal"]       # added to the type's default excludes
 summarize = ["Meetings/**"] # true, false, or the notes whose summaries are worth writing
+mounts = { "Agents" = "~/agents" }  # optional: a folder moved out, read as if still at Agents/ inside
 
 [sources.claude_code]
 [sources.git]
