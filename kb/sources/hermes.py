@@ -249,4 +249,4 @@ def extract(run):
     yield Progress(started)
 
 
-TYPE = SourceType(Options, extract, exclude=("tool",))
+TYPE = SourceType(Options, extract, exclude=("tool",), reads_files=True)

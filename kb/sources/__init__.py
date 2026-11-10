@@ -75,6 +75,9 @@ class SourceType(NamedTuple):
     # For a source whose watermark must never pass an item that was not stored: any item the store refuses fails the run
     # and nothing of the run is kept, instead of the item being skipped with a warning.
     all_or_nothing: bool = False
+    # For a source that reads files on the computer that reads it, as agent sessions are: masking keeps its results in
+    # a file on that computer too (kb.mask.memo), so a session read again is masked again only where it grew.
+    reads_files: bool = False
 
 
 def type_names():
