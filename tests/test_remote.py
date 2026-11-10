@@ -14,9 +14,13 @@ LOG = logging.getLogger("superhistory-test")
 FAKE_SSH = """#!{python}
 import subprocess, sys
 args = sys.argv[1:]
+options = []
 while args[0] == "-o":
+    options.append(args[1])
     args = args[2:]
 alias = args[0]
+with open({calls!r} + ".options", "a") as fh:
+    fh.write(" ".join(options) + "\\n")
 program = sys.stdin.buffer.read()
 with open({calls!r}, "a") as calls:
     calls.write(alias + "\\n")
@@ -28,6 +32,10 @@ if alias == "refused":
     sys.exit(255)
 out = subprocess.run([{python!r}, "-I", "-"], input=program, stdout=subprocess.PIPE, cwd="/")
 listing = b"'verb': 'live_ids'" in program
+if alias == "stalls" and not listing:
+    sys.stdout.buffer.write(out.stdout.splitlines(True)[0])
+    sys.stderr.write("Timeout, server not responding.\\n")
+    sys.exit(255)
 if alias == "drops" and listing:
     sys.stdout.buffer.write(out.stdout.splitlines(True)[0])
     sys.stderr.write("client_loop: send disconnect: Broken pipe\\n")
@@ -138,6 +146,24 @@ class RemoteTest(unittest.TestCase):
         self.assertEqual(failures, 1)
         self.assertEqual(self.stored_ids(), ["desk@drops:a.md", "desk@drops:b.md"])
         self.assertIn("notes@drops", dict(store.failing(self.db)))
+
+    def test_a_read_asks_ssh_to_end_a_dead_link(self):
+        self.note("a.md", "one")
+        self.assertEqual(ingest.run(self.db, self.config(), LOG, with_summaries=False), 0)
+        with open(self.calls + ".options") as fh:
+            runs = [line.split() for line in fh.read().splitlines()]
+        self.assertTrue(runs)
+        for options in runs:
+            self.assertIn("ServerAliveInterval=15", options)
+            self.assertIn("ServerAliveCountMax=4", options)
+
+    def test_a_link_that_dies_during_a_read_counts_as_asleep_and_keeps_nothing_half_read(self):
+        self.note("a.md", "one")
+        self.note("b.md", "two")
+        failures = ingest.run(self.db, self.config(("stalls",)), LOG, with_summaries=False)
+        self.assertEqual(failures, 0)
+        self.assertEqual([host for host, _ in store.away(self.db)], ["stalls"])
+        self.assertEqual(self.stored_ids(), [])
 
     def test_an_unreadable_remote_folder_deletes_nothing(self):
         self.note("locked/a.md", "one")
