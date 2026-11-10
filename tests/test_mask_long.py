@@ -97,16 +97,15 @@ def pattern_cases():
 class Equal(unittest.TestCase):
     """Small sizes, so the tests run fast; every secret here reads within REACH of itself."""
 
-    def check(self, text, cuts, whole=None, origin=True):
+    def check(self, text, cuts, whole=None):
         """Masks `text` cut at `cuts`, and checks it masks as `whole` (the text read whole, worked out if not given),
-        and with `origin`, that mask_with_origin() says where each character came from as read whole too."""
-        whole = whole or (masking._mask_whole(text), masking._mask_with_origin_whole(text) if origin else None)
+        and that mask_with_origin() says where each character came from as read whole too."""
+        whole = whole or (masking._mask_whole(text), masking._mask_with_origin_whole(text))
         with sizes(3072, 1536, 512), cut_at(*cuts):
             fresh_memo()
             self.assertEqual(mask(text), whole[0])
-            if origin:
-                fresh_memo()
-                self.assertEqual(mask_with_origin(text), whole[1] or masking._mask_with_origin_whole(text))
+            fresh_memo()
+            self.assertEqual(mask_with_origin(text), whole[1])
         return whole[0]
 
     def test_a_secret_cut_at_each_character_masks_as_whole(self):
@@ -117,7 +116,7 @@ class Equal(unittest.TestCase):
             self.assertNotEqual(whole[0], text, "the case must hold a secret")
             for k in range(1, len(secret)):
                 with self.subTest(case=n, cut=k):
-                    self.check(text, [len(left) + k], whole, origin=k % 3 == 1)
+                    self.check(text, [len(left) + k], whole)
 
     def test_secrets_of_every_pattern_cut_in_three_places(self):
         cases = pattern_cases()
