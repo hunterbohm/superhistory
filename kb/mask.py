@@ -17,6 +17,7 @@ import os
 import re
 import shlex
 import sys
+import threading
 import traceback
 import warnings
 
@@ -4972,11 +4973,12 @@ _SAW_ALL = contextvars.ContextVar("kb_mask_saw_all", default=None)
 
 class _Memo:
     """Results by a hash of (kind, mask VERSION, how the text is read, text), the latest LIMIT characters of them kept
-    in this process; and with a file (memo()), there too."""
+    in this process; and with a file (memo()), there too. One lock serves both: the summary step masks in threads."""
     LIMIT = 64 * 1024 * 1024
 
     def __init__(self):
         self.kept, self.size, self.file = collections.OrderedDict(), 0, None
+        self.lock = threading.Lock()
 
     def _key(self, kind, text, how):
         how = f"{kind}\x00{VERSION}\x00{int(_STORED_ROW.get())}\x00{how}\x00".encode()
@@ -4984,6 +4986,10 @@ class _Memo:
 
     def get(self, kind, text, how=""):
         key = self._key(kind, text, how)
+        with self.lock:
+            return self._get(key, text)
+
+    def _get(self, key, text):
         found = self.kept.get(key)
         if found is not None:
             self.kept.move_to_end(key)
@@ -4996,9 +5002,10 @@ class _Memo:
 
     def put(self, kind, text, value, how=""):
         key = self._key(kind, text, how)
-        self._keep(key, value)
-        if self.file is not None:
-            self.file.put(key, value)
+        with self.lock:
+            self._keep(key, value)
+            if self.file is not None:
+                self.file.put(key, value)
 
     def _keep(self, key, value):
         size = len(value) if isinstance(value, str) else len(value[0]) + 8 * len(value[1])
@@ -5024,7 +5031,7 @@ class _MemoFile:
         fresh = not os.path.exists(path)
         if fresh:
             os.close(os.open(path, os.O_WRONLY | os.O_CREAT, 0o600))
-        self.db = sqlite3.connect(path, timeout=30)
+        self.db = sqlite3.connect(path, timeout=30, check_same_thread=False)  # used only under _Memo.lock
         self.db.execute("CREATE TABLE IF NOT EXISTS memo(key BLOB PRIMARY KEY, value BLOB NOT NULL, used INTEGER NOT "
                         "NULL)")
         self.today = int(__import__("time").time() // 86400)
@@ -5093,7 +5100,8 @@ _MEMO = _Memo()
 @contextlib.contextmanager
 def memo(path):
     """Within it, mask() keeps its results in the file at `path` too, and finds them there in a later run. Use it only
-    where the texts masked are in files on this computer already, as a reader of agent sessions reads: the file holds
+    where the texts masked are on this computer already, as a reader of agent sessions reads them from their files and
+    the summary step from the store: the file holds
     a keyed hash of each text beside its masked form, and one who has the file and its key could confirm a guess at
     a secret in a text, which the text's own file on this computer shows anyway."""
     if _MEMO.file is not None:
@@ -5103,8 +5111,9 @@ def memo(path):
     try:
         yield
     finally:
-        file, _MEMO.file = _MEMO.file, None
-        file.close()
+        with _MEMO.lock:
+            file, _MEMO.file = _MEMO.file, None
+            file.close()
 
 
 def clip(text, limit, more=" …"):
