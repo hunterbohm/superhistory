@@ -141,7 +141,7 @@ def _columns(db, table):
 
 
 def render(db, profile, db_path, row, superseded=""):
-    """The Item for one session row, or None when nobody said anything or nothing answered.
+    """The Item for one session row, or None when nobody said anything or nothing answered (a reply or a tool call).
     `superseded` is an SQL condition for message rows to skip (see _superseded)."""
     sid, source, title, started, origin, display_name = row
     lines, first_prompt, last_ts, answered = [], None, started, False
@@ -175,7 +175,10 @@ def render(db, profile, db_path, row, superseded=""):
                 answered = True
                 lines.append(f"ASSISTANT: {text}")
         if role == "assistant":
-            lines.extend(_tool_calls(calls))
+            actions = _tool_calls(calls)
+            # Kanban workers and many cron jobs work only through tool calls and never write a reply.
+            answered = answered or bool(actions)
+            lines.extend(actions)
     if not first_prompt or not answered:
         return None
     platform = PLATFORM.get(source, source)
