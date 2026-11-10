@@ -18,8 +18,13 @@ from kb.mask import holds_secret, id_names, mask, mask_all, memo, secret_in_id
 from kb.paths import Paths
 from kb.sources import Gone, Item, Progress
 
-# What ssh prints when the computer is off the network, as when a laptop sleeps. A refused login is a fault.
-OFF_NETWORK = re.compile(r"Operation timed out|Connection timed out|No route to host|Host is down|Network is unreachable")
+# What ssh prints when the computer is off the network, as when a laptop sleeps (before the read, or during it: "Timeout,
+# server HOST not responding" once its keep-alives go unanswered). A refused login is a fault.
+OFF_NETWORK = re.compile(r"Operation timed out|Connection timed out|No route to host|Host is down|Network is unreachable"
+                         r"|Timeout, server \S+ not responding")
+# A link that dies during a read, as when the laptop sleeps, ends after about a minute of unanswered keep-alives, so
+# its ssh exits and the connection closes instead of waiting for TCP to give up hours later.
+KEEPALIVE = ["-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=4"]
 STDERR_TAIL = 600
 BOOTSTRAP = """
 import importlib.abc, importlib.util, sys
@@ -156,8 +161,8 @@ class SshReader:
             program.write(script(request))
             program.seek(0)
             try:
-                proc = subprocess.Popen(["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", self.host.ssh,
-                                         self.host.python, "-"], stdin=program, stdout=subprocess.PIPE, stderr=err,
+                proc = subprocess.Popen(["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", *KEEPALIVE,
+                                         self.host.ssh, self.host.python, "-"], stdin=program, stdout=subprocess.PIPE, stderr=err,
                                         text=True, encoding="utf-8", errors="replace")
             except OSError as exc:
                 raise RuntimeError(mask(f"ssh did not start: {exc}")) from None
