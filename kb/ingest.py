@@ -147,7 +147,7 @@ def run(db, config, log, only=(), with_summaries=True, model_factory=None, memo=
     """Every configured source, or those named in `only`, then summaries for new long items. Returns the number of
     failures. The caller holds the database lock. `memo`: the file masking keeps its results in for a source that
     reads files on this computer (kb.mask.memo); an item of one read on another computer comes masked, so its text
-    holds no secret to confirm."""
+    holds no secret to confirm. The summary step uses it too: the texts it masks are in this computer's store."""
     log = masked_log(log)
     capped = mask_module.capped
     model_factory = model_factory or (lambda: ai.load(config.ai))
@@ -193,7 +193,10 @@ def run(db, config, log, only=(), with_summaries=True, model_factory=None, memo=
         log.info("remask: %d rows masked again, %d older rows left for the next ingest", changed, left)
     if with_summaries and config.summarize.enabled and config.ai:
         try:
-            summarize.run(db, config, model_factory(), log)
+            # The summary step masks each item's stored text again, whole; a long session grows at its end, so the memo
+            # finds every piece of it but the last from the run before.
+            with mask_module.memo(memo) if memo is not None else contextlib.nullcontext():
+                summarize.run(db, config, model_factory(), log)
         except Exception as exc:
             log.exception("summarize failed")
             store.record_failure(db, "summarize", exc)

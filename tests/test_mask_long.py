@@ -357,6 +357,19 @@ class Memo(unittest.TestCase):
         read.assert_not_called()
         whole.assert_not_called()
 
+    def test_threads_share_the_memo(self):
+        # The summary step asks its model in threads, and each prompt is masked there, within the memo.
+        import concurrent.futures
+        texts = ["password=" + f"x7Rt9Lm{i}" * 200 + "\n" + filler(3000, i) for i in range(16)]
+        alone = [mask(x) for x in texts]
+        fresh_memo()
+        with masking.memo(self.path), concurrent.futures.ThreadPoolExecutor(4) as pool:
+            self.assertEqual(list(pool.map(mask, texts * 2)), alone * 2)
+        fresh_memo()
+        with mock.patch.object(masking, "_mask_whole") as whole, masking.memo(self.path):
+            self.assertEqual([mask(x) for x in texts], alone)
+        whole.assert_not_called()
+
     def test_without_the_memo_nothing_short_is_kept(self):
         mask("password=" + "x7Rt9Lm2" * 200)
         self.assertEqual(len(masking._MEMO.kept), 0)
