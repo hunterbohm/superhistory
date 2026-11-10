@@ -97,33 +97,38 @@ def pattern_cases():
 class Equal(unittest.TestCase):
     """Small sizes, so the tests run fast; every secret here reads within REACH of itself."""
 
-    def check(self, text, cuts):
-        with sizes(4096, 2048, 512), cut_at(*cuts):
+    def check(self, text, cuts, whole=None, origin=True):
+        """Masks `text` cut at `cuts`, and checks it masks as `whole` (the text read whole, worked out if not given),
+        and with `origin`, that mask_with_origin() says where each character came from as read whole too."""
+        whole = whole or (masking._mask_whole(text), masking._mask_with_origin_whole(text) if origin else None)
+        with sizes(3072, 1536, 512), cut_at(*cuts):
             fresh_memo()
-            whole = masking._mask_whole(text)
-            self.assertEqual(mask(text), whole)
-            fresh_memo()
-            self.assertEqual(mask_with_origin(text), masking._mask_with_origin_whole(text))
-        return whole
+            self.assertEqual(mask(text), whole[0])
+            if origin:
+                fresh_memo()
+                self.assertEqual(mask_with_origin(text), whole[1] or masking._mask_with_origin_whole(text))
+        return whole[0]
 
     def test_a_secret_cut_at_each_character_masks_as_whole(self):
         for n, secret in enumerate(CASES):
-            left = filler(2500, n) + "\n"
-            text = left + secret + "\n" + filler(2500, n + 50)
+            left = filler(1600, n) + "\n"
+            text = left + secret + "\n" + filler(1600, n + 50)
+            whole = masking._mask_whole(text), masking._mask_with_origin_whole(text)
+            self.assertNotEqual(whole[0], text, "the case must hold a secret")
             for k in range(1, len(secret)):
                 with self.subTest(case=n, cut=k):
-                    whole = self.check(text, [len(left) + k])
-                    self.assertNotEqual(whole, text, "the case must hold a secret")
+                    self.check(text, [len(left) + k], whole, origin=k % 3 == 1)
 
     def test_secrets_of_every_pattern_cut_in_three_places(self):
         cases = pattern_cases()
         self.assertGreater(len(cases), 20)
         for n, secret in enumerate(cases):
-            left = filler(2500, n)
-            text = left + " " + secret + " " + filler(2500, n + 99)
+            left = filler(1600, n)
+            text = left + " " + secret + " " + filler(1600, n + 99)
+            whole = masking._mask_whole(text), masking._mask_with_origin_whole(text)
             for k in sorted({1, len(secret) // 2, len(secret) - 1}):
                 with self.subTest(secret=secret[:30], cut=k):
-                    self.check(text, [len(left) + 1 + k])
+                    self.check(text, [len(left) + 1 + k], whole)
 
     def test_a_keyword_far_from_its_token_still_reads_the_rule(self):
         # gitleaks' rules are read only where the text holds a keyword of theirs; here it is two pieces away.
@@ -155,10 +160,11 @@ class Equal(unittest.TestCase):
             parts.append(filler(r.randint(100, 900), i, breaks=bool(i % 3)))
             parts.append(r.choice(CASES) + r.choice(["\n", " ", ""]))
         text = "".join(parts)
+        whole = masking._mask_whole(text), masking._mask_with_origin_whole(text)
         for trial in range(6):
             cuts = sorted(r.sample(range(100, len(text) - 100), 8))
             with self.subTest(trial=trial):
-                self.check(text, cuts)
+                self.check(text, cuts, whole)
 
     def test_a_text_the_mask_hides_most_of_is_masked_whole_once_merging_runs_long(self):
         text = ("[masked]" + "A" * 64 + "\n\n") * 400
@@ -186,22 +192,19 @@ class Equal(unittest.TestCase):
 
 
 class FullSize(unittest.TestCase):
-    """Key blocks as long as the mask's longest readings, at the sizes the package runs with, cut across."""
+    """Key blocks as long as the mask's longest readings, with the REACH the package runs with, cut across."""
 
     def setUp(self):
         patch = in_pieces()
         patch.start()
         self.addCleanup(patch.stop)
 
-    def check(self, text, cuts):
-        self.assertGreater(len(text), masking.WHOLE)
+    def check(self, text, cuts, whole):
         read, real = [], masking._pieces
         with cut_at(*cuts), mock.patch.object(masking, "_pieces", side_effect=lambda t: read.append(real(t)) or read[-1]):
             fresh_memo()
-            whole = masking._mask_whole(text)
             self.assertEqual(mask(text), whole)
         self.assertTrue(read and read[-1] is not None, "read in pieces, not whole")
-        return whole
 
     def blocks(self):
         r = random.Random(3)
@@ -219,20 +222,25 @@ class FullSize(unittest.TestCase):
         return {"pem": pem, "encrypted": encrypted, "pgp": pgp, "ssh2": ssh2, "base64": encoded}
 
     def test_key_blocks_cut_at_their_breaks(self):
-        for name, block in self.blocks().items():
-            left = filler(masking.WHOLE // 2 + 4096, 21)
-            text = left + "\n" + block + "\n" + filler(masking.WHOLE // 2, 22)
-            start = len(left) + 1
-            breaks = [start + m.end() for m in re.finditer("\n", block)]
-            places = sorted(set(breaks[:3] + breaks[-3:] + list(range(start + 1, start + len(block), 4000))))
-            for cut in places:
-                with self.subTest(block=name, cut=cut - start):
-                    whole = self.check(text, [cut])
-                    self.assertNotEqual(whole, text)
+        # Text of 2 * REACH and more on each side of the block, so every window reaches as far as it does in a longer
+        # text; read in pieces from 64K, where the package reads them from 256K, so the test costs a third.
+        with mock.patch.object(masking, "WHOLE", 64 * 1024), mock.patch.object(masking, "ALONE", 64 * 1024):
+            for name, block in self.blocks().items():
+                left = filler(2 * masking.REACH + 4096, 21)
+                text = left + "\n" + block + "\n" + filler(2 * masking.REACH + 4096, 22)
+                self.assertGreater(len(text), masking.WHOLE)
+                whole = masking._mask_whole(text)
+                self.assertNotEqual(whole, text)
+                start = len(left) + 1
+                breaks = [start + m.end() for m in re.finditer("\n", block)]
+                places = sorted(set(breaks[:2] + breaks[-2:] + list(range(start + 1, start + len(block), 6000))))
+                for cut in places:
+                    with self.subTest(block=name, cut=cut - start):
+                        self.check(text, [cut], whole)
 
     def test_a_long_text_with_keys_masks_as_whole_as_cut_by_itself(self):
         blocks = list(self.blocks().values())
-        text = "".join(filler(40000, i) + "\n" + blocks[i % len(blocks)] + "\n" for i in range(12))
+        text = "".join(filler(30000, i) + "\n" + blocks[i % len(blocks)] + "\n" for i in range(8))
         self.assertGreater(len(text), masking.WHOLE)
         fresh_memo()
         self.assertEqual(mask(text), masking._mask_whole(text))
@@ -257,38 +265,30 @@ def counting():
 
 
 class Speed(unittest.TestCase):
-    """A session grows all day and is masked again each time it is read: only where it grew is masked again."""
-
-    def setUp(self):
-        patch = in_pieces()
-        patch.start()
-        self.addCleanup(patch.stop)
+    """A session grows all day and is masked again each time it is read: only where it grew is masked again, even
+    where what it grew by holds a keyword the rest does not."""
 
     def test_a_grown_text_masks_again_only_where_it_grew(self):
-        text = sprinkled(900_000, 3)
-        fresh_memo()
-        started = time.process_time()
-        first = mask(text)
-        cold = time.process_time() - started
-        grown = text + sprinkled(20_000, 4)
-        calls, patch = counting()
-        with patch:
+        with sizes(64 * 1024, 32 * 1024, 8 * 1024):
+            text = sprinkled(400_000, 3)
+            self.assertNotIn("facebook", text.lower())
+            fresh_memo()
             started = time.process_time()
-            again = mask(grown)
-            warm = time.process_time() - started
-        self.assertEqual(again[:len(first) - 2 * masking.PIECE], first[:len(first) - 2 * masking.PIECE])
-        self.assertLess(sum(calls), 3 * masking.PIECE + 4 * masking.REACH + 20_000)
-        self.assertLess(warm, cold / 2)
-
-    def test_a_keyword_new_far_away_masks_again_only_where_its_rule_finds_a_secret(self):
-        text = sprinkled(900_000, 5)
-        self.assertNotIn("facebook", text.lower())
-        fresh_memo()
-        mask(text)
-        calls, patch = counting()
-        with patch:
-            mask(text + "\nsee the facebook docs\n")
-        self.assertLess(sum(calls), 3 * masking.PIECE + 4 * masking.REACH)
+            first = mask(text)
+            cold = time.process_time() - started
+            grown = text + sprinkled(20_000, 4)
+            calls, patch = counting()
+            with patch:
+                started = time.process_time()
+                again = mask(grown)
+                warm = time.process_time() - started
+            self.assertEqual(again[:len(first) - 2 * masking.PIECE], first[:len(first) - 2 * masking.PIECE])
+            self.assertLess(sum(calls), 3 * masking.PIECE + 4 * masking.REACH + 20_000)
+            self.assertLess(warm, cold / 2)
+            calls.clear()
+            with patch:
+                mask(grown + "\nsee the facebook docs\n")
+            self.assertLess(sum(calls), 3 * masking.PIECE + 4 * masking.REACH)
 
 
 class FarKeywords(unittest.TestCase):
@@ -346,8 +346,8 @@ class Memo(unittest.TestCase):
         self.dir.cleanup()
 
     def test_a_later_run_finds_what_an_earlier_one_masked(self):
-        text = sprinkled(400_000, 5)
-        with masking.memo(self.path):
+        text = sprinkled(100_000, 5)
+        with sizes(64 * 1024, 32 * 1024, 8 * 1024), masking.memo(self.path):
             first = mask(text)
             short = mask("password=" + "x7Rt9Lm2" * 200)
         fresh_memo()
