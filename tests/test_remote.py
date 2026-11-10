@@ -34,7 +34,7 @@ out = subprocess.run([{python!r}, "-I", "-"], input=program, stdout=subprocess.P
 listing = b"'verb': 'live_ids'" in program
 if alias == "stalls" and not listing:
     sys.stdout.buffer.write(out.stdout.splitlines(True)[0])
-    sys.stderr.write("Timeout, server not responding.\\n")
+    sys.stderr.write("Timeout, server stalls.example not responding.\\n")
     sys.exit(255)
 if alias == "drops" and listing:
     sys.stdout.buffer.write(out.stdout.splitlines(True)[0])

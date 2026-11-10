@@ -19,9 +19,9 @@ from kb.paths import Paths
 from kb.sources import Gone, Item, Progress
 
 # What ssh prints when the computer is off the network, as when a laptop sleeps (before the read, or during it: "Timeout,
-# server not responding" once its keep-alives go unanswered). A refused login is a fault.
+# server HOST not responding" once its keep-alives go unanswered). A refused login is a fault.
 OFF_NETWORK = re.compile(r"Operation timed out|Connection timed out|No route to host|Host is down|Network is unreachable"
-                         r"|Timeout, server not responding")
+                         r"|Timeout, server \S+ not responding")
 # A link that dies during a read, as when the laptop sleeps, ends after about a minute of unanswered keep-alives, so
 # its ssh exits and the connection closes instead of waiting for TCP to give up hours later.
 KEEPALIVE = ["-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=4"]
