@@ -194,10 +194,13 @@ class FullSize(unittest.TestCase):
         self.addCleanup(patch.stop)
 
     def check(self, text, cuts):
-        with cut_at(*cuts):
+        self.assertGreater(len(text), masking.WHOLE)
+        read, real = [], masking._pieces
+        with cut_at(*cuts), mock.patch.object(masking, "_pieces", side_effect=lambda t: read.append(real(t)) or read[-1]):
             fresh_memo()
             whole = masking._mask_whole(text)
             self.assertEqual(mask(text), whole)
+        self.assertTrue(read and read[-1] is not None, "read in pieces, not whole")
         return whole
 
     def blocks(self):
@@ -217,8 +220,8 @@ class FullSize(unittest.TestCase):
 
     def test_key_blocks_cut_at_their_breaks(self):
         for name, block in self.blocks().items():
-            left = filler(masking.REACH * 3, 21)
-            text = left + "\n" + block + "\n" + filler(masking.REACH * 3, 22)
+            left = filler(masking.WHOLE // 2 + 4096, 21)
+            text = left + "\n" + block + "\n" + filler(masking.WHOLE // 2, 22)
             start = len(left) + 1
             breaks = [start + m.end() for m in re.finditer("\n", block)]
             places = sorted(set(breaks[:3] + breaks[-3:] + list(range(start + 1, start + len(block), 4000))))
@@ -303,6 +306,18 @@ class FarKeywords(unittest.TestCase):
             self.assertNotIn(token, masked)
             self.assertEqual(masked, masking._mask_whole(grown))
             self.assertIn(token, mask(text))
+
+    def test_a_keyword_only_a_piece_sees_reads_the_rule_in_every_piece(self):
+        # As where only a view without characters some reading does not see holds the keyword: the whole text's
+        # keywords miss it, and the pieces find it, so they are read again with it.
+        rule = next(r for r in masking._GITLEAKS if r[3] == ("facebook",))
+        token = samples.samples(rule[0], 1, 7)[0]
+        text = filler(3000, 33) + "\n" + token + "\n" + filler(9000, 34) + "\nsee the facebook docs\n"
+        with sizes(4096, 2048, 512), mock.patch.object(masking, "_keywords_in", return_value=frozenset()):
+            fresh_memo()
+            masked = mask(text)
+            self.assertEqual(masked, masking._mask_whole(text))
+        self.assertNotIn(token, masked)
 
     def test_what_every_match_of_a_rule_holds(self):
         # A rule is skipped in a piece that lacks all its keywords only where the piece lacks what each match holds.

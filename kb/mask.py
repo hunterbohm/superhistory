@@ -785,8 +785,14 @@ def _rule_read(pattern, keywords, lower):
     """Whether a gitleaks rule (its `pattern` and `keywords`) reads a text whose lowercase is `lower`: True where the
     text holds a keyword of it, or it has none; else, inside a long text's piece, "far" where the whole text holds one
     (_SEEN_KEYWORDS), and while _FAR records, False, so the rule is read to say whether it would find a secret, unless
-    the text lacks what every match of it holds (_needed)."""
-    if not keywords or any(k in lower for k in keywords):
+    the text lacks what every match of it holds (_needed). The keywords a piece's texts hold are noted (_SAW)."""
+    if not keywords:
+        return True
+    here = [k for k in keywords if k in lower]
+    if here:
+        saw = _SAW.get()
+        if saw is not None:
+            saw.update(here)
         return True
     if any(k in _SEEN_KEYWORDS.get() for k in keywords):
         return "far"
@@ -822,6 +828,8 @@ def _needed(items):
 
 
 def _needed_by(pattern):
+    if pattern.flags & re.IGNORECASE and not pattern.flags & re.ASCII:
+        return None  # Unicode case folding matches characters whose lowercase is not the literal's: "ſ" for "s"
     try:
         return _needed(_sre_parse.parse(pattern.pattern, pattern.flags))
     except Exception:  # a parser of another Python: the rule is read to say whether it finds one
@@ -4785,26 +4793,31 @@ def _part(text):
     reads gitleaks' rules for keywords anywhere in the whole text (_SEEN_KEYWORDS), so its result is kept by which of
     the rules that find a secret in it without a keyword of their own there are read (_far_how): a keyword new
     elsewhere in a growing text changes how a piece reads only where such a rule of it finds one."""
-    far = _MEMO.get("far", text)
-    found = _MEMO.get("piece", text, _far_how(far)) if far is not None else None
+    record = _MEMO.get("far", text)
+    record = json.loads(record) if record is not None else None
+    found = _MEMO.get("piece", text, _far_how(record["far"])) if isinstance(record, dict) else None
     if found is None:
-        token = _FAR.set(set())
+        tokens = _FAR.set(set()), _SAW.set(set())
         try:
             result, origin, still = _masked(text)
-            far = json.dumps(sorted(list(k) for k in _FAR.get()))
+            record = {"far": sorted(list(k) for k in _FAR.get()), "saw": sorted(_SAW.get())}
         finally:
-            _FAR.reset(token)
+            _FAR.reset(tokens[0])
+            _SAW.reset(tokens[1])
         found = (result, array.array("q", origin), still)
-        _MEMO.put("far", text, far)
-        _MEMO.put("piece", text, found, _far_how(far))
+        _MEMO.put("far", text, json.dumps(record))
+        _MEMO.put("piece", text, found, _far_how(record["far"]))
+    saw = _SAW_ALL.get()
+    if saw is not None:
+        saw.update(record["saw"])
     return found
 
 
 def _far_how(far):
     """How a piece reads, as its memo knows it: each set of keywords of a rule that finds a secret in it without one of
-    them there (`far`, as JSON), and whether the whole text holds one of them."""
+    them there (`far`), and whether the whole text holds one of them."""
     seen = _SEEN_KEYWORDS.get()
-    return json.dumps([[k, any(w in seen for w in k)] for k in json.loads(far)])
+    return json.dumps([[k, any(w in seen for w in k)] for k in far])
 
 
 def _span(result, origin, base, low, high):
@@ -4859,12 +4872,21 @@ def _in_pieces(text):
 
 def _long(text):
     """_masked() of a long text (_in_pieces), read in pieces: (result, origin, still); None when a piece still
-    changes at the last pass, and the text is then masked whole."""
-    token = _SEEN_KEYWORDS.set(_keywords_in(text))
-    try:
-        return _pieces(text)
-    finally:
-        _SEEN_KEYWORDS.reset(token)
+    changes at the last pass, and the text is then masked whole. The pieces read with the keywords the whole text
+    holds (_keywords_in); where they find one there in a text of their own that the whole holds none of, as a view
+    without the characters one reading or another does not see, they are read again with it too."""
+    seen = _keywords_in(text)
+    while True:
+        saw = set()
+        tokens = _SEEN_KEYWORDS.set(frozenset(seen)), _SAW_ALL.set(saw)
+        try:
+            found = _pieces(text)
+        finally:
+            _SEEN_KEYWORDS.reset(tokens[0])
+            _SAW_ALL.reset(tokens[1])
+        if found is None or saw <= seen:
+            return found
+        seen = seen | saw
 
 
 def _pieces(text):
@@ -4943,6 +4965,9 @@ _SEEN_KEYWORDS = contextvars.ContextVar("kb_mask_seen_keywords", default=frozens
 # whether the rule is read or not. Whatever the rest of the whole text holds, the piece reads alike wherever it holds
 # keywords of these rules alike: each other rule is read where the piece holds a keyword of it, or finds nothing.
 _FAR = contextvars.ContextVar("kb_mask_far", default=None)
+# The keywords of gitleaks' rules the texts a piece's mask reads hold (_SAW), and all its pieces' (_SAW_ALL, _long).
+_SAW = contextvars.ContextVar("kb_mask_saw", default=None)
+_SAW_ALL = contextvars.ContextVar("kb_mask_saw_all", default=None)
 
 
 class _Memo:
