@@ -222,7 +222,8 @@ def cmd_ingest(paths, config, args):
             return 0
         db = store.connect(paths.db)
         config = _own(paths, config)
-        failures = ingest.run(db, config, log, args.only or (), not args.no_summaries)
+        failures = ingest.run(db, config, log, args.only or (), not args.no_summaries,
+                              memo=paths.cache_dir / "mask-memo.sqlite")
         failures += ingest.after(paths, config, db, log)
         return 1 if failures else 0
 

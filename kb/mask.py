@@ -1,8 +1,10 @@
+import array
 import ast
 import base64
 import bisect
 import calendar
 import codecs
+import collections
 import contextlib
 import contextvars
 import functools
@@ -17,6 +19,12 @@ import shlex
 import sys
 import traceback
 import warnings
+
+try:
+    from re import _constants as _sre, _parser as _sre_parse
+except ImportError:  # Python before 3.11
+    import sre_constants as _sre
+    import sre_parse as _sre_parse
 
 from kb import gitleaks
 
@@ -773,16 +781,78 @@ def _gitleaks_secret(m, group, entropy, allowed, stopwords):
     return start, end
 
 
+def _rule_read(pattern, keywords, lower):
+    """Whether a gitleaks rule (its `pattern` and `keywords`) reads a text whose lowercase is `lower`: True where the
+    text holds a keyword of it, or it has none; else, inside a long text's piece, "far" where the whole text holds one
+    (_SEEN_KEYWORDS), and while _FAR records, False, so the rule is read to say whether it would find a secret, unless
+    the text lacks what every match of it holds (_needed)."""
+    if not keywords or any(k in lower for k in keywords):
+        return True
+    if any(k in _SEEN_KEYWORDS.get() for k in keywords):
+        return "far"
+    if _FAR.get() is None:
+        return None
+    needed = _NEEDED.get(pattern)
+    return None if needed is not None and not any(n in lower for n in needed) else False
+
+
+def _needed(items):
+    """Strings, lowercase, one of which every match of a parsed pattern's `items` holds; None when none is known. A
+    match holds a match of each item that is not an assertion, so of its literals, of a group's, of each branch's, of
+    what repeats at least once."""
+    best, run = None, ""
+
+    def longer(a, b):
+        return b if a is None or (b is not None and min(map(len, b)) > min(map(len, a))) else a
+    for op, av in list(items) + [(None, None)]:
+        if op is _sre.LITERAL:
+            run += chr(av).lower()
+            continue
+        if run:
+            best, run = longer(best, frozenset([run])), ""
+        if op is _sre.SUBPATTERN:
+            best = longer(best, _needed(av[-1]))
+        elif op is _sre.BRANCH:
+            each = [_needed(branch) for branch in av[1]]
+            if all(each):
+                best = longer(best, frozenset().union(*each))
+        elif op in (_sre.MAX_REPEAT, _sre.MIN_REPEAT) and av[0] >= 1:
+            best = longer(best, _needed(av[2]))
+    return best
+
+
+def _needed_by(pattern):
+    try:
+        return _needed(_sre_parse.parse(pattern.pattern, pattern.flags))
+    except Exception:  # a parser of another Python: the rule is read to say whether it finds one
+        return None
+
+
+_NEEDED = {rule[0]: _needed_by(rule[0]) for rule in _GITLEAKS + _GITLEAKS_AFTER_A_BREAK}
+
+
+def _far_found(keywords):
+    """Records that a rule with `keywords`, none of them in the text it reads, finds a secret there (_FAR)."""
+    far = _FAR.get()
+    if far is not None:
+        far.add(keywords)
+
+
 def _gitleaks_spans(text, rules=None):
     """Where gitleaks' rules find a secret in `text`, ordered and merged; each rule read only where a keyword of it
     is in the text."""
     lower, spans = text.lower(), []
     for pattern, group, entropy, keywords, allowed, stopwords in (_GITLEAKS if rules is None else rules):
-        if keywords and not any(k in lower for k in keywords):
+        read = _rule_read(pattern, keywords, lower)
+        if read is None:
             continue
         for m in pattern.finditer(text):
             span = _gitleaks_secret(m, group, entropy, allowed, stopwords)
             if span:
+                if read is not True:  # read for a keyword elsewhere in the text, or only to say whether that matters
+                    _far_found(keywords)
+                    if not read:
+                        break
                 spans.append(span)
     merged = []
     for start, end in sorted(spans):
@@ -4242,8 +4312,8 @@ def _split_secrets_seen(text, rules, run, starts, seen_by_main):
     text_only = rules[2] in ("named", "today")  # an id is read without gitleaks' rules, as _run reads it
     found = sorted(found + (_gitleaks_spans(view) if text_only else []))
     lower = view.lower()
-    vendored = [rule for rule in _GITLEAKS_AFTER_A_BREAK
-                if text_only and (not rule[3] or any(k in lower for k in rule[3]))]
+    vendored = [(rule, read) for rule in (_GITLEAKS_AFTER_A_BREAK if text_only else ())
+                for read in [_rule_read(rule[0], rule[3], lower)] if read is not None]
     glued = _glued_tokens(v, found, after_a_break, vendored)
 
     spans = list(seen_by_main)
@@ -4294,12 +4364,16 @@ def _glued_tokens(v, found, after_a_break, vendored):
             if token and token.end() > place and not _scheme_words(token):
                 glued.append((place, token.end()))
                 continue
-            for pattern, group, entropy, _, allowed, stopwords in vendored:
+            for (pattern, group, entropy, keywords, allowed, stopwords), read in vendored:
                 m = pattern.match(view, place, stop)
                 if m and m.end() == stop < len(view):
                     m = pattern.match(view, place)
                 span = m and _gitleaks_secret(m, group, entropy, allowed, stopwords)
                 if span and span[1] > place:
+                    if read is not True:
+                        _far_found(keywords)
+                        if not read:
+                            continue
                     glued.append((max(place, span[0]), span[1]))
                     break
     return glued
@@ -4596,8 +4670,8 @@ def _passes_masked(text, places=frozenset()):
     return masked, [came[c] if c >= 0 else -1 for c in after], still
 
 
-def mask_with_origin(text):
-    """mask(), and where each character of the result came from in `text`, -1 for a placeholder's (kb.mask._edit)."""
+def _mask_with_origin_whole(text):
+    """mask_with_origin() of the text read whole."""
     original = text
     text, origin, still = _masked(text)
     if not still:
@@ -4609,12 +4683,8 @@ def mask_with_origin(text):
             list(range(head)) + [-1] * 8 + list(range(len(original) - tail, len(original))))
 
 
-def mask(text):
-    """The text with every secret replaced by "[masked]". A placeholder can make the text next to it read as a secret
-    or as a key's leftovers, so masking repeats until a pass changes nothing: masked text masks to itself, and text
-    with no secret costs one pass. No pattern matches a placeholder alone, so it stops; should a text still change at
-    the last pass, the region still changing is masked whole, and counted in `capped`. Where a pass read otherwise than
-    main's own could, the text is masked again as _masked masks it, all main's own mask hides hidden too."""
+def _mask_whole(text):
+    """mask() of the text read whole."""
     global capped
     original, novel, keys = text, [], _encoded_key_spans(text)
     if keys:  # hidden over the passes, which then need to know where each character came from
@@ -4643,6 +4713,373 @@ def mask(text):
     tail = len(os.path.commonprefix([original[head:][::-1], text[head:][::-1]]))
     capped += 1
     return text[:head] + "[masked]" + text[len(text) - tail:]
+
+
+# Long texts. Some readings above go over the whole text again for each thing they find, so masking a text whole takes
+# time that grows faster than its length: an agent session of 4 MB took minutes, more where it is dense with
+# secret-like strings, and a session grows all day, masked again each time it is read. A long text (_in_pieces) is
+# masked in pieces of about PIECE characters (_piece_cuts), each read whole, with the same result as the text read whole:
+# - No pattern reads farther than REACH from where it starts but those that run on to the end of a text, such as a
+#   key's paragraph. Where a piece's mask hides its last character, or the next piece's its first, the two are masked
+#   as one piece instead, so such a run is never cut.
+# - Everything within REACH of a cut is checked against a window of the text read whole that reaches 2 * REACH from
+#   the cut on each side (_cut_holds): whatever a secret across the cut makes the mask hide, read whole, the window
+#   hides too, with all the text that decides it. Where the pieces and the window differ, the two pieces are masked
+#   as one piece instead, and the cuts at its ends are checked again.
+# - Farther from a cut, a piece holds REACH of the text on both sides of every character, as the whole text does.
+# A piece that still changes at the last pass (MAX_PASSES) has the text masked whole, as before.
+# The windows read each character about twice, so pieces cost more than a plain text read whole until it is long:
+# they are read for a text longer than WHOLE where the memo keeps them for the next read (memo()), as a session read
+# again is, and else for one longer than ALONE.
+WHOLE = 256 * 1024
+ALONE = 2 * 1024 * 1024
+PIECE = 128 * 1024
+MERGED = 4 * PIECE
+# The longest reach of a bounded pattern: an encrypted key's fields to its footer (_FIELDS_TO_KEY_END), two paragraphs
+# of 16,384 characters, a blank line and the footer, with room to spare.
+REACH = 36 * 1024
+
+
+def _piece_cuts(text):
+    """Where `text` is cut into pieces: after the first line break at least PIECE past the last cut, or, in a line
+    longer than PIECE, after the first space or tab there, or, failing both within 2 * PIECE, at PIECE past it. Cuts
+    are counted from the start, so a text that grows at its end is cut where it was before, and its pieces repeat."""
+    cuts, at, size = [], 0, len(text)
+    while size - at > PIECE:
+        least, most = at + PIECE, min(size, at + 2 * PIECE)
+        cut = text.find("\n", least, most)
+        if cut < 0:
+            spaces = [i for i in (text.find(" ", least, most), text.find("\t", least, most)) if i >= 0]
+            cut = min(spaces) if spaces else least - 1
+        cut += 1
+        if cut >= size:
+            break
+        cuts.append(cut)
+        at = cut
+    return cuts
+
+
+def _at(origin, source):
+    """The index in a mask's result of the character that came from `source`, or None when it was hidden."""
+    i = bisect.bisect_left(_Kept(origin), source)
+    return i if i < len(origin) and origin[i] == source else None
+
+
+class _Kept:
+    """A mask's origin as bisect reads it: a placeholder's -1 reads as the source before it, which keeps it in order."""
+
+    def __init__(self, origin):
+        self.origin = origin
+
+    def __len__(self):
+        return len(self.origin)
+
+    def __getitem__(self, i):
+        while i >= 0 and self.origin[i] < 0:
+            i -= 1
+        return self.origin[i] if i >= 0 else -1
+
+
+def _part(text):
+    """_masked() of a piece or a window, as (result, origin, still), its origin an array; kept in the memo. A piece
+    reads gitleaks' rules for keywords anywhere in the whole text (_SEEN_KEYWORDS), so its result is kept by which of
+    the rules that find a secret in it without a keyword of their own there are read (_far_how): a keyword new
+    elsewhere in a growing text changes how a piece reads only where such a rule of it finds one."""
+    far = _MEMO.get("far", text)
+    found = _MEMO.get("piece", text, _far_how(far)) if far is not None else None
+    if found is None:
+        token = _FAR.set(set())
+        try:
+            result, origin, still = _masked(text)
+            far = json.dumps(sorted(list(k) for k in _FAR.get()))
+        finally:
+            _FAR.reset(token)
+        found = (result, array.array("q", origin), still)
+        _MEMO.put("far", text, far)
+        _MEMO.put("piece", text, found, _far_how(far))
+    return found
+
+
+def _far_how(far):
+    """How a piece reads, as its memo knows it: each set of keywords of a rule that finds a secret in it without one of
+    them there (`far`, as JSON), and whether the whole text holds one of them."""
+    seen = _SEEN_KEYWORDS.get()
+    return json.dumps([[k, any(w in seen for w in k)] for k in json.loads(far)])
+
+
+def _span(result, origin, base, low, high):
+    """The part of a mask's result whose characters came from `low` to `high` of the text (`base` being where the
+    masked text starts in it), with each one's source, or None when the first or last of them was hidden."""
+    first, last = _at(origin, low - base), _at(origin, high - 1 - base)
+    if first is None or last is None:
+        return None
+    return result[first:last + 1], [c + base if c >= 0 else -1 for c in origin[first:last + 1]]
+
+
+def _cut_holds(text, before, after):
+    """Whether the cut between two pieces, each (start, end, (result, origin, still)), masks as the text read whole
+    there: neither piece's mask hides the characters at the cut, and the two say what a window of the text read whole
+    says, within REACH of it."""
+    start, cut, (left, left_origin, _) = before
+    _, end, (right, right_origin, _) = after
+    if not left or not right or left_origin[-1] != cut - 1 - start or right_origin[0] != 0:
+        return False
+    low, high = max(0, cut - 2 * REACH), min(len(text), cut + 2 * REACH)
+    window, window_origin, still = _part(text[low:high])
+    if still:
+        return False
+    first, last = max(start, cut - REACH), min(end, cut + REACH)
+    read = _span(window, window_origin, low, first, last)
+    head = _span(left, left_origin, start, first, cut)
+    tail = _span(right, right_origin, cut, cut, last)
+    return read is not None and head is not None and tail is not None and read == (head[0] + tail[0],
+                                                                                    head[1] + tail[1])
+
+
+def _keywords_in(text):
+    """The keywords of gitleaks' rules anywhere in `text`, as the mask reads it: as written, without the characters a
+    reader does not see, and with JSON's escapes read once and twice. A rule is read only where the text holds a
+    keyword of it, which may stand far from the token: a piece reads a rule where the whole text holds one."""
+    views, view = [text, _unseen_view(text)[0]], text
+    for _ in range(2):
+        read = "\\" in view and _json_unescaped(view)
+        if not read:
+            break
+        view = read[0]
+        views += [view, _unseen_view(view)[0]]
+    lowered = [v.lower() for v in views]
+    return frozenset(k for rule in _GITLEAKS + _GITLEAKS_AFTER_A_BREAK for k in rule[3]
+                     if any(k in low for low in lowered))
+
+
+def _in_pieces(text):
+    """Whether `text` is masked in pieces (_long)."""
+    return len(text) > (WHOLE if _MEMO.file is not None else ALONE)
+
+
+def _long(text):
+    """_masked() of a long text (_in_pieces), read in pieces: (result, origin, still); None when a piece still
+    changes at the last pass, and the text is then masked whole."""
+    token = _SEEN_KEYWORDS.set(_keywords_in(text))
+    try:
+        return _pieces(text)
+    finally:
+        _SEEN_KEYWORDS.reset(token)
+
+
+def _pieces(text):
+    """The pieces of _long, from the start: each cut is checked as its piece is masked, and where it does not hold,
+    the two pieces are masked as one and the cut before them checked again. A piece that grows past MERGED, as one in
+    a text the mask hides most of does, has the text masked whole instead: merging on would read it again and again."""
+    bounds = [0] + _piece_cuts(text) + [len(text)]
+    pieces = []
+    for a, b in zip(bounds, bounds[1:]):
+        piece = (a, b, _part(text[a:b]))
+        while not piece[2][2] and pieces and not _cut_holds(text, pieces[-1], piece):
+            start = pieces.pop()[0]
+            if b - start > MERGED:
+                return None
+            piece = (start, b, _part(text[start:b]))
+        if piece[2][2]:
+            return None
+        pieces.append(piece)
+    origin = []
+    for start, _, (_, part, _) in pieces:
+        origin.extend([c + start if c >= 0 else -1 for c in part] if start else part)
+    return "".join(piece[2][0] for piece in pieces), origin, False
+
+
+def _plain():
+    """Whether mask() is called as callers call it: not from inside a mask, which reads with settings of its own."""
+    return (_TOP.get() and _NOVEL.get() is None and _WRAPPINGS.get() and not _KEY_PLACES.get()
+            and not _KEY_HERE.get() and _READ_DEPTH.get() == (0, 0))
+
+
+def mask_with_origin(text):
+    """mask(), and where each character of the result came from in `text`, -1 for a placeholder's (kb.mask._edit)."""
+    if not _plain():
+        return _mask_with_origin_whole(text)
+    token = _TOP.set(False)
+    try:
+        found = _long(text) if _in_pieces(text) else None
+        return (found[0], found[1]) if found is not None else _mask_with_origin_whole(text)
+    finally:
+        _TOP.reset(token)
+
+
+def mask(text):
+    """The text with every secret replaced by "[masked]". A placeholder can make the text next to it read as a secret
+    or as a key's leftovers, so masking repeats until a pass changes nothing: masked text masks to itself, and text
+    with no secret costs one pass. No pattern matches a placeholder alone, so it stops; should a text still change at
+    the last pass, the region still changing is masked whole, and counted in `capped`. Where a pass read otherwise than
+    main's own could, the text is masked again as _masked masks it, all main's own mask hides hidden too. A text
+    long text is read in pieces, to the same result (_long), and results are kept in the memo (_MEMO)."""
+    if not _plain():
+        return _mask_whole(text)
+    kept = len(text) > WHOLE or (len(text) >= MEMO_LEAST and _MEMO.file is not None)
+    found = _MEMO.get("text", text) if kept else None
+    if found is not None:
+        return found
+    token = _TOP.set(False)
+    try:
+        long = _long(text) if _in_pieces(text) else None
+        found = long[0] if long is not None else _mask_whole(text)
+    finally:
+        _TOP.reset(token)
+    if kept:
+        _MEMO.put("text", text, found)
+    return found
+
+
+# The memo: what mask() worked out, by the text and how it was read, so a text masked again costs a lookup. A session
+# read again has the same pieces but its last, and each of its tool outputs is the same text. A long text's pieces and
+# result are kept in this process; with memo(), every text of MEMO_LEAST or more is kept, in a file too, for the next
+# run.
+MEMO_LEAST = 1024
+_TOP = contextvars.ContextVar("kb_mask_top", default=True)
+# The keywords of gitleaks' rules the whole of a long text holds, while its pieces are masked (_keywords_in).
+_SEEN_KEYWORDS = contextvars.ContextVar("kb_mask_seen_keywords", default=frozenset())
+# While a piece is masked (_part): the keywords of each gitleaks rule that finds a secret in it with none of them there,
+# whether the rule is read or not. Whatever the rest of the whole text holds, the piece reads alike wherever it holds
+# keywords of these rules alike: each other rule is read where the piece holds a keyword of it, or finds nothing.
+_FAR = contextvars.ContextVar("kb_mask_far", default=None)
+
+
+class _Memo:
+    """Results by a hash of (kind, mask VERSION, how the text is read, text), the latest LIMIT characters of them kept
+    in this process; and with a file (memo()), there too."""
+    LIMIT = 64 * 1024 * 1024
+
+    def __init__(self):
+        self.kept, self.size, self.file = collections.OrderedDict(), 0, None
+
+    def _key(self, kind, text, how):
+        how = f"{kind}\x00{VERSION}\x00{int(_STORED_ROW.get())}\x00{how}\x00".encode()
+        return hashlib.sha256(how + text.encode("utf-8", "surrogatepass")).digest()
+
+    def get(self, kind, text, how=""):
+        key = self._key(kind, text, how)
+        found = self.kept.get(key)
+        if found is not None:
+            self.kept.move_to_end(key)
+            return found[0]
+        if self.file is not None:
+            found = self.file.get(key, text)
+            if found is not None:
+                self._keep(key, found)
+        return found
+
+    def put(self, kind, text, value, how=""):
+        key = self._key(kind, text, how)
+        self._keep(key, value)
+        if self.file is not None:
+            self.file.put(key, value)
+
+    def _keep(self, key, value):
+        size = len(value) if isinstance(value, str) else len(value[0]) + 8 * len(value[1])
+        self.kept[key] = (value, size)
+        self.size += size
+        while self.size > self.LIMIT and self.kept:
+            _, (_, gone) = self.kept.popitem(last=False)
+            self.size -= gone
+
+
+class _MemoFile:
+    """The memo's file: results by a keyed hash of the text (HMAC, with a key of its own in the file beside it), so the
+    file confirms no guess at a secret to one without the key. It is read only where the texts masked are in files on
+    this computer already (memo()). Entries not used for MEMO_DAYS go."""
+
+    def __init__(self, path):
+        import hmac
+        import sqlite3
+        self._hmac = hmac
+        path = os.path.abspath(path)
+        os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
+        self.secret = _memo_secret(path + ".key")
+        fresh = not os.path.exists(path)
+        if fresh:
+            os.close(os.open(path, os.O_WRONLY | os.O_CREAT, 0o600))
+        self.db = sqlite3.connect(path, timeout=30)
+        self.db.execute("CREATE TABLE IF NOT EXISTS memo(key BLOB PRIMARY KEY, value BLOB NOT NULL, used INTEGER NOT "
+                        "NULL)")
+        self.today = int(__import__("time").time() // 86400)
+        self.db.execute("DELETE FROM memo WHERE used < ?", (self.today - MEMO_DAYS,))
+        self.db.commit()
+
+    def _key(self, key):
+        return self._hmac.new(self.secret, key, "sha256").digest()
+
+    def get(self, key, text):
+        row = self.db.execute("SELECT value FROM memo WHERE key=?", (self._key(key),)).fetchone()
+        if row is None:
+            return None
+        self.db.execute("UPDATE memo SET used=? WHERE key=?", (self.today, self._key(key)))
+        value = json.loads(__import__("zlib").decompress(row[0]).decode("utf-8", "surrogatepass"))
+        if isinstance(value, str):
+            return value
+        result, runs, still = value
+        origin = array.array("q")
+        for first, count in runs:
+            origin.extend(range(first, first + count) if first >= 0 else [-1] * count)
+        return result, origin, still
+
+    def put(self, key, value):
+        if not isinstance(value, str):
+            result, origin, still = value
+            runs = []
+            for c in origin:
+                if runs and ((c < 0 and runs[-1][0] < 0) or (c >= 0 and runs[-1][0] >= 0
+                                                             and runs[-1][0] + runs[-1][1] == c)):
+                    runs[-1][1] += 1
+                else:
+                    runs.append([c if c >= 0 else -1, 1])
+            value = [result, runs, still]
+        blob = __import__("zlib").compress(json.dumps(value, ensure_ascii=False).encode("utf-8", "surrogatepass"))
+        self.db.execute("INSERT OR REPLACE INTO memo VALUES (?,?,?)", (self._key(key), blob, self.today))
+
+    def close(self):
+        self.db.commit()
+        self.db.close()
+
+
+MEMO_DAYS = 30
+
+
+def _memo_secret(path):
+    """The memo file's own key, made once: 32 random bytes only this user can read."""
+    try:
+        with open(path, "rb") as fh:
+            secret = fh.read()
+        if len(secret) == 32:
+            return secret
+    except FileNotFoundError:
+        pass
+    secret = os.urandom(32)
+    fd = os.open(path + ".new", os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "wb") as fh:
+        fh.write(secret)
+    os.replace(path + ".new", path)
+    return secret
+
+
+_MEMO = _Memo()
+
+
+@contextlib.contextmanager
+def memo(path):
+    """Within it, mask() keeps its results in the file at `path` too, and finds them there in a later run. Use it only
+    where the texts masked are in files on this computer already, as a reader of agent sessions reads: the file holds
+    a keyed hash of each text beside its masked form, and one who has the file and its key could confirm a guess at
+    a secret in a text, which the text's own file on this computer shows anyway."""
+    if _MEMO.file is not None:
+        yield
+        return
+    _MEMO.file = _MemoFile(path)
+    try:
+        yield
+    finally:
+        file, _MEMO.file = _MEMO.file, None
+        file.close()
 
 
 def clip(text, limit, more=" …"):

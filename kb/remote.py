@@ -1,5 +1,6 @@
 """Reading a source on another computer. The package travels to it as the program `ssh <host> python3 -` runs, and is
 imported there from memory, so that computer needs Python 3.9 or newer and nothing else, and keeps no copy."""
+import contextlib
 import dataclasses
 import functools
 import importlib
@@ -13,7 +14,8 @@ import traceback
 
 import kb
 from kb import COMMAND
-from kb.mask import holds_secret, id_names, mask, mask_all, secret_in_id
+from kb.mask import holds_secret, id_names, mask, mask_all, memo, secret_in_id
+from kb.paths import Paths
 from kb.sources import Gone, Item, Progress
 
 # What ssh prints when the computer is off the network, as when a laptop sleeps. A refused login is a fault.
@@ -124,8 +126,11 @@ def _serve(request):
         lines = (encode(event) for event in kind.extract(run) if not holds_secret(json.dumps(event.mark, default=str))
                  and (isinstance(event, Progress)
                       or not secret_in_id(event.source_id, id_names(getattr(event, "meta", None)))))
-    for line in lines:
-        sys.stdout.write(line + "\n")
+    # A source of files on this computer keeps masking's results here, beside the files (kb.mask.memo).
+    kept = memo(Paths.for_user().cache_dir / "mask-memo.sqlite") if kind.reads_files else contextlib.nullcontext()
+    with kept:
+        for line in lines:
+            sys.stdout.write(line + "\n")
     sys.stdout.flush()
     return 0
 
