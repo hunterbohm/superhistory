@@ -4000,9 +4000,13 @@ class Base64ReviewTwentyFourthTest(unittest.TestCase):
         # the words went with it; its last line, shorter than a word after it, must go all the same, under a mark that
         # changes from line to line too, and a short key's two lines, the first after the words that open a JSON value.
         # A GnuPG key whose armour comment holds a control byte ends at it without its footer, so its footer must read.
+        # Past a key's last line beside other text, words whose run at the key's column decodes on from it to text, or
+        # a word on that line past it that decodes on to text before text shaped as what follows the line above's run,
+        # may be the key going on after a value read in its place (review round 4), so there the words go with the key.
         import base64
         import json
         import random
+        import re
         import textwrap
         der = made_up_private_key(random.Random(12))
         body = "\n".join(textwrap.wrap(base64.b64encode(der).decode(), 64))
@@ -4031,7 +4035,7 @@ class Base64ReviewTwentyFourthTest(unittest.TestCase):
                         with self.subTest(key=name, form=form, width=width, after=after):
                             masked = mask("Plan\n" + text)
                             self.assertEqual([chunk for chunk in chunks if len(chunk) >= 4 and chunk in masked], [])
-                            self.assertIn(kept, masked)
+                            self.assertTrue(kept in masked or not any(w in masked for w in re.findall(r"[a-z]+", kept)))
 
     @staticmethod
     def whole_and_cut(keys):
@@ -4544,6 +4548,52 @@ class Base64ReviewTwentyFourthTest(unittest.TestCase):
                     self.assertEqual([n for n, line in enumerate(lines) if line in kept and n * width < len(code) - 4],
                                      [])
                     self.assertIn("next paragraph", masked)
+
+    def test_a_line_put_among_a_keys_lines_is_masked_with_them(self):
+        # Under a comment after each line, a padded value beside a key's last line was read in its place and ended the
+        # key with no doubt, so that line showed (review round 4); so did a last line under 16 characters after one on
+        # a line of its own, as after a key's end a run goes on only where it is 16 or more. At a width no multiple of
+        # four each line of a key starts inside a group, so a value, a hash or words on a line of their own among its
+        # lines broke the reading, and the lines after them decoded to nothing alone; and a hash as long as its lines,
+        # read in place of one whatever it decodes to, broke the key's text. Where the key's base64 goes on at its
+        # column past such a line, all from its header goes, to a short last line two lines on. Its footer's own line
+        # holds no secret.
+        import base64
+        import random
+        import textwrap
+        r = random.Random(37)
+        values = (base64.b64encode(b"b" * 46).decode(), base64.b64encode(b"b" * 10).decode(), "Yg==",
+                  "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08", "see the note below")
+        i = 0
+        for name, data in self.key_files(r).items():
+            if name == "gnupg":
+                continue
+            footer = data.rindex(b"-----END" if b"-----END" in data else b"---- END")
+            code = base64.b64encode(data).decode()
+            for width in (61, 64, 70):
+                # whole, cut before its footer, cut there to 5 characters on its last line, or cut anywhere past its
+                # first two lines
+                cut = len(base64.b64encode(data[:footer]))
+                for end in (len(code), cut, max(2, cut // width - 1) * width + 5, r.randrange(2 * width + 4, len(code))):
+                    chunks = textwrap.wrap(code[:end], width)
+                    for value in values:
+                        for where in ("beside", "before", "own line", "two lines up", "own line inside"):
+                            comment, i = (" # " + "a" * 80, " # plain words here")[i % 2], i + 1
+                            lines = [c + comment for c in chunks]
+                            at = len(lines) - 1 - (where == "two lines up")
+                            at = len(lines) // 2 if where == "own line inside" else at
+                            if where == "beside":
+                                lines[at] += " " + value
+                            elif where == "before":
+                                lines[at] = value + " " + lines[at]
+                            else:
+                                lines.insert(at, value + comment)
+                            text = "\n".join(["Notes:"] + lines + ["", "next paragraph"])
+                            with self.subTest(key=name, width=width, end=end, value=value[:4], where=where):
+                                masked = mask(text)
+                                shown = [c for n, c in enumerate(chunks) if len(c) >= 4 and c + comment in masked]
+                                self.assertEqual([c for c in shown if code.index(c) * 3 // 4 < footer - 1], [])
+                                self.assertIn("next paragraph", masked)
 
     def test_horizontal_space_and_line_breaks_are_every_one_python_reads(self):
         import re

@@ -1449,14 +1449,15 @@ def _marked_key_spans(text):
     "+" ("//", a diff's "+"), which then reads as the line's base64: over lines one after another whose base64 starts
     with them, a second reading leaves out as many of them on each as most of those lines start with, or fewer where a
     line starts with fewer, so a line of the key whose own base64 starts with one keeps it, and a line of other text
-    among them changes nothing for the rest. A run whose lines hold a piece of a key's word is read once more, each
-    line as the base64 on it that decodes on from the lines above (_chained_key_lines), as text longer than a line's
-    base64 (a comment, a label) takes the longest run's place, marks that end in "/" or "+" may change in length
-    from line to line, and an armour comment past ASCII decodes to no text. Where more than one run on a line goes
-    on from the lines above (another stream of base64 beside a key's, a second key, random base64 or words as long),
-    which is the key's is not known, so where a line read starts a key file's header with a piece of its word just
-    after, all from there to the last run of base64 on the run's last line whose longest is 8 characters or more is
-    masked."""
+    among them changes nothing for the rest. Every run of two lines or more is read once more, each line as the base64
+    on it that decodes on from the lines above (_chained_key_lines), as text longer than a line's base64 (a comment, a
+    label) takes the longest run's place, marks that end in "/" or "+" may change in length from line to line, an armour
+    comment past ASCII decodes to no text, and a key wrapped at five characters or fewer holds no piece of its word on
+    any one line. Where more than one run on a line goes on from the lines above (another stream of base64 beside a
+    key's, a second key, random base64 or words as long), or a key's base64 goes on past a line of it in doubt (a value,
+    a hash or words put among its lines), which is the key's is not known, so where a line read starts a key file's
+    header with a piece of its word just after, all from there to the last run of base64 on the run's last line whose
+    longest is 8 characters or more, or the last run that may go on the key, is masked."""
     runs, run, at = [], [], 0
     for line in text.splitlines(True):
         end = at + len(line.rstrip(_BREAK_CHARACTERS))
@@ -1487,24 +1488,26 @@ def _marked_key_spans(text):
                             for a, b in ((start if keep else line, start + k), (end, line_end)) if a < b]
     # and each run of two lines or more, read again as the base64 each line goes on (a key wrapped narrower than six
     # characters holds no piece of its word on any one line); where more than one goes on on a line of a key's, or one
-    # goes on, on a line with other text beside it, after a key's base64 ended, which is the key's is not known, so all
-    # from its header to the run's last line of base64 goes: fail closed
+    # goes on, on a line with other text beside it, after a key's base64 ended, or the key's base64 goes on past a line
+    # of it in doubt, which is the key's is not known, so all from its header to the run's last line of base64 goes:
+    # fail closed
     chained, whole = [], []
     for run in runs:
         if len(run) < 2:
             continue
-        lines, unsure = _chained_key_lines(text, run)
+        lines, unsure, reach = _chained_key_lines(text, run)
         read = [line for line in lines if line]
         joined = _joined(text, read, [0] * len(read))
         at = list(itertools.accumulate((end - start for _, start, end, _ in read), initial=0))
         # from the first run read that starts a key file's header with a piece of its word just after, to the last run
-        # read or the last run on the last line whose longest is 8 characters or more, as a wrong pick can end a reading
+        # read, the last that may go on the key in doubt, or the last run on the last line whose longest is 8 characters
+        # or more, as a wrong pick can end a reading
         header = next((read[bisect.bisect_right(at, m.start()) - 1][1] for m in _ENCODED_BEGIN.finditer(joined)
                        if _KEY_PIECE.search(joined, m.start(), m.start() + 56)), None)
         if unsure and header is not None:
             ends = [[*_MARKED_BASE64.finditer(text, line, line_end)][-1].end() for line, start, end, line_end in run
                     if end - start >= 8]
-            whole.append((header, max([read[-1][2]] + ends)))
+            whole.append((header, max([read[-1][2], reach] + ends)))
         elif _ENCODED_KEY.search(joined):
             chained += [(a, b) for line, start, end, line_end in read for a, b in ((line, start), (end, line_end))
                         if a < b]
@@ -1614,29 +1617,47 @@ def _lead_shape(lead):
 
 def _chained_key_lines(text, run):
     """For each line of `run` (_marked_key_spans), the (line, start, end, line_end) of the base64 on it that goes on
-    what the lines above decode to, or None where none does and the line reads as written; and whether, on a line after
-    one that does not end a key, more than one goes on, or any goes on, on a line that holds other text beside it, after
-    a key's base64 ended (padded or short) and before a key file's header is read again, so which is the key's is not
-    known: a padded value read in place of a key's line ends it early, and the key's lines after that may not decode
-    alone. A line's longest run of base64 is not a key's where other text on it is longer (a comment after it, a label
-    before it), nor are its marks all left out where they end in "/" or "+" and differ in length from line to line. A
-    key's base64 decodes to its file's text, so each line is read as a run that decodes to ASCII after the lines above,
-    past as many of the "/" and "+" that start it as that takes (the reader finds each key's word where it is, so a line
-    read as written starts the lines below afresh). Within a key, a run as long as the line above's goes on whatever it
-    decodes to, as an armour comment may hold any byte, and so does one holding a key file's header, wherever it is. Of
-    the runs on a line and the ways to read each, one holding six characters of a key's word, read on from the line
-    above, comes first, then one starting as a key file's header does, so a key's header is read where another file's
-    starts beside it; then one that decodes, then one as long as the line above's, then, where none above is read, the
-    longest. One under 8 characters goes on from the line above only to the end of a key's base64 (its padding or a line
-    break), at the column the line above's starts at, or where no other run on its line goes on and no padding before it
-    ends a key, as a key cut short may end in a line that short. Signs alone are no key's line: as a key's base64 they
-    decode past ASCII. After a line where none goes on, or one shorter than the line above or padded (a key's last), one
-    goes on only where it is 16 characters or more, or starts as a key file's header does, so a word that decodes to
-    ASCII by chance does not."""
+    what the lines above decode to, or None where none does and the line reads as written; whether, on a line after one
+    that does not end a key, more than one goes on (where one is padded, as a key's last line is, another of 8
+    characters or more), or any goes on, on a line that holds other text beside it, after a key's base64 ended (padded
+    or short) and before a key file's header is read again, so which is the key's is not known: a padded value read in
+    place of a key's line ends it early, and the key's lines after that may not decode alone. So too where a line of a
+    key's that holds other text is in doubt, as a run on it is read without decoding or ends the key, or none on it goes
+    on (a value, a hash or words put among a key's lines, read in place of one or breaking them; a key wrapped at a
+    width no multiple of four starts each line inside a group), and on a line after it with other text a run at the
+    column the key's lines start at decodes on, from what the key's base64 left before that line, to text with a
+    character in it that is no space, or, on the line in doubt, a run past the one read decodes on as it would, before
+    text shaped as what follows the run on the line above (a comment after each line): the key may go on there, and the
+    reading follows it on through such runs; and where the last of those ends. A line's longest run of base64 is not a
+    key's where other text on it is longer (a comment after it, a label before it), nor are its marks all left out where
+    they end in "/" or "+" and differ in length from line to line. A key's base64 decodes to its file's text, so each
+    line is read as a run that decodes to ASCII after the lines above, past as many of the "/" and "+" that start it as
+    that takes (the reader finds each key's word where it is, so a line read as written starts the lines below afresh).
+    Within a key, a run as long as the line above's goes on whatever it decodes to, as an armour comment may hold any
+    byte, and so does one holding a key file's header, wherever it is. Of the runs on a line and the ways to read each,
+    one holding six characters of a key's word, read on from the line above, comes first, then one starting as a key
+    file's header does, so a key's header is read where another file's starts beside it; then one that decodes, then one
+    as long as the line above's, then, where none above is read, the longest. One under 8 characters goes on from the
+    line above only to the end of a key's base64 (its padding or a line break), at the column the line above's starts
+    at, or where no other run on its line goes on and no padding before it ends a key, as a key cut short may end in a
+    line that short. Signs alone are no key's line: as a key's base64 they decode past ASCII. After a line where none
+    goes on, or one shorter than the line above or padded (a key's last), one goes on only where it is 16 characters or
+    more, or starts as a key file's header does, so a word that decodes to ASCII by chance does not."""
     lines, unsure, ended = [], False, False
     # carry: the characters past the last whole group of those read; tail: the last five read, as a key's word goes on
     carry, width, closed, tail, column = "", 0, True, "", None  # column: where the line above's run starts on it
-    for line, _, _, line_end in run:
+    after = ""  # what follows the line above's run on it
+    shadow = None  # past a line of a key's in doubt: (what the key's base64 left before it, the key's lines' column)
+    reach = 0  # where the last run that may go on a key in doubt ends
+    for line, own_start, own_end, line_end in run:
+        beside = bool(text[line:own_start].strip() or text[own_end:line_end].strip())  # other text on the line
+        # the key going on past that line, at its column: which line is the key's is not known
+        for m in _MARKED_BASE64.finditer(text, line, line_end) if shadow is not None and beside else ():
+            piece = m.group().lstrip("+/")
+            if len(piece) >= 4 and m.end() - len(piece) - line == shadow[1] and _decodes_to_text(shadow[0], piece):
+                unsure, reach, joined = True, m.end(), shadow[0] + piece
+                shadow = (joined[len(joined) - len(joined) % 4:], shadow[1])  # and on past this line
+                break
         found = []  # for each run on the line that goes on: (rank, its pick, what it leaves past its groups)
         spare = None  # the first run under 8 characters that goes on, read where no other does
         padded = _PADDED_LINE.match(text, line, line_end)  # read once a line, as each run on a long one would cost it
@@ -1667,20 +1688,49 @@ def _chained_key_lines(text, run):
         if not found and spare:
             found = [spare]
         if not found:
+            shadow = (carry, column) if not closed and beside else shadow  # none goes on, within a key
             lines.append(None)
             carry, closed, tail = "", True, ""
             continue
-        _, pick, carry = max(found, key=lambda each: each[0])
+        carry_before = carry
+        rank, pick, carry = max(found, key=lambda each: each[0])
         size = pick[2] - pick[1]
         # on a line with other text beside its run: bare lines are main's reader's, which reads them whole
         unsure = (unsure or ended and bool(text[line:pick[1]].strip() or text[pick[2]:line_end].strip())
-                  or not closed and len(found) > 1 and text[pick[2] - 1] != "=")  # padded, a key's last line
-        closed = text[pick[2] - 1] == "=" or not closed and size < width
+                  or not closed and len(found) > 1 and (text[pick[2] - 1] != "="  # padded, a key's last line
+                                                       or sum(each[0][2] and each[1][2] - each[1][1] >= 8
+                                                              for each in found) > 1))  # unless one as long goes on
+        ends = text[pick[2] - 1] == "=" or not closed and size < width
+        # within a key: a run read without decoding, or one that ends it, may be another line read in its place (a
+        # value, a hash, words)
+        if not closed and beside and (rank[2:3] == (False,) or ends):
+            shadow = (carry_before, column)
+            # and past it on its line, a run before text shaped as what follows the line above's run (a comment after
+            # each line; within 8 characters of as long, as a number in it may grow): the key went on
+            for m in _MARKED_BASE64.finditer(text, pick[2], line_end):
+                piece = m.group().lstrip("+/")
+                near = abs(line_end - m.end() - len(after)) <= 8  # read the shape only there: a long line costs it
+                if (len(piece) >= 4 and near and _decodes_to_text(carry_before, piece)
+                        and _lead_shape(text[m.end():line_end]) == _lead_shape(after)):
+                    unsure, reach = True, m.end()
+        closed = ends
+        shadow = None if _ENCODED_BEGIN.search(text, pick[1], pick[2]) else shadow
         ended = ended and not _ENCODED_BEGIN.search(text, pick[1], pick[2]) or closed  # a key's header: afresh
         lines.append(pick)
-        column = pick[1] - line
+        column, after = pick[1] - line, text[pick[2]:line_end]
         carry, width, tail = "" if closed else carry, size, "" if closed else (tail + text[pick[1]:pick[2]])[-5:]
-    return lines, unsure
+    return lines, unsure, reach
+
+
+def _decodes_to_text(carry, piece):
+    """Whether the first 48 characters of `carry` and then `piece` decode to ASCII text with a character in it that is
+    no space, as a key file's lines do (a line break alone, "Cg==", ends any stream of text)."""
+    head = carry + piece[:48]
+    decoded = _base64_decoded(head, 0, len(head) - len(head) % 4)
+    return decoded is not None and _VISIBLE_TEXT.fullmatch(decoded) is not None
+
+
+_VISIBLE_TEXT = re.compile(rb"\s*[!-~][ -~\s]*")
 
 
 def _reads_on(carry, piece):
