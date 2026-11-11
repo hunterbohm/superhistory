@@ -175,6 +175,32 @@ class FullTest(HermesCase):
     def test_silent_cron_sessions_are_skipped(self):
         self.assertNotIn("default:cron_abc123_20261018_100000", self.items())
 
+    def test_a_session_that_works_only_through_tool_calls_is_kept(self):
+        # Kanban workers and many cron jobs never write a reply; their tool calls are the work.
+        root = os.path.join(self.tmp.name, "tools-only")
+        make_store(os.path.join(root, "state.db"), [
+            ("kanban1", "kanban", None, 6000.0, [
+                ("user", "work kanban task t_123", {}),
+                ("assistant", "", {"calls": tool_call("web_search", query="texting agent reply length")}),
+                ("tool", json.dumps({"output": "three sources"}), {"tool": "web_search"}),
+                ("assistant", "Operation interrupted: waiting for model response (16.5s elapsed).", {}),
+                ("assistant", "", {"calls": tool_call("kanban_complete", task="t_123")}),
+            ]),
+            ("cron_fed789_20261110_015200", "cron", None, 7000.0, [
+                ("user", CRON_PREAMBLE + "Check the shipment tracking page.", {}),
+                ("assistant", "", {"calls": tool_call("terminal", command="curl -s https://example.com/track")}),
+                ("tool", json.dumps({"output": "In transit"}), {"tool": "terminal"}),
+                ("assistant", "[SILENT]", {}),
+            ]),
+        ])
+        items = self.items(root=root)
+        self.assertEqual(set(items), {"default:kanban1", "default:cron_fed789_20261110_015200"})
+        content = items["default:kanban1"].content
+        self.assertIn("USER: work kanban task t_123", content)
+        self.assertIn("TOOL web_search:", content)
+        self.assertIn("TOOL kanban_complete:", content)
+        self.assertIn("TOOL terminal: curl", items["default:cron_fed789_20261110_015200"].content)
+
     def test_the_default_exclude_drops_the_synthetic_tool_platform(self):
         self.assertNotIn("default:smoke", self.items())
         self.assertIn("default:smoke", self.items(excludes=()))

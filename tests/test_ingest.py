@@ -13,7 +13,7 @@ import types
 import unittest
 from unittest import mock
 
-from kb import ai, cli, config, ids, ingest, search, store
+from kb import ai, cli, config, ids, ingest, mask as mask_module, search, store, summarize
 from kb.paths import Paths
 from kb.sources import Gone, Item, Progress, SourceType
 
@@ -483,6 +483,19 @@ class SummaryTest(IngestCase):
         self.assertEqual(model.asked, 1)
         self.assertEqual([unit for unit, _ in store.succeeded(self.db)], ["notes@m1", "summarize"])
 
+    def test_the_summary_step_masks_with_the_memo(self):
+        # It masks each long item's stored text again; without the memo a 5 MB session cost minutes on every run.
+        path = os.path.join(self.tmp.name, "cache", "mask-memo.sqlite")
+        model, seen, real = FakeModel(), [], summarize.item_text
+        def item_text(db, it):
+            seen.append(mask_module._MEMO.file is not None)
+            return real(db, it)
+        with mock.patch.object(summarize, "item_text", item_text):
+            self.assertEqual(self.run_all(self.long_source(), ai_plugin=True, model_factory=lambda: model, memo=path), 0)
+        self.assertEqual(seen, [True])
+        self.assertTrue(os.path.exists(path))
+        self.assertIsNone(mask_module._MEMO.file)
+
     def test_with_summaries_off_reads_without_calling_the_model(self):
         model = FakeModel()
         self.assertEqual(self.run_all(self.long_source(), ai_plugin=True, model_factory=lambda: model,
@@ -710,6 +723,24 @@ class CliTest(unittest.TestCase):
         code, out = self.run_cli("summarize", "--estimate")
         self.assertEqual(code, 0)
         self.assertRegex(out, r"notes\s+1\s")
+
+    def test_the_summarize_command_masks_with_the_memo(self):
+        notes = self.make_notes()
+        with open(os.path.join(notes, "Area", "long.md"), "w") as fh:
+            fh.write("walrus pricing line\n" * 600)
+        os.utime(os.path.join(notes, "Area", "long.md"), (time.time() - 86400,) * 2)
+        self.configure(notes)
+        with open(self.paths.config_file, "a") as fh:
+            fh.write("summarize = true\n")
+        self.assertEqual(self.run_cli("ingest", "--no-summaries")[0], 0)
+        seen, real = [], summarize.item_text
+        def item_text(db, it):
+            seen.append(mask_module._MEMO.file is not None)
+            return real(db, it)
+        with mock.patch.object(summarize, "item_text", item_text), mock.patch.object(ai, "load", return_value=FakeModel()):
+            self.assertEqual(self.run_cli("summarize")[0], 0)
+        self.assertEqual(seen, [True])
+        self.assertTrue(os.path.exists(os.path.join(self.paths.cache_dir, "mask-memo.sqlite")))
 
     def test_forget_without_a_terminal_asks_for_yes(self):
         self.configure(self.make_notes())

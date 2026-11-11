@@ -17,7 +17,7 @@ from pathlib import Path
 
 from kb import COMMAND, NAME, __version__, ai, backup, check, config as config_mod, decisions, ids, ingest, search, store, summarize
 from kb.ai import AIError
-from kb.mask import MaskFilter, MaskedStream, mask, masked_log
+from kb.mask import MaskFilter, MaskedStream, mask, masked_log, memo
 from kb.paths import Paths
 
 PAGE = 20000
@@ -222,7 +222,8 @@ def cmd_ingest(paths, config, args):
             return 0
         db = store.connect(paths.db)
         config = _own(paths, config)
-        failures = ingest.run(db, config, log, args.only or (), not args.no_summaries)
+        failures = ingest.run(db, config, log, args.only or (), not args.no_summaries,
+                              memo=paths.cache_dir / "mask-memo.sqlite")
         failures += ingest.after(paths, config, db, log)
         return 1 if failures else 0
 
@@ -240,7 +241,8 @@ def cmd_summarize(paths, config, args):
     with store.exclusive(paths.lock) as held:
         if not held:
             raise Fail("an ingest or summarize run holds the lock; try again later")
-        summarize.run(store.connect(paths.db), _own(paths, config), model, log, args.limit, args.source)
+        with memo(paths.cache_dir / "mask-memo.sqlite"):
+            summarize.run(store.connect(paths.db), _own(paths, config), model, log, args.limit, args.source)
     return 0
 
 

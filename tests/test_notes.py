@@ -322,5 +322,74 @@ class IngestNotesTest(NotesCase):
         self.assertEqual([unit for unit, _ in store.failing(db)], ["notes@m1"])
 
 
+def mounted(root, mounts):
+    """The notes source of `root` with `mounts`, written as a TOML inline table."""
+    table = ", ".join(f"{json.dumps(k)} = {json.dumps(v)}" for k, v in mounts.items())
+    text = f'machine = "m1"\n[sources.notes]\npath = {json.dumps(root)}\nmounts = {{ {table} }}\n'
+    text += 'exclude = ["Agents/**/logs"]\n'
+    return config.parse(text).sources[0]
+
+
+class MountsTest(NotesCase):
+    """A folder moved out of the notes folder reads as it did inside, where a mount names it."""
+
+    def setUp(self):
+        super().setUp()
+        self.outside = os.path.join(self.tmp.name, "agents")
+
+    def events(self, mounts, since=None):
+        return {i.source_id: i for i in ingest.LocalReader().events(mounted(self.root, mounts), since)}
+
+    def test_a_mounted_folder_reads_under_its_path_inside(self):
+        write(self.root, "Areas/a.md", "inside")
+        write(self.outside, "Workspaces/cc/AGENTS.md", "rules")
+        write(self.outside, "Workspaces/cc/logs/run.md", "machine output")
+        items = self.events({"Agents": self.outside})
+        self.assertEqual(set(items), {"Areas/a.md", "Agents/Workspaces/cc/AGENTS.md"})
+        item = items["Agents/Workspaces/cc/AGENTS.md"]
+        self.assertEqual(item.content, "Field Notes/Agents/Workspaces/cc\n\nrules")
+        self.assertEqual(item.meta, {"path": os.path.join(self.outside, "Workspaces/cc/AGENTS.md")})
+        live = ingest.LocalReader().live_ids(mounted(self.root, {"Agents": self.outside}))
+        self.assertEqual(sorted(live), ["Agents/Workspaces/cc/AGENTS.md", "Areas/a.md"])
+
+    def test_a_folder_still_inside_is_read_there(self):
+        write(self.root, "Agents/inside.md", "here")
+        write(self.outside, "outside.md", "there")
+        self.assertEqual(set(self.events({"Agents": self.outside})), {"Agents/inside.md"})
+
+    def test_notes_moved_out_keep_their_ids_and_nothing_is_pruned_or_doubled(self):
+        write(self.root, "Areas/a.md", "inside", mtime=time.time() - 3600)
+        write(self.root, "Agents/Workspaces/cc/AGENTS.md", "walrus rules", mtime=time.time() - 3600)
+        db = self.database()
+        ingest.run_unit(db, mounted(self.root, {"Agents": self.outside}), "m1", ingest.LocalReader(), LOG, "m1:")
+        before = {r[0]: r[1] for r in db.execute("SELECT source_id, content FROM docs WHERE source='notes'")}
+        os.makedirs(self.outside)
+        os.rename(os.path.join(self.root, "Agents/Workspaces"), os.path.join(self.outside, "Workspaces"))
+        os.rmdir(os.path.join(self.root, "Agents"))
+        ingest.run_unit(db, mounted(self.root, {"Agents": self.outside}), "m1", ingest.LocalReader(), LOG, "m1:")
+        after = {r[0]: r[1] for r in db.execute("SELECT source_id, content FROM docs WHERE source='notes'")}
+        self.assertEqual(after, before)
+        self.assertEqual(set(after), {"m1:Areas/a.md", "m1:Agents/Workspaces/cc/AGENTS.md"})
+        hits = search.search(db, "walrus", sources=("notes",))
+        self.assertEqual([h["source_id"] for h in hits], ["m1:Agents/Workspaces/cc/AGENTS.md"])
+
+    def test_a_missing_mounted_folder_fails_the_source_and_keeps_its_notes(self):
+        write(self.root, "Areas/a.md", "inside")
+        write(self.outside, "b.md", "outside")
+        db = self.database()
+        ingest.run_unit(db, mounted(self.root, {"Agents": self.outside}), "m1", ingest.LocalReader(), LOG, "m1:")
+        os.remove(os.path.join(self.outside, "b.md"))
+        os.rmdir(self.outside)
+        text = (f'machine = "m1"\n[sources.notes]\npath = {json.dumps(self.root)}\n'
+                f'mounts = {{ "Agents" = {json.dumps(self.outside)} }}\n')
+        self.assertEqual(ingest.run(db, config.parse(text), LOG), 1)
+        self.assertEqual(self.stored(db), {"m1:Areas/a.md", "m1:Agents/b.md"})
+
+    def test_a_mount_must_name_a_folder_inside(self):
+        for bad in ("../elsewhere", "/abs", ""):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                ingest.LocalReader().live_ids(mounted(self.root, {bad: self.outside}))
+
+
 if __name__ == "__main__":
     unittest.main()
