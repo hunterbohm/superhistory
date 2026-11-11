@@ -4523,6 +4523,38 @@ class Base64ReviewTwentyFourthTest(unittest.TestCase):
                     # four times the lines
                     self.assertLess(took[1 << 15], 8 * max(took[1 << 13], 0.01), took)
 
+    def test_a_block_of_key_file_starts_on_one_line_costs_bytes_in_proportion(self):
+        # A key written as one line with its breaks escaped (one physical line main's reader reads as a block of
+        # lines) is many runs on that line; each run's start, where it is one of the block's, was tested for nothing
+        # but blanks before it by copying the bytes from the line's start and stripping them, so a long line of such
+        # runs copied bytes in the square of their number (review round 7). The cost is bytes copied, not the clock:
+        # a copy runs far faster than the reading around it, so the square shows in bytes long before the clock. The
+        # first byte past the line's leading blanks is found once instead.
+        import base64
+        from kb import mask as mask_module
+
+        class Counting(str):
+            sliced = 0
+
+            def __getitem__(self, key):
+                if isinstance(key, slice):
+                    start, stop, _ = key.indices(len(self))
+                    Counting.sliced += max(0, stop - start)
+                return str.__getitem__(self, key)
+
+        for header in (b"-----BEGIN CERTIFICATE-----\n", b"-----BEGIN PUBLIC KEY-----\n", b"-----BEGIN X-----\n"):
+            chunk = base64.b64encode(header).decode()
+            sliced = {}
+            for k in (1000, 4000):  # four times the runs on the one physical line
+                stream = "\\n ".join([chunk] * k)  # the escaped line breaks main's reader reads as a block
+                text = 'notes\n{"k":"' + stream + '"}\n' + chunk + "\n\nnext paragraph"
+                Counting.sliced = 0
+                mask_module._encoded_key_spans(Counting(text))
+                sliced[k] = Counting.sliced
+            with self.subTest(header=header):
+                # four times the runs: linear copies four times the bytes, the square sixteen
+                self.assertLess(sliced[4000], 8 * max(sliced[1000], 1), sliced)
+
     def test_a_padded_value_beside_or_between_a_keys_lines_is_masked_with_them(self):
         # A padded run read in place of one of a key's lines, beside it or on a line of its own between two of them,
         # ended the key's base64 there, so a reading found no doubt; the key's lines after it start inside a character

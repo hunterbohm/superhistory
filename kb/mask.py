@@ -1594,6 +1594,9 @@ def _marked_key_spans(text, keys, through):
     return spans
 
 
+_LEADING_BLANKS = re.compile(r"""[ \t"']*""")  # a line's leading spaces, tabs and quotes, before its first run
+
+
 def _file_starts(text, run, later):
     """Where a key file starts a run of base64 on a line of `run` (_marked_key_spans), its bytes from the run's start
     (past as many as three "/" or "+" before it, as a mark may end in them) a key file's header, after a byte order mark
@@ -1612,8 +1615,12 @@ def _file_starts(text, run, later):
         if not _ENCODED_BEGIN.search(text, line, line_end):
             continue
         reached = False  # the next lines were searched once for this line's key word (kept linear, below)
+        # the first byte on the line past its leading spaces, tabs and quotes: a run at or before it has nothing but
+        # those before it (the line's first). Found once, not by copying a longer prefix for each run to strip, which
+        # cost time in the square of the runs on a line of them read in a block main's reader reads (review round 7).
+        lead = _LEADING_BLANKS.match(text, line, line_end).end()
         for m in _MARKED_BASE64.finditer(text, line, line_end):
-            if m.start() in later and not text[line:m.start()].strip(" \t\"'"):
+            if m.start() in later and m.start() <= lead:
                 continue  # main's reader reads it in its block, as a key's line or a quote's
             signs = min(3, len(m.group()) - len(m.group().lstrip("+/")))
             if any(_KEY_FILE_START.match(_base64_decoded(text, m.start() + k, m.start() + k + min(
