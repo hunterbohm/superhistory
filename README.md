@@ -545,8 +545,10 @@ Known limits:
   base64. Which run of base64 on such a line is the key's cannot be told, so the runs are read only to find a key's
   header: each line as the run on it that decodes on from the lines above (past as many "/" and "+" as that takes, and
   within a key one as long as the line above's, or one holding a key file's header anywhere), and where those runs
-  hold a key file's header as a line of its own, or a run starts as a key file does with a key's word in its header
-  (but on lines main's reader reads as one stream, where words before a header quote it), everything from that line's
+  hold a key file's header as a line of its own, or any run on a line starts as a key file does with a key's word in
+  its header (every run on the line is read, so a key file beside another, a certificate or a public block, is found on
+  its own run though another starts as a key file before it; but on lines main's reader reads as one stream, where
+  words before a header quote it), everything from that line's
   first run of base64 to the last run on the last line of the run of lines that each hold base64 is masked: every run
   on each line, the text between them, and the marks of the lines below. Where main's reader reads the key through its
   footer, it is left to main's reading, and a reading that goes on past main's end is masked from there; a key main
@@ -556,7 +558,11 @@ Known limits:
   marks alone). These lines are read in each view main's reader reads (as written, and with JSON's escapes read once
   and twice), and an escape's letter glued to the start of main's key is read as part of it. So a field's name or a
   label before the header on its line, and words, a certificate or a JSON field after the key in the same run of
-  lines, are masked with it. Main shows such a key; this only masks more.
+  lines, are masked with it. Main shows such a key; this only masks more. A key wrapped narrow (about 12 base64
+  characters a line or fewer) with a decoy run of base64 beside it, or a decoy fused into the key's own run with no
+  space, can still show: its header, split across the narrow lines, holds no whole header or key's word on one line to
+  find, and the per-line reading follows the decoy's column. A decoy beside a key wrapped at 16 columns or wider is
+  masked. Main shows all of these.
   Whether the words before a header on its decoded line make a sentence that quotes it is read from the few dozen
   bytes before it: a byte no text holds there starts a key where the words alone would quote it, and a space further
   back is not seen, so a header after a long word starts its key. This masks more.

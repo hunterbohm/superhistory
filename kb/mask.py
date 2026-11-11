@@ -1600,28 +1600,38 @@ def _file_starts(text, run, later):
     or line breaks or none, with a piece of a key's word in its header (the run's first 64 characters past its signs, or
     the next three lines where the run is shorter): the key starts on that line whatever the line above decodes to (a
     line of words as wide, which _written_key_spans reads as a sentence quoting the header) and whichever run beside it
-    the lines are read by (another file's, as a certificate's header beside). A run that starts a line past the first of
-    a block of two lines or more that _written_key_spans reads (`later`: where those lines start) is left to it: it
-    reads one stream there, and a header after words in it as a quote, which stays. On a block's first line nothing is
-    before it in the stream (and a line put among a key's lines can end the block there, short of its header's end)."""
+    the lines are read by (another file's, as a certificate's header beside). Every run on the line is read, not the
+    first that starts as a key file alone: a key file beside another (a certificate, a public key) starts on its own
+    run, which a decoy run before it, cut short of its own key word, must not hide (review round 6). A run that starts
+    a line past the first of a block of two lines or more that _written_key_spans reads (`later`: where those lines
+    start) is left to it: it reads one stream there, and a header after words in it as a quote, which stays. On a
+    block's first line nothing is before it in the stream (and a line put among a key's lines can end the block there,
+    short of its header's end)."""
     starts = []
     for i, (line, line_end) in enumerate(run):
         if not _ENCODED_BEGIN.search(text, line, line_end):
             continue
+        reached = False  # the next lines were searched once for this line's key word (kept linear, below)
         for m in _MARKED_BASE64.finditer(text, line, line_end):
             if m.start() in later and not text[line:m.start()].strip(" \t\"'"):
                 continue  # main's reader reads it in its block, as a key's line or a quote's
             signs = min(3, len(m.group()) - len(m.group().lstrip("+/")))
             if any(_KEY_FILE_START.match(_base64_decoded(text, m.start() + k, m.start() + k + min(
                     32, (m.end() - m.start() - k) // 4 * 4)) or b"") for k in range(signs + 1)):
-                # a key's word in its header: in the run's first 64 characters past its signs, or on the next lines
-                header = (m.start() + signs + 64 if m.end() - m.start() >= signs + 64
-                          else run[min(i + 3, len(run) - 1)][1])
-                if _KEY_PIECE.search(text, m.start(), header):
+                # a key's word in its header: in the run's first 64 characters past its signs
+                if _KEY_PIECE.search(text, m.start(), m.start() + signs + 64):
                     starts.append(m.start())
-                # one look a line: a short run's window holds every later run's on it; past a long one, a key's
-                # header beside it is the chained reading's, as a key's lines beside a certificate's
-                break
+                    break  # a key file starts here, its word in it; the block masks whole from this line
+                # or, where the run ends before those 64 characters, on the next three lines, as a header too narrow
+                # to hold its key's word on one line wraps onto them (a wide run holds the word already, so a
+                # certificate's body, as wide, is not searched on and a chance run of its bytes taken for a key's
+                # word); read once for the line, from its first such run, so a line of many runs that each start as a
+                # key file is searched once, not once each, which cubed the time
+                if m.end() - m.start() < signs + 64 and not reached:
+                    reached = True
+                    if _KEY_PIECE.search(text, m.start(), run[min(i + 3, len(run) - 1)][1]):
+                        starts.append(m.start())
+                        break
     return starts
 
 

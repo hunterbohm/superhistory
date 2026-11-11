@@ -160,7 +160,8 @@ PEM private key or a PGP private or secret key block written as base64, as a Kub
 the lines that wrap it, their breaks plain or escaped at any depth, as JSON in JSON writes them, and through lines that
 each hold its base64 among other text (a quote's or a comment's mark, a line's number, code or a table's cells around
 it, another stream beside it): in each run of lines that each hold base64, the runs that decode on from the lines above,
-and a run that starts as a key file does, are read only to find a key's header, and from the line it starts on
+and any run on a line that starts as a key file does (every run on the line is read, so a key file beside a
+certificate or a public block is found on its own run), are read only to find a key's header, and from the line it starts on
 everything is masked whole to the last run of base64 on the run's last line, since no one run on a line is known to be
 the key's; a key main's reader reads through its footer is left to it, and masked on from its end where a reading goes
 past it, and one it reads short of its footer (a line put among a key's lines ends it) is masked as any other. It is found

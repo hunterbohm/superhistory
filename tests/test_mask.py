@@ -4736,6 +4736,47 @@ class Base64ReviewTwentyFourthTest(unittest.TestCase):
                                 rf"(?<![A-Za-z0-9+/]){re.escape(run)}(?![A-Za-z0-9+/=])", masked)], [])
                             self.assertIn("next paragraph", masked)
 
+    def test_a_keys_header_is_found_whatever_base64_stands_beside_its_lines(self):
+        # A key's header was found by the first run on a line that starts as a key file, so a decoy run before it that
+        # also starts as one (a certificate, with a key's word too far into it to count, or a public key) hid the real
+        # header: the decoy was read and the key's own run, beside it, never (review round 6). Every run on the line is
+        # read now, so the key's header is found whichever run on the line holds it, with a decoy run before or after
+        # it. The key whole, cut before its footer, or cut to a short last line; at the widths a key file wraps at,
+        # where a line holds its header's start (its narrower wraps, where the header spans lines and a decoy steals
+        # the chained reading, are a known gap, masked only once a reading other than this finds the block).
+        import base64
+        import random
+        import textwrap
+        written, i = Base64ReviewNineteenFindingsTest.written, 0
+        r = random.Random(67)
+        others = {"certificate with a key's word": base64.b64encode(
+                      b"-----BEGIN CERTIFICATE-----\n" + b"a" * 48 + b"PRIVATE ").decode(),
+                  "certificate": base64.b64encode(b"-----BEGIN CERTIFICATE-----\n" + b"a" * 60).decode(),
+                  "public key": base64.b64encode(b"---- BEGIN SSH2 PUBLIC KEY ----\n" + b"c" * 50).decode(),
+                  "words": base64.b64encode(b"zebra quilt vortex jumble fathom drowsy " * 2).decode()}
+        for name, whole, data in self.whole_and_cut(self.key_files(r)):
+            code = base64.b64encode(data).decode()
+            head = data.index(b"\n") + 1
+            foot = max(data.rfind(b"-----END"), data.rfind(b"---- END"))
+            foot = foot if foot > 0 else len(data)
+            for width in (16, 24, 32, 48, 64, 76):
+                chunks = textwrap.wrap(code, width)
+                for kind, other in others.items():
+                    for place in ("before", "after"):
+                        every, i = i % 2 == 0, i + 1
+                        lines = [(f"> {other} | {chunk}" if place == "before" else f"> {chunk} | {other}")
+                                 if every or not n else f"> {chunk}" for n, chunk in enumerate(chunks)]
+                        text = "\n".join(["Notes:"] + lines + ["", "next paragraph"])
+                        depth, older = i % 3, i // 3 % 2
+                        with self.subTest(key=name, whole=whole, width=width, other=kind, place=place, every=every,
+                                          depth=depth, older=older):
+                            masked = Base64ReviewEighteenTest.masks(written(text, depth), older)
+                            # no line of the key's past its header's line and before its footer's shows its base64
+                            # (the decoy's own words share none of the key's, so none is matched on a decoy line)
+                            self.assertEqual([n for n, c in enumerate(chunks) if len(c) >= 4 and c in masked
+                                              and head + 3 < n * width * 3 // 4 < foot - width], [])
+                            self.assertIn("next paragraph", masked)
+
     def test_a_key_after_one_mains_reader_reads_is_masked_under_every_mark(self):
         # Under a mark of base64's own "/" or "+", main's reader reads some keys (an RSA key's, a PKCS#8 key's) through
         # their footers and not the key after them in the same run of lines, which a reading of the lines past their
