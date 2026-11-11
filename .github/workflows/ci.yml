@@ -42,7 +42,8 @@ jobs:
   check:
     needs: changes
     if: needs.changes.outputs.code == 'true'
-    runs-on: ubuntu-latest
+    # Ubuntu 26.04 runners have no Python 3.9 for setup-python, and 3.9 is the oldest Python the README supports.
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
     strategy:
       fail-fast: false
