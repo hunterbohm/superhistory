@@ -212,9 +212,6 @@ def run(db, config, log, only=(), with_summaries=True, model_factory=None, memo=
             log.exception("decisions failed")
             store.record_failure(db, "decisions", exc)
             failures += 1
-        else:
-            store.record_ok(db, "decisions")
-            db.commit()
     if mask_module.capped > capped:
         total = int(store.get_watermark(db, store.STATE, "mask_capped") or 0) + mask_module.capped - capped
         store.set_watermark(db, store.STATE, "mask_capped", total)

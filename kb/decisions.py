@@ -667,6 +667,8 @@ def run(db, ask, owner, kind_of, log, limit=None, workers=WORKERS):
     calls = len(batches) + late_calls + checks
     with db:
         store.set_watermark(db, *LAST_RUN, now_iso())
+        # Here, not in ingest: a scheduled `decisions run` sets LAST_RUN too, after which ingest finds no pass due.
+        store.record_ok(db, "decisions")
     stats = Stats(done, proposed, replaced, authors, calls, failed)
     log.info("decisions: %d judged (%s), %d replacements proposed, %d marked after the check, %d marks cleared, "
              "%d failed, %d model calls", done, ", ".join(f"{k} {v}" for k, v in authors.items()), proposed, replaced,

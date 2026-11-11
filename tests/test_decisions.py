@@ -85,6 +85,13 @@ class DecisionTest(Store):
                          "Composio switched off; Executor replaces it for app accounts.")
         self.assertEqual(self.db.execute("SELECT count(*) FROM docs").fetchone()[0], rows)
 
+    def test_a_finished_pass_shows_as_a_successful_refresh(self):
+        store.record_failure(self.db, "decisions", RuntimeError("model down"))
+        self.session("one", "2026-10-24T10:00:00Z", ["Executor handles app accounts."])
+        self.run_pass(Model(lambda text, older, _: answer()))
+        self.assertTrue(store.get_watermark(self.db, store.STATE, "ok:decisions"))
+        self.assertIsNone(store.get_watermark(self.db, store.STATE, "fail:decisions"))
+
     def test_no_mark_when_the_second_check_disagrees(self):
         self.session("old", "2026-06-12T10:00:00Z", ["Composio CLI is the default for connected app accounts."])
         self.session("new", "2026-10-24T10:00:00Z", ["Composio switched off; Executor replaces it for app accounts."])
