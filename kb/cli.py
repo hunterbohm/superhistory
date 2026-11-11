@@ -997,7 +997,11 @@ def cmd_decisions_run(paths, config, args):
         if not held:
             raise Fail("an ingest or summarize run holds the lock; try again later")
         with contextlib.closing(store.connect(paths.db)) as db:
-            stats = decisions.run(db, ask, owner, ingest.kind_of(config), log, args.limit)
+            try:
+                stats = decisions.run(db, ask, owner, ingest.kind_of(config), log, args.limit)
+            except Exception as exc:
+                store.record_failure(db, "decisions", exc)
+                raise
     print(f"Judged {stats.judged:,} decisions: {stats.authors['owner']:,} yours, {stats.authors['agent']:,} from "
           f"agents, {stats.authors['other']:,} from other people. Marked {stats.replaced:,} as replaced. "
           f"{stats.calls:,} model calls" + (f"; {stats.failed:,} left for the next run." if stats.failed else "."))

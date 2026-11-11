@@ -125,6 +125,14 @@ class CliTest(TempHome):
         self.assertEqual(code, 1)
         self.assertIn("instructions", err)
 
+    def test_a_failed_decisions_run_shows_in_the_refresh_list(self):
+        self.write_config('machine = "studio"\n[decisions]\nowner = ["Sam"]\n')
+        with mock.patch.object(cli.ai, "load"), \
+                mock.patch.object(cli.decisions, "run", side_effect=RuntimeError("model down")):
+            code, _, _ = self.run_kb("decisions", "run")
+        self.assertEqual(code, 1)
+        self.assertIn("model down", store.get_watermark(self.db, store.STATE, "fail:decisions"))
+
     def test_a_command_run_in_process_closes_the_database_it_opened(self):
         # A program that runs superhistory's commands in-process would otherwise keep a file handle open for each one, until
         # its garbage collector ran, and run out of them.
