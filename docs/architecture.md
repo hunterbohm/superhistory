@@ -159,14 +159,11 @@ work this way; a PuTTY key file masks from `Private-Lines:` through its paragrap
 PEM private key or a PGP private or secret key block written as base64, as a Kubernetes secret holds one, masks through
 the lines that wrap it, their breaks plain or escaped at any depth, as JSON in JSON writes them, and through lines that
 each hold its base64 among other text (a quote's or a comment's mark, a line's number, code or a table's cells around
-it): in a run of lines that each hold base64, where the longest run on each line, joined, holds a key's word, each line
-is read again as that run alone, but for words before it on the lines after the last that carries a mark, and where
-a line's run lies after its longest, again with that line's longest; and in every run of two lines or more, again with
-each line's run that decodes, after the lines above, to text (or within a key is as long as the line above's, or holds a
-key file's header), and all from the key's header to the run's last line of base64 masked where more than one run on a
-line of a key's goes on, or, on lines that hold other text, one goes on after a key's base64 ended, or the key's base64
-goes on, at its column or on the same line, past a line of it with other text that ended it, was read without decoding
-or held none that goes on. It is found
+it, another stream beside it): in each run of lines that each hold base64, the runs that decode on from the lines above,
+and a run that starts as a key file does, are read only to find a key's header, and from the line it starts on
+everything is masked whole to the last run of base64 on the run's last line, since no one run on a line is known to be
+the key's; a key main's reader reads through its footer is left to it, and masked on from its end where a reading goes
+past it, and one it reads short of its footer (a line put among a key's lines ends it) is masked as any other. It is found
 where its encoded "PRIVATE KEY" or "SECRET KEY" decodes inside the key's header or footer on a line of its own, so a field's name
 or a sentence that names one, or quotes a header, stays. It is read once over the text as written, and again with the
 characters a reader does not see taken out, and hidden over what mask()'s passes leave: no reading reads its

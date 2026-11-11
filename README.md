@@ -540,31 +540,23 @@ Known limits:
   as on main. In a row an older Superhistory stored,
   an OpenSSH private key's private section, re-encoded alone after a placeholder, reads as public material and shows.
   A key encoded in lines that each hold its base64 among other text is masked too: after a mark ("> ", "# ", "// ",
-  "-- ", "; ", "* ", "| ", a diff's "+", a quote character, written, escaped or as a web page's entity, once or
-  more), after a line's number, inside code or a table's cells, or before a comment. In a run of lines that each hold
-  base64, where the longest run of it on each line, joined, holds a key's word, each line is read as that run alone,
-  so text on those lines that the key's base64 then spans is masked with it. Only on the lines after the last one
-  that carries a mark (no word before its run, or words shaped as a line next to it has, a log's stream, a node, a
-  letter or a number alike) do words before a line's run stay, so a line of words after a key cut short ("next
-  steps") is no line of it; a key's last line, shorter than a word on it, is read from where its neighbour's mark
-  ends. Where a line is read from a run after its longest, as a line of the key can read as the word of a mark that
-  words beside it carry, the lines are read again with that line's longest. Every run of two lines or more is read
-  once more (a key wrapped at five characters or fewer holds no piece of its word on any one line), each line as the
-  run on it, past as many "/" and "+" as that takes, that decodes to text after the lines above, or within a key is as
-  long as the line above's, as an armour comment may hold any byte, or holds a key file's header anywhere, as bytes
-  before the file (a byte order mark) may move it inside a line; so a comment or a label longer than a line's base64,
-  or marks of changing length, hide no line of the key. A run under 8 characters, as a key cut short may end in, goes
-  on where it starts at the column of the line above's or where no other run on its line does. Where more than one run
-  on a line of a key's goes on from the lines above (another stream of base64 beside it, a second key, random base64
-  or words as long; past a padded one, as a key's last line is, one of 8 characters or more), or any run goes on, on a
-  line that holds other text beside it, after a key's base64 ended (padded or short) and before another key file's
-  header (a padded value beside or between its lines read in place of one), or the key's base64 goes on, at the column
-  its lines start at or on the same line, past a line of it with other text that ended it, was read without decoding
-  or held no run that goes on (a value, a hash or words put among its lines; a key wrapped at a width no multiple of
-  four starts each line inside a group of four), which is the key's is not known, and all from the key's header to the
-  last run of base64 on the last of those lines whose longest is 8 characters or more, or the last run that may go on
-  the key, is masked. So a line of words after a key's last line, beside other text, whose run at the key's column
-  decodes on from it to text goes with the key. Main shows such a key; this only masks more.
+  "-- ", "; ", "* ", "| ", a diff's "+", a quote character, written, escaped or as a web page's entity, once or more),
+  after a line's number or a label, inside code or a table's cells, before a comment, or beside another stream of
+  base64. Which run of base64 on such a line is the key's cannot be told, so the runs are read only to find a key's
+  header: each line as the run on it that decodes on from the lines above (past as many "/" and "+" as that takes, and
+  within a key one as long as the line above's, or one holding a key file's header anywhere), and where those runs
+  hold a key file's header as a line of its own, or a run starts as a key file does with a key's word in its header
+  (but on lines main's reader reads as one stream, where words before a header quote it), everything from that line's
+  first run of base64 to the last run on the last line of the run of lines that each hold base64 is masked: every run
+  on each line, the text between them, and the marks of the lines below. Where main's reader reads the key through its
+  footer, it is left to main's reading, and a reading that goes on past main's end is masked from there; a key main
+  reads short of its footer is masked to the run's end as any other, as a line put among a key's lines (words, a hash,
+  a value) ends main's reading there; elsewhere a footer read across lines can be another stream's (two keys side by
+  side, the shorter on the left), so the masking goes on to the next line with no base64 (a blank line, or one of
+  marks alone). These lines are read in each view main's reader reads (as written, and with JSON's escapes read once
+  and twice), and an escape's letter glued to the start of main's key is read as part of it. So a field's name or a
+  label before the header on its line, and words, a certificate or a JSON field after the key in the same run of
+  lines, are masked with it. Main shows such a key; this only masks more.
   Whether the words before a header on its decoded line make a sentence that quotes it is read from the few dozen
   bytes before it: a byte no text holds there starts a key where the words alone would quote it, and a space further
   back is not seen, so a header after a long word starts its key. This masks more.
