@@ -1619,7 +1619,9 @@ def _file_starts(text, run, later):
                           else run[min(i + 3, len(run) - 1)][1])
                 if _KEY_PIECE.search(text, m.start(), header):
                     starts.append(m.start())
-                break  # a later run on the line has no piece after it that this one's has not, so one look a line
+                # one look a line: a short run's window holds every later run's on it; past a long one, a key's
+                # header beside it is the chained reading's, as a key's lines beside a certificate's
+                break
     return starts
 
 
