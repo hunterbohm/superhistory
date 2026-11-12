@@ -311,7 +311,7 @@ def item(db, catalog, rid, page=None, query=""):
     ids = [r[0] for r in rows]
     if store.unversioned(db, ids):
         return {"error": f"This item was written by an older version. Run `{COMMAND} rebuild`."}
-    fresh = len(store.current(db, ids)) == len(ids)
+    fresh = store.as_stored(rows)
     if not fresh and store.secret_id(src, sid, store.item_names(db, src, sid)):
         return None
     first = rows[0]

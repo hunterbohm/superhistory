@@ -701,11 +701,18 @@ def _repoint(db, source, source_id, meta):
 
 
 def item_rows(db, rid):
-    """The doc, or the raw chunks in order, of the item that row `rid` belongs to."""
+    """The doc, or the raw chunks in order, of the item that row `rid` belongs to, each with the mask version it
+    records, read in the same statement as its text."""
     return db.execute(
-        "SELECT i.id, i.source, i.ts, i.title, i.content, i.metadata FROM docs r JOIN docs i "
+        "SELECT i.id, i.source, i.ts, i.title, i.content, i.metadata, i.masked FROM docs r JOIN docs i "
         "ON i.source = r.source AND i.source_id = r.source_id AND i.kind IN ('doc', 'raw') "
         "WHERE r.id = ? ORDER BY json_extract(i.metadata, '$.chunk')", (rid,)).fetchall()
+
+
+def as_stored(rows):
+    """Whether an item's rows (item_rows) may be cut as they are stored: every one records today's mask version, so
+    the item was masked as one text with today's mask() when it was stored (current)."""
+    return all(row[6] == VERSION for row in rows)
 
 
 def get_watermark(db, source, key):
