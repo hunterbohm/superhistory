@@ -157,8 +157,15 @@ footer, through the end of its paragraph (the next blank line, plain or escaped)
 after its DEK-Info field, and a PGP key's past the blank line after its armor headers. PEM, PGP and ssh.com's SSH2 keys
 work this way; a PuTTY key file masks from `Private-Lines:` through its paragraph, and an age secret key by its shape. A
 PEM private key or a PGP private or secret key block written as base64, as a Kubernetes secret holds one, masks through
-the lines that wrap it, their breaks plain or escaped at any depth, as JSON in JSON writes them. It is found where its
-encoded "PRIVATE KEY" or "SECRET KEY" decodes inside the key's header or footer on a line of its own, so a field's name
+the lines that wrap it, their breaks plain or escaped at any depth, as JSON in JSON writes them, and through lines that
+each hold its base64 among other text (a quote's or a comment's mark, a line's number, code or a table's cells around
+it, another stream beside it): in each run of lines that each hold base64, the runs that decode on from the lines above,
+and any run on a line that starts as a key file does (every run on the line is read, so a key file beside a
+certificate or a public block is found on its own run), are read only to find a key's header, and from the line it starts on
+everything is masked whole to the last run of base64 on the run's last line, since no one run on a line is known to be
+the key's; a key main's reader reads through its footer is left to it, and masked on from its end where a reading goes
+past it, and one it reads short of its footer (a line put among a key's lines ends it) is masked as any other. It is found
+where its encoded "PRIVATE KEY" or "SECRET KEY" decodes inside the key's header or footer on a line of its own, so a field's name
 or a sentence that names one, or quotes a header, stays. It is read once over the text as written, and again with the
 characters a reader does not see taken out, and hidden over what mask()'s passes leave: no reading reads its
 placeholder, so what follows the key, such as a certificate's base64, stays, and all the passes hide stays hidden. It

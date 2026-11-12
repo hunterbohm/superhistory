@@ -539,11 +539,33 @@ Known limits:
   placeholder, a key's body on the placeholder's own line followed by words ("[masked] MC4C... notes deploy") shows,
   as on main. In a row an older Superhistory stored,
   an OpenSSH private key's private section, re-encoded alone after a placeholder, reads as public material and shows.
-  Lines that each start with the same quote or comment mark ("> ", "# ", "// ", "-- ", "; ", "* ", "| ", a quote
-  character, written, escaped or as a web page's entity) are read as no block, so a key encoded in them shows, as on main. Whether the words before a header on its decoded line make a
-  sentence that quotes it is read from the few dozen bytes before it: a byte no text holds there starts a key where
-  the words alone would quote it, and a space further back is not seen, so a header after a long word starts its key.
-  This masks more.
+  A key encoded in lines that each hold its base64 among other text is masked too: after a mark ("> ", "# ", "// ",
+  "-- ", "; ", "* ", "| ", a diff's "+", a quote character, written, escaped or as a web page's entity, once or more),
+  after a line's number or a label, inside code or a table's cells, before a comment, or beside another stream of
+  base64. Which run of base64 on such a line is the key's cannot be told, so the runs are read only to find a key's
+  header: each line as the run on it that decodes on from the lines above (past as many "/" and "+" as that takes, and
+  within a key one as long as the line above's, or one holding a key file's header anywhere), and where those runs
+  hold a key file's header as a line of its own, or any run on a line starts as a key file does with a key's word in
+  its header (every run on the line is read, so a key file beside another, a certificate or a public block, is found on
+  its own run though another starts as a key file before it; but on lines main's reader reads as one stream, where
+  words before a header quote it), everything from that line's
+  first run of base64 to the last run on the last line of the run of lines that each hold base64 is masked: every run
+  on each line, the text between them, and the marks of the lines below. Where main's reader reads the key through its
+  footer, it is left to main's reading, and a reading that goes on past main's end is masked from there; a key main
+  reads short of its footer is masked to the run's end as any other, as a line put among a key's lines (words, a hash,
+  a value) ends main's reading there; elsewhere a footer read across lines can be another stream's (two keys side by
+  side, the shorter on the left), so the masking goes on to the next line with no base64 (a blank line, or one of
+  marks alone). These lines are read in each view main's reader reads (as written, and with JSON's escapes read once
+  and twice), and an escape's letter glued to the start of main's key is read as part of it. So a field's name or a
+  label before the header on its line, and words, a certificate or a JSON field after the key in the same run of
+  lines, are masked with it. Main shows such a key; this only masks more. A key wrapped narrow (about 12 base64
+  characters a line or fewer) with a decoy run of base64 beside it, or a decoy fused into the key's own run with no
+  space, can still show: its header, split across the narrow lines, holds no whole header or key's word on one line to
+  find, and the per-line reading follows the decoy's column. A decoy beside a key wrapped at 16 columns or wider is
+  masked. Main shows all of these.
+  Whether the words before a header on its decoded line make a sentence that quotes it is read from the few dozen
+  bytes before it: a byte no text holds there starts a key where the words alone would quote it, and a space further
+  back is not seen, so a header after a long word starts its key. This masks more.
   A header or footer whose words before "PRIVATE KEY" run past 200 bytes, far past any a key tool writes, is read as
   none, so a key encoded with one shows, as on main.
 - A lone piece of a private key's base64 with neither header nor footer shows, as on main, unless a key's rest
