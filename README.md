@@ -520,9 +520,13 @@ Known limits:
   alone on a line of its own, narrower than the lines below it, is a stream of its own too, so a public key below it
   whose lines fill the width stays. In a row an older Superhistory stored, encoded text after a key in its stream that does not
   decode from its line's start to words reads as an older Superhistory's rest of a key after the key's placeholder, and is
-  masked too. A header after text on its decoded line, as a sentence quoting one writes it, starts a key only with a
+  masked too. A header after text on its decoded line, as a sentence quoting one writes it, starts a key with a
   footer later in its stream, and then the key starts on that line, with the words before the header and whatever lies
-  between it and the footer. A header that starts a line below a shorter one, the last of another encoded stream,
+  between it and the footer. With no footer later it starts one too, unless nothing follows it or the line after it
+  reads as prose (text with a letter and nothing a key's lines hold, up to its line break or another key file's
+  header); a key's body, an armour header, a blank line, or a line the text ends inside is no prose. So a key file cut
+  short after a label on its header's line ("key: -----BEGIN ...") is masked, and a document that quotes a header and
+  goes on in words, or ends there, stays. A header that starts a line below a shorter one, the last of another encoded stream,
   starts a stream of its own, so the words above it quote nothing and it starts its key, footer or none. A key file's
   header below it, past prose, starts the key instead, on a line of its own, or, where the text runs on into the file
   with no line break, after a byte order mark or where the line widths change; past no prose (a run a key's body could
@@ -558,11 +562,16 @@ Known limits:
   marks alone). These lines are read in each view main's reader reads (as written, and with JSON's escapes read once
   and twice), and an escape's letter glued to the start of main's key is read as part of it. So a field's name or a
   label before the header on its line, and words, a certificate or a JSON field after the key in the same run of
-  lines, are masked with it. Main shows such a key; this only masks more. A key wrapped narrow (about 12 base64
-  characters a line or fewer) with a decoy run of base64 beside it, or a decoy fused into the key's own run with no
-  space, can still show: its header, split across the narrow lines, holds no whole header or key's word on one line to
-  find, and the per-line reading follows the decoy's column. A decoy beside a key wrapped at 16 columns or wider is
-  masked. Main shows all of these.
+  lines, are masked with it. Main shows such a key; this only masks more. Each line's first three runs of base64 and
+  its last three are also read as columns, each column as main's reader reads a key written plain, so a key wrapped
+  narrow (one to seven characters a line) beside a line's number, a label or a table's cells, or after a line before
+  its file ("key:") beside base64 of words, whose header no single line holds, is found and masked the same way. A
+  column counts a key only where its base64 there holds the key's header and the column cut something (another run, a
+  mark) off one of the key's lines, and a key main's reader reads through its footer is left to it, so a field after a
+  key, a line of words above a lone footer, or a field's name before a stream that quotes a header stays. A key whose
+  run stands fourth or further from both ends of its lines, or between runs that change in number from line to line,
+  a narrow key whose header is cut off, a decoy fused into the key's own run with no space, or a decoy's lines between
+  a narrow key's lines (12 characters a line or fewer), can still show. Main shows all of these.
   Whether the words before a header on its decoded line make a sentence that quotes it is read from the few dozen
   bytes before it: a byte no text holds there starts a key where the words alone would quote it, and a space further
   back is not seen, so a header after a long word starts its key. This masks more.

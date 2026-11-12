@@ -161,12 +161,15 @@ the lines that wrap it, their breaks plain or escaped at any depth, as JSON in J
 each hold its base64 among other text (a quote's or a comment's mark, a line's number, code or a table's cells around
 it, another stream beside it): in each run of lines that each hold base64, the runs that decode on from the lines above,
 and any run on a line that starts as a key file does (every run on the line is read, so a key file beside a
-certificate or a public block is found on its own run), are read only to find a key's header, and from the line it starts on
+certificate or a public block is found on its own run), and each line's first three and last three runs read as
+columns (so a key wrapped narrow beside a line's number, a label or another stream's words is found though no one line
+holds its header), are read only to find a key's header, and from the line it starts on
 everything is masked whole to the last run of base64 on the run's last line, since no one run on a line is known to be
 the key's; a key main's reader reads through its footer is left to it, and masked on from its end where a reading goes
 past it, and one it reads short of its footer (a line put among a key's lines ends it) is masked as any other. It is found
 where its encoded "PRIVATE KEY" or "SECRET KEY" decodes inside the key's header or footer on a line of its own, so a field's name
-or a sentence that names one, or quotes a header, stays. It is read once over the text as written, and again with the
+or a sentence that names one, or quotes a header, stays; a header after a label on its line, cut short of its footer,
+starts its key unless nothing or a line of prose follows it. It is read once over the text as written, and again with the
 characters a reader does not see taken out, and hidden over what mask()'s passes leave: no reading reads its
 placeholder, so what follows the key, such as a certificate's base64, stays, and all the passes hide stays hidden. It
 masks from the line that holds its header's first byte through the line with its footer's last byte and the line breaks
