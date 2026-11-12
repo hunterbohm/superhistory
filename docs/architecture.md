@@ -148,9 +148,11 @@ refusal over the second.
 
 Text is masked before it is cut, never after: a cut can keep part of a secret too short for mask() to know. A row of
 today's version, and for a chunk every chunk of its item, was masked whole, so `superhistory search` cuts it as stored
-(`store.current`). Any other row, from before versions or from an older `mask()`, is masked whole when read: search
-masks the hit's whole item, its title and its metadata, finds the match again in the masked text with FTS5's own
-matching, and leaves out an item whose id holds a secret. `superhistory get` and the summarizer always mask the whole item.
+(`store.current`), and `superhistory get` and the dashboard cut a page from an item whose rows are all of today's
+version (`store.as_stored`): masking a long session whole again for each page took minutes. Any other row, from before
+versions or from an older `mask()`, is masked whole when read: search masks the hit's whole item, its title and its
+metadata, finds the match again in the masked text with FTS5's own matching, and leaves out an item whose id holds a
+secret, and `get` masks the whole item before it cuts the page. The summarizer always masks the whole item.
 
 `mask()` masks a private key by its structure, never line by line: from its header through its footer, or, with no
 footer, through the end of its paragraph (the next blank line, plain or escaped), an encrypted key's past the blank line
