@@ -4934,6 +4934,188 @@ class Base64ReviewTwentyFourthTest(unittest.TestCase):
                 # four times the text
                 self.assertLess(took[1 << 20], 8 * max(took[1 << 18], 0.05), took)
 
+    @staticmethod
+    def gnupg_files(r):
+        """GnuPG secret key blocks, made up: with armour headers or none, a blank line or none, a CRC line or none,
+        "SECRET KEY BLOCK", a comment past ASCII, and the fixture whose comment holds a control byte."""
+        import base64
+        import textwrap
+        body = "\n".join(textwrap.wrap(base64.b64encode(b"\x95\x03\x98" + r.randbytes(600)).decode(), 64))
+        crc = "\n=" + base64.b64encode(r.randbytes(3)).decode()
+        head, foot = "-----BEGIN PGP PRIVATE KEY BLOCK-----\n", "\n-----END PGP PRIVATE KEY BLOCK-----\n"
+        return {"gnupg headers": (head + "Version: GnuPG v2\nComment: walrus ledger\n\n" + body + crc + foot).encode(),
+                "gnupg blank": (head + "\n" + body + crc + foot).encode(),
+                "gnupg no blank, no crc": (head + body + foot).encode(),
+                "gnupg secret": (head + "\n" + body + crc + foot).replace("PRIVATE", "SECRET").encode(),
+                "gnupg café": (head + "Comment: café – test\n\n" + body + crc + foot).encode(),
+                "gnupg control": Base64ReviewNineteenFindingsTest.fixture("gnupg_control_comment")}
+
+    def test_a_key_file_cut_short_after_a_label_on_its_headers_line_is_masked(self):
+        # A header after text on its decoded line ("key: -----BEGIN ...") reads as a quote, as a sentence quoting one
+        # writes it, and starts a key only with a footer later in its stream, so a key file cut short after a label
+        # showed its body, on bare lines and under a mark, on main too. With no footer after it, such a header starts
+        # its key unless the line after it is a whole line of prose; a document that quotes a header and goes on in
+        # words stays (main's tests of quoted headers).
+        import base64
+        import random
+        import textwrap
+        written, i = Base64ReviewNineteenFindingsTest.written, 0
+        r = random.Random(43)
+        labels = ("key: ", "private_key = ", "KEY=", "Note: ", "例：", "Ex:", 'export KEY="', "- ")
+        keys = {**self.key_files(r), **self.gnupg_files(r)}
+        for name, data in keys.items():
+            footer = data.rindex(b"-----END" if b"-----END" in data else b"---- END")
+            first = data.index(b"\n") + 1
+            for label in labels:
+                for width in (16, 30, 64, 76):
+                    # cut before its footer, anywhere past its header's line, or 3 bytes into the line after it
+                    for end in (footer, r.randrange(first + 8, footer), first + 3):
+                        file = label.encode() + data[:end]
+                        chunks = textwrap.wrap(base64.b64encode(file).decode(), width)
+                        mark = ("", "> ", "# ")[i // 3 % 3]
+                        text = "\n".join(["Notes:"] + [mark + c for c in chunks] + ["", "next paragraph"])
+                        depth, older, i = i % 3, i // 9 % 2, i + 1
+                        past = len(file) - len(data[:end]) + first  # past the header's line
+                        with self.subTest(key=name, label=label, width=width, end=end, mark=mark, depth=depth,
+                                          older=older):
+                            masked = Base64ReviewEighteenTest.masks(written(text, depth), older)
+                            self.assertEqual([c for n, c in enumerate(chunks) if len(c) >= 4 and c in masked
+                                              and (6 * (n * width + len(c)) - 1) // 8 >= past], [])
+                            self.assertIn("next paragraph", masked)
+
+    def test_a_key_file_cut_short_after_a_label_and_long_space_on_its_headers_line_is_masked(self):
+        # Review round 1: the line after such a header is read in a window past it, and a window that ended in the
+        # spaces or tabs after the header, before its line break, read as nothing after it, so the key showed; one
+        # that ended a few bytes into the key's first line ("openssh-key-v1") read those as words. Only the text's end
+        # after it is nothing, and a line the window ends inside reads as no prose.
+        import base64
+        import random
+        import textwrap
+        written, i = Base64ReviewNineteenFindingsTest.written, 0
+        r = random.Random(71)
+        keys = {**self.key_files(r), **self.gnupg_files(r)}
+        for name, data in keys.items():
+            first = data.index(b"\n")
+            footer = data.rindex(b"-----END" if b"-----END" in data else b"---- END")
+            for pad in [*range(140, 260, 23), *range(280, 360, 7), 600]:  # the window ends in it or the line after
+                for fill in (b" ", b"\t"):
+                    width = (64, 76)[i % 2]
+                    file = b"key: " + data[:first] + fill * pad + data[first:footer]
+                    chunks = textwrap.wrap(base64.b64encode(file).decode(), width)
+                    text = "\n".join(["Notes:"] + chunks + ["", "next paragraph"])
+                    depth, older, i = i % 3, i // 3 % 2, i + 1
+                    past = len(b"key: ") + first + pad + 1  # past the header's line
+                    with self.subTest(key=name, pad=pad, fill=fill, width=width, depth=depth, older=older):
+                        masked = Base64ReviewEighteenTest.masks(written(text, depth), older)
+                        self.assertEqual([c for n, c in enumerate(chunks) if len(c) >= 4 and c in masked
+                                          and (6 * (n * width + len(c)) - 1) // 8 >= past], [])
+                        self.assertIn("next paragraph", masked)
+
+    def test_a_header_quoted_before_a_blank_line_and_words_above_a_key_file_in_its_stream_stays(self):
+        # A header after a label on its line, then a blank line and words, then a key file on a line of its own, in
+        # one stream: main reads the words as prose and starts the key at the file's header below them, so the words
+        # stay. With a footer later in its stream, a quoted header is read as main reads it: the line after it decides
+        # (_prose_after) only where no footer follows, and a blank line there would start a key that takes the words.
+        import base64
+        import random
+        import textwrap
+        r = random.Random(59)
+        words = b"Read the notes on rotation before you import it, and keep the old one until the new one is in use. "
+        words *= 3
+        keys = {**self.key_files(r), **self.gnupg_files(r)}
+        i = 0
+        for name, data in keys.items():
+            head = data[:data.index(b"\n")]
+            for label in (b"Example: ", b"key: "):
+                for brk in (b"\n", b"\r\n"):
+                    for width in (64, 76):
+                        pre = label + head + brk * 2 + words
+                        pre += b" " * (-(len(pre) + len(brk)) % (width * 3 // 4)) + brk  # the file starts its line
+                        lines = textwrap.wrap(base64.b64encode(pre + data).decode(), width)
+                        text = "\n".join(["Notes:"] + lines + ["", "next paragraph"])
+                        first = len(label + head + brk * 2)
+                        span = lambda n: (n * width * 6 // 8, (6 * (n * width + len(lines[n])) - 1) // 8)
+                        between = [line for n, line in enumerate(lines)
+                                   if span(n)[0] >= first and span(n)[1] < len(pre)]
+                        body = [line for n, line in enumerate(lines[:-2]) if span(n)[0] > len(pre) + 64]
+                        older, i = i % 2, i + 1
+                        with self.subTest(key=name, label=label, brk=brk, width=width, older=older):
+                            self.assertGreaterEqual(len(between), 4)
+                            masked = Base64ReviewEighteenTest.masks(text, older)
+                            self.assertEqual([line for line in between if line not in masked], [])
+                            self.assertEqual([line for line in body if line in masked], [])
+                            self.assertIn("next paragraph", masked)
+
+    def test_a_key_wrapped_narrow_beside_other_runs_or_after_a_line_before_its_file_is_masked(self):
+        # Each line was read as one run (_chained_key_lines), and one under 8 characters goes on from the line above
+        # only at its column, so a key wrapped at 4 to 7 characters beside a line's number, a label, a table's cells,
+        # under quote marks that change in length, or before notes that change in number, showed; so did a key after a
+        # line before its file ("key:", which moves its header inside a line) beside base64 of words, longer and
+        # decoding to text too. Its header, split across lines, then held no key's word on any one line, so no run on a
+        # line started a key file. GnuPG's key cut short showed so, and every other kind, cut short or whole, on main
+        # too. Each line's first three runs and last three are read as columns too, each as main's reader reads a key
+        # written plain.
+        import base64
+        import random
+        import textwrap
+        written, i = Base64ReviewNineteenFindingsTest.written, 0
+        r = random.Random(47)
+        words = base64.b64encode(b"rotate the ledger after the review, then move the plan to approved. " * 9).decode()
+        keys = {**self.key_files(r), **self.gnupg_files(r)}
+        narrow = ("{n} | {line}", "[main{odd}] {line}", "{quote}{line}", "<tr><td>{n}</td><td>{line}</td></tr>",
+                  "| {n} | {line} |", "{stream}: {line}", "{line} | {n} | {stream} | {node}",
+                  "{node} {stream} {n} | {line}", "{n} | {line} {notes}")
+        for name, data in keys.items():
+            footer = data.rindex(b"-----END" if b"-----END" in data else b"---- END")
+            for whole in (True, False):
+                file = data if whole else data[:footer]
+                forms = [(form, b"", width) for form in narrow for width in (4, 5, 7)]
+                forms += [("{words} {line}", prefix, width) for prefix in (b"key:\n", b"x\n") for width in (16, 30)]
+                for form, prefix, width in forms:
+                    code = base64.b64encode(prefix + file).decode()
+                    chunks = textwrap.wrap(code, width)
+                    lines = [self.around(form.replace("{words}", words[n * 7 % 40:][:width + 1 + n * 13 % 50]).replace(
+                        "{notes}", " ".join(("ok", "done", "next")[:n % 4])), n + 1, c) for n, c in enumerate(chunks)]
+                    text = "\n".join(["Notes:"] + lines + ["", "next paragraph"])
+                    depth, older, i = i % 3, i // 3 % 2, i + 1
+                    with self.subTest(key=name, whole=whole, form=form, prefix=prefix, width=width, depth=depth,
+                                      older=older):
+                        masked = Base64ReviewEighteenTest.masks(written(text, depth), older)
+                        # each line of the key, past the line before its file, as written beside its line's text
+                        shown = [n for n, line in enumerate(lines) if len(chunks[n]) >= 4 and line in masked
+                                 and (6 * (n * width + len(chunks[n])) - 1) // 8 >= len(prefix)]
+                        self.assertEqual(shown, [])
+                        self.assertIn("next paragraph", masked)
+
+    def test_lines_of_key_runs_read_as_columns_cost_time_in_proportion(self):
+        # Each column whose runs hold a key's word is read once, as one view of the text, however many runs of lines
+        # hold it, and a column's lines are joined once: four times the lines, each with a key's base64 in six
+        # columns, in runs of lines apart or in one, take under eight times the time. The texts stay under WHOLE, as a
+        # longer one's result is kept and masking it again costs a lookup.
+        import base64
+        import random
+        import textwrap
+        import time
+        from kb import mask as masking
+        r = random.Random(53)
+        chunks = textwrap.wrap(base64.b64encode(self.pem(r)).decode(), 8)
+        lines = lambda chunks: "\n".join(f"{n} | {c} {c} | {c} {c} {c} # {c}" for n, c in enumerate(chunks))
+        for shape in ("apart", "one"):
+            with self.subTest(shape=shape):
+                took = {}
+                for blocks in (6, 24):
+                    text = ("\n\n".join(lines(chunks) for _ in range(blocks)) if shape == "apart"
+                            else lines(chunks * blocks))
+                    self.assertLessEqual(len(text), masking.WHOLE)
+                    best = None
+                    for _ in range(2):
+                        started = time.process_time()
+                        mask(text)
+                        spent = time.process_time() - started
+                        best = spent if best is None else min(best, spent)
+                    took[blocks] = best
+                self.assertLess(took[24], 8 * max(took[6], 0.05), took)
+
 
 class Base64ReviewTwentyFifthTest(unittest.TestCase):
     """#34's twenty-fifth review: a web page's quote entity, after a footer's spaces, that the edge of the window
