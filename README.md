@@ -522,11 +522,12 @@ Known limits:
   decode from its line's start to words reads as an older Superhistory's rest of a key after the key's placeholder, and is
   masked too. A header after text on its decoded line, as a sentence quoting one writes it, starts a key with a
   footer later in its stream, and then the key starts on that line, with the words before the header and whatever lies
-  between it and the footer. With no footer later it starts one too, unless nothing follows it or the line after it
-  reads as prose (text with a letter and nothing a key's lines hold, up to its line break or another key file's
-  header); a key's body, an armour header, a blank line, or a line the text ends inside is no prose. So a key file cut
-  short after a label on its header's line ("key: -----BEGIN ...") is masked, and a document that quotes a header and
-  goes on in words, or ends there, stays. A header that starts a line below a shorter one, the last of another encoded stream,
+  between it and the footer. With no footer later it starts one too, unless the text ends after it or what follows it,
+  on its line or the next, reads as prose (text with a letter and nothing a key's lines hold, up to a line break or
+  another key file's header); a key's body, an armour header, a blank line, or a line the text ends inside is no
+  prose, and neither is what the 384 bytes past the header do not hold whole (long spaces, a long line). So a key file
+  cut short after a label on its header's line ("key: -----BEGIN ...") is masked, and a document that quotes a header
+  and goes on in words, or ends there, stays. A header that starts a line below a shorter one, the last of another encoded stream,
   starts a stream of its own, so the words above it quote nothing and it starts its key, footer or none. A key file's
   header below it, past prose, starts the key instead, on a line of its own, or, where the text runs on into the file
   with no line break, after a byte order mark or where the line widths change; past no prose (a run a key's body could

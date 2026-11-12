@@ -4983,6 +4983,34 @@ class Base64ReviewTwentyFourthTest(unittest.TestCase):
                                               and (6 * (n * width + len(c)) - 1) // 8 >= past], [])
                             self.assertIn("next paragraph", masked)
 
+    def test_a_key_file_cut_short_after_a_label_and_long_space_on_its_headers_line_is_masked(self):
+        # Review round 1: the line after such a header is read in a window past it, and a window that ended in the
+        # spaces or tabs after the header, before its line break, read as nothing after it, so the key showed; one
+        # that ended a few bytes into the key's first line ("openssh-key-v1") read those as words. Only the text's end
+        # after it is nothing, and a line the window ends inside reads as no prose.
+        import base64
+        import random
+        import textwrap
+        written, i = Base64ReviewNineteenFindingsTest.written, 0
+        r = random.Random(71)
+        keys = {**self.key_files(r), **self.gnupg_files(r)}
+        for name, data in keys.items():
+            first = data.index(b"\n")
+            footer = data.rindex(b"-----END" if b"-----END" in data else b"---- END")
+            for pad in [*range(140, 260, 23), *range(280, 360, 7), 600]:  # the window ends in it or the line after
+                for fill in (b" ", b"\t"):
+                    width = (64, 76)[i % 2]
+                    file = b"key: " + data[:first] + fill * pad + data[first:footer]
+                    chunks = textwrap.wrap(base64.b64encode(file).decode(), width)
+                    text = "\n".join(["Notes:"] + chunks + ["", "next paragraph"])
+                    depth, older, i = i % 3, i // 3 % 2, i + 1
+                    past = len(b"key: ") + first + pad + 1  # past the header's line
+                    with self.subTest(key=name, pad=pad, fill=fill, width=width, depth=depth, older=older):
+                        masked = Base64ReviewEighteenTest.masks(written(text, depth), older)
+                        self.assertEqual([c for n, c in enumerate(chunks) if len(c) >= 4 and c in masked
+                                          and (6 * (n * width + len(c)) - 1) // 8 >= past], [])
+                        self.assertIn("next paragraph", masked)
+
     def test_a_header_quoted_before_a_blank_line_and_words_above_a_key_file_in_its_stream_stays(self):
         # A header after a label on its line, then a blank line and words, then a key file on a line of its own, in
         # one stream: main reads the words as prose and starts the key at the file's header below them, so the words

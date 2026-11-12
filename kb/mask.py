@@ -1250,12 +1250,14 @@ _ARMOUR_HEADER_LINE = re.compile(b"(?:^|" + _BREAK_BYTES_SEARCH.pattern + b")" +
 
 def _prose_after(joined, frame):
     """Whether what follows a header (`frame`, as _frame reads one, `refused` too) leaves it a quote, as a document that
-    quotes a header goes on in words: nothing at all, or a line of prose up to its line break or another key file's
-    header (a stream after it that starts one), text with a letter and nothing a key's lines hold (_Below). A key's
-    body, an armour header, a blank line, or a line the text ends inside, as a key cut short there ends, is none. Read
-    in a window of 192 bytes past the header's group, so many headers cost time in proportion."""
+    quotes a header goes on in words: nothing before the text ends, or prose up to a line break or another key file's
+    header (a stream after it that starts one), on the line after it or after it on its own line, text with a letter
+    and nothing a key's lines hold (_Below). A key's body, an armour header, a blank line, or a line the text ends
+    inside, as a key cut short there ends, is none. Read in a window of 384 bytes past the header's group, so many
+    headers cost time in proportion; a window that ends before what follows it does (spaces, a long line, a key's line
+    whose first bytes read as words) reads as none, failing closed."""
     group = frame[1]
-    hi = min(len(joined), group + 256)
+    hi = min(len(joined), group + 512)
     pad = joined.find("=", group, hi)
     ended = pad >= 0 or hi == len(joined)  # the text ends in the window
     hi = pad - (pad - group) % 4 + 4 if pad >= 0 else hi - (hi - group) % 4
@@ -1263,15 +1265,17 @@ def _prose_after(joined, frame):
     header = decoded and _KEY_FRAME.match(decoded, frame[2] - group)
     if not header:
         return False
-    brk = _BREAK_BYTES.match(decoded, _SPACE_OR_QUOTE_RUN.match(decoded, header.end()).end())
-    if brk is None or brk.end() == len(decoded):
-        return True  # nothing after it: no key's text to hide
-    end = _BREAK_BYTES_SEARCH.search(decoded, brk.end())
-    other = _KEY_FRAME.search(decoded, brk.end(), end.start() if end else len(decoded))
-    if not (end or other) and ended:
-        return False  # the text ends inside the line, as a key cut short there does
+    rest = _SPACE_OR_QUOTE_RUN.match(decoded, header.end()).end()
+    brk = _BREAK_BYTES.match(decoded, rest)
+    start = brk.end() if brk else rest  # the line after it, or the words after it on its line
+    if start == len(decoded):
+        return ended  # nothing after it where the text ends there: no key's text to hide
+    end = _BREAK_BYTES_SEARCH.search(decoded, start)
+    other = _KEY_FRAME.search(decoded, start, end.start() if end else len(decoded))
+    if not (end or other) and (brk or not ended):
+        return False  # the text ends inside the line after it, as a key cut short there does, or the window does
     end = end.start() if end else len(decoded)
-    key_text, letter = _Below._holds(decoded[brk.end():other.start() if other else end])
+    key_text, letter = _Below._holds(decoded[start:other.start() if other else end])
     return letter and not key_text
 
 
