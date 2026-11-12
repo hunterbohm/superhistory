@@ -4,11 +4,12 @@ import os
 import re
 import sqlite3
 import tempfile
+import time
 import unittest
 from datetime import datetime, timedelta, timezone
 from unittest import mock
 
-from kb import cli, config as config_mod, store
+from kb import cli, config as config_mod, mask as mask_module, store
 
 NOTES_CONFIG = 'machine = "studio"\n\n[sources.notes]\npath = "{path}"\n'
 
@@ -322,6 +323,79 @@ class CliTest(TempHome):
         near = self.db.execute("SELECT id FROM docs WHERE json_extract(metadata, '$.chunk') = 1").fetchone()[0]
         self.assertNotIn("Hit #", self.get(near))
         self.assertNotIn("Hit #", self.get(near, "--offset", start))
+
+    def make_older(self, text=None):
+        """The stored rows as a store masked with an older mask() holds them, with `text` as their text when given,
+        cut where the rows were and the last row taking the rest."""
+        rows = self.db.execute("SELECT id, content FROM docs ORDER BY json_extract(metadata, '$.chunk')").fetchall()
+        at = 0
+        for n, (rid, content) in enumerate(rows, 1):
+            if text is not None:
+                end = at + len(content) if n < len(rows) else len(text)
+                self.db.execute("UPDATE docs SET content = ? WHERE id = ?", (text[at:end], rid))
+            at += len(content)
+        self.db.execute("UPDATE docs SET masked = 'older'")  # a change to the text clears the version, so it is set after
+        self.db.commit()
+
+    def pages(self, rid):
+        """Every page of an item, read by following each page's command for the next."""
+        pages, offset = [], 0
+        while offset is not None:
+            out = self.get(rid, "--offset", offset)
+            pages.append(out.split("\n\n", 1)[1])
+            cut = re.search(r"\n\[[\d,]+ characters remain\. For the next page, run `superhistory get \d+ --offset (\d+)`\.\]\n$",
+                            pages[-1])
+            pages[-1] = pages[-1][:cut.start() if cut else -1]
+            offset = int(cut.group(1)) if cut else None
+        return pages
+
+    def test_a_page_of_a_long_current_item_costs_a_fraction_of_masking_the_item(self):
+        # A long session took minutes to mask whole, for each page read (143 s for one of 5.6 MB). Its rows record
+        # that they were masked whole with today's mask(), so a page costs the page; rows of an older mask() still
+        # cost the whole item, which is the measure here. Both sides run on this machine, so the ratio needs no cap.
+        body = "".join(f"{i:06d} the build log said the deploy step passed on the second try\n" for i in range(3500))
+        self.assertGreater(len(body), 10 * cli.PAGE)
+        # mask() keeps a longer text's result in this process, which would hide the cost of the second read.
+        self.assertLessEqual(len(body), mask_module.WHOLE)
+        self.add("long", body, title="Long session")
+        rid = self.db.execute("SELECT min(id) FROM docs").fetchone()[0]
+
+        def cost():
+            started = time.process_time()
+            out = self.get(rid)
+            return time.process_time() - started, out
+
+        current, page = min(cost() for _ in range(3))
+        self.make_older()
+        older, older_page = cost()
+        self.assertEqual(page, older_page)
+        self.assertIn(body[:cli.PAGE // 2], page)
+        self.assertLess(current * 4, older, f"a page of a current item took {current:.3f} s, of an older one {older:.3f} s")
+
+    def test_a_secret_near_a_page_edge_is_masked_on_both_pages(self):
+        secret = "ghp_abcdefghijklmnopqrstuvwxyz0123456789ABCD"
+        # No line break in the page's second half, so the page is cut at its cap, in the middle of whatever stands
+        # there: the secret ends before the cut, lies across it, or starts after it.
+        lines = ("y" * 900 + "\n") * 11
+        for at in (cli.PAGE - 50, cli.PAGE - 30, cli.PAGE - 10, cli.PAGE + 5):
+            with self.subTest(at=at):
+                self.db.execute("DELETE FROM docs")
+                lead = lines + "y" * (at - len(lines) - len(" token "))
+                body = lead + " token " + secret + " " + "w" * 9000 + "\nthe end\n"
+                self.assertEqual(body.index(secret), at)
+                self.add("edge", body)
+                rid = self.db.execute("SELECT min(id) FROM docs").fetchone()[0]
+                current = self.pages(rid)
+                self.assertEqual(len(current), 2)
+                self.assertEqual("".join(current), body.replace(secret, "[masked]"))
+                # An older store's rows hold the secret itself: the item is masked whole before the page is cut.
+                self.make_older(body)
+                self.assertIn(secret, "".join(r[4] for r in store.item_rows(self.db, rid)))
+                older = self.pages(rid)
+                self.assertEqual(older, current)
+                for page in current + older:
+                    for part in (secret[:12], secret[16:28], secret[-12:]):
+                        self.assertNotIn(part, page)
 
     def test_unknown_id_or_offset_fails_cleanly(self):
         self.add("a", "short body")

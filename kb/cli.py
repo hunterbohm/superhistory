@@ -122,16 +122,19 @@ def cmd_get(db, paths, config, args):
     ids = [r[0] for r in rows]
     if store.unversioned(db, ids):
         raise Fail(store.REBUILD.format(path=paths.db))
-    # Masked again before the page cut: a store written before today's patterns may hold what they find.
-    text = mask("".join(r[4] for r in rows))
-    hit = len(mask("".join(r[4] for r in rows[:ids.index(args.id)]))) if args.id in ids else 0
+    # An item whose rows all record today's mask version was masked as one text when it was stored, so its page is
+    # cut from the stored text (store.as_stored); masking a long session whole again takes minutes. Any other item is
+    # masked again whole before the page cut: a store written before today's patterns may hold what they find.
+    shown = (lambda stored: stored) if store.as_stored(rows) else mask
+    text = shown("".join(r[4] for r in rows))
+    hit = len(shown("".join(r[4] for r in rows[:ids.index(args.id)]))) if args.id in ids else 0
     start = args.offset
     if not 0 <= start < max(len(text), 1):
         raise Fail(f"--offset {start} is outside #{args.id}'s item, which has {len(text):,} characters.")
     end = min(start + PAGE, len(text))
     if end < len(text):
         end = text.rfind("\n", start + PAGE // 2, end) + 1 or end
-    _, source, ts, title, _, meta = rows[0]
+    _, source, ts, title, _, meta, _ = rows[0]
     by = store.superseded_by(db, *row)
     flag = f" (superseded by {_item_name(db, by)})" if by else ""
     print(f"{ts[:10]}  {source}  {mask(title)}{flag}")
