@@ -75,7 +75,7 @@ def _hide(text, keep, headless, track):
 def _masked(text, keep, headless, track):
     """One pass: (the text, and with `track` where each character of it came from in `text`)."""
     kinds = [_kind(ch, keep) for ch in text]
-    if not any(kinds):
+    if not any(kinds) and not keys.has_glued_code(text):
         masked = mask(text)
         came = None
         if track:
@@ -184,6 +184,8 @@ def _rounds(text, keep, headless, hidden=()):
         found = set()
         for reading, places in _readings(current, [_kind(ch, keep) for ch in current]):
             found |= _found(reading, places, headless)
+            if keys.has_glued_code(reading):
+                found |= _found(reading, places, headless, True)
         new = {origin[j] for j in found if origin[j] >= 0}  # a placeholder found is a run already hidden
         if not new:
             return
@@ -235,15 +237,16 @@ def _replaced(text, came, spans):
     return "".join(pieces), carried + came[last:]
 
 
-def _found(reading, places, headless):
+def _found(reading, places, headless, glued=False):
     """The places in the text, `places[i]` for `reading`'s i-th character, that kb's mask and then Sync's codes hide
     when they read `reading` until it stops changing, as strip-then-mask did, since hiding a code can free a key behind
-    it; with any the reading left out between two of them, which sit inside what is hidden."""
+    it; with any the reading left out between two of them, which sit inside what is hidden. With `glued`, Sync's codes
+    are read with what is glued to them (`keys.glued_code_spans`)."""
     current, origin = reading, list(range(len(reading)))
     for _ in range(PASSES):
         masked, came = mask_with_origin(current)
         came = [origin[c] if c >= 0 else -1 for c in came]
-        masked, came = _replaced(masked, came, keys.code_mask_spans(masked, headless))
+        masked, came = _replaced(masked, came, keys.code_mask_spans(masked, headless, glued))
         if masked == current:
             break
         current, origin = masked, came

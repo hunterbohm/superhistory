@@ -889,7 +889,7 @@ def _gitleaks_edits(text):
 # Which mask() a stored row was masked with. A row of another version, or of none, is masked again when read and by
 # the next ingest. The patterns change it by themselves; bump REVISION when the code that applies them changes what
 # it masks.
-REVISION = 42
+REVISION = 43
 VERSION = f"r{REVISION}-" + hashlib.sha256(repr((REVISION, [p.pattern for p in SECRET_PATTERNS + PREFIXED_SECRETS], KEYED_SECRET.pattern,
                                 ENV_KEY_SECRET.pattern, JSON_SECRET.pattern, FLAG_SECRET.pattern, AUTH_SECRET.pattern,
                                 COMMAND_FLAGS, PASSWORD_NAME.pattern, sorted(PLACEHOLDERS), REFERENCE.pattern,
@@ -4724,7 +4724,7 @@ def _run(text, rules, origin=None, named=None, fired=None, look=False):
     # gitleaks' rules last, so a named value holding a provider's token is read whole first; and in text only, as an
     # id is read more narrowly (secret_in_id), and an id one took for a token would drop its item.
     if reading in ("named", "today"):
-        for step in (_name_value_edits, _typed_code_edits, _gitleaks_edits):
+        for step in (_name_value_edits, _typed_code_edits, _typed_json_edits, _gitleaks_edits):
             edits = step(text)  # read from the text the step before left
             if edits:
                 note(edits)
@@ -6814,6 +6814,175 @@ def _typed_code_edits(text):
         else:
             merged.append((start, end, "[masked]"))
     return merged
+
+
+# A typing tool's input as a transcript holds it written as an object: JSON's, or Python's repr, plain or escaped as
+# JSON in JSON writes it. A field is an object whose strings under one of these names label it, and what it types is
+# a string, or a number, under one of the others. kb's readers hide what a tool types at ingest (typed_secrets); a row
+# stored before they did, and any other text that quotes a call, holds it as written, so the mask reads it here.
+_JSON_LABEL_KEYS = frozenset(key.lower() for key in _LABEL_KEYS)
+_JSON_TYPED_KEYS = frozenset(("text", "value", "keys", "input", "content", "string"))
+_JSON_TYPED_HINT = re.compile(r"(?i)(?:text|value|keys|input|content|string)(?:\\*[\"'])?\s*:")
+_JSON_SECRET_HINT = re.compile(r"(?i)pass|pwd|pin|otp|secret|token|credential|cvc|cvv|[23]fa|mfa|key|one.?time|"
+                               r"verification|security|seed|phrase")
+_TYPING_NAME_AT = re.compile(rf"(?i)(?<![\w$])(?:mcp__[\w-]+__(?:{_TYPING_TOOL.pattern[4:]})"
+                             rf"|(?:browser|puppeteer|playwright)_{_TYPING_NAMES})(?![\w])")
+_ACTION_TYPE = re.compile(r"(?i)\baction(?:\\*[\"'])?\s*[:=]\s*\\*[\"']type\b")
+# A string's quote with the backslashes that escape it, a mark, a number, a name.
+_JSON_TOKEN = re.compile(r"(?<!\\)\\*[\"']|[{}\[\]:,]|-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?|[A-Za-z_$][\w$-]*")
+_ESCAPED_QUOTE = re.compile(r"\\[\"']")  # a quote a string holds escaped: JSON, or code, written inside it
+_JSON_STRING_LIMIT = 4096  # a string past this is no field's label or password
+_JSON_TYPING_REACH = 600  # how far past a typing tool's name an object with no label is read as its input
+
+
+def _opens_a_json_string(text, at):
+    """Whether a quote at `at` follows a mark that a string follows in an object or a list ("{", "[", "(", ",", ":",
+    "="), past spaces and breaks, escaped or not, as JSON in JSON writes them, so an apostrophe in a word ("don't")
+    opens none."""
+    j = at
+    while j > 0:
+        if text[j - 1] in " \t\r\n":
+            j -= 1
+        elif text[j - 1] in "nrt" and j >= 2 and text[j - 2] == "\\":
+            j -= 1
+            while j > 0 and text[j - 1] == "\\":
+                j -= 1
+        else:
+            break
+    return j == 0 or text[j - 1] in "{[(,:="
+
+
+def _json_name(inner):
+    """A key as an object names it: JSON's escapes read, the characters a reader does not see left out, in lower case."""
+    view = _json_unescaped(inner)
+    return INVISIBLE.sub("", view[0] if view else inner).lower()
+
+
+def _json_labels_ask(labels):
+    """Whether an object's labels, read as typed_secrets reads them, in each view of them, ask for a secret."""
+    views = [[], []]
+    for label in labels:
+        decoded = _json_unescaped(label)
+        for read in (label, decoded[0]) if decoded else (label,):
+            seen = list(_seen_views(read))
+            for k in (0, 1):
+                views[k].append(seen[min(k, len(seen) - 1)])
+    return any(_labels_ask_for_a_secret(tuple(view)) for view in views if view)
+
+
+def _typing_named_before(names, start):
+    """Whether a typing tool's name (`names`, where each ends) stands within _JSON_TYPING_REACH before `start`."""
+    k = bisect.bisect_right(names, start) - 1
+    return k >= 0 and start - names[k] <= _JSON_TYPING_REACH
+
+
+def _json_object_edits(text, frame, typing):
+    """The spans an object's typed values mask: all of them where its labels ask for a secret; where it has no label,
+    those that read as a credential, in what a typing tool's name or a "type" action reads as its input."""
+    typed = frame["typed"]
+    if not typed:
+        return []
+    if frame["labels"]:
+        return typed if _json_labels_ask(frame["labels"]) else []
+    if not (frame["action"] or typing):
+        return []
+    return [(a, b) for a, b in typed if any(map(_password_shaped, _seen_views(text[a:b])))]
+
+
+def _typed_json_edits(text):
+    """Each value a typing tool types into a field labelled for a secret, as an object in text writes it ({"element":
+    "Password", "text": ...}, or the same in Python's repr, or escaped as JSON in JSON writes it), as an edit that masks
+    it: read with typed_secrets' rule, but of any object, not only a tool's input, and with the label in any key
+    order. A value with no label is masked where it reads as a credential and a typing tool's name stands just before
+    the object, or the object's action is "type". A string the line ends before it closes, as a clipped call is, masks
+    to the line's end. A string that holds objects of its own, as a call's arguments do in JSON, is read as they are."""
+    # The two gates only save the scan on a text with no such call. A name written with an escape, or with a character
+    # a reader does not see, would pass neither, so a text that holds one goes to the scan.
+    disguised = "\\u" in text or "\\U" in text or INVISIBLE.search(text) is not None
+    if not (disguised or _JSON_TYPED_HINT.search(text)):
+        return []
+    names = [m.end() for m in _TYPING_NAME_AT.finditer(text)]
+    if not (disguised or names or _ACTION_TYPE.search(text) or _JSON_SECRET_HINT.search(text)):
+        return []
+    edits = []
+    _json_scan(text, 0, len(text), names, edits, 0)
+    merged = []
+    for start, end in sorted(edits):
+        if end > start:
+            if merged and start <= merged[-1][1]:
+                merged[-1] = (merged[-1][0], max(merged[-1][1], end), "[masked]")
+            else:
+                merged.append((start, end, "[masked]"))
+    return merged
+
+
+def _json_scan(text, pos, stop, names, edits, level):
+    """The objects in text[pos:stop], each read when it closes, or at the end for one the text clips; their masked
+    spans added to `edits`. `level` is how many strings deep this stretch is."""
+    frames = []
+    pending = None  # the last string or name, which a ":" makes a key
+    while True:
+        m = _JSON_TOKEN.search(text, pos, stop)
+        if not m:
+            break
+        tok, pos = m.group(), m.end()
+        top = frames[-1] if frames else None
+        if tok[-1] in "\"'":
+            quoted = len(tok) - 1 in (0, 1, 3, 7) and _opens_a_json_string(text, m.start())
+            end = _code_string_end(text, m.start(), min(stop, m.start() + _JSON_STRING_LIMIT)) if quoted else None
+            if end is None:
+                # a value a quote opens and the line never closes: a clipped call. It masks to the line's end.
+                if quoted and top is not None and top["key"] in _JSON_TYPED_KEYS and top["value"]:
+                    line = text.find("\n", pos, stop)
+                    line = stop if line < 0 else line
+                    top["typed"].append((pos, line))
+                    top["value"] = False
+                    pos = line
+                continue
+            a, b = _code_text(text, ("s", m.start(), end))
+            pos = end
+            if top is not None and top["value"]:
+                if top["key"] in _JSON_LABEL_KEYS:
+                    top["labels"].append(text[a:b])
+                if top["key"] in _JSON_TYPED_KEYS:
+                    top["typed"].append((a, b))
+                if top["key"] == "action" and _json_name(text[a:b]) == "type":
+                    top["action"] = True
+                top["value"], top["key"] = False, None
+            else:
+                pending = _json_name(text[a:b])
+            if level < 4 and _ESCAPED_QUOTE.search(text, a, b):
+                _json_scan(text, a, b, names, edits, level + 1)
+        elif tok == "{" or tok == "[":
+            frames.append({"dict": tok == "{", "labels": [], "typed": [], "action": False, "key": None, "value": False,
+                           "start": m.start()})
+            pending = None
+        elif tok == "}" or tok == "]":
+            if frames:
+                frame = frames.pop()
+                if frame["dict"]:
+                    edits += _json_object_edits(text, frame, _typing_named_before(names, frame["start"]))
+            pending = None
+        elif tok == ":":
+            if top is not None and top["dict"] and pending is not None:
+                top["key"], top["value"] = pending, True
+            pending = None
+        elif tok == ",":
+            if top is not None:
+                top["key"], top["value"] = None, False
+            pending = None
+        elif tok[0] in "-0123456789":
+            if top is not None and top["value"]:
+                if top["key"] in _JSON_TYPED_KEYS:
+                    top["typed"].append((m.start(), pos))
+                top["value"], top["key"] = False, None
+        elif top is not None and top["value"]:
+            top["value"], top["key"] = False, None
+        else:
+            pending = tok.lower()
+    for frame in reversed(frames):  # a call clipped before its objects close
+        if frame["dict"]:
+            edits += _json_object_edits(text, frame, _typing_named_before(names, frame["start"]))
 
 
 def _exc_text(exc_info):

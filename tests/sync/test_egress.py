@@ -9,6 +9,7 @@ import itertools
 import json
 import os
 import random
+import re
 import secrets
 import shutil
 import string
@@ -469,7 +470,13 @@ class HideBarTest(unittest.TestCase):
                 self.assertEqual(shown & by_kb, set(), "kb's mask hides it in the text as it leaves")
                 self.assertFalse([ch for ch in out if ch not in "\t\n\r" and unicodedata.category(ch) in egress.INVISIBLE])
                 if not any(egress._kind(ch, "\n\t\r") for ch in text):
-                    self.assertEqual(out, at_922fb6b.hide(text), "text with no invisible character leaves as before")
+                    # (repinned: a code with a letter or digit glued on, a key's head after it, now hides as one run
+                    # (one placeholder), where each was hidden in a pass of its own and left two side by side, or one
+                    # with the stray "]" of the other's placeholder after it. The text around the placeholders is as
+                    # before; what is hidden, and what a glued second code adds, is checked above.)
+                    placeholders = re.compile(r"(?:\[masked\]\]?)+")
+                    self.assertEqual(placeholders.sub("[masked]", out), placeholders.sub("[masked]", at_922fb6b.hide(text)),
+                                     "text with no invisible character leaves as before")
 
 
 class HideTimeTest(unittest.TestCase):
@@ -617,12 +624,6 @@ class OneCharacterTest(unittest.TestCase):
                         self.fail(f"{text!r} left {egress.hide(text)!r}")
 
 
-def residual(test):
-    """A shape on docs/sync.md's list of what masking is known to miss: a deliberate construction known to get through.
-    It is expected to fail, and fails the suite the day it no longer does, so the list can lose it."""
-    return unittest.expectedFailure(test)
-
-
 class PinnedMaskTest(unittest.TestCase):
     """What kb's mask hides, as of #40, leaves hidden: shapes #27's mask left, keys of
     digits and separators, which #29's mask showed as dates, and credentials of digits with a T or a Z, which #39's
@@ -681,24 +682,186 @@ class PinnedMaskTest(unittest.TestCase):
                 self.assertEqual(egress.clean({"text": text})["text"], text)
 
 
-class ResidualTest(unittest.TestCase):
-    @residual
-    def test_a_code_glued_onto_the_end_of_another(self):
-        # kb's mask takes the first code and the second's first six groups as one token; the last two, past a space, are
-        # too short to be a code. Plain text leaves them the same way.
+class GluedCodeTest(unittest.TestCase):
+    """A code with another code glued onto its end or its front hides whole: no eight characters of either code in a
+    row leave, however the second is written (with its head or without it, in groups with a dash, space or line break
+    between), wherever a break splits it, and whatever invisible character sits between the codes or inside one. kb's
+    mask hides what touches a hidden code up to the next break, and a code that stops there is too short to read."""
+
+    CODE_CHARS = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
+    INVISIBLES = ("", "\u2060", "\u200b", "\u00ad", "\ufeff", "\u200d", "\u034f")
+
+    @classmethod
+    def body(cls, rng, n):
+        while True:
+            chars = "".join(rng.choice(cls.CODE_CHARS) for _ in range(n))
+            if any(c.isdigit() for c in chars) and any(c.isalpha() and c > "F" for c in chars):
+                return chars
+
+    @staticmethod
+    def written(head, body, sep, head_sep, cuts):
+        """A code as a person writes it: the head, then the body in groups of four or run together, with `cuts` the
+        places in the body where a break is written instead of nothing."""
+        groups = [body[i:i + 4] for i in range(0, len(body), 4)] if sep else [body]
+        out = sep.join(groups) if sep else body
+        for at in sorted(cuts, reverse=True):
+            out = out[:at] + " " + out[at:]
+        return (head + head_sep + out) if head else out
+
+    @staticmethod
+    def shown(out, bodies):
+        """The first run of 8 characters of any code that is still in `out`, or None."""
+        flat = "".join(c for c in out.replace("[masked]", " ").upper() if c.isalnum())
+        for body in bodies:
+            for i in range(len(body) - 7):
+                if body[i:i + 8] in flat:
+                    return body[i:i + 8]
+        return None
+
+    def check(self, text, bodies):
+        for out in (egress.hide(text), egress.clean({"content": text})["content"]):
+            self.assertIsNone(self.shown(out, bodies), f"{text!r} left {out!r}")
+            self.assertEqual(egress.hide(out), out, "hiding twice changes nothing")
+
+    def test_the_audits_text(self):
+        # The residual this test closes: the second code's last two groups, past a space, were left.
         second = "5SVAV3AJ5MLPDHJCNHPRERM4 F2NG2BX5"
         for glue in ("", "\u2060"):
             text = "VRC1PNH766JU9C9GF55UVZSQ4MA9F676Z6Z7" + second[:13] + glue + second[13:]
             self.assertNotIn("F2NG2BX5", egress.hide(text))
+            self.assertNotIn("F2NG2BX5", egress.clean({"text": text})["text"])
+            self.assertEqual(egress.hide(text), "[masked]")
 
-    @residual
-    def test_a_password_typed_through_a_browser_tool_in_transcript_text(self):
-        # kb hides what a browser tool types when its readers ingest the call (typed_secrets), not in its mask, so a row
-        # kb stored before its readers did that, and has not read again, leaves with the password.
+    def test_a_second_code_glued_onto_the_end_of_a_first_is_masked_whatever_the_kinds_and_widths(self):
+        rng = random.Random("glued-codes")
+        # (head, characters in the body): a whole recovery code and a whole pairing code first, and ones cut short, whose
+        # read takes the head of the second code for its own characters; a second code with no head, a whole one with
+        # its head, and ones cut short.
+        firsts = (("VRC1", 32), ("VP1", 26), ("VRC1", 28), ("VRC1", 24))
+        seconds = (("", 32), ("VRC1", 32), ("VP1", 26), ("VRC1", 24), ("VRC1", 20), ("VP1", 20))
+        # Every pair of kinds, with the rest drawn: how each is written, a break in the second after `cut` characters,
+        # and the invisible character inside the second or between the two.
+        for (head1, n1), (head2, n2) in itertools.product(firsts, seconds):
+            for _ in range(10):
+                sep1, sep2, glue = rng.choice(("", "-", " ")), rng.choice(("", "-", " ")), rng.choice(self.INVISIBLES)
+                cut = rng.choice((None, 4, 8, 13, 20, 24))
+                one, two = self.body(rng, n1), self.body(rng, n2)
+                first = self.written(head1, one, sep1, rng.choice(("", "-")), ())
+                cuts = () if cut is None or cut >= n2 or sep2 else (cut,)
+                second = self.written(head2, two, sep2, rng.choice(("", "-")), cuts)
+                at = rng.randrange(len(second) + 1)
+                text = rng.choice((f"{first}{second[:at]}{glue}{second[at:]}", f"note {first}{glue}{second} end",
+                                   f"{first}{glue}{second}.\n"))
+                with self.subTest(first=(head1, n1, sep1), second=(head2, n2, sep2), glue=glue, cut=cut):
+                    self.check(text, (one, two))
+
+    def test_a_code_without_its_head_glued_onto_the_front_of_a_code_is_masked(self):
+        rng = random.Random("glued-front")
+        for head, n in (("VRC1", 32), ("VRC1", 28), ("VRC1", 24), ("VP1", 26)):
+            for _ in range(24):
+                sep, sep2 = rng.choice(("", "-", " ")), rng.choice(("", "-", " "))
+                glue, cut = rng.choice(self.INVISIBLES), rng.choice((None, 4, 8, 12, 20, 24, 28))
+                bare, coded = self.body(rng, 32), self.body(rng, n)
+                before = self.written("", bare, sep, "", () if cut is None or sep else (cut,))
+                text = rng.choice(("", "x ", "code: ")) + f"{before}{glue}{self.written(head, coded, sep2, '', ())}" + rng.choice(("", " end", ".\n"))
+                with self.subTest(head=head, n=n, sep=sep, sep2=sep2, glue=glue, cut=cut):
+                    self.check(text, (bare, coded))
+
+    def test_codes_without_heads_run_together_are_masked_and_a_run_of_other_text_is_not(self):
+        rng = random.Random("glued-bare")
+        for count in (2, 3):
+            for _ in range(12):
+                bodies = [self.body(rng, 32) for _ in range(count)]
+                lower = rng.random() < 0.5
+                sep, glue = rng.choice(("", "-", " ")), rng.choice(self.INVISIBLES)
+                parts = [self.written("", body.lower() if lower else body, sep, "", ()) for body in bodies]
+                k = rng.randrange(len(parts[-1]) + 1)  # an invisible character inside the last code, not between them
+                parts[-1] = parts[-1][:k] + glue + parts[-1][k:]
+                text = f"code: {''.join(parts)} end"
+                with self.subTest(count=count, sep=sep, lower=lower, glue=glue):
+                    self.check(text, bodies)
+        # A run of more than eight groups that mixes cases, as base64 does, or holds no letter past F, as a hash does,
+        # is not a code: it leaves as it did.
+        mixed = "".join(rng.choice(self.CODE_CHARS + self.CODE_CHARS.lower()) for _ in range(64))
+        code, hash_ = self.body(rng, 32), "3F2A9C0B" * 4  # a run of 32 that is a code, and one that is a hash
+        for text in (f"data: {mixed}.", f"data: {mixed.lower()[:32]}{mixed.upper()[32:]}.",  # both cases
+                     f"data: {'3F2A9C0B' * 8}.", f"data: {'3f2a9c0b' * 8}.", f"hash: {'3f2a9c0b' * 8}",
+                     f"data: {'3f2a9c0b-' * 7}3f2a9c0b.",  # no letter past F
+                     f"data: {code}{hash_}.", f"data: {hash_}{code}.",  # only some of its 32s are codes
+                     f"data: {code}{code[:4]}.", f"data: {code}{code[:8]}.", f"data: {code}{code[:28]}.",  # not whole codes
+                     f"data: {code.lower()}{code[:4].lower()}."):
+            with self.subTest(text=text):
+                self.assertEqual(egress.hide(text), text)
+
+    def test_words_after_a_code_that_nothing_is_glued_to_stay(self):
+        # Only a code with a letter or digit touching it takes more with it. kb's mask already reads the word after a
+        # code written with dashes as part of it, a four-letter one ("then" below); the words past it stay, as before.
+        code = "VRC1-" + "-".join(["A1G2", "7HJK", "M3NP", "Q4RS", "T5VW", "X6YZ", "8BCD", "9EFG"])
+        for text, shown in ((f"saved {code} then deploy the release", "saved [masked] deploy the release"),
+                            (f"saved {code}\nThen deploy the release", "saved [masked] deploy the release"),
+                            (f"saved {code}. Then deploy the release", "saved [masked]. Then deploy the release"),
+                            (f"({code}) is your code and it is private", "([masked]) is your code and it is private"),
+                            (f"saved {code[5:]} and then deploy the release", "saved [masked] and then deploy the release")):
+            with self.subTest(text=text):
+                self.assertEqual(egress.hide(text), shown)
+
+    def test_what_is_past_a_glued_run_that_is_no_second_code_stays(self):
+        # A run glued on, then groups that bring it past 32 (or to under 20), is not a second code written in two
+        # pieces: kb's mask hides the run to the break, and the groups past it stay, as they did.
+        code = "VRC1" + "A1G2" * 8
+        for glued, group in (("AB12CD34EF56GH78JK90", "WXYZ" * 4), ("AB12CD34EF56GH78JK90MN", "PQ34RS56TV78"),
+                             ("AB12", "WXYZ" * 3), ("AB12CD34EF56GH78JK90MN34PQ56", "RS78TV90WX12")):
+            with self.subTest(glued=glued, group=group):
+                self.assertEqual(egress.hide(f"{code}{glued} {group} end"), f"[masked] {group} end")
+
+    def test_a_key_glued_onto_the_end_of_a_code_is_masked_whole(self):
+        # Masking a code first would cut the key into pieces kb no longer reads; the key hides whole as it always did.
+        code = "VRC1" + "A1G2" * 8
+        for key in ("sk-ant-api03-" + "Ab3dE5fG7hJ9kL2m-" * 5, "ghp_" + "Ab3D" * 9, "AKIAIOSFODNN7EXAMPLE",
+                    "sk-proj-" + "a1B2" * 20):
+            with self.subTest(key=key[:12]):
+                out = egress.hide(code + key + " end")
+                # Nothing of the code or the key is left. A word after a key of 20 to 31 characters glued on may go with
+                # it: it reads as the rest of a second code, written in two pieces.
+                self.assertIn(out.replace("[masked]", ""), (" end", ""), out)
+                self.assertEqual(egress.hide(out), out)
+
+
+class TypedPasswordInTextTest(unittest.TestCase):
+    """kb's readers hide what a browser tool types at ingest (typed_secrets); a row stored before they did, and not
+    read again, holds it as written. kb's mask hides it in the text now, so Sync does not send it, whatever the row's
+    age, and whichever way the call is written."""
+
+    def test_the_audits_texts(self):
         for text in ('TOOL mcp__playwright__browser_type: {"element": "Password", "text": "Tr0ub4dor&3xq"}',
                      '{"type":"tool_use","name":"mcp__playwright__browser_type",'
                      '"input":{"element":"Password field","ref":"e12","text":"Tr0ub4dor&3xq"}}'):
-            self.assertNotIn("Tr0ub4dor", egress.clean({"text": text})["text"])
+            with self.subTest(text=text):
+                out = egress.clean({"text": text})["text"]
+                self.assertNotIn("Tr0ub4dor", out)
+                self.assertIn("Password", out)
+                self.assertEqual(egress.clean({"text": out})["text"], out)
+                self.assertNotIn("Tr0ub4dor", egress.hide(text))
+
+    def test_every_form_a_call_is_written_in_and_an_invisible_character_in_the_value_or_the_label(self):
+        rng = random.Random("typed-egress")
+        for tool in ("mcp__playwright__browser_type", "browser_type", "mcp__puppeteer__puppeteer_fill"):
+            for label in ("Password", "Enter your PIN", "Secret key", "Pass\u200bword", "P\ufeffassword"):
+                value = "Zk9qWm2x" + rng.choice(("-Tr0ub4dor", "\u200b-Tr0ub4dor", "}{Tr0ub4dor", "'Tr0ub4dor"))
+                args = ({"selector": "input[name=password]", "value": value} if "puppeteer" in tool
+                        else {"element": label, "ref": "e12", "text": value})
+                block = {"type": "tool_use", "name": tool, "input": args}
+                for text in (f"TOOL {tool}: {json.dumps(args)}", json.dumps(block), json.dumps(json.dumps(block)),
+                             f"TOOL {tool}: {args!r}", json.dumps(block, indent=1)):
+                    with self.subTest(tool=tool, label=label, text=text):
+                        for out in (egress.hide(text), egress.clean({"text": text})["text"]):
+                            self.assertNotIn("Zk9qWm2x", out)
+                            self.assertEqual(egress.hide(out), out)
+
+    def test_an_ordinary_field_beside_it_stays(self):
+        text = 'TOOL mcp__playwright__browser_type: {"element": "Search", "text": "pelican plan"}'
+        self.assertEqual(egress.hide(text), text)
+        self.assertEqual(egress.clean({"text": text}), {"text": text})
 
 
 class NamedOrdersTest(unittest.TestCase):
