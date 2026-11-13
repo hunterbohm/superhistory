@@ -176,12 +176,11 @@ the run (64 lines at most) starts a key on its line, as a footer's piece with no
 first line through that footer, unless the pieces lie in a header a reading of the lines (the chained runs, each column,
 main's blocks, none joining lines across one it skips) shows as quoted, with words or prose after it and no key's lines
 below it (a line that decodes to a run as long as a key's line, or lines that decode as a key's wrapped narrow do, a
-decoy glued to them, set apart or set between, or cut with spaces: a run, alone or joined to the next two lines' runs,
-that decodes from no offset to words and from one to bytes that start or end in base64's characters, on two lines with 6
-or more or on eight with 3 or more; two runs 4 to 7 characters long on two lines, each decoding alone to base64's
-characters, that joined decode on to 6 or more; three lines' runs glued that decode to 9 or more at an edge; or more
-than four such short runs on a line), or in another file's header or footer (a certificate's, a public key's). It is
-found
+decoy glued to them, set apart or set between, or cut with spaces: a run, alone, joined to the next two lines' runs, or
+4 to 7 characters long and decoding alone to base64's characters, joined to such a run on the next line, that decodes
+from no offset to words and from one to bytes that start or end in base64's characters, on two lines with 6 or more or
+on eight with 3 or more; three lines' runs glued that decode to 9 or more at an edge; or more than four such short runs
+on a line), or in another file's header or footer (a certificate's, a public key's). It is found
 where its encoded "PRIVATE KEY" or "SECRET KEY" decodes inside the key's header or footer on a line of its own, so a field's name
 or a sentence that names one, or quotes a header, stays; a header after a label on its line, cut short of its footer,
 starts its key unless nothing or a line of prose follows it. It is read once over the text as written, and again with the

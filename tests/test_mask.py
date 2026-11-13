@@ -5290,6 +5290,8 @@ class Base64ReviewTwentyFourthTest(unittest.TestCase):
         # Many lines of words below a header a document quotes: a line whose run decodes to words from one offset is
         # a quote's, not a key's, whatever the other offsets decode to; read at those alone, eight lines of a long
         # document start or end in base64's characters by chance, and it went as a key's (review round 1 of PR 92).
+        # Beside a word on each line too: a short run that decodes to no base64 characters is no piece of a key's
+        # line wrapped narrow, and joined to the next line's runs, eight lines of a long document would read as one.
         import textwrap
         for frame in ("-----BEGIN PRIVATE KEY-----", "-----BEGIN RSA PRIVATE KEY-----",
                       "---- BEGIN SSH2 ENCRYPTED PRIVATE KEY ----"):
@@ -5298,9 +5300,9 @@ class Base64ReviewTwentyFourthTest(unittest.TestCase):
                        + "Keep the old one until the new one is in use, then rotate the garden plan after the review.\n"
                        * repeat).encode()
                 code = base64.b64encode(doc).decode()
-                for width in (4, 5, 7, 8, 12, 16, 24, 64, 76):
+                for width in (4, 5, 6, 7, 8, 12, 16, 24, 64, 76):
                     chunks = textwrap.wrap(code, width)
-                    for form in ("{line}", "> {line}", "{n:>6}\t{line}"):
+                    for form in ("{line}", "> {line}", "{n:>6}\t{line}", "{line}  # part {n}"):
                         lines = [self.around(form, n + 1, c) for n, c in enumerate(chunks)]
                         text = "\n".join(["Notes:"] + lines + ["", "next paragraph"])
                         with self.subTest(frame=frame, repeat=repeat, width=width, form=form):
