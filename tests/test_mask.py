@@ -5455,7 +5455,9 @@ class Base64ReviewTwentyFourthTest(unittest.TestCase):
         # longest runs joined read none of the key, and the key's run alone, 7 characters or fewer, decodes to three
         # bytes that read as words. A run 4 to 7 characters long that decodes to base64's characters is read with each
         # such run on the next line joined to it, as a key's line goes on into the next; and a line cut into more such
-        # groups than four, as a key's line cut with spaces, reads as a key's.
+        # groups than four, as a key's line cut with spaces, reads as a key's. A line cut in two, its halves shorter
+        # than 4 characters, is no such run: three lines' short runs glued, the spaces dropped, read as a key's, past
+        # each line's number.
         import itertools
         import random
         import textwrap
@@ -5469,7 +5471,7 @@ class Base64ReviewTwentyFourthTest(unittest.TestCase):
             footer = data.rindex(b"-----END" if b"-----END" in data else b"---- END")
             for file, width, place in itertools.product((data, data[:footer]), (4, 5, 6, 7, 8, 12, 24),
                                                         ("decoy before", "decoy after", "decoys both sides",
-                                                         "cut into groups")):
+                                                         "cut into groups", "cut in two", "numbered, cut in two")):
                 code = base64.b64encode(file).decode()
                 decoy, words, mark = decoys[i % 3], said[i // 3 % 2], ("> ", "")[i // 6 % 2]
                 lead = (decoy, base64.b64encode(b"Example: ").decode())[i // 12 % 2]
@@ -5478,6 +5480,9 @@ class Base64ReviewTwentyFourthTest(unittest.TestCase):
                 chunks = textwrap.wrap(code[cut:], width)
                 if place == "cut into groups":
                     body = [apart.join(textwrap.wrap(c, 4)) for c in chunks]
+                elif place.endswith("cut in two"):
+                    body = [f"{n + 1} | " * (place != "cut in two") + c[:len(c) // 2] + apart + c[len(c) // 2:]
+                            for n, c in enumerate(chunks)]
                 else:
                     body = [apart.join(([decoy] if place != "decoy after" else []) + [c]
                                        + ([decoy] if place != "decoy before" else [])) for c in chunks]
@@ -5487,7 +5492,9 @@ class Base64ReviewTwentyFourthTest(unittest.TestCase):
                                   lead=lead[:8], words=words[:6], mark=mark, apart=apart, depth=depth, older=older):
                     masked = Base64ReviewEighteenTest.masks(written(text, depth), older)
                     held = "\n".join([head, decoy, "Notes:", "next paragraph"])
-                    seen = [textwrap.wrap(c, 4) if place == "cut into groups" else [c] for c in chunks]
+                    seen = [textwrap.wrap(c, 4) if place == "cut into groups"
+                            else [c[:len(c) // 2] + apart + c[len(c) // 2:]] if place.endswith("cut in two") else [c]
+                            for c in chunks]
                     self.assertEqual([n for n, c in enumerate(chunks) if len(c) >= 4
                                       and any(g in masked and g not in held for g in seen[n] if len(g) >= 4)
                                       and cut // 4 * 3 + 6 * n * width // 8 > header
