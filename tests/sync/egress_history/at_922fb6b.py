@@ -22,7 +22,7 @@ PASSES = 8
 
 
 def hide(text, keep="\n\t\r", headless=True):
-    """`text` stripped, then with kb's secrets masked, and then Varve's own recovery and pairing codes, which kb does not
+    """`text` stripped, then with kb's secrets masked, and then Sync's own recovery and pairing codes, which kb does not
     know. kb's mask goes first: a code-shaped run inside a longer secret, masked first, would break that secret into
     pieces kb no longer knows. The masks run again until the text stops changing, since masking one secret can free
     another the pass before skipped, such as a token glued to a code; hiding is then the same however often it runs.

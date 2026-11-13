@@ -33,7 +33,7 @@ PASSES = 8
 
 
 def hide(text, keep="\n\t\r", headless=True):
-    """`text` as `visible` leaves it, with every secret kb's mask and then Varve's own recovery and pairing codes find
+    """`text` as `visible` leaves it, with every secret kb's mask and then Sync's own recovery and pairing codes find
     masked. kb's mask goes before the codes: a code-shaped run inside a longer secret, masked first, would break that
     secret into pieces kb no longer knows. Both read the text three ways, and what any finds is hidden: as written, since
     kb's mask reads through invisible characters and takes one as a word's edge, so a key glued to a word by one is
@@ -96,7 +96,7 @@ def _masked(text, keep, headless, track):
 
 
 def _codes(text, came, headless):
-    """`text` with Varve's codes masked, as keys.mask_codes masks them, and `came` carried along when given."""
+    """`text` with Sync's codes masked, as keys.mask_codes masks them, and `came` carried along when given."""
     for start, end in reversed(keys.code_mask_spans(text, headless)):
         text = text[:start] + "[masked]" + text[end:]
         if came is not None:
@@ -105,7 +105,7 @@ def _codes(text, came, headless):
 
 
 def _found(reading, places, headless):
-    """The places in the text, `places[i]` for `reading`'s i-th character, that kb's mask and then Varve's codes hide
+    """The places in the text, `places[i]` for `reading`'s i-th character, that kb's mask and then Sync's codes hide
     when they read `reading`, with any the reading left out between two of them, which sit inside what is hidden."""
     masked, origin = kbmask.mask_with_origin(reading)
     found = set(places) - {places[o] for o in origin if o >= 0}

@@ -13,10 +13,10 @@ import tempfile
 
 from .. import COMMAND
 
-# The first name of this protocol's bytes: key derivation, pack and roster namespaces, account claims and relay headers
-# are built from it. It is the product's first name. Peers on other versions and the relay read these bytes as they
-# are, so it stays as it is whatever the product is called, and `kb.COMMAND` must never stand in for it.
-WIRE_NAME = "varve"
+# The name Sync's bytes are built from: key derivation, pack and roster namespaces, account claims and the relay's upload
+# headers. The relay reads the headers and every computer the rest as they are, so tests/sync/test_wire.py pins them: a
+# rename that changes them must change the relay in the same release, and every sync group starts over.
+WIRE_NAME = COMMAND
 
 AGE_RECIPIENT = re.compile(r"age1[a-z0-9]{58}")
 AGE_IDENTITY = re.compile(r"AGE-SECRET-KEY-1[0-9A-Z]{58}")

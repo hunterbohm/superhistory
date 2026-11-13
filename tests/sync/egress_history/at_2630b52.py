@@ -33,7 +33,7 @@ PASSES = 8
 
 
 def hide(text, keep="\n\t\r", headless=True):
-    """`text` as `visible` leaves it, with every secret kb's mask and then Varve's own recovery and pairing codes find
+    """`text` as `visible` leaves it, with every secret kb's mask and then Sync's own recovery and pairing codes find
     masked. kb's mask goes before the codes: a code-shaped run inside a longer secret, masked first, would break that
     secret into pieces kb no longer knows. Text with an invisible character is read every way `_readings` names, and
     what any reading finds is hidden before any reads again, until a round finds nothing new (`_rounds`, which says why
@@ -136,7 +136,7 @@ def _readings(text, kinds):
 
 
 def _codes(text, came, headless):
-    """`text` with Varve's codes masked, as keys.mask_codes masks them, and `came` carried along when given."""
+    """`text` with Sync's codes masked, as keys.mask_codes masks them, and `came` carried along when given."""
     return _replaced(text, came, keys.code_mask_spans(text, headless))
 
 
@@ -158,7 +158,7 @@ def _replaced(text, came, spans):
 
 
 def _found(reading, places, headless):
-    """The places in the text, `places[i]` for `reading`'s i-th character, that kb's mask and then Varve's codes hide
+    """The places in the text, `places[i]` for `reading`'s i-th character, that kb's mask and then Sync's codes hide
     when they read `reading` until it stops changing, as strip-then-mask did, since hiding a code can free a key behind
     it; with any the reading left out between two of them, which sit inside what is hidden."""
     current, origin = reading, list(range(len(reading)))

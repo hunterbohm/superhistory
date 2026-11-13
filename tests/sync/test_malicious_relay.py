@@ -510,8 +510,8 @@ class MaliciousRelayTest(unittest.TestCase):
         fake, epochs = self.world.fake, []
 
         def remove_computer_3_after_the_first_pack(method, path, headers):
-            if method == "PUT" and path.startswith("/sync/packs/") and "x-varve-snapshot" not in headers:
-                epochs.append(int(headers["x-varve-epoch"]))
+            if method == "PUT" and path.startswith("/sync/packs/") and "x-superhistory-snapshot" not in headers:
+                epochs.append(int(headers["x-superhistory-epoch"]))
                 if len(epochs) == 1:
                     fake.revoke(c.client.device_id)
         fake.before_hooks.append(remove_computer_3_after_the_first_pack)
@@ -528,8 +528,8 @@ class MaliciousRelayTest(unittest.TestCase):
         fake, group, epochs, refused = self.world.fake, self.world.fake.group(EMAIL), [], []
 
         def note(method, path, headers):
-            if method == "PUT" and path.startswith("/sync/packs/") and "x-varve-snapshot" not in headers:
-                epochs.append(int(headers["x-varve-epoch"]))
+            if method == "PUT" and path.startswith("/sync/packs/") and "x-superhistory-snapshot" not in headers:
+                epochs.append(int(headers["x-superhistory-epoch"]))
 
         def remove_computer_3_and_refuse_the_first_pack(method, path, status, out):
             if not refused and method == "PUT" and path.startswith("/sync/packs/") and status == 200:
@@ -644,8 +644,8 @@ class MaliciousRelayTest(unittest.TestCase):
 
         def note(method, path, body=None, headers=None):
             named = {k.lower(): v for k, v in (headers or {}).items()}
-            if method == "PUT" and path.startswith("/sync/packs/") and "x-varve-snapshot" in named:
-                uploads.append((int(named["x-varve-epoch"]), body))
+            if method == "PUT" and path.startswith("/sync/packs/") and "x-superhistory-snapshot" in named:
+                uploads.append((int(named["x-superhistory-epoch"]), body))
             return request(method, path, body, headers)
         patcher = mock.patch.object(fake, "request", note)
         patcher.start()
@@ -721,8 +721,8 @@ class MaliciousRelayTest(unittest.TestCase):
             return replica(db)
 
         def note(method, path, headers):
-            if method == "PUT" and path.startswith("/sync/packs/") and "x-varve-snapshot" in headers:
-                snapshot_epochs.append(int(headers["x-varve-epoch"]))
+            if method == "PUT" and path.startswith("/sync/packs/") and "x-superhistory-snapshot" in headers:
+                snapshot_epochs.append(int(headers["x-superhistory-epoch"]))
         fake.before_hooks.append(note)
         with mock.patch.object(fake, "_rotation_due", lambda group: False), \
                 mock.patch.object(records, "replica", remove_computer_3_while_the_snapshot_is_read):

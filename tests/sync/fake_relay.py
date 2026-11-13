@@ -619,14 +619,14 @@ class FakeRelay:
                 return 200, {"seq": p["seq"]}
         if self._rotation_due(group):
             raise Reply(409, "rotation_due")
-        if req.headers.get("x-varve-epoch") != str(group.epoch):
+        if req.headers.get("x-superhistory-epoch") != str(group.epoch):
             raise Reply(409, "stale_epoch")
         if self.refuse_packs:
             raise Reply(507, self.refuse_packs)
         seq = group.next_seq
         group.next_seq += 1
         group.packs.append({"seq": seq, "pack_id": pack_id, "epoch": group.epoch, "blob": req.body,
-                            "snapshot_id": req.headers.get("x-varve-snapshot"),
+                            "snapshot_id": req.headers.get("x-superhistory-snapshot"),
                             "day": time.strftime("%Y-%m-%d", time.gmtime(self.clock()))})
         return 200, {"seq": seq}
 

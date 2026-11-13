@@ -23,7 +23,7 @@ PASSES = 8
 
 
 def hide(text, keep="\n\t\r", headless=True):
-    """`text` stripped, with every secret kb's mask finds masked, then Varve's own recovery and pairing codes, which kb
+    """`text` stripped, with every secret kb's mask finds masked, then Sync's own recovery and pairing codes, which kb
     does not know. kb's mask reads it two ways and hides what either finds. It reads the text stripped, so a key that
     invisible characters split, or characters it takes for spaces such as form feeds, is whole again, and a key split
     around a secret-shaped middle masks whole, not just its middle. It also reads the text as written, since it reads
