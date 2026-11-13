@@ -2,7 +2,7 @@
 
 Each case is one item, written one of two ways. An earlier version of today's mask() wrote it and recorded that
 version on its rows, as a later version will find this one's: its own mask's output, or in the worst case its text as it
-came. Or an older kb wrote it, before rows recorded a version: main's store_item with main's own mask()
+came. Or an older superhistory wrote it, before rows recorded a version: main's store_item with main's own mask()
 (tests/legacy_mask.py), its token patterns alone or no mask at all, sometimes main's row-by-row remask after it, and
 summary rows as main's summarizer wrote them, cut before they were masked. Main wrote a tool's input as JSON and cut it
 to 300 characters before masking it. An item's id is a note filed under a name with a secret-looking word, a Hermes
@@ -11,9 +11,9 @@ holds filler, tokens, named values and private keys in the layouts text gives th
 
 After today's remask, on every case: an earlier version's item whose id holds no secret keeps every kind of row it
 had, and one whose id holds one is gone; no row of an earlier version is left old; and no row stamped current holds a
-piece of a planted secret, read through the layout's marks. An older kb's rows are left as they were and never stamped,
-search shows none of them, and the store refuses to open again until it is rebuilt. KB_OLD_ROW_CASES sets the number
-of cases and KB_OLD_ROW_SEED the seed.
+piece of a planted secret, read through the layout's marks. An older superhistory's rows are left as they were and never stamped,
+search shows none of them, and the store refuses to open again until it is rebuilt. SUPERHISTORY_OLD_ROW_CASES sets the number
+of cases and SUPERHISTORY_OLD_ROW_SEED the seed.
 """
 import json
 import os
@@ -27,8 +27,8 @@ from kb.mask import VERSION, mask
 from tests import legacy_mask, legacy_store
 from tests.test_write_fuzz import BASE64, KEY_STARTS
 
-CASES = int(os.environ.get("KB_OLD_ROW_CASES", "1500"))
-SEED = os.environ.get("KB_OLD_ROW_SEED", "20261101")
+CASES = int(os.environ.get("SUPERHISTORY_OLD_ROW_CASES", "1500"))
+SEED = os.environ.get("SUPERHISTORY_OLD_ROW_SEED", "20261101")
 ITEMS_PER_STORE = 40
 CHUNK = 160
 TS = "2026-10-01T10:00:00Z"
@@ -53,7 +53,7 @@ MARKS = re.compile(r"\s+|\\+[nrt]|<br>|[\"'#>+]")
 
 
 class Case:
-    """One item as an older kb stored it, and the secrets planted in it."""
+    """One item as an older superhistory stored it, and the secrets planted in it."""
 
     def __init__(self, r, n):
         self.r, self.n, self.pieces = r, n, set()
@@ -124,7 +124,7 @@ class Case:
 
 
 def write(db, r, case):
-    """The case's rows as an earlier version of today's mask wrote them, or as an older kb did."""
+    """The case's rows as an earlier version of today's mask wrote them, or as an older superhistory did."""
     case.older = r.random() < 0.5
     if case.older:
         pick = r.random()
@@ -162,9 +162,9 @@ def problems(db, path, cases):
         kinds = {kind for _, kind, _, _ in rows}
         if case.older:
             if case.kinds - kinds:
-                found.append(f"{case.sid!r}: an older kb's item lost its {sorted(case.kinds - kinds)} rows")
+                found.append(f"{case.sid!r}: an older superhistory's item lost its {sorted(case.kinds - kinds)} rows")
             if {(rid, content) for rid, _, version, content in rows if version is None} != case.unversioned:
-                found.append(f"{case.sid!r}: an older kb's row was changed or stamped with a version")
+                found.append(f"{case.sid!r}: an older superhistory's row was changed or stamped with a version")
         elif case.secret_id:
             if kinds:
                 found.append(f"{case.sid!r}: kept, though its id holds a secret")
@@ -192,7 +192,7 @@ def problems(db, path, cases):
     if any(case.older for case in cases):
         try:
             store.connect(path).close()
-            found.append("a store with an older kb's rows opened")
+            found.append("a store with an older superhistory's rows opened")
         except store.NeedsRebuild:
             pass
     return found
@@ -215,7 +215,7 @@ def run(cases=CASES):
             if random.Random(f"{SEED}:remask:{first}").random() < 0.5:
                 legacy_store.remask(db, legacy_store.token_mask)  # main's own remask, a row at a time
             db.commit()
-            for case in batch:  # what main's remask changed is an older kb's row now, whichever wrote it first
+            for case in batch:  # what main's remask changed is an older superhistory's row now, whichever wrote it first
                 case.unversioned = set(db.execute("SELECT id, content FROM docs WHERE source=? AND source_id=? AND "
                                                   "masked IS NULL", (case.source, case.sid)).fetchall())
                 case.older = bool(case.unversioned)
@@ -228,7 +228,7 @@ def run(cases=CASES):
 class OldRowShapeTest(unittest.TestCase):
     def test_remask_keeps_every_item_without_a_secret_stamps_no_row_with_one_and_reads_no_older_kbs(self):
         failures = run()
-        self.assertEqual(failures, [], f"{len(failures)} problems in {CASES} cases (KB_OLD_ROW_SEED={SEED}); "
+        self.assertEqual(failures, [], f"{len(failures)} problems in {CASES} cases (SUPERHISTORY_OLD_ROW_SEED={SEED}); "
                                        f"the first: {failures[:3]}")
 
 

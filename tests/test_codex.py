@@ -14,7 +14,7 @@ from kb.sources.codex import TYPE, Options
 FIXTURES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures", "codex", "sessions")
 SID = "019e0000-0000-7000-8000-000000000001"
 SEGMENT = "019e0000-0000-7000-8000-0000000000aa"
-LOG = logging.getLogger("varve-test-codex")
+LOG = logging.getLogger("superhistory-test-codex")
 LOG.addHandler(logging.NullHandler())
 LOG.propagate = False
 
@@ -132,7 +132,7 @@ class ReadingTest(CodexCase):
             self.assertIn(expected, content)
 
     def test_tool_arguments_written_as_json_show_no_secret(self):
-        # Arguments with no field kb shows are written as JSON, where a line break reads "\\n" and a quote \\".
+        # Arguments with no field superhistory shows are written as JSON, where a line break reads "\\n" and a quote \\".
         body = 'deploy notes\nghp_' + "A1" * 12 + '\nconfig {"password": "walrus2wolfpack9"}'
         content = self.write_and_read(conversation() + [
             rec(3, "response_item", {"type": "function_call", "name": "notes", "arguments": json.dumps({"body": body})})
@@ -360,7 +360,7 @@ class RunnerTest(CodexCase):
         self.other = other
         self.write(f"archived_sessions/rollout-b-{other}.jsonl",
                    conversation(sid=other, cwd=self.home + "/code/private-client", prompt="Plan the giraffe feeder"))
-        self.db = store.connect(os.path.join(self.tmp.name, "kb.sqlite"))
+        self.db = store.connect(os.path.join(self.tmp.name, "superhistory.sqlite"))
         self.addCleanup(self.db.close)
 
     def ingest(self, extra=""):

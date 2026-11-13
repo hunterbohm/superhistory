@@ -230,7 +230,7 @@ def _token_request(form):
         raise RuntimeError(mask.mask(f"the token request to {TOKEN_URL} failed: {type(exc).__name__}: {exc}")) from None
 
 
-def oauth_login(client_id, client_secret, open_browser=webbrowser.open, timeout=300):
+def oauth_login(client_id, client_secret, open_browser=webbrowser.open, timeout=300, scope=SCOPE):
     """Google's installed-app sign-in through the browser and a one-shot server on 127.0.0.1, with PKCE. Returns the
     refresh token; nothing here stores it."""
     verifier = secrets.token_urlsafe(64)
@@ -258,7 +258,7 @@ def oauth_login(client_id, client_secret, open_browser=webbrowser.open, timeout=
     deadline = time.monotonic() + timeout
     try:
         open_browser(AUTH_URL + "?" + urlencode({
-            "client_id": client_id, "redirect_uri": redirect, "response_type": "code", "scope": SCOPE,
+            "client_id": client_id, "redirect_uri": redirect, "response_type": "code", "scope": scope,
             "code_challenge": challenge, "code_challenge_method": "S256", "state": state,
             "access_type": "offline", "prompt": "consent"}))
         while not answers:

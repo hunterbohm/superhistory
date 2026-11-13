@@ -9,7 +9,10 @@
     per_run = 150
     [schedule]
     every_minutes = 15
-    [sources.notes]               # one table per source; its name is what `kb search --source` takes
+    [decisions]                   # judge new decision records once a day; off until owner names you
+    owner = ["Sam Lee", "sam@example.com"]   # the name you go by first, then other names and addresses you write as
+    instructions = ["~/code/*/AGENTS.md"]    # files your agents load, which `superhistory decisions drift` checks against them
+    [sources.notes]               # one table per source; its name is what `superhistory search --source` takes
     type = "notes"                # default: the table name
     path = "~/Notes"
     exclude = ["Journal"]         # added to the type's default excludes
@@ -28,6 +31,7 @@ import typing
 from dataclasses import dataclass
 from typing import Any, Mapping, Optional, Tuple
 
+from kb import COMMAND
 from kb.mask import mask
 
 from kb.mask import KEY_WORD, holds_secret, mask
@@ -35,12 +39,13 @@ from kb.mask import KEY_WORD, holds_secret, mask
 # Names go into every stored id and into the logs, so one that looks like a key is refused; the message is masked.
 SECRET_NAME = "{where}: this name looks like a secret; use a plain name"
 # A name that is a secret's word can be printed: it is the word itself, not a secret.
-KEY_WORD_NAME = ('{where}: "{name}" is a word for a secret, such as "password" or "token", so kb could not tell an id '
+KEY_WORD_NAME = (f'{{where}}: "{{name}}" is a word for a secret, such as "password" or "token", so {COMMAND} could not tell an id '
                  'made from it from a secret. To fix it, {fix}.')
 NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,39}$")
 SOURCE_KEYS = {"type", "enabled", "exclude", "exclude_defaults", "summarize", "hosts"}
 MAX_CHECK_BUDGET = 25.0
-# Tables kb keeps as they are for the packages that read them: [sync] for the Sync client (kb/sync), [cloud] for Cloud.
+# Tables superhistory keeps as they are for the packages that read them: [sync] for the Sync client (kb/sync), and [cloud], an
+# older name for the same table that is still read.
 EXTENSION_TABLES = ("sync", "cloud")
 SECRET_TIMEOUT = 60.0
 
@@ -151,6 +156,14 @@ class SummarizeSettings:
 
 
 @dataclass(frozen=True)
+class DecisionSettings:
+    owner: Tuple[str, ...] = ()
+    instructions: Tuple[str, ...] = ()
+    every_hours: int = 24
+    per_run: int = 2000
+
+
+@dataclass(frozen=True)
 class Schedule:
     every_minutes: int = 15
 
@@ -164,9 +177,12 @@ class Config:
     schedule: Schedule = Schedule()
     sources: Tuple[Source, ...] = ()
     hosts: Tuple[Host, ...] = ()
+    decisions: DecisionSettings = DecisionSettings()
     # Whose items these are: the install id kb fills in when it writes (kb.ids). A Config built elsewhere, such as a
     # hosted store's, may leave it empty; its items are then prefixed by `machine`.
     install: str = ""
+    # The folder source plug-ins are run from, which the kb command fills in from its paths.
+    plugins_dir: str = ""
     extra: Mapping[str, Any] = dataclasses.field(default_factory=dict)
 
     @property
@@ -189,6 +205,7 @@ class Config:
     def units(self):
         """Every health unit this config owns."""
         units = tuple(f"{s.name}@{h}" for s in self.sources for h in s.hosts) + ("summarize",)
+        units += ("decisions",) if self.decisions.owner else ()
         return units + (("sync",) if any(key in self.extra for key in EXTENSION_TABLES) else ())
 
 
@@ -223,13 +240,13 @@ def parse(text):
         problems.append("machine: use lowercase letters, digits, - and _, up to 40 characters")
         machine = "local"
     elif KEY_WORD.fullmatch(machine):
-        problems.append(KEY_WORD_NAME.format(where="machine", name=machine, fix="run `kb setup` and give this "
+        problems.append(KEY_WORD_NAME.format(where="machine", name=machine, fix=f"run `{COMMAND} setup` and give this "
                                              "computer another name, or change the machine line in this file"))
         machine = "local"
     elif holds_secret(machine):
         problems.append(SECRET_NAME.format(where="machine"))
         machine = "local"
-    tables = {key: raw.pop(key, {}) for key in ("ai", "check", "summarize", "schedule", "hosts", "sources")}
+    tables = {key: raw.pop(key, {}) for key in ("ai", "check", "summarize", "schedule", "hosts", "sources", "decisions")}
     extra = {key: raw.pop(key) for key in EXTENSION_TABLES if key in raw}
     problems += [f"{key}: unknown key" for key in raw]
     for key, value in tables.items():
@@ -241,6 +258,7 @@ def parse(text):
         problems.append(f"check.budget_seconds: must be above 0 and at most {MAX_CHECK_BUDGET:g}")
     summarize = options_from(SummarizeSettings, tables["summarize"], "summarize", problems)
     schedule = options_from(Schedule, tables["schedule"], "schedule", problems)
+    decisions = options_from(DecisionSettings, tables["decisions"], "decisions", problems)
     ai = _ai(tables["ai"], problems)
     hosts = []
     for name, table in tables["hosts"].items():
@@ -265,12 +283,12 @@ def parse(text):
             sources.append(source)
     problems += [f"{key}: expected a table" for key, value in extra.items() if not isinstance(value, dict)]
     if extra:
-        problems += [f"sources.{s.name}: with [sync] or [cloud] on, name the account it reads (for GitHub, set "
+        problems += [f"sources.{s.name}: with [sync] on, name the account it reads (for GitHub, set "
                      f'involves to your login instead of "@me"), so a second computer reading it is caught'
                      for s in sources if s.type.account and not s.type.account(s.options)]
     if problems:
         raise ConfigError(problems)
-    return Config(machine, ai, check, summarize, schedule, tuple(sources), tuple(hosts), extra=extra)
+    return Config(machine, ai, check, summarize, schedule, tuple(sources), tuple(hosts), decisions, extra=extra)
 
 
 def _ai(table, problems):
@@ -383,7 +401,11 @@ def options_from(cls, raw, where, problems):
             problems.append(f"{where}.{name}: required")
     if len(problems) > found:
         return None
-    return cls(**values)
+    try:
+        return cls(**values)
+    except ValueError as exc:  # a dataclass may check its fields together in __post_init__, naming the key first
+        problems.append(f"{where}.{exc}")
+        return None
 
 
 def _coerce(hint, value):
@@ -405,6 +427,10 @@ def _coerce(hint, value):
         if not isinstance(value, list):
             raise TypeError(f"expected {_describe(hint)}")
         return tuple(_coerce(args[0], v) for v in value)
+    if origin is dict:
+        if not isinstance(value, dict):
+            raise TypeError(f"expected {_describe(hint)}")
+        return {k: _coerce(args[1], v) for k, v in value.items()}
     if hint is Secret:
         if not isinstance(value, str):
             raise TypeError('expected "env:NAME", "file:PATH" or "cmd:COMMAND"')
@@ -426,4 +452,6 @@ def _describe(hint):
         return " or ".join(_describe(a) for a in args if a is not type(None))
     if origin is tuple:
         return f"a list of {_describe(args[0])}s"
+    if origin is dict:
+        return f"a table of {_describe(args[1])}s"
     return {str: "text", int: "a whole number", float: "a number", bool: "true or false"}.get(hint, "a value")

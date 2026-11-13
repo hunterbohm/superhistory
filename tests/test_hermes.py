@@ -10,7 +10,7 @@ from kb import config, ingest, search, store
 from kb.sources import Excludes, Item, Progress, Run
 from kb.sources import hermes
 
-LOG = logging.getLogger("varve-test-hermes")
+LOG = logging.getLogger("superhistory-test-hermes")
 LOG.addHandler(logging.NullHandler())
 LOG.propagate = False
 
@@ -131,7 +131,7 @@ class FullTest(HermesCase):
         self.assertIn("ASSISTANT: Found it, queueing now.", content)
 
     def test_tool_arguments_written_as_json_show_no_secret(self):
-        # Arguments with no field kb shows are written as JSON, where a line break reads "\\n" and a quote \\".
+        # Arguments with no field superhistory shows are written as JSON, where a line break reads "\\n" and a quote \\".
         body = 'deploy notes\nghp_' + "A1" * 12 + '\nconfig {"password": "walrus2wolfpack9"}'
         root = os.path.join(self.tmp.name, "json")
         make_store(os.path.join(root, "state.db"), [("j", "cli", None, 1000.0, [
@@ -146,11 +146,11 @@ class FullTest(HermesCase):
         for profile in ("secret-project", "token-research", "work"):
             make_store(os.path.join(root, "profiles", profile, "state.db"), [
                 (f"20261028_101500_{profile[:3]}", "cli", None, 1000.0, chat("where is the plan?", "In the notes."))])
-        db = store.connect(os.path.join(self.tmp.name, "kb.sqlite"))
+        db = store.connect(os.path.join(self.tmp.name, "superhistory.sqlite"))
         self.addCleanup(db.close)
         source = config.Source("hermes", "hermes", hermes.TYPE, hermes.Options(root), ("tool",), config.Summarize(False),
                                ("desk",))
-        log = logging.getLogger("varve-test-hermes")
+        log = logging.getLogger("superhistory-test-hermes")
         log.addHandler(logging.NullHandler())
         ingest.run_unit(db, source, "desk", ingest.LocalReader(), log, "c-abcdefghijklm:")
         kept = ["c-abcdefghijklm:secret-project:20261028_101500_sec", "c-abcdefghijklm:token-research:20261028_101500_tok",
@@ -174,6 +174,32 @@ class FullTest(HermesCase):
 
     def test_silent_cron_sessions_are_skipped(self):
         self.assertNotIn("default:cron_abc123_20261018_100000", self.items())
+
+    def test_a_session_that_works_only_through_tool_calls_is_kept(self):
+        # Kanban workers and many cron jobs never write a reply; their tool calls are the work.
+        root = os.path.join(self.tmp.name, "tools-only")
+        make_store(os.path.join(root, "state.db"), [
+            ("kanban1", "kanban", None, 6000.0, [
+                ("user", "work kanban task t_123", {}),
+                ("assistant", "", {"calls": tool_call("web_search", query="texting agent reply length")}),
+                ("tool", json.dumps({"output": "three sources"}), {"tool": "web_search"}),
+                ("assistant", "Operation interrupted: waiting for model response (16.5s elapsed).", {}),
+                ("assistant", "", {"calls": tool_call("kanban_complete", task="t_123")}),
+            ]),
+            ("cron_fed789_20261110_015200", "cron", None, 7000.0, [
+                ("user", CRON_PREAMBLE + "Check the shipment tracking page.", {}),
+                ("assistant", "", {"calls": tool_call("terminal", command="curl -s https://example.com/track")}),
+                ("tool", json.dumps({"output": "In transit"}), {"tool": "terminal"}),
+                ("assistant", "[SILENT]", {}),
+            ]),
+        ])
+        items = self.items(root=root)
+        self.assertEqual(set(items), {"default:kanban1", "default:cron_fed789_20261110_015200"})
+        content = items["default:kanban1"].content
+        self.assertIn("USER: work kanban task t_123", content)
+        self.assertIn("TOOL web_search:", content)
+        self.assertIn("TOOL kanban_complete:", content)
+        self.assertIn("TOOL terminal: curl", items["default:cron_fed789_20261110_015200"].content)
 
     def test_the_default_exclude_drops_the_synthetic_tool_platform(self):
         self.assertNotIn("default:smoke", self.items())
@@ -339,7 +365,7 @@ class IngestHermesTest(HermesCase):
         return config.parse(f'machine = "m1"\n[sources.agent]\ntype = "hermes"\nroot = {json.dumps(self.root)}\n{extra}')
 
     def database(self):
-        db = store.connect(os.path.join(self.tmp.name, "kb.sqlite"))
+        db = store.connect(os.path.join(self.tmp.name, "superhistory.sqlite"))
         self.addCleanup(db.close)
         return db
 

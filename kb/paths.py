@@ -4,9 +4,9 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-from kb import NAME
+from kb import COMMAND, NAME
 
-HOME_ENV = "KB_HOME"
+HOME_ENV = f"{COMMAND.upper()}_HOME"
 
 
 @dataclass(frozen=True)
@@ -18,15 +18,19 @@ class Paths:
 
     @property
     def db(self):
-        return self.data_dir / "kb.sqlite"
+        return self.data_dir / f"{COMMAND}.sqlite"
 
     @property
     def lock(self):
-        return self.data_dir / "kb.lock"
+        return self.data_dir / f"{COMMAND}.lock"
 
     @property
     def keys_dir(self):
         return self.config_file.parent / "keys"
+
+    @property
+    def plugins_dir(self):
+        return self.config_file.parent / "plugins"
 
     @property
     def seen_dir(self):
@@ -47,7 +51,7 @@ class Paths:
 
     @classmethod
     def for_user(cls, env=None, platform=None, home=None):
-        """KB_HOME puts everything in one folder. Otherwise the config is under ~/.config on both systems, and the
+        """SUPERHISTORY_HOME puts everything in one folder. Otherwise the config is under ~/.config on both systems, and the
         database, logs and cache follow the platform: ~/Library on a Mac, the XDG folders on Linux."""
         env = os.environ if env is None else env
         platform = platform or sys.platform

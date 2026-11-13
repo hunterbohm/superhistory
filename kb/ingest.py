@@ -1,6 +1,7 @@
 """Reads every configured source on every host it names and stores what changed. A failing source is recorded and
 skipped. A reader reads one source on one host: LocalReader on this computer, SshReader on another, and the Sync
 client's reader for a computer whose rows arrive through Sync."""
+import contextlib
 import dataclasses
 import importlib
 import hashlib
@@ -8,7 +9,7 @@ import json
 import sys
 import time
 
-from kb import ai, ids, mask as mask_module, store, summarize
+from kb import ai, decisions, ids, mask as mask_module, store, summarize
 from kb.mask import holds_secret, id_names, mask, masked_log, secret_in_id
 from kb.remote import HostAway, SshReader
 from kb.sources import Excludes, Gone, Item, Progress, Run
@@ -22,8 +23,9 @@ _UNBUILT = object()
 
 
 class LocalReader:
-    def __init__(self, model_factory=None):
+    def __init__(self, model_factory=None, plugins_dir=""):
         self._model_factory = model_factory or (lambda: None)
+        self._plugins_dir = plugins_dir
         self._built = _UNBUILT
 
     def _model(self):
@@ -36,7 +38,8 @@ class LocalReader:
         return self._built
 
     def _run(self, source, since):
-        return Run(source.options, Excludes(source.exclude), since, self._model() if source.type.needs_model else None)
+        return Run(source.options, Excludes(source.exclude), since, self._model() if source.type.needs_model else None,
+                   self._plugins_dir)
 
     def events(self, source, since):
         if sys.platform not in source.type.platforms:
@@ -102,13 +105,18 @@ def run_unit(db, source, host, reader, log, prefix):
                 raise TypeError(f"not an event: a {type(event).__name__}")
             if not isinstance(event, Progress) and secret_in_id(event.source_id,
                                                                  id_names(getattr(event, "meta", None))):
+                if source.type.all_or_nothing:
+                    raise ValueError("an item's id looks like it holds a secret; give it an id that does not")
                 log.warning("%s@%s: skipped %s, whose name looks like it holds a secret; rename it to index it",
                             source.name, host, mask(event.source_id))
             changed += apply(db, source.name, prefix, event, host)
         except Exception as exc:
+            if source.type.all_or_nothing:
+                raise RuntimeError(f"the store refused an item ({type(exc).__name__}: {mask(str(exc))[:100]}), so "
+                                   "nothing of this run was kept and its watermark stays") from None
             log.warning("%s@%s: skipped %s: %s", source.name, host, getattr(event, "source_id", "?"), exc)
         seen += 1
-        if seen % COMMIT_EVERY == 0:
+        if seen % COMMIT_EVERY == 0 and not source.type.all_or_nothing:
             db.commit()
     if mark is not None:
         store.set_watermark(db, source.name, host, json.dumps(mark))
@@ -130,15 +138,22 @@ def run_unit(db, source, host, reader, log, prefix):
              time.time() - started)
 
 
-def run(db, config, log, only=(), with_summaries=True, model_factory=None):
+def kind_of(config):
+    """source name -> its type's name, for the decision pass to read each item as its type writes it."""
+    return lambda name: config.source(name).type_name if config.source(name) else name
+
+
+def run(db, config, log, only=(), with_summaries=True, model_factory=None, memo=None):
     """Every configured source, or those named in `only`, then summaries for new long items. Returns the number of
-    failures. The caller holds the database lock."""
+    failures. The caller holds the database lock. `memo`: the file masking keeps its results in for a source that
+    reads files on this computer (kb.mask.memo); an item of one read on another computer comes masked, so its text
+    holds no secret to confirm. The summary step uses it too: the texts it masks are in this computer's store."""
     log = masked_log(log)
     capped = mask_module.capped
     model_factory = model_factory or (lambda: ai.load(config.ai))
     store.clean_state(db)
     db.commit()
-    local = LocalReader(model_factory)
+    local = LocalReader(model_factory, config.plugins_dir)
     remote = {h.name: SshReader(h) for h in config.hosts}
     away = set()
     failures = 0
@@ -154,11 +169,13 @@ def run(db, config, log, only=(), with_summaries=True, model_factory=None):
                 failures += 1
                 continue
             unit = f"{source.name}@{host}"
+            kept = mask_module.memo(memo) if memo is not None and source.type.reads_files else contextlib.nullcontext()
             try:
-                if host == config.machine:
-                    run_unit(db, source, host, local, log, ids.prefix(config.owner))
-                else:
-                    run_unit(db, source, host, remote[host], log, ids.prefix(config.owner, host))
+                with kept:
+                    if host == config.machine:
+                        run_unit(db, source, host, local, log, ids.prefix(config.owner))
+                    else:
+                        run_unit(db, source, host, remote[host], log, ids.prefix(config.owner, host))
             except HostAway:
                 db.rollback()
                 away.add(host)
@@ -176,7 +193,10 @@ def run(db, config, log, only=(), with_summaries=True, model_factory=None):
         log.info("remask: %d rows masked again, %d older rows left for the next ingest", changed, left)
     if with_summaries and config.summarize.enabled and config.ai:
         try:
-            summarize.run(db, config, model_factory(), log)
+            # The summary step masks each item's stored text again, whole; a long session grows at its end, so the memo
+            # finds every piece of it but the last from the run before.
+            with mask_module.memo(memo) if memo is not None else contextlib.nullcontext():
+                summarize.run(db, config, model_factory(), log)
         except Exception as exc:
             log.exception("summarize failed")
             store.record_failure(db, "summarize", exc)
@@ -184,6 +204,14 @@ def run(db, config, log, only=(), with_summaries=True, model_factory=None):
         else:
             store.record_ok(db, "summarize")
             db.commit()
+    if with_summaries and config.decisions.owner and config.ai and decisions.due(db, config.decisions.every_hours):
+        try:
+            decisions.run(db, decisions.asker(model_factory()), config.decisions.owner, kind_of(config), log,
+                          config.decisions.per_run)
+        except Exception as exc:
+            log.exception("decisions failed")
+            store.record_failure(db, "decisions", exc)
+            failures += 1
     if mask_module.capped > capped:
         total = int(store.get_watermark(db, store.STATE, "mask_capped") or 0) + mask_module.capped - capped
         store.set_watermark(db, store.STATE, "mask_capped", total)
@@ -195,8 +223,8 @@ def run(db, config, log, only=(), with_summaries=True, model_factory=None):
 
 
 def after(paths, config, db, log):
-    """Calls kb.sync.after_ingest(paths, config, db, log) when [sync] or [cloud] is in the config. A failure is
-    recorded as the "sync" unit. Returns the number of failures."""
+    """Calls kb.sync.after_ingest(paths, config, db, log) when [sync] (or the older [cloud]) is in the config. A failure
+    is recorded as the "sync" unit. Returns the number of failures."""
     if "sync" not in config.units():
         return 0
     try:

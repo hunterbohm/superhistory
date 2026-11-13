@@ -152,4 +152,4 @@ def extract(run):
     yield Progress(started)
 
 
-TYPE = SourceType(Options, extract, exclude=(WORKDIR_PREFIX + "*",))
+TYPE = SourceType(Options, extract, exclude=(WORKDIR_PREFIX + "*",), reads_files=True)

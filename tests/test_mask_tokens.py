@@ -1,4 +1,4 @@
-"""Random tokens where kb reads a value by its shape alone, and the code names it shows there.
+"""Random tokens where superhistory reads a value by its shape alone, and the code names it shows there.
 
 The readers that judge a lone value by its shape (after "pass" or "pwd" beside a user, in an XML element, after a name
 a colour code splits, in a two-item list, beside a user in a mapping, in a field with no label, typed into the focused
@@ -234,7 +234,7 @@ class TokenCostTest(unittest.TestCase):
 
 class RevisionTest(unittest.TestCase):
     def test_stored_rows_are_masked_again(self):
-        self.assertEqual(masking.REVISION, 13)
+        self.assertEqual(masking.REVISION, 41)
 
 
 if __name__ == "__main__":

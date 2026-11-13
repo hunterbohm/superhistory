@@ -1,0 +1,12 @@
+[sources.calendar]
+type = "plugin"
+plugin = "google-calendar"
+[sources.calendar.settings]
+client_id = "YOUR-CLIENT-ID.apps.googleusercontent.com"   # your Google OAuth client, type "Desktop app"
+google_scope = "https://www.googleapis.com/auth/calendar.readonly"
+calendar_ids = ["primary"]  # or calendar addresses; each is read
+window_days = 365           # events that ended up to this many days ago
+future_days = 365           # and events that start up to this many days ahead
+[sources.calendar.secrets]
+client_secret = "file:~/.config/superhistory/keys/google.client-secret"
+refresh_token = "file:~/.config/superhistory/keys/calendar.refresh-token"

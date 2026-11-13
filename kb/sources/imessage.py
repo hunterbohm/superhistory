@@ -1,7 +1,7 @@
 """iMessage: one item per chat per local calendar day, read from the Messages database (chat.db) on a Mac.
 
 Contact names come from the macOS AddressBook files under the `contacts` folder. Tapbacks, empty rows, group-rename
-events and auth-code texts are dropped. Reading chat.db needs Full Disk Access for the Python that runs kb.
+events and auth-code texts are dropped. Reading chat.db needs Full Disk Access for the Python that runs superhistory.
 
 `run.excludes` is called once per chat with each of these keys, and the chat is skipped when any matches: every
 participant's handle as stored (a phone number like "+15550100123" or an email), the chat's own name when a group has

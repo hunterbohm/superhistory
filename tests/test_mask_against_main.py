@@ -17,7 +17,7 @@ new reading reads.
 
 The texts: a generator of secrets, words and invisible characters that splits some secrets and not others, the write
 fuzz's planted texts and titles, and the old-row cases with what older kbs' masks left of them. Each text runs as
-written and without its invisible characters. KB_DIFF_CASES sets how many of each.
+written and without its invisible characters. SUPERHISTORY_DIFF_CASES sets how many of each.
 """
 import importlib.util
 import os
@@ -32,7 +32,7 @@ from tests import legacy_mask, legacy_store
 from tests.test_old_rows import Case
 from tests.test_write_fuzz import Planted
 
-CASES = int(os.environ.get("KB_DIFF_CASES", "300"))
+CASES = int(os.environ.get("SUPERHISTORY_DIFF_CASES", "300"))
 PLACEHOLDER = "[masked]"
 
 
@@ -99,11 +99,14 @@ class gate9:
             swap["_GITLEAKS"] = []
             swap["_named"] = _main_named
             swap["_name_value_edits"] = lambda text: []
+            swap["_encoded_key_spans"] = lambda text: []
+            swap["_key_rest_edits"] = main_key_rest
             swap["_typed_code_edits"] = lambda text: []
             links = [re.compile(p.pattern.replace("]*:)", "]+:)").replace("&])*%(?:25)?3A)", "&])+%(?:25)?3A)"),
                                 p.flags) for p in head.PREFIXED_SECRETS[1:3]]
             swap.update(PREFIXED_SECRETS=[head.PREFIXED_SECRETS[0], *links, *head.PREFIXED_SECRETS[3:]],
-                        _COMMANDS=head._COMMANDS[:5], _ANY_COMMAND=main._ANY_COMMAND)
+                        _COMMANDS=head._COMMANDS[:5], _ANY_COMMAND=main._ANY_COMMAND,
+                        _wrapping_edits=lambda text: [])
         self.saved = {name: getattr(head, name) for name in swap}
         for name, value in swap.items():
             setattr(head, name, value)
@@ -112,6 +115,39 @@ class gate9:
     def __exit__(self, *exc):
         for name, value in self.saved.items():
             setattr(head, name, value)
+
+
+def main_key_rest(text, starts=None):
+    """main's key-rest reading: base64 after a placeholder, through its footer or the end of its paragraph."""
+    return [(m.start(1), m.end(), "") for m in main._KEY_REST.finditer(text)]
+
+
+_BASE64_RUN = re.compile(r"(?<![A-Za-z0-9+/])(?=[A-Za-z0-9+/]*[A-Z])(?=[A-Za-z0-9+/]*[a-z])[A-Za-z0-9+/]{16,}={0,2}")
+
+
+def key_rest_changes(text):
+    """(where this branch's key-rest reading hides past main's, where main's hides what this branch's shows by design)
+    as positions. By design it shows ordinary text past a key's rest, a line of words or a JSON object's next field,
+    and base64 that decodes whole as public material; any other run of base64 main's hides, four characters of it or
+    more shown, stays a leak."""
+    _, shown = tracked(text, head._read)
+    saved, head._key_rest_edits = head._key_rest_edits, main_key_rest
+    try:
+        _, shown_by_main = tracked(text, head._read)
+    finally:
+        head._key_rest_edits = saved
+    public = set()
+    for block in head._WRAPPED_BASE64.finditer(text):
+        data = re.sub(r"[^A-Za-z0-9+/=]", "", head._KEY_ESCAPE.sub("", block.group()))
+        decoded = head._base64_decoded(data, 0, None)
+        if decoded and head._public_material(decoded):
+            public.update(range(block.start(), block.end()))
+    only_here = shown - shown_by_main
+    for m in _BASE64_RUN.finditer(text):  # four characters or more of one shown, past a flag's letter ("-pSecret")
+        seen = only_here.intersection(range(m.start(), m.end())) - public
+        if len(seen) >= 4:
+            only_here -= seen
+    return shown_by_main - shown, only_here
 
 
 def new_readings(text):
@@ -139,9 +175,19 @@ def new_readings(text):
         out.update(range(*head._back(origin, start, end, len(text))))
     for m in head.ENCODED_PRIVATE_KEY.finditer(text):
         out.update(range(m.start(), m.end()))
+    for start, end in head._encoded_key_spans(text):
+        out.update(range(start, end))
     for pattern in head.PREFIXED_SECRETS[1:3]:
         for m in pattern.finditer(text):
             out.update(range(m.end(1), m.end()))
+    # mask-wrappings' command reading, as the pass reads it, after the secrets known by their shape: what the pass
+    # hides with it on and shows with it off.
+    wrapping, head._wrapping_edits = head._wrapping_edits, lambda text: []
+    try:
+        unwrapped = head._run(text, (head.SECRET_PATTERNS, (), "named"), list(range(len(text))))[1]
+    finally:
+        head._wrapping_edits = wrapping
+    out.update({c for c in unwrapped if c >= 0} - {c for c in origin if c >= 0})
     for line_pattern, flag, _ in head._COMMANDS[5:]:
         for line in line_pattern.finditer(text):
             for m in flag.finditer(text, line.start(), line.end()):
@@ -397,7 +443,7 @@ def corpus(cases=CASES):
         text = Case(r, n).text
         size = r.randint(40, 400)
         yield f"old row {n}", text
-        yield f"old row {n}, an older kb's mask", legacy_mask.mask(text)
+        yield f"old row {n}, an older superhistory's mask", legacy_mask.mask(text)
         yield f"old row {n}, main's token mask", legacy_store.token_mask(text)
         yield f"old row {n}, masked a chunk at a time", "".join(legacy_mask.mask(text[i:i + size])
                                                                  for i in range(0, len(text), size))
@@ -429,11 +475,12 @@ class AgainstMainTest(unittest.TestCase):
             if extra:
                 problems.append(f"read as written, hides what main shows at {runs(extra)[:3]}: {written!r} vs {theirs!r}")
         # 4. Gate 9's readings only add, where they read; the four values it reads as no secret are all it shows.
-        lost = sorted(written_shown - base_shown - no_secret_values(text))
+        hidden_more, shown_by_design = key_rest_changes(text)
+        lost = sorted(written_shown - base_shown - no_secret_values(text) - shown_by_design)
         if lost:
             problems.append(f"shows what main's readings hide past the four values at {runs(lost)[:3]}: {written!r} vs "
                             f"{base!r}")
-        reads = new_readings(text)
+        reads = new_readings(text) | hidden_more
         far = [run for run in runs(base_shown - written_shown) if not reads.intersection(range(*run))]
         if far:
             problems.append(f"gate 9's readings hide away from where they read at {far[:3]}: {written!r} vs {base!r}")

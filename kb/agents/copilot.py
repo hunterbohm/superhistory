@@ -4,7 +4,7 @@ import json
 import os
 import shutil
 
-from kb import agents
+from kb import COMMAND, agents
 from kb.agents import Agent, Change
 
 EVENT = "userPromptSubmitted"
@@ -29,7 +29,7 @@ def _is_kb(entry):
 
 
 def _unreadable(path):
-    return Change(path, "skipped", "not a JSON object kb can edit; fix it and run again")
+    return Change(path, "skipped", f"not a JSON object {COMMAND} can edit; fix it and run again")
 
 
 def detect(home):

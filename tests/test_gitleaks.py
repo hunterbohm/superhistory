@@ -1,4 +1,4 @@
-"""kb's copy of gitleaks' provider token rules (kb/gitleaks.py, written by tools/vendor_gitleaks.py). A test per rule,
+"""superhistory's copy of gitleaks' provider token rules (kb/gitleaks.py, written by tools/vendor_gitleaks.py). A test per rule,
 on examples drawn from the rule's own pattern as gitleaks draws its own (tests/samples.py): each is masked where a
 token stands in text, in a link's query, in JSON, after a name, behind a terminal colour code and split by an
 invisible character. No rule matches the ordinary-text generator, nor does mask() change any of it. Made-up secrets
@@ -33,7 +33,7 @@ def examples(index, n=6):
 
 
 def places(secret, keywords):
-    """Where a token stands in text kb reads. A rule is read only where a keyword of it is in the text, as gitleaks
+    """Where a token stands in text superhistory reads. A rule is read only where a keyword of it is in the text, as gitleaks
     reads it, so where the token holds none, one stands before it, as a provider's name does."""
     half = len(secret) // 2
     word = "" if not keywords or any(k in secret.lower() for k in keywords) else keywords[0] + " "
@@ -76,7 +76,7 @@ for _index, _rule in enumerate(gitleaks.RULES):
 # as any character, so its examples can lack them.
 _KEYWORDS_IN_EVERY_REAL_TOKEN = {"slack-config-access-token", "slack-webhook-url"}
 # gitleaks reads Facebook's access token only by the word "facebook": its shape, 15 or 16 digits, "|" and 27 to 40
-# letters and digits, is also a pipe-separated record's (a microsecond timestamp and a trace id), so kb reads it so too.
+# letters and digits, is also a pipe-separated record's (a microsecond timestamp and a trace id), so superhistory reads it so too.
 _READ_ONLY_BY_ITS_NAME = {"facebook-access-token"}
 
 

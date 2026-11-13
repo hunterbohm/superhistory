@@ -4,12 +4,12 @@ import os
 import shutil
 import subprocess
 
-from kb import agents
+from kb import COMMAND, agents
 from kb.mask import mask
 from kb.agents import Agent, _turns
 
-PLUGIN = "kb-context"
-MARKER = "kb-managed Hermes plugin"
+PLUGIN = COMMAND
+MARKER = f"{COMMAND}-managed Hermes plugin"
 PLATFORMS = {"discord", "desktop", "tui", "cli", "acp", "imessage", "photon", "bluebubbles", "telegram", "api_server"}
 
 PLUGIN_INIT = '''# ''' + MARKER + '''
@@ -36,9 +36,9 @@ def register(ctx):
     ctx.register_hook("pre_llm_call", _on_pre_llm_call)
 '''
 
-PLUGIN_YAML = '''name: kb-context
+PLUGIN_YAML = f'''name: {COMMAND}
 version: "1"
-description: Adds a few knowledge-base records related to each message the user sends, looked up by kb, or nothing when none relate.
+description: Adds a few knowledge-base records related to each message the user sends, looked up by {COMMAND}, or nothing when none relate.
 provides_hooks:
   - pre_llm_call
 '''
@@ -82,9 +82,9 @@ def installed(home):
 
 def install(home, kb_command):
     init = _init(home)
-    # Any file already in the folder, even an empty one, belongs to whoever put it there unless it is kb's plugin.
+    # Any file already in the folder, even an empty one, belongs to whoever put it there unless it is superhistory's plugin.
     if os.path.isdir(_folder(home)) and os.listdir(_folder(home)) and not _ours(home):
-        return [agents.Change(init, "skipped", f"a plugin named {PLUGIN} that kb did not write is already there")]
+        return [agents.Change(init, "skipped", f"a plugin named {PLUGIN} that {COMMAND} did not write is already there")]
     changes = []
     for path, text in ((init, plugin_source(kb_command)), (os.path.join(_folder(home), "plugin.yaml"), PLUGIN_YAML)):
         old = agents.read(path)
@@ -106,15 +106,15 @@ def uninstall(home):
     if not os.path.exists(_init(home)):
         return [agents.Change(folder, "unchanged")]
     if not _ours(home):
-        return [agents.Change(folder, "skipped", f"the {PLUGIN} plugin there was not written by kb")]
+        return [agents.Change(folder, "skipped", f"the {PLUGIN} plugin there was not written by {COMMAND}")]
     _hermes("disable")
-    # Only kb's own files go; anything else someone put in the folder stays, and so does the folder then.
+    # Only superhistory's own files go; anything else someone put in the folder stays, and so does the folder then.
     for name in ("__init__.py", "plugin.yaml"):
         if os.path.exists(os.path.join(folder, name)):
             os.remove(os.path.join(folder, name))
     shutil.rmtree(os.path.join(folder, "__pycache__"), ignore_errors=True)
     if os.listdir(folder):
-        return [agents.Change(folder, "removed", "kept the files in it that kb did not write")]
+        return [agents.Change(folder, "removed", f"kept the files in it that {COMMAND} did not write")]
     os.rmdir(folder)
     return [agents.Change(folder, "removed")]
 

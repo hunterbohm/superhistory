@@ -129,7 +129,7 @@ def main(argv=None):
     p.add_argument("--results", default=run.RESULTS)
     p.add_argument("--out", default=os.path.join(run.RESULTS, "chart.png"))
     p.add_argument("--chrome", default="google-chrome")
-    p.add_argument("--fonts", default=os.path.expanduser("~/.cache/kb-bench/fonts"))
+    p.add_argument("--fonts", default=os.path.expanduser("~/.cache/superhistory-bench/fonts"))
     args = p.parse_args(argv)
     with tempfile.TemporaryDirectory() as tmp:
         source = os.path.join(tmp, "chart.html")

@@ -27,7 +27,7 @@ ERROR_BYTES = 1 << 16
 REPLY_BYTES = 1 << 24
 LIMITED = threading.Event()
 WAIT_MINUTES = 30
-# Standing order 22: at most two model calls at once in a run, kb's hedged copies and the summarizer's included. A
+# Standing order 22: at most two model calls at once in a run, superhistory's hedged copies and the summarizer's included. A
 # call waits here for a slot, so a run with more than one worker mostly waits, and a hedge copy can start late.
 SLOTS = threading.BoundedSemaphore(2)
 
@@ -45,7 +45,7 @@ def base_url():
 
 
 def key_source():
-    """Where the key is read from, as a kb config secret: env:BENCH_API_KEY, or file:<BENCH_KEY_FILE>."""
+    """Where the key is read from, as a superhistory config secret: env:BENCH_API_KEY, or file:<BENCH_KEY_FILE>."""
     if os.environ.get("BENCH_API_KEY"):
         return "env:BENCH_API_KEY"
     if KEY_FILE:
