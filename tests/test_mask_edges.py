@@ -110,7 +110,7 @@ class Edges(unittest.TestCase):
         gaps = ("\n\n" * masking.REACH, "\n" * (3 * masking.REACH), "\n\n\n" + "\t" * (3 * masking.REACH),
                 "+\n\n" * masking.REACH, "%20\n\n" * masking.REACH, "%2520\n\n" * masking.REACH,
                 "\\n\\n\n\n" * masking.REACH, "\\u0020\n\n" * masking.REACH, "\\ufeff\n\n" * masking.REACH,
-                "\ufeff\u200b\n\n" * masking.REACH)
+                "\ufeff\u200b\n\n" * masking.REACH, ("\\xad" * 40 + "\n\n") * 40, ("\u00ad" * 120 + "\n\n") * 40)
         hidden = 0
         for gap in gaps:
             for field in ("password:", "Bearer"):

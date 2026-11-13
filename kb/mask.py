@@ -5498,24 +5498,25 @@ def _span(result, origin, base, low, high):
 
 
 _LETTERS = re.compile(r"[A-Za-z]{3,}")
+# What a view of the mask may read as other characters or as none: an escape, a percent code, a character a reader does
+# not see (INVISIBLE). Its letters are not letters every view keeps.
+_ESCAPE_LIKE = re.compile(r"\\+(?:u[0-9A-Fa-f]{4}|U[0-9A-Fa-f]{8}|x[0-9A-Fa-f]{2}|[A-Za-z])|%[0-9A-Fa-f]{2}|"
+                          + INVISIBLE.pattern)
 
 
 def _wordless(text):
-    """Whether `text`, in any view the mask reads (_views), holds a stretch of REACH // 8 characters with no three
-    letters in a row. A field and its value may stand any gap apart, farther than REACH: whitespace, "+", "%20",
-    "%2520", characters a reader does not see, as written or escaped (KEYED_SECRET's _GAP). No gap holds three letters
-    in a row in the view that reads it as one, so where such letters come at least that often in every view, no gap
-    runs past a cut there; elsewhere the cut does not hold and the text is read whole there."""
-    most = REACH // 8
-    for view in _views(text):
-        at = 0
-        for m in _LETTERS.finditer(view):
-            if m.start() - at >= most:
-                return True
-            at = m.end()
-        if len(view) - at >= most:
+    """Whether `text` holds a stretch of REACH // 8 characters with no three letters in a row that every view the mask
+    reads keeps (_ESCAPE_LIKE blanked out first, at its own length). A field and its value may stand any gap apart,
+    farther than REACH: whitespace, "+", "%20", "%2520", characters a reader does not see, as written or escaped
+    (KEYED_SECRET's _GAP). No gap holds such letters, so where they come at least that often, no gap runs past a cut
+    there; elsewhere the cut does not hold and the text is read whole there. Distances are the text's own: a view
+    without its unseen characters would make a gap look shorter than it stands."""
+    view, at, most = _ESCAPE_LIKE.sub(lambda m: " " * len(m.group()), text), 0, REACH // 8
+    for m in _LETTERS.finditer(view):
+        if m.start() - at >= most:
             return True
-    return False
+        at = m.end()
+    return len(view) - at >= most
 
 
 def _cut_holds(text, before, after):
@@ -5540,9 +5541,10 @@ def _cut_holds(text, before, after):
                                                                                     head[1] + tail[1])
 
 
-def _views(text):
-    """`text` as the mask reads it: as written, without the characters a reader does not see, and with JSON's escapes
-    read once and twice."""
+def _keywords_in(text):
+    """The keywords of gitleaks' rules anywhere in `text`, as the mask reads it: as written, without the characters a
+    reader does not see, and with JSON's escapes read once and twice. A rule is read only where the text holds a
+    keyword of it, which may stand far from the token: a piece reads a rule where the whole text holds one."""
     views, view = [text, _unseen_view(text)[0]], text
     for _ in range(2):
         read = "\\" in view and _json_unescaped(view)
@@ -5550,14 +5552,7 @@ def _views(text):
             break
         view = read[0]
         views += [view, _unseen_view(view)[0]]
-    return views
-
-
-def _keywords_in(text):
-    """The keywords of gitleaks' rules anywhere in `text`, as the mask reads it (_views). A rule is read only where the
-    text holds a keyword of it, which may stand far from the token: a piece reads a rule where the whole text holds
-    one."""
-    lowered = [v.lower() for v in _views(text)]
+    lowered = [v.lower() for v in views]
     return frozenset(k for rule in _GITLEAKS + _GITLEAKS_AFTER_A_BREAK for k in rule[3]
                      if any(k in low for low in lowered))
 
