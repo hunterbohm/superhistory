@@ -15,7 +15,7 @@ import traceback
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from kb import COMMAND, NAME, __version__, ai, backup, check, config as config_mod, decisions, ids, ingest, search, store, summarize
+from kb import COMMAND, NAME, __version__, ai, backup, check, config as config_mod, decisions, ids, ingest, search, store, summarize, sync
 from kb.ai import AIError
 from kb.mask import MaskFilter, MaskedStream, mask, masked_log, memo
 from kb.paths import Paths
@@ -1169,6 +1169,7 @@ def parser():
         da = dsub.add_parser(verdict, help=f"mark an agent-reported decision as {word} by you")
         da.add_argument("id", type=int)
         da.set_defaults(fn=cmd_decisions_answer, verdict=word)
+    sync.register(sub)
     return p
 
 
