@@ -5700,8 +5700,9 @@ class Base64ReviewTwentyFourthTest(unittest.TestCase):
 
     def test_lines_of_many_short_runs_below_a_quoted_header_cost_time_in_proportion(self):
         # Review round 2 of PR 92: below a quoted header, each run 4 to 7 characters long that decodes to base64's
-        # characters is read with each such run on the next line joined to it. A line with more than four such runs
-        # reads as a key's line and is not read so, so four times the runs on each line take under eight times the time.
+        # characters is read with each run 4 to 7 characters long on the next line joined to it. A line with more than
+        # four such runs reads as a key's line and is not read so, so four times the runs on each line take under eight
+        # times the time: the same run on each line, and runs that differ, which no pair leaves out as repeated.
         import random
         import time
         from kb import mask as masking
@@ -5709,18 +5710,47 @@ class Base64ReviewTwentyFourthTest(unittest.TestCase):
         data = self.pem(r)
         head = (base64.b64encode(data).decode()[:-(-data.index(b"\n") // 3) * 4]
                 + base64.b64encode(b" as their opening line, then the body.").decode())
-        took = {}
-        for runs in (60, 240):
-            text = "\n".join(["Notes:", head] + [" ".join(["YWJj"] * runs)] * 8 + ["", "next paragraph"])
-            self.assertLessEqual(len(text), masking.WHOLE)
-            best = None
-            for _ in range(2):
-                started = time.process_time()
-                mask(text)
-                spent = time.process_time() - started
-                best = spent if best is None else min(best, spent)
-            took[runs] = best
-        self.assertLess(took[240], 8 * max(took[60], 0.05), took)
+        letters = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
+        for kind in ("the same run", "runs that differ"):
+            took = {}
+            for runs in (60, 240):
+                if kind == "the same run":
+                    lines = [" ".join(["YWJj"] * runs)] * 8
+                else:
+                    lines = [" ".join(base64.b64encode(bytes(r.choice(letters) for _ in range(3))).decode()
+                                      for _ in range(runs)) for _ in range(8)]
+                text = "\n".join(["Notes:", head] + lines + ["", "next paragraph"])
+                self.assertLessEqual(len(text), masking.WHOLE)
+                best = None
+                for _ in range(2):
+                    started = time.process_time()
+                    mask(text)
+                    spent = time.process_time() - started
+                    best = spent if best is None else min(best, spent)
+                took[runs] = best
+            with self.subTest(kind=kind):
+                self.assertLess(took[240], 8 * max(took[60], 0.05), took)
+
+    def test_lines_of_words_below_a_quoted_header_stay(self):
+        # Base64 of a document that quotes a key's header, then lines of plain words, five to eight to a line: a word
+        # 4 to 7 letters long seldom decodes alone to base64's characters, so the pairs read few of them and the lines
+        # stay, as on main. Counting every such run as a key's piece would mask them.
+        import random
+        r = random.Random(79)
+        words = ("ledger", "garden", "walrus", "budget", "deploy", "review", "rotate", "plan", "team", "prod",
+                 "certs", "invoice", "notes", "keep", "body", "line", "after", "month", "files", "these", "every",
+                 "until", "older", "newer")
+        frames = ("-----BEGIN PRIVATE KEY-----", "-----BEGIN RSA PRIVATE KEY-----",
+                  "---- BEGIN SSH2 ENCRYPTED PRIVATE KEY ----", "-----BEGIN OPENSSH PRIVATE KEY-----")
+        for frame in frames:
+            head = base64.b64encode(f"PEM files use {frame} as their opening line, then the body.".encode()).decode()
+            for count in (5, 6, 8):
+                for k in range(8):
+                    lines = [" ".join(r.sample(words, count)) for _ in range(12)]
+                    text = "\n".join(["Notes:", head] + lines + ["", "next paragraph"])
+                    with self.subTest(frame=frame, count=count, k=k):
+                        masked = mask(text)
+                        self.assertEqual([line for line in lines if line not in masked], [])
 
 
 class Base64ReviewTwentyFifthTest(unittest.TestCase):
