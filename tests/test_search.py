@@ -183,6 +183,31 @@ class SearchTest(TempDB):
         self.assertEqual(search.search(self.db, "what is the"), [])
         self.assertEqual(search.search(self.db, "absent"), [])
 
+    def test_a_store_from_before_the_indexes_gives_the_same_hits(self):
+        self.add("note", "the zeppelin hangar opens at dawn", title="note")
+        self.add("long", long_body("zeppelin"), title="long")
+        self.add("other", "a hangar with no airship", title="other", source="t")
+        self.db.execute("INSERT INTO docs(kind, source, source_id, ts, title, content, metadata, masked) "
+                        "VALUES ('doc', 's', 'old', ?, 'old', 'an older zeppelin note', '{}', 'an-earlier-mask')", (iso(),))
+        self.db.commit()
+
+        def hits(db):
+            return [[(h["id"], h["title"], h["snippet"], h["excerpt"]) for h in search.search(db, query, **kw)]
+                    for query, kw in (("zeppelin", {}), ("zeppelin hangar", {}), ("hangar", {"sources": ("t",)}),
+                                      ("zeppelin", {"after": iso(timedelta(days=1))}), ("absent", {}))]
+
+        with_them = hits(self.db)
+        self.assertEqual(sorted(h[1] for h in with_them[0]), ["long", "note", "old"])
+        self.assertEqual([h[1] for h in with_them[2]], ["other"])
+        self.db.close()
+        with sqlite3.connect(self.path) as raw:
+            raw.executescript("DROP INDEX docs_brief; DROP INDEX docs_item_masked; "
+                              "CREATE INDEX docs_item ON docs(source, source_id, kind);")
+        raw.close()
+        reader = store.connect(self.path, readonly=True)
+        self.addCleanup(reader.close)
+        self.assertEqual(hits(reader), with_them)
+
     def test_hostile_queries_do_not_raise(self):
         self.add("a", "alpha beta")
         for q in ('"', 'NEAR(', 'a AND', '*', '(', 'x" OR "y', "col:val", "--", "\\", "'"):
