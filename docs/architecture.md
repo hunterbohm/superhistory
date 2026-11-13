@@ -25,7 +25,7 @@ printed text come from them, so a rename is one edit.
 | `kb/dashboard/` | `superhistory dashboard`: a local page over the store, read-only. `catalog.py` finds projects and people, `views.py` shapes each page's data, `server.py` serves it on 127.0.0.1, and `static/` holds the page, its script, style and fonts. |
 | `kb/sources/` | Source types. Each module defines `TYPE`, and its name is the type's name. |
 | `kb/sources/plugin.py` | The `plugin` type: runs a program from the plug-ins folder and reads its items from JSON lines. The format is in `docs/plugins.md`. |
-| `kb/sync/` | Reserved for the Sync client. |
+| `kb/sync/` | The Sync client: keys, the roster, packs, the relay transport and the `sync` command. `docs/sync.md` says how to set it up. |
 
 ## The dashboard
 
@@ -62,7 +62,7 @@ row masked again whole first.
 
 ## Where Sync plugs in
 
-The Sync client goes in `kb/sync/`, imported as `kb.sync`.
+The Sync client is `kb/sync/`, imported as `kb.sync`.
 
 - Every stored `source_id` starts with the prefix of the install that read it: `<install id>:` for this computer, and
   `<install id>@<host>:` for a host it reads over SSH, where host is the name in `[hosts.NAME]`. The install id is
@@ -73,7 +73,7 @@ The Sync client goes in `kb/sync/`, imported as `kb.sync`.
   changes nothing. A prune deletes only under the prefix it read, and the summarizer summarizes only this install's
   items.
 - After `superhistory ingest`, when the config has a `[sync]` table, or a `[cloud]` table (an older name Superhistory still reads), Superhistory calls
-  `kb.sync.after_ingest(paths, config, db, log)`, which runs `superhistory sync` and `superhistory push`. `config.extra` holds those
+  `kb.sync.after_ingest(paths, config, db, log)`, which runs one sync. `config.extra` holds those
   tables as parsed TOML, and `config.install` holds this install's id. It runs even when no source is configured, so
   a forgotten reader's deletions still go out. A failure, a missing client included, is the `sync` health unit and
   makes `superhistory ingest` exit 1. Everything Superhistory logs is masked, tracebacks included, and Superhistory's records stay out of the
@@ -92,10 +92,10 @@ Each online account has one reader. Gmail, GitHub, YouTube and Eden read an acco
 would store every thread twice under two prefixes. `config.account_keys()` names the account each source reads, one
 key however the config spells it (case, a leading `@`, dots in a gmail.com name). With `[sync]` (or `[cloud]`) on, a
 source whose config does not name its account, such as GitHub left at `"@me"`, is a config error. The Sync client
-refuses a second reader: at `superhistory sync join`, and on every `after_ingest`, because a member can add a
+refuses a second reader: at `superhistory sync join`, and on every sync, because a member can add a
 source after joining. An account key holds a mail address, so it goes only where item text goes. To move a reader to
 a new computer, run `superhistory forget NAME` on the old one and remove `[sources.NAME]` from its config, then add the source
-on the new one. When the old computer is gone, removing it from Sync must clear its items; that is the Sync client's.
+on the new one. When the old computer is gone, `superhistory sync remove` on another computer removes it and, unless told to keep them, clears its items.
 
 What a stored item carries, and so what a synced or pushed item exposes to whoever can read it: the source name;
 the `source_id`, whose native part can hold a file path, a mail account or a chat handle such as a phone number;
