@@ -109,18 +109,20 @@ class Edges(unittest.TestCase):
         # no window is used.
         gaps = ("\n\n" * masking.REACH, "\n" * (3 * masking.REACH), "\n\n\n" + "\t" * (3 * masking.REACH),
                 "+\n\n" * masking.REACH, "%20\n\n" * masking.REACH, "%2520\n\n" * masking.REACH,
-                "\\n\\n\n\n" * masking.REACH, "\\u0020\n\n" * masking.REACH)
+                "\\n\\n\n\n" * masking.REACH, "\\u0020\n\n" * masking.REACH, "\\ufeff\n\n" * masking.REACH,
+                "\ufeff\u200b\n\n" * masking.REACH)
         hidden = 0
         for gap in gaps:
-            with self.subTest(gap=gap[:6]):
-                tail_text = paragraphs(3000, 4) + "password:" + gap + "swordfish\n"
-                head_text = "password:" + gap + "swordfish\n\n" + paragraphs(5000, 5)
-                tail_whole = masking._mask_whole(tail_text)
-                windowed = self.read(tail_text, N, tail_whole)[2]
-                self.read(head_text, len(head_text) - 5000)
-                if "swordfish" not in tail_whole:
-                    hidden += 1
-                    self.assertEqual(windowed[1], False)
+            for field in ("password:", "Bearer"):
+                with self.subTest(gap=gap[:6], field=field):
+                    tail_text = paragraphs(3000, 4) + field + gap + "swordfishswordfish\n"
+                    head_text = field + gap + "swordfishswordfish\n\n" + paragraphs(5000, 5)
+                    tail_whole = masking._mask_whole(tail_text)
+                    windowed = self.read(tail_text, N, tail_whole)[2]
+                    self.read(head_text, len(head_text) - 5000)
+                    if "swordfish" not in tail_whole:
+                        hidden += 1
+                        self.assertEqual(windowed[1], False)
         self.assertGreater(hidden, 0, "some gap must make the value a secret")
 
     def test_a_cut_near_the_kept_part_is_refused(self):

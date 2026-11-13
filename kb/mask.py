@@ -5501,17 +5501,21 @@ _LETTERS = re.compile(r"[A-Za-z]{3,}")
 
 
 def _wordless(text):
-    """Whether `text` holds a stretch of REACH // 8 characters with no three letters in a row. A field and its value may
-    stand any gap apart: whitespace, "+", "%20", "%2520", or the same escaped in JSON, in any view the mask reads
-    (KEYED_SECRET's _GAP), farther than REACH. No gap holds three letters in a row, as written or escaped, so where
-    such letters come at least that often, no gap runs past a cut there; elsewhere the cut does not hold and the text
-    is read whole there."""
-    at, most = 0, REACH // 8
-    for m in _LETTERS.finditer(text):
-        if m.start() - at >= most:
+    """Whether `text`, in any view the mask reads (_views), holds a stretch of REACH // 8 characters with no three
+    letters in a row. A field and its value may stand any gap apart, farther than REACH: whitespace, "+", "%20",
+    "%2520", characters a reader does not see, as written or escaped (KEYED_SECRET's _GAP). No gap holds three letters
+    in a row in the view that reads it as one, so where such letters come at least that often in every view, no gap
+    runs past a cut there; elsewhere the cut does not hold and the text is read whole there."""
+    most = REACH // 8
+    for view in _views(text):
+        at = 0
+        for m in _LETTERS.finditer(view):
+            if m.start() - at >= most:
+                return True
+            at = m.end()
+        if len(view) - at >= most:
             return True
-        at = m.end()
-    return len(text) - at >= most
+    return False
 
 
 def _cut_holds(text, before, after):
@@ -5536,10 +5540,9 @@ def _cut_holds(text, before, after):
                                                                                     head[1] + tail[1])
 
 
-def _keywords_in(text):
-    """The keywords of gitleaks' rules anywhere in `text`, as the mask reads it: as written, without the characters a
-    reader does not see, and with JSON's escapes read once and twice. A rule is read only where the text holds a
-    keyword of it, which may stand far from the token: a piece reads a rule where the whole text holds one."""
+def _views(text):
+    """`text` as the mask reads it: as written, without the characters a reader does not see, and with JSON's escapes
+    read once and twice."""
     views, view = [text, _unseen_view(text)[0]], text
     for _ in range(2):
         read = "\\" in view and _json_unescaped(view)
@@ -5547,7 +5550,14 @@ def _keywords_in(text):
             break
         view = read[0]
         views += [view, _unseen_view(view)[0]]
-    lowered = [v.lower() for v in views]
+    return views
+
+
+def _keywords_in(text):
+    """The keywords of gitleaks' rules anywhere in `text`, as the mask reads it (_views). A rule is read only where the
+    text holds a keyword of it, which may stand far from the token: a piece reads a rule where the whole text holds
+    one."""
+    lowered = [v.lower() for v in _views(text)]
     return frozenset(k for rule in _GITLEAKS + _GITLEAKS_AFTER_A_BREAK for k in rule[3]
                      if any(k in low for low in lowered))
 
