@@ -5497,6 +5497,14 @@ def _span(result, origin, base, low, high):
     return result[first:last + 1], [c + base if c >= 0 else -1 for c in origin[first:last + 1]]
 
 
+def _long_space(text):
+    """Whether `text` holds a run of whitespace of REACH // 8 or more. Some patterns let a field and its value stand any
+    such run apart (KEYED_SECRET's \\s*), farther than REACH: a cut near one holds only where the text is read whole
+    there, so no field on one side of it loses a value on the other. A shorter run cannot carry a match across REACH of
+    other text."""
+    return re.search(r"\s{%d,}" % (REACH // 8), text) is not None
+
+
 def _cut_holds(text, before, after):
     """Whether the cut between two pieces, each (start, end, (result, origin, still)), masks as the text read whole
     there: neither piece's mask hides the characters at the cut, and the two say what a window of the text read whole
@@ -5504,6 +5512,8 @@ def _cut_holds(text, before, after):
     start, cut, (left, left_origin, _) = before
     _, end, (right, right_origin, _) = after
     if not left or not right or left_origin[-1] != cut - 1 - start or right_origin[0] != 0:
+        return False
+    if _long_space(text[max(0, cut - REACH):cut + REACH]):
         return False
     low, high = max(0, cut - 2 * REACH), min(len(text), cut + 2 * REACH)
     window, window_origin, still = _part(text[low:high])
@@ -5632,7 +5642,8 @@ def mask(text):
 #   _pieces checks it. A run that comes in over the cut from the far side is a key's paragraph, masked on to its end
 #   from a header before a tail's cut, or back to its start from a footer after a head's (_headless_key_edits); a
 #   blank line ends it, and none crosses more than two (a PGP key's one, an encrypted key's two), so _BARRIER blank
-#   lines between the kept part and the cut stop every one.
+#   lines between the kept part and the cut stop every one. A field and its value can also stand any run of
+#   whitespace apart, so no run of REACH // 8 may stand there either.
 # - A rule that finds a secret in the window with no keyword of its own there reads as the whole text's keywords say
 #   (_far_how); the window is used only where each such rule has a keyword in the text (_keywords_in), as a keyword
 #   in a view only the far text makes could turn it on.
@@ -5732,7 +5743,7 @@ def _edge(text, n, head):
         away = origin[first] if k == first else origin[k] + 1
         apart, far = window[:away], away
     breaks = sum(1 for _ in itertools.islice(_BLANK_LINE.finditer(apart), _BARRIER))
-    if far < REACH or breaks < _BARRIER:
+    if far < REACH or breaks < _BARRIER or _long_space(apart):
         return None
     return result[:n] if head else result[-n:]
 

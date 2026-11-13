@@ -99,6 +99,18 @@ class Edges(unittest.TestCase):
         # A window cut in a secret is used where its edge character is not one the secret hides, and always right.
         self.assertGreater(sum(accepted), len(accepted) // 4)
 
+    def test_a_field_whitespace_apart_from_its_value_is_masked_whole(self):
+        # A field and its value may stand any run of whitespace apart: a window cut in that run would keep the value
+        # without the field that makes it a secret.
+        for gap in ("\n\n" * masking.REACH, "\n" * (3 * masking.REACH), "\n\n\n" + "\t" * (3 * masking.REACH)):
+            with self.subTest(gap=gap[:3]):
+                tail_text = paragraphs(3000, 4) + "password:" + gap + "swordfish\n"
+                head_text = "password:" + gap + "swordfish\n\n" + paragraphs(5000, 5)
+                self.assertNotIn("swordfish", masking._mask_whole(tail_text))
+                self.assertEqual(self.read(tail_text, N)[2][1], False)
+                self.assertNotIn("swordfish", masking.mask_tail(tail_text, N))
+                self.assertNotIn("swordfish", masking.mask_head(head_text, len(head_text) - 5000))
+
     def test_a_cut_near_the_kept_part_is_refused(self):
         text = paragraphs(7000, 3)
         near = lambda text, n, head: N + 100 if head else len(text) - N - 100
