@@ -109,6 +109,12 @@ If you lose every computer, install Superhistory on a new one, sign in with `sup
 
 - Each item's text, title, time and where it came from, its summaries, and the marks that say one item replaces
   another. Secrets that Superhistory's masking finds are masked before they leave, as they are when it stores them.
+- Masking is known to miss two shapes, and Sync sends them as stored. One is a recovery code with a second code
+  glued onto its end: the last two groups of the second code get through. The other is a password typed through a
+  browser tool, in an item stored before Superhistory's readers learned to hide what a browser tool types, and not read
+  again since.
+  `tests/sync/test_egress.py` keeps both as expected failures, so the suite fails the day masking catches one and this
+  list can lose it.
 - Everything is locked with keys only your computers hold, then signed, before it reaches the relay. The relay sees
   how many computers you have and their names, and when and how much they sync. It sees nothing about what you sync.
 - The website holds your account, your plan, and each computer's name and public keys.

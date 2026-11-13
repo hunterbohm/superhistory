@@ -618,8 +618,8 @@ class OneCharacterTest(unittest.TestCase):
 
 
 def residual(test):
-    """A shape on design.md's residual list: a deliberate construction known to get through. It is expected to fail,
-    and fails the suite the day it no longer does, so the list can lose it."""
+    """A shape on docs/sync.md's list of what masking is known to miss: a deliberate construction known to get through.
+    It is expected to fail, and fails the suite the day it no longer does, so the list can lose it."""
     return unittest.expectedFailure(test)
 
 
@@ -694,7 +694,7 @@ class ResidualTest(unittest.TestCase):
     @residual
     def test_a_password_typed_through_a_browser_tool_in_transcript_text(self):
         # kb hides what a browser tool types when its readers ingest the call (typed_secrets), not in its mask, so a row
-        # kb stored before #29 and has not read again leaves with the password, as on main.
+        # kb stored before its readers did that, and has not read again, leaves with the password.
         for text in ('TOOL mcp__playwright__browser_type: {"element": "Password", "text": "Tr0ub4dor&3xq"}',
                      '{"type":"tool_use","name":"mcp__playwright__browser_type",'
                      '"input":{"element":"Password field","ref":"e12","text":"Tr0ub4dor&3xq"}}'):

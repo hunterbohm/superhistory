@@ -294,8 +294,7 @@ class NarrowRound(unittest.TestCase):
 
     def test_a_headless_code_with_mixed_separators_or_line_breaks_is_masked(self):
         text = "000G 40R4-0M30-E209-185G-R38E-1W81-24GK"
-        self.assertEqual(keys.parse_recovery_code("VRC1-" + text), keys.parse_recovery_code("VRC1-" + text),
-                         "it is a code")
+        self.assertEqual(keys.parse_recovery_code("VRC1-" + text), bytes(range(20)), "it is a code")
         body = keys.new_recovery_code()[0].removeprefix("VRC1-")
         groups = body.split("-")
         for written in (text, " ".join(groups[:3]) + "-" + "\n".join(groups[3:]), "\r\n".join(groups),
