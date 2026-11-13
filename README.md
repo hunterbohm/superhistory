@@ -41,7 +41,8 @@ sh superhistory-source/install.sh --from superhistory-source
 
 You can also install with `pipx install ./superhistory-source` or `uv tool install ./superhistory-source`.
 
-Superhistory is free and open source to self-host, plus Sync at $10 a month.
+Superhistory is free and open source to self-host, plus Sync at $10 a month. `docs/sync.md` says how to set Sync up on
+each computer.
 
 ## Try it before you connect anything
 

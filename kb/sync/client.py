@@ -13,7 +13,7 @@ import time
 import uuid
 
 from . import keys, pack, records, relay, roster, state
-from .. import ids, store
+from .. import COMMAND, NAME, ids, store
 from .keys import Refused
 from .login import NotSignedIn, Paths, approve, signed_in
 
@@ -287,7 +287,7 @@ class SyncClient:
         """`superhistory sync login` makes the device keys and registers them with the app. Keys made anywhere else would match nothing
         the app holds, so every other computer would refuse this one."""
         if not (os.path.exists(self.paths.device_age) and os.path.exists(self.paths.device_ssh)):
-            raise SyncError("This computer's keys are missing. Run `superhistory sync login` again.")
+            raise SyncError(f"This computer's keys are missing. Run `{COMMAND} sync login` again.")
 
     def _my_entry(self, added_in):
         return roster.check_entry({
@@ -405,7 +405,7 @@ class SyncClient:
 
     def _member(self):
         if self.roster is None:
-            raise SyncError("This computer is not in a sync group. Run `superhistory sync init`, `superhistory sync join` or `superhistory sync recover`.")
+            raise SyncError(f"This computer is not in a sync group. Run `{COMMAND} sync init`, `{COMMAND} sync join` or `{COMMAND} sync recover`.")
         me = self.roster.entry(self.device_id)
         if me is None or me["removed"] is not None:
             raise SyncError("This computer was removed from the sync group.")
@@ -418,15 +418,15 @@ class SyncClient:
         st = self.relay.state()
         if st["group"]:
             if st.get("member") and self.roster is None:
-                self._bootstrap(show, "Another computer is already in this account's sync group. Run `superhistory sync join` here.")
+                self._bootstrap(show, f"Another computer is already in this account's sync group. Run `{COMMAND} sync join` here.")
                 self._restore_from_envelope()
             if st.get("member"):
                 return None, self.run_once()
-            raise SyncError("Sync is already set up for this account. Run `superhistory sync join` here, or `superhistory sync recover`.")
+            raise SyncError(f"Sync is already set up for this account. Run `{COMMAND} sync join` here, or `{COMMAND} sync recover`.")
         self._require_keys()
         # Asked before the group exists, so a person who denies it leaves nothing behind, and a try that stops after it
         # asks again to the same end: the app takes the same computer as the first member twice.
-        self._bootstrap(show, "Another computer set up sync for this account first. Run `superhistory sync join` here.")
+        self._bootstrap(show, f"Another computer set up sync for this account first. Run `{COMMAND} sync join` here.")
         code, secret = keys.new_recovery_code()
         rident, rtag = keys.recovery_keys(secret)
         first = keys.new_identity()
@@ -510,7 +510,7 @@ class SyncClient:
             self._refuse_join_on_clash(pk, entry)
             if entry["prefix"] in self._removed().cleared:
                 raise SyncError(f'"{entry["label"]}" was removed with its items cleared, so it cannot join again as the '
-                                "same install. To add it, delete the install-id file in its Superhistory config folder first. "
+                                f"same install. To add it, delete the install-id file in its {NAME} config folder first. "
                                 "The items it read before are then cleared on it too.")
             new = {**entry, "added_in": ro.version + 1}
             new_ro = roster.Roster(roster.new_link(ro, ro.epoch, self.device_id, ro.entries + [new], ring))
@@ -561,7 +561,7 @@ class SyncClient:
             self._joining = None
             with contextlib.suppress(relay.RelayError):
                 self.relay.delete_slot(pk.slot_id)
-            raise SyncError(self._taken_message(self._refusal_held(data), "run `superhistory sync join` again"))
+            raise SyncError(self._taken_message(self._refusal_held(data), f"run `{COMMAND} sync join` again"))
         self._anchor(keys.KeyRing.from_json(data["keyring"]))
         version = self.roster.version
         state.put(self.db, "joined_behind", version if self._next_link_stood_behind(version) else None)
@@ -589,7 +589,7 @@ class SyncClient:
         raise SyncError(f'Did not add "{entry["label"]}": it reads an online account that {who} already '
                         f'{"reads" if len(labels) == 1 else "read"} in your sync group, and one computer reads each online '
                         f'account. On "{entry["label"]}", remove the source that reads it from its config, then run '
-                        "`superhistory sync join` there with a new code from `superhistory sync add-device`.")
+                        f"`{COMMAND} sync join` there with a new code from `{COMMAND} sync add-device`.")
 
     @staticmethod
     def _refusal_held(refusal):
@@ -609,7 +609,7 @@ class SyncClient:
         return (f"This computer reads the online account{'s' if len(names) > 1 else ''} in {where}, which {_quoted(labels)} "
                 f"already {reads} in your sync group. One computer reads each online account. Remove "
                 f"{where if names else 'the source that reads it'} from this computer's config, then {then}. To move that "
-                f"account here instead, run `superhistory forget NAME` on {_quoted(labels)}, where NAME is the source that "
+                f"account here instead, run `{COMMAND} forget NAME` on {_quoted(labels)}, where NAME is the source that "
                 "reads it there, remove that source from its config, and sync there first.")
 
     def _refresh(self):
@@ -964,7 +964,7 @@ class SyncClient:
 
     def _member_or_recovering(self):
         if self.roster is None:
-            raise SyncError("This computer is not in a sync group. Run `superhistory sync init`, `superhistory sync join` or `superhistory sync recover`.")
+            raise SyncError(f"This computer is not in a sync group. Run `{COMMAND} sync init`, `{COMMAND} sync join` or `{COMMAND} sync recover`.")
 
     def _read_snapshot(self, snap, adopting):
         """Take the current snapshot, trusting it only through its announcement in its author's chain. Returns how many
@@ -1342,7 +1342,7 @@ class SyncClient:
     def _other(self, label):
         matches = [e for e in self.roster.active() if e["label"] == label and e["device_id"] != self.device_id]
         if len(matches) != 1:
-            raise SyncError("No single other computer in the group has that label. `superhistory sync status` lists them.")
+            raise SyncError(f"No single other computer in the group has that label. `{COMMAND} sync status` lists them.")
         return matches[0]
 
     def items_read_by(self, label):
@@ -1383,7 +1383,7 @@ class SyncClient:
         """Replace the recovery code through a rotation. Returns the new code."""
         self._member()
         if self.pull().stalled:
-            raise SyncError("Sync is stalled, so the recovery code cannot change now. `superhistory sync status` shows why.")
+            raise SyncError(f"Sync is stalled, so the recovery code cannot change now. `{COMMAND} sync status` shows why.")
         code = self._rotate(new_recovery=True)
         self.compact(force=True)
         return code
@@ -1424,7 +1424,7 @@ class SyncClient:
         others = any(d["device_id"] != self.device_id and not d["revoked_on"] for d in self.app.devices(self.app_token))
         # Recovery restores everyone's history, so the others' items are kept.
         self._bootstrap(show, "Another computer is still in the sync group, so recovery stopped. Remove it on the "
-                              "website, then run `superhistory sync recover` again.", {"do": "recover"} if others else {"do": "bootstrap"})
+                              f"website, then run `{COMMAND} sync recover` again.", {"do": "recover"} if others else {"do": "bootstrap"})
         pull_or_stop()  # packs that arrived before the revocations took effect
         ring, ro, listed = self.keyring, self.roster, self._listed()
         version, epoch = ro.version + 1, ring.newest + 1
@@ -1482,7 +1482,7 @@ class SyncClient:
             ro, ring = self.roster, self.keyring
             held = ro.holders(mine, besides=self.device_id)
             if held:
-                raise SyncError(self._taken_message(held, "run `superhistory sync` again"))
+                raise SyncError(self._taken_message(held, f"run `{COMMAND} sync` again"))
             me = ro.entry(self.device_id)
             if me["accounts"] == mine:
                 return
@@ -1619,11 +1619,11 @@ class SyncClient:
             problems.append("The relay shows an older roster than this computer trusts.")
         held = self.roster.holders(roster.claims(self.accounts), besides=self.device_id)
         if held:
-            problems.append(self._taken_message(held, "run `superhistory sync` again") + " Nothing is sent from here until then.")
+            problems.append(self._taken_message(held, f"run `{COMMAND} sync` again") + " Nothing is sent from here until then.")
         if st.get("rotation_due"):
             problems.append("A removed computer still holds keys. The next sync rotates them.")
         if self.recovery_code_due():
-            problems.append("A removed computer still knows the recovery code. Run `superhistory sync recovery-code --new`.")
+            problems.append(f"A removed computer still knows the recovery code. Run `{COMMAND} sync recovery-code --new`.")
         # Named while the chain is still short, read now, so a pull that brought the packs and then stopped on
         # something else does not leave the notice standing.
         problems += [missing_notice((self.roster.entry(d) or {}).get("label", "another computer"))
@@ -1647,7 +1647,7 @@ class SyncClient:
                 out.append((prog, proc.returncode == 0, proc.stdout.decode().strip()))
             except FileNotFoundError:
                 out.append((prog, False, "not installed"))
-        with tempfile.TemporaryDirectory(prefix="superhistory-sync-") as tmp:
+        with tempfile.TemporaryDirectory(prefix=f"{COMMAND}-sync-") as tmp:
             probe = os.path.join(tmp, "probe")
             try:
                 keys.make_device_keys(probe + ".age", probe + ".ssh")

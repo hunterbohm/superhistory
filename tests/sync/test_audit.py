@@ -189,7 +189,7 @@ class Finding10SignatureBeforeInflating(unittest.TestCase):
 
 
 class HostMetadata(unittest.TestCase):
-    """From varve #14: kb reads an id's host from its rows' own `host` metadata, so the host must travel as kb wrote it.
+    """From #14: kb reads an id's host from its rows' own `host` metadata, so the host must travel as kb wrote it.
     An item from a computer named like "tokenbox" must not be taken for a secret's name."""
 
     def test_items_from_a_host_named_tokenbox_sync_with_their_host(self):

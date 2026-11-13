@@ -381,7 +381,7 @@ class HideInvisibleTest(unittest.TestCase):
 
     def test_a_key_glued_to_a_word_by_an_invisible_is_masked(self):
         # Launch gate 12, closed by both of its halves: kb's mask matches through invisibles and takes one as a word's
-        # edge (varve #27), and hide masks before it strips, so the mask sees the invisible that bounds the key.
+        # edge (#27), and hide masks before it strips, so the mask sees the invisible that bounds the key.
         for ch in self.MARKS:
             out = egress.hide("budget" + ch + self.KEY + " paid")
             self.assertNotIn(self.KEY, out, f"gate 12: a key glued by U+{ord(ch):04X} must not leak")
@@ -624,7 +624,7 @@ def residual(test):
 
 
 class PinnedMaskTest(unittest.TestCase):
-    """What kb's mask at the pinned commit, varve #40's merge, hides leaves hidden: shapes #27's mask left, keys of
+    """What kb's mask hides, as of #40, leaves hidden: shapes #27's mask left, keys of
     digits and separators, which #29's mask showed as dates, and credentials of digits with a T or a Z, which #39's
     showed where it reads a value by its shape alone."""
 
@@ -694,7 +694,7 @@ class ResidualTest(unittest.TestCase):
     @residual
     def test_a_password_typed_through_a_browser_tool_in_transcript_text(self):
         # kb hides what a browser tool types when its readers ingest the call (typed_secrets), not in its mask, so a row
-        # kb stored before varve #29 and has not read again leaves with the password, as on main.
+        # kb stored before #29 and has not read again leaves with the password, as on main.
         for text in ('TOOL mcp__playwright__browser_type: {"element": "Password", "text": "Tr0ub4dor&3xq"}',
                      '{"type":"tool_use","name":"mcp__playwright__browser_type",'
                      '"input":{"element":"Password field","ref":"e12","text":"Tr0ub4dor&3xq"}}'):

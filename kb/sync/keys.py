@@ -11,10 +11,12 @@ import secrets
 import subprocess
 import tempfile
 
-# The first name of this protocol's bytes: key derivation, pack namespaces and relay headers are built from it. Peers on
-# other versions and the relay read them as they are, so it stays whatever the product is called, and `kb.NAME` must
-# never stand in for it. Written in two parts because kb's tests allow the product's name in one place only.
-WIRE_NAME = "var" + "ve"
+from .. import COMMAND
+
+# The first name of this protocol's bytes: key derivation, pack and roster namespaces, account claims and relay headers
+# are built from it. It is the product's first name. Peers on other versions and the relay read these bytes as they
+# are, so it stays as it is whatever the product is called, and `kb.COMMAND` must never stand in for it.
+WIRE_NAME = "varve"
 
 AGE_RECIPIENT = re.compile(r"age1[a-z0-9]{58}")
 AGE_IDENTITY = re.compile(r"AGE-SECRET-KEY-1[0-9A-Z]{58}")
@@ -54,8 +56,9 @@ class ToolError(Exception):
 # What to install for each tool this file runs.
 INSTALL = {"ssh-keygen": "Install OpenSSH's client: macOS has it, and on Debian or Ubuntu it is `apt install openssh-client`.",
            "age": "Install age from https://age-encryption.org, or with `brew install age` or `apt install age`."}
-# The namespace a computer signs its renewal under, so no signature made for git or anything else passes as one.
-RENEW_NAMESPACE = "superhistory-renew@v1"
+# The namespace a computer signs its renewal under, so no signature made for git or anything else passes as one. The app
+# checks the same string (RENEW_NAMESPACE in its sshsig.ts), which spells the product's name, so a rename changes both.
+RENEW_NAMESPACE = f"{COMMAND}-renew@v1"
 
 
 def _run(args, data=b""):
@@ -117,7 +120,7 @@ def open_file(identity_path, data):
 
 
 def open_with(identities, data):
-    with tempfile.TemporaryDirectory(prefix="superhistory-sync-") as tmp:
+    with tempfile.TemporaryDirectory(prefix=f"{COMMAND}-sync-") as tmp:
         path = os.path.join(tmp, "identities")
         write_private(path, "".join(i + "\n" for i in identities).encode())
         return open_file(path, data)
@@ -215,7 +218,7 @@ def verify(principal, ssh_key, namespace, data, signature):
     """True when `signature` is `principal`'s over `data`. The principal is a device id, never a label."""
     if not DEVICE_ID.fullmatch(principal) or not SSH_KEY.fullmatch(ssh_key):
         return False
-    with tempfile.TemporaryDirectory(prefix="superhistory-sync-") as tmp:
+    with tempfile.TemporaryDirectory(prefix=f"{COMMAND}-sync-") as tmp:
         signers, sig = os.path.join(tmp, "allowed_signers"), os.path.join(tmp, "sig")
         write_private(signers, f'{principal} namespaces="{namespace}" {ssh_key}\n'.encode())
         write_private(sig, signature)

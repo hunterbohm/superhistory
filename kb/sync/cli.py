@@ -6,15 +6,15 @@ import traceback
 
 from . import keys, login, relay
 from .client import HOOK_LOCK_WAIT, SYNC_LOCK_WAIT, SyncClient, SyncError, missing_notice
-from .. import config as config_mod, store
+from .. import COMMAND, NAME, config as config_mod, store
 from ..agents import write as write_file
 
 # What a sync says when the relay refuses a pack for a storage limit. The pack stays in the outbox, so nothing is lost.
-QUOTA_DAY = ("Your Superhistory Sync storage allowance for today is used up. Nothing is lost: your changes stay on this "
+QUOTA_DAY = (f"Your {NAME} Sync storage allowance for today is used up. Nothing is lost: your changes stay on this "
              "computer and go up on the first sync after midnight UTC.")
-QUOTA_TOTAL = ("Your Superhistory Sync storage is full. Nothing is lost: your changes stay on this computer and go up when "
-               "there is room. To make room, run `superhistory sync compact` on another of your computers where "
-               "`superhistory sync status` shows 0 records waiting: it compacts what the relay holds. If every computer "
+QUOTA_TOTAL = (f"Your {NAME} Sync storage is full. Nothing is lost: your changes stay on this computer and go up when "
+               f"there is room. To make room, run `{COMMAND} sync compact` on another of your computers where "
+               f"`{COMMAND} sync status` shows 0 records waiting: it compacts what the relay holds. If every computer "
                "has records waiting, {who}.")
 CODE = re.compile(r"V(?:RC|P)1(?:-[0-9A-Z]{1,4})+")
 
@@ -24,7 +24,7 @@ def quota_total(paths):
     saved = keys.load_json(login.Paths(paths).login) or {}
     support = saved.get("support")
     who = f"write to {support}" if isinstance(support, str) and relay.SUPPORT_EMAIL.fullmatch(support) else (
-        "contact Superhistory support")
+        f"contact {NAME} support")
     return QUOTA_TOTAL.format(who=who)
 
 
@@ -72,7 +72,7 @@ def cmd_init(client, args):
 
 def cmd_add_device(client, args):
     pairing = client.add_device()
-    print("On the new computer, run `superhistory sync join` and enter this code:")
+    print(f"On the new computer, run `{COMMAND} sync join` and enter this code:")
     _reveal(pairing.code)
     print("The code works once, for 10 minutes. Waiting...", flush=True)
 
@@ -119,7 +119,7 @@ def cmd_compact(client, args):
     if report.compacted or (not report.stalled and client.compact(force=True)):
         print("Compacted.")
         return 0
-    print("Not compacted: this computer still has changes to send or packs to take in. Run `superhistory sync`, then try again.")
+    print(f"Not compacted: this computer still has changes to send or packs to take in. Run `{COMMAND} sync`, then try again.")
     return 1
 
 
@@ -178,7 +178,7 @@ def cmd_recover(client, args):
 
 def cmd_recovery_code(client, args):
     if not args.new:
-        print("Run `superhistory sync recovery-code --new` to replace the recovery code.")
+        print(f"Run `{COMMAND} sync recovery-code --new` to replace the recovery code.")
         return 1
     code = client.new_recovery_code()
     print("New recovery code. The old one opens only data synced before now:")
@@ -217,10 +217,10 @@ def ensure_sync_table(paths):
         print(f"Sync is set up, but {paths.config_file} would have problems with a [sync] table, so it is unchanged:")
         for problem in exc.problems:
             print(f"  {problem}")
-        print("Fix those, then add a line `[sync]` to the file, so `superhistory ingest` syncs too.")
+        print(f"Fix those, then add a line `[sync]` to the file, so `{COMMAND} ingest` syncs too.")
         return
     write_file(str(paths.config_file), text)
-    print(f"Added [sync] to {paths.config_file}, so `superhistory ingest` syncs too.")
+    print(f"Added [sync] to {paths.config_file}, so `{COMMAND} ingest` syncs too.")
 
 
 def run(paths, config, args):
@@ -238,7 +238,7 @@ def run(paths, config, args):
     except relay.RelayError as exc:
         said = f"The relay said {exc.status} {exc.code}." if exc.code else f"The relay said {exc.status}."
         message = {"revoked": "This computer was removed from sync.", "no_plan": "This account has no Sync plan.",
-                   "unauthorized": "Sign in again with `superhistory sync login`.",
+                   "unauthorized": f"Sign in again with `{COMMAND} sync login`.",
                    "quota_day": QUOTA_DAY}.get(exc.code, said)
         if exc.code == "quota_total":
             message = quota_total(paths)

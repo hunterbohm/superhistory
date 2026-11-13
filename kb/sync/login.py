@@ -2,7 +2,7 @@ import os
 import time
 
 from . import keys, relay, roster
-from .. import ids
+from .. import COMMAND, ids
 from ..mask import mask
 
 SCOPES = ("sync", "push", "read")
@@ -36,9 +36,9 @@ def signed_in(paths):
     seen, which no longer works anywhere, so it is never sent again."""
     saved = keys.load_json(paths.login)
     if not saved:
-        raise NotSignedIn("This computer is not signed in. Run `superhistory sync login` first.")
+        raise NotSignedIn(f"This computer is not signed in. Run `{COMMAND} sync login` first.")
     if "token" in saved or not (saved.get("sync_token") and saved.get("app_token")):
-        raise NotSignedIn("This computer signed in with an older version of Sync. Run `superhistory sync login` "
+        raise NotSignedIn(f"This computer signed in with an older version of Sync. Run `{COMMAND} sync login` "
                           "once to replace its token.")
     return saved
 
@@ -90,7 +90,7 @@ def login(kb_paths, transport, app_url, relay_url, label=None, show=None, sleep=
         device_id, token, sync_token, label = approve(app, app_url, show, action, sleep=sleep, ssh_path=paths.device_ssh)
     except keys.Unaccepted:
         raise keys.Unaccepted("The browser did not approve this sign-in, so nothing changed. If the page said this "
-                              "computer is on your account under other keys, remove it on the website, then run `superhistory sync login` "
+                              f"computer is on your account under other keys, remove it on the website, then run `{COMMAND} sync login` "
                               "again to add it as a new computer.") from None
     if not roster.valid_label(label) or sync_token is None:
         raise relay.RelayError(502, "bad_answer")

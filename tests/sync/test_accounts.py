@@ -21,7 +21,7 @@ HEX64 = re.compile(r"[0-9a-f]{64}")
 
 
 def digest(key):
-    return hashlib.sha256(b"superhistory-sync-account\0" + key.encode()).hexdigest()
+    return hashlib.sha256(b"varve-sync-account\0" + key.encode()).hexdigest()
 
 
 class AccountsTest(unittest.TestCase):

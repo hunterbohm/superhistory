@@ -8,8 +8,10 @@ once an ingest finishes, when the config has a `[sync]` table.
 import argparse
 import sys
 
-APP_URL = "https://app.superhistory.dev"
-RELAY_URL = "https://sync.superhistory.dev"
+from .. import COMMAND, NAME
+
+APP_URL = f"https://app.{COMMAND}.dev"
+RELAY_URL = f"https://sync.{COMMAND}.dev"
 
 
 class _Parser(argparse.ArgumentParser):
@@ -39,7 +41,7 @@ def register(sub):
         sub._parser_class = default
     sy.set_defaults(fn=run)
     actions = sy.add_subparsers(dest="action", metavar="ACTION")
-    lg = actions.add_parser("login", help="sign this computer in to your Superhistory account")
+    lg = actions.add_parser("login", help=f"sign this computer in to your {NAME} account")
     lg.add_argument("--app", default=APP_URL, help="the app's address")
     lg.add_argument("--relay", default=RELAY_URL, help="the relay's address")
     lg.add_argument("--label", help="the name this computer shows to your others")

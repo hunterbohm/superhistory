@@ -120,7 +120,7 @@ class StoreToStoreTest(unittest.TestCase):
         self.assertEqual(rows(self.a), rows(self.b))
 
     def test_a_secret_cut_across_two_chunks_leaves_masked_as_one_text(self):
-        # kb before varve #14 cut an item before masking it, so neither chunk shows the key and neither is masked.
+        # kb before #14 cut an item before masking it, so neither chunk shows the key and neither is masked.
         key = "sk-ant-api03-" + "Ab3dEf6hIj9kLm2nOp5qRs8tUv1wXy4zAb7cDe0f"
         parts = ["note " + key[:8], key[8:] + " end"]
         put_rows(self.a, "notes", f"{A}:cut", "2026-10-01", "Cut", parts, {"hash": "h", "path": key})

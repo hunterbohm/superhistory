@@ -25,7 +25,7 @@ _PRIVATE_IN_LABEL = re.compile(r"c-[a-z2-7]{13}[:@]|\+?[0-9](?:[ ().-]?[0-9]){6,
 
 def claim(account_key):
     """What the roster holds for an account key (`Config.account_keys`): a digest, so roster.json on disk names no address."""
-    return hashlib.sha256(b"superhistory-sync-account\0" + account_key.encode()).hexdigest()
+    return hashlib.sha256(f"{keys.WIRE_NAME}-sync-account\0{account_key}".encode()).hexdigest()
 
 
 def claims(account_keys):
