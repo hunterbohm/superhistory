@@ -52,7 +52,6 @@ CREATE TABLE IF NOT EXISTS docs(
   metadata TEXT NOT NULL DEFAULT '{}',
   masked TEXT
 );
-CREATE INDEX IF NOT EXISTS docs_item ON docs(source, source_id, kind);
 CREATE INDEX IF NOT EXISTS docs_ts ON docs(ts);
 CREATE VIRTUAL TABLE IF NOT EXISTS docs_fts USING fts5(
   title, content, content='docs', content_rowid='id', tokenize='""" + TOKENIZE + """');
@@ -76,6 +75,15 @@ END;
 CREATE TABLE IF NOT EXISTS ingest_state(
   source TEXT NOT NULL, key TEXT NOT NULL, watermark TEXT, PRIMARY KEY(source, key));
 """
+
+
+# A row of docs holds its text, which can fill dozens of pages of the file, and its mask version comes after the text.
+# A search asks which item and kind each of thousands of rows belongs to, and which version every chunk of a hit's item
+# records; read from the rows, that is tens of megabytes a search, and seconds once they have left memory. These hold
+# the answers apart from the text: docs_brief by row id (by_id), docs_item_masked by item, in place of docs_item.
+INDEXES = ("CREATE INDEX IF NOT EXISTS docs_brief ON docs(id, kind, source, source_id, ts, masked)",
+           "CREATE INDEX IF NOT EXISTS docs_item_masked ON docs(source, source_id, kind, masked)",
+           "DROP INDEX IF EXISTS docs_item")
 
 
 class NeedsRebuild(Exception):
@@ -128,7 +136,16 @@ def connect(path, readonly=False):
         if not _versioned(db):
             db.execute("ALTER TABLE docs ADD COLUMN masked TEXT")  # an empty store from before rows recorded it
         db.execute("CREATE INDEX IF NOT EXISTS docs_masked ON docs(masked)")
+        for sql in INDEXES:
+            db.execute(sql)
     return db
+
+
+def by_id(db):
+    """`INDEXED BY docs_brief` for a query that finds rows of docs by id and reads only the columns that index holds,
+    or nothing for a store no writer has opened since the index came, which a read-only connection can't add."""
+    held = db.execute("SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = 'docs_brief'").fetchone()
+    return "INDEXED BY docs_brief" if held else ""
 
 
 def _stat(name):
@@ -376,7 +393,8 @@ def unversioned(db, ids):
     if not _versioned(db):
         return set(ids)
     return {rid for (rid,) in db.execute(
-        f"SELECT r.id FROM docs r WHERE r.id IN ({','.join('?' * len(ids))}) AND (r.masked IS NULL OR (r.kind = 'raw' "
+        f"SELECT r.id FROM docs r {by_id(db)} WHERE r.id IN ({','.join('?' * len(ids))}) "
+        f"AND (r.masked IS NULL OR (r.kind = 'raw' "
         f"AND EXISTS (SELECT 1 FROM docs c WHERE c.source = r.source AND c.source_id = r.source_id AND c.kind = 'raw' "
         f"AND c.masked IS NULL)))", ids)}
 
@@ -388,7 +406,8 @@ def current(db, ids):
     if not ids or not _versioned(db):
         return set()
     return {rid for (rid,) in db.execute(
-        f"SELECT r.id FROM docs r WHERE r.id IN ({','.join('?' * len(ids))}) AND r.masked = ? AND (r.kind != 'raw' "
+        f"SELECT r.id FROM docs r {by_id(db)} WHERE r.id IN ({','.join('?' * len(ids))}) "
+        f"AND r.masked = ? AND (r.kind != 'raw' "
         f"OR NOT EXISTS (SELECT 1 FROM docs c WHERE c.source = r.source AND c.source_id = r.source_id "
         f"AND c.kind = 'raw' AND c.masked IS NOT ?))", (*ids, VERSION, VERSION))}
 
