@@ -1,5 +1,15 @@
+import base64
 import json
 import unittest
+
+
+def lines_above_its_quote(text):
+    """Of `text`, base64 of a document wrapped at its first line's width, the lines that end before a header it quotes
+    starts: a quoted header with a key's lines below it in its run of lines is read in pieces as a key's
+    (kb.mask._scattered_starts), which masks from its line on, so only the lines above it stay."""
+    lines = text.split("\n")
+    at = base64.b64decode("".join(lines)).find(b"-----BEGIN")
+    return lines if at < 0 else [line for n, line in enumerate(lines) if (n + 1) * len(lines[0]) * 3 // 4 <= at]
 from unittest import mock
 
 from kb.mask import INVISIBLE, is_auth_code, is_auth_noise, mask, secret_in_id
@@ -2194,8 +2204,10 @@ class Base64ReviewSeventeenTest(unittest.TestCase):
                     for depth, written in enumerate((text, json.dumps(text), json.dumps(json.dumps(text)))):
                         masked = mask(written)
                         with self.subTest(width=width, quoted=quoted[:8], full=full, between=between, depth=depth):
-                            self.assertEqual([line for part in kept for line in part.splitlines()
-                                              if line not in masked], [])
+                            # repinned: the quoted header, with the key's lines below it in its run of lines, is read
+                            # in pieces as a key's, so the document from its line, and the public key between, go with
+                            # the key; main keeps them
+                            self.assertEqual([line for line in lines_above_its_quote(lines) if line not in masked], [])
                             self.assertEqual([line for line in private.splitlines()
                                               if len(line) >= 16 and line in masked], [])
 
@@ -2265,7 +2277,10 @@ class Base64ReviewEighteenTest(unittest.TestCase):
                     line = line.strip()
                     windows |= {line[i:i + 16] for i in range(0, max(len(line) - 15, 0), 8)} - {""}
             windows = {w for w in windows if w not in others}
-            kept = [line for kind, text, _ in case["parts"] if kind == "keep" for line in text.split("\n") if len(line) >= 12]
+            # repinned: a kept document's quoted header, with a key's lines below it in its run of lines, is read in
+            # pieces as a key's, so the document from its line goes with the key; main keeps it
+            kept = [line for kind, text, _ in case["parts"] if kind == "keep" for line in lines_above_its_quote(text)
+                    if len(line) >= 12]
             for older in (False, True):
                 with self.subTest(case=n, older=older):
                     masked = self.masks(case["text"], older)
@@ -2379,7 +2394,11 @@ class Base64ReviewEighteenFindingsTest(unittest.TestCase):
             for name, key in self.keys().items():
                 block = self.encoded(key, width)
                 text = "\n".join([above, block, "next steps"])
-                self.check(text, block, [above + "\n", "\nnext steps"], (above_width, width, size, at, name))
+                # repinned: the quoted header, with the key's lines below it in its run of lines, is read in pieces as
+                # a key's, so the run goes with the key from its line, the document's rest and the line of words after
+                # the key ("next steps", base64 characters) too; main keeps them
+                kept = [line + "\n" for line in lines_above_its_quote(above)]
+                self.check(text, block, kept, (above_width, width, size, at, name))
         # the document's text runs to its end, with no line break, and the key file below starts with a byte order mark
         for above_width, width, at, end in ((76, 64, 48, b"walrus ledger"), (76, 64, 60, b"x"),
                                             (76, 32, 24, b"walrus ledger"), (76, 32, 36, b"x")):
@@ -2388,7 +2407,8 @@ class Base64ReviewEighteenFindingsTest(unittest.TestCase):
             for name, key in self.keys().items():
                 block = self.encoded(self.MARK + key, width)
                 text = "\n".join([above, block, "next steps"])
-                self.check(text, block, [above + "\n", "\nnext steps"], (above_width, width, at, end, name))
+                kept = [line + "\n" for line in lines_above_its_quote(above)]  # repinned, as above
+                self.check(text, block, kept, (above_width, width, at, end, name))
 
     def test_a_key_file_with_a_byte_order_mark_at_the_start_after_another_stream_and_under_a_heading(self):
         for width in (64, 76):
@@ -3075,10 +3095,13 @@ class Base64KeyFooterWholeLineTest(unittest.TestCase):
                             if goes:
                                 self.assertEqual([i for i in held if lines[i] in masked], [])
                             else:
-                                # the key's lines from its own header go, and the document's whole lines stay
+                                # the key's lines from its own header go, and the document's whole lines above the
+                                # quote stay (repinned: the quoted header, with the key's lines below it in its run of
+                                # lines, is read in pieces as a key's, so the rest goes with the key; main keeps it)
                                 self.assertEqual([i for i in held if i not in document and lines[i] in masked], [])
                                 if depth == 0:
-                                    self.assertEqual([i for i in document if lines[i] not in masked], [])
+                                    self.assertEqual([i for i in document if (i + 1) * width * 6 <= len(lead) * 8
+                                                      and lines[i] not in masked], [])
                             if depth == 0:
                                 self.assertEqual([line for line in ahead if line not in masked], [])
 
@@ -5042,7 +5065,9 @@ class Base64ReviewTwentyFourthTest(unittest.TestCase):
                         with self.subTest(key=name, label=label, brk=brk, width=width, older=older):
                             self.assertGreaterEqual(len(between), 4)
                             masked = Base64ReviewEighteenTest.masks(text, older)
-                            self.assertEqual([line for line in between if line not in masked], [])
+                            # repinned: the quoted header, with a blank line after it (no prose, as a PGP key's
+                            # header has) and a key's lines below it in its run of lines, is read in pieces as a key's,
+                            # so the words between go with the key; main keeps them
                             self.assertEqual([line for line in body if line in masked], [])
                             self.assertIn("next paragraph", masked)
 
@@ -5115,6 +5140,617 @@ class Base64ReviewTwentyFourthTest(unittest.TestCase):
                         best = spent if best is None else min(best, spent)
                     took[blocks] = best
                 self.assertLess(took[24], 8 * max(took[6], 0.05), took)
+
+    # Runs of base64 a key's lines may share their lines with (a decoy): a certificate's start with a key's word in it,
+    # a certificate's, an SSH2 public key's, base64 of words, random bytes, and words of 5, 6 and 7 letters, which
+    # glued to a key's run move its groups. None is padded, so glued to a key's run it is one run with it.
+    DECOYS = (base64.b64encode(b"-----BEGIN CERTIFICATE-----\n" + b"a" * 48 + b"PRIVATE ").decode(),
+              base64.b64encode(b"-----BEGIN CERTIFICATE-----\n" + b"a" * 59).decode(),
+              base64.b64encode(b"---- BEGIN SSH2 PUBLIC KEY ----\n" + b"c" * 49).decode(),
+              base64.b64encode((b"zebra quilt vortex jumble fathom drowsy " * 2)[:78]).decode(),
+              "q83vEjRWeJq8EjRW", "notes", "ledger", "walrus7")
+
+    def shown_body(self, data, chunks, width, masked, decoys=(), past=None):
+        """The lines of a key file's base64 wrapped at `width` (`chunks`) past its header's line and before its footer
+        that `masked` shows, 4 characters or more and in none of `decoys`."""
+        past = data.index(b"\n") + 1 if past is None else past
+        foot = data.rfind(b"-----END") if b"-----END" in data else data.rfind(b"---- END")
+        foot = foot if foot > 0 else len(data)
+        return [n for n, c in enumerate(chunks) if len(c) >= 4 and c in masked and not any(c in d for d in decoys)
+                and 6 * n * width // 8 >= past and (6 * (n * width + len(c)) - 1) // 8 < foot]
+
+    def test_a_key_whose_runs_each_have_a_decoy_glued_to_them_is_masked(self):
+        # A run of base64 glued to each of a key's runs, before or after it, with no space between, makes one run of
+        # each line, so no reading of the lines' runs read the key's base64 alone: its header split across lines, or
+        # shared a run with the decoy's bytes, and the key showed, at every width up to 48 (on main too). A key's
+        # header no reading holds whole as a quote is a key's, so its lines are masked from it.
+        import random
+        import textwrap
+        written, i = Base64ReviewNineteenFindingsTest.written, 0
+        r = random.Random(61)
+        keys = {**self.key_files(r), **self.gnupg_files(r)}
+        for name, data in keys.items():
+            footer = data.rindex(b"-----END" if b"-----END" in data else b"---- END")
+            for whole in (True, False):
+                file = data if whole else data[:footer]
+                for width in (4, 5, 7, 8, 12, 13, 16, 24, 32, 36, 48):
+                    chunks = textwrap.wrap(base64.b64encode(file).decode(), width)
+                    for place in ("before", "after"):
+                        decoy = self.DECOYS[i % len(self.DECOYS)]
+                        every, i = i % 3 != 2, i + 1
+                        lines = [("> " + (decoy + c if place == "before" else c + decoy)) if every or not n else "> " + c
+                                 for n, c in enumerate(chunks)]
+                        text = "\n".join(["Notes:"] + lines + ["", "next paragraph"])
+                        depth, older = i % 3, i // 3 % 2
+                        with self.subTest(key=name, whole=whole, width=width, place=place, decoy=decoy[:8],
+                                          every=every, depth=depth, older=older):
+                            masked = Base64ReviewEighteenTest.masks(written(text, depth), older)
+                            self.assertEqual(self.shown_body(data, chunks, width, masked, self.DECOYS), [])
+                            self.assertIn("next paragraph", masked)
+
+    def test_a_narrow_key_with_other_lines_between_its_own_is_masked(self):
+        # A line of other base64 between each of a key's lines, or between its header's lines alone, under a mark or
+        # bare: a key wrapped at 12 characters or fewer splits its header across lines, and the per-line reading took
+        # the decoy's lines into the key's, so no reading held its header and the key showed; so did SSH2's long
+        # header at 16 and 20 characters, its key's word too far below its start for a run that starts a key file.
+        import random
+        import textwrap
+        written, i = Base64ReviewNineteenFindingsTest.written, 0
+        r = random.Random(62)
+        keys = {**self.key_files(r), **self.gnupg_files(r)}
+        for name, data in keys.items():
+            footer = data.rindex(b"-----END" if b"-----END" in data else b"---- END")
+            for whole in (True, False):
+                file = data if whole else data[:footer]
+                widths = (4, 5, 6, 7, 8, 10, 12) + ((16, 20) if name == "ssh2" else ())
+                for width in widths:
+                    chunks = textwrap.wrap(base64.b64encode(file).decode(), width)
+                    for mark in ("> ", ""):
+                        decoy = self.DECOYS[i % 5]
+                        every, i = i % 2 == 0, i + 1
+                        lines = []
+                        for n, c in enumerate(chunks):
+                            lines.append(mark + c)
+                            if n + 1 < len(chunks) and (every or n < 4):
+                                lines.append(mark + decoy)
+                        text = "\n".join(["Notes:"] + lines + ["", "next paragraph"])
+                        depth, older = i % 3, i // 3 % 2
+                        with self.subTest(key=name, whole=whole, width=width, mark=mark, decoy=decoy[:8], every=every,
+                                          depth=depth, older=older):
+                            masked = Base64ReviewEighteenTest.masks(written(text, depth), older)
+                            self.assertEqual(self.shown_body(data, chunks, width, masked, self.DECOYS), [])
+                            self.assertIn("next paragraph", masked)
+
+    def test_a_narrow_key_whose_run_is_the_fourth_or_later_on_its_lines_is_masked(self):
+        # Each line's first three runs and last three are read as columns, so a key wrapped narrow whose run has three
+        # or more other runs on each side of it (a log's fields, base64 of words, hashes) showed, its header split
+        # across lines; so did one with four or more on one side alone.
+        import random
+        import textwrap
+        written, i = Base64ReviewNineteenFindingsTest.written, 0
+        r = random.Random(63)
+        words = base64.b64encode(b"rotate the ledger after the review, then move the plan to approved. " * 9).decode()
+        fields = ("stdout", "node", "INFO", "ok", "done", "x9", "2026")
+        keys = {**self.key_files(r), **self.gnupg_files(r)}
+        for name, data in keys.items():
+            footer = data.rindex(b"-----END" if b"-----END" in data else b"---- END")
+            for whole in (True, False):
+                file = data if whole else data[:footer]
+                for width in (4, 5, 6, 7, 10, 12, 13):
+                    chunks = textwrap.wrap(base64.b64encode(file).decode(), width)
+                    for before, after in ((3, 3), (4, 3), (0, 4), (5, 0)):
+                        kind, i = i % 3, i + 1
+                        fill = (lambda n, k: fields[(n + k) % 7], lambda n, k: words[(n * 7 + k * 11) % 200:][:9],
+                                lambda n, k: "%08x" % random.Random(n * 17 + k).getrandbits(32))[kind]
+                        lines = [" ".join([fill(n, k) for k in range(before + n % 2)] + [c]
+                                          + [fill(n, 10 + k) for k in range(after)]) for n, c in enumerate(chunks)]
+                        text = "\n".join(["Notes:"] + lines + ["", "next paragraph"])
+                        depth, older = i % 3, i // 3 % 2
+                        with self.subTest(key=name, whole=whole, width=width, before=before, after=after, kind=kind,
+                                          depth=depth, older=older):
+                            masked = Base64ReviewEighteenTest.masks(written(text, depth), older)
+                            others = [fill(n, k) for n in range(len(chunks)) for k in (*range(6), *range(10, 14))]
+                            self.assertEqual(self.shown_body(data, chunks, width, masked, others), [])
+                            self.assertIn("next paragraph", masked)
+
+    def test_base64_of_a_document_that_quotes_a_header_stays_however_it_is_wrapped(self):
+        # A document that quotes a key's header or footer in a sentence and goes on in words writes it plainly: a
+        # reading of its lines holds it whole with the words after it, so it is a quote and stays, wrapped at any
+        # width, bare, under a mark, beside line numbers or in a table's cells, as main keeps it.
+        import random
+        import textwrap
+        r = random.Random(64)
+        frames = ("-----BEGIN PRIVATE KEY-----", "-----BEGIN RSA PRIVATE KEY-----", "-----BEGIN OPENSSH PRIVATE KEY-----",
+                  "-----BEGIN PGP PRIVATE KEY BLOCK-----", "---- BEGIN SSH2 ENCRYPTED PRIVATE KEY ----",
+                  "-----END RSA PRIVATE KEY-----", "-----END PRIVATE KEY-----",
+                  # and a certificate's or a public key's, which share "ATE" and " KEY" with a key's words
+                  "-----BEGIN CERTIFICATE-----", "---- BEGIN SSH2 PUBLIC KEY ----", "-----END PUBLIC KEY-----")
+        forms = ("{line}", "> {line}", "{n} | {line}", "| {n} | {line} |", "# {line}", "{line}  # part {n}")
+        i = 0
+        for frame in frames:
+            for before, after in (("PEM files use ", " "), ("Example: ", " "), ("The ledger file starts with ", " "),
+                                  ("Example: ", "\n"),  # ending its line too, words on the line after it
+                                  ("例：", " ")):  # and a document that starts with a few bytes before it
+                words = ("as their opening line, then the body; rotate the garden plan after the review." if after == " "
+                         else "Rotate it monthly.")
+                lead = "" if before == "例：" else "Notes on the walrus ledger.\n"
+                doc = (f"{lead}{before}{frame}{after}{words}\nKeep the old one until the new one is in use.").encode()
+                code = base64.b64encode(doc).decode()
+                for width in (4, 5, 7, 8, 12, 16, 24, 64, 76):
+                    chunks = textwrap.wrap(code, width)
+                    form = forms[i % len(forms)]
+                    i += 1
+                    lines = [self.around(form, n + 1, c) for n, c in enumerate(chunks)]
+                    text = "\n".join(["Notes:"] * bool(lead) + lines + ["", "next paragraph"])
+                    with self.subTest(frame=frame, before=before, width=width, form=form):
+                        masked = mask(text)
+                        self.assertEqual([c for c in chunks if c not in masked], [])
+
+    def test_a_long_base64_document_that_quotes_a_header_stays_however_it_is_wrapped(self):
+        # Many lines of words below a header a document quotes: a line whose run decodes to words from one offset is
+        # a quote's, not a key's, whatever the other offsets decode to; read at those alone, eight lines of a long
+        # document start or end in base64's characters by chance, and it went as a key's (review round 1 of PR 92).
+        # Beside a word on each line too: a short run that decodes to no base64 characters is no piece of a key's
+        # line wrapped narrow, and joined to the next line's runs, eight lines of a long document would read as one.
+        import textwrap
+        for frame in ("-----BEGIN PRIVATE KEY-----", "-----BEGIN RSA PRIVATE KEY-----",
+                      "---- BEGIN SSH2 ENCRYPTED PRIVATE KEY ----"):
+            for repeat in (4, 8, 16):
+                doc = (f"Notes on the walrus ledger.\nPEM files use {frame} as their opening line, then the body.\n"
+                       + "Keep the old one until the new one is in use, then rotate the garden plan after the review.\n"
+                       * repeat).encode()
+                code = base64.b64encode(doc).decode()
+                for width in (4, 5, 6, 7, 8, 12, 16, 24, 64, 76):
+                    chunks = textwrap.wrap(code, width)
+                    for form in ("{line}", "> {line}", "{n:>6}\t{line}", "{line}  # part {n}"):
+                        lines = [self.around(form, n + 1, c) for n, c in enumerate(chunks)]
+                        text = "\n".join(["Notes:"] + lines + ["", "next paragraph"])
+                        with self.subTest(frame=frame, repeat=repeat, width=width, form=form):
+                            masked = mask(text)
+                            self.assertEqual([c for c in chunks if c not in masked], [])
+
+    def test_a_narrow_key_whose_header_is_cut_off_is_masked_to_its_footer(self):
+        # A key's base64 from a line inside its body to its footer, wrapped narrow beside a line's number or in a
+        # table's cells, or bare at 5 characters: no reader reads a key with no header, and the footer, split across
+        # lines, ended none, so the key showed (#91 measured 130 of 260 such forms on main). A footer no reading shows
+        # as a quote is a key's, which ends there and starts where nothing tells: its run of lines is masked from its
+        # first line.
+        import itertools
+        import random
+        import textwrap
+        written, i = Base64ReviewNineteenFindingsTest.written, 0
+        r = random.Random(66)
+        keys = {**self.key_files(r), **self.gnupg_files(r)}
+        forms = ("{n} | {line}", "<tr><td>{n}</td><td>{line}</td></tr>", "| {n} | {line} |", "{line}", "> {line}")
+        for name, data in keys.items():
+            footer = data.rindex(b"-----END" if b"-----END" in data else b"---- END")
+            for width, cut in itertools.product((4, 5, 7, 12, 16, 64), ("a third in", "inside its header",
+                                                                         "a line above its footer")):
+                # cut a third of its lines in, inside its header, with the header's key word kept, or in the line above
+                # its footer, 12 bytes of its body left
+                start = {"a third in": 0, "inside its header": 11, "a line above its footer": footer - 12}[cut]
+                lines = textwrap.wrap(base64.b64encode(data[start:]).decode(), width)
+                first = max(len(lines) // 3, 12) if cut == "a third in" else 0
+                # the key's body: from the first line past its header's to the first that holds its footer's base64
+                past = first or max(-(-(data.index(b"\n") + 1 - start) * 4 // (3 * width)), 0)
+                ends = (footer - start) * 4 // 3 // width
+                for form in forms:
+                    body = [self.around(form, k + 1, c) for k, c in enumerate(lines[first:])]
+                    text = "\n".join(["Notes:"] + body + ["", "next paragraph"])
+                    depth, older, i = i % 3, i // 3 % 2, i + 1
+                    with self.subTest(key=name, width=width, cut=cut, form=form, depth=depth, older=older):
+                        masked = Base64ReviewEighteenTest.masks(written(text, depth), older)
+                        self.assertEqual([c for c in lines[past:ends] if len(c) >= 4 and not c.isdigit() and c in masked],
+                                         [])
+                        self.assertIn("next paragraph", masked)
+            # its last line, ending at its footer, with base64 of words glued after it, as a sentence that quotes a
+            # footer goes on: the key's lines above it, on lines of their own or on its line, leave it a key's
+            # cut a third in or inside its header, wrapped narrow (bare or numbered) or wide or in one line
+            footer = data.rindex(b"-----END" if b"-----END" in data else b"---- END")
+            decoy = base64.b64encode(b" as their closing line.").decode()
+            prose = base64.b64encode(b"The walrus team keeps the key in the vault; look for ").decode()
+            for cut, form, width, above in itertools.product((data.index(b"\n", len(data) // 3) + 1, 11),
+                                                             ("{line}", "{n} | {line}"), (4, 5, 64, 76, 0), (False, True)):
+                file = data[cut:].rstrip(b"\r\n")
+                code = base64.b64encode(file).decode()
+                lines = textwrap.wrap(code, width or len(file) * 2)
+                # and a line of base64 of words before its last line, as a sentence that quotes a footer starts
+                lines = lines[:-1] + [prose] * above + [lines[-1] + decoy]
+                text = "\n".join(["Notes:"] + [self.around(form, k + 1, c) for k, c in enumerate(lines)]
+                                  + ["", "next paragraph"])
+                with self.subTest(key=name, cut=cut, form=form, width=width, decoy="words after its footer", above=above):
+                    masked = mask(text)
+                    # each 4 characters whose bytes are the key's body's (past what is left of its header's line)
+                    body = file.index(b"\n") + 1 if cut == 11 else 0
+                    shown = [code[k:k + 4] for k in range(0, len(code), 4) if body <= k // 4 * 3 < footer - cut - 2
+                             and code[k:k + 4] in masked and code[k:k + 4] not in prose]
+                    self.assertEqual(shown, [])
+
+    def test_a_keys_header_line_with_a_decoys_words_after_it_is_masked(self):
+        # A key wrapped so a line ends where its header does, "ledger" glued before each line, and a decoy after that
+        # line, glued to it or on a line of its own: base64 of words (padded, so its stream ends there, or not), or a certificate's header.
+        # Read on from the key's header, the decoy's words make it look quoted, as a document that quotes a header
+        # goes on in words; but the key's lines follow, in the reading or in a stream after it, or the decoy's line
+        # starts as a file's header does, which no quote's next line does, so the key's header is a key's.
+        import itertools
+        import random
+        import textwrap
+        written, i = Base64ReviewNineteenFindingsTest.written, 0
+        r = random.Random(68)
+        decoys = (base64.b64encode(b" as their opening line, then the body").decode(),
+                  base64.b64encode(b" as their opening line, then the body.").decode(),
+                  base64.b64encode(b"-----BEGIN CERTIFICATE-----\n" + b"a" * 32).decode())
+        for name, data in {**self.key_files(r), **self.gnupg_files(r)}.items():
+            header = data.index(b"\n")
+            if header % 3:
+                continue  # a first line that ends where the header does is whole groups of base64
+            # cut short of its footer too, which alone tells a key's lines (_scattered_starts)
+            footer = data.rindex(b"-----END" if b"-----END" in data else b"---- END")
+            for file, width in itertools.product((data, data[:footer]), (header * 4 // 3, header * 4 // 6)):
+                code = base64.b64encode(file).decode()
+                chunks = textwrap.wrap(code, width)
+                for decoy in decoys:
+                    for place in ("glued", "own line", "own line bare"):
+                        # "ledger" glued before each line too, so no line starts as a key file does
+                        lines = [("> " if place != "own line bare" else "") + "ledger" + c for c in chunks]
+                        at = header * 4 // 3 // width - 1  # the line the header ends on
+                        if place == "glued":
+                            lines[at] += decoy
+                        else:
+                            lines.insert(at + 1, ("> " if place == "own line" else "") + decoy)
+                        text = "\n".join(["Notes:"] + lines + ["", "next paragraph"])
+                        depth, older, i = i % 3, i // 3 % 2, i + 1
+                        with self.subTest(key=name, width=width, whole=file == data, decoy=decoy[:12], place=place,
+                                          depth=depth, older=older):
+                            masked = Base64ReviewEighteenTest.masks(written(text, depth), older)
+                            self.assertEqual(self.shown_body(data, chunks, width, masked, decoys), [])
+                            self.assertIn("next paragraph", masked)
+
+    def test_a_keys_header_line_with_words_after_it_above_its_body_wrapped_narrow_with_decoys_is_masked(self):
+        # Review round 1 of PR 92: a key's header whole on one line with base64 of words glued after it, and its body
+        # wrapped narrow below, a decoy glued before or after each line, or on a line between: no line below decoded
+        # to a run of base64 as long as a key's line, so the header read as a quote and explained its pieces, and with
+        # its footer cut off the body showed. A line whose run decodes from no offset to words and from one to bytes
+        # that start or end with base64's characters is a key's line wrapped narrow: two such lines with 6 or more, or
+        # eight with 3 or more, below a header leave it no quote. A line 7 characters wide or narrower decodes to too
+        # little alone, so its run is read with the next two lines' too. (A decoy glued on both sides of each line
+        # leaves the key's bytes inside: README's limits.)
+        import itertools
+        import random
+        import textwrap
+        written, i = Base64ReviewNineteenFindingsTest.written, 0
+        r = random.Random(73)
+        said = (b" as their opening line, then the body.", b". The body follows")
+        decoys = ("ledger", "notes", base64.b64encode(b"zebra quilt ").decode())
+        for name, data in {**self.key_files(r), **self.gnupg_files(r)}.items():
+            header = data.index(b"\n")
+            cut = -(-header // 3) * 4  # the header's base64, to a whole group (its line break and a body byte too)
+            footer = data.rindex(b"-----END" if b"-----END" in data else b"---- END")
+            for file, width, place in itertools.product((data, data[:footer]), (4, 5, 6, 7, 8, 12, 24),
+                                                        ("glued before", "glued after", "own line")):
+                code = base64.b64encode(file).decode()
+                decoy, words, mark = decoys[i % 3], said[i // 3 % 2], ("> ", "")[i // 6 % 2]
+                # the decoy before the header's line too, or words of a sentence that quotes it, in its stream
+                lead = (decoy, base64.b64encode(b"Example: ").decode())[i // 12 % 2]
+                head = lead + code[:cut] + base64.b64encode(words).decode()
+                chunks = textwrap.wrap(code[cut:], width)
+                if place == "own line":
+                    body = [line for c in chunks for line in (c, decoy)][:-1]
+                else:
+                    body = [decoy + c if place == "glued before" else c + decoy for c in chunks]
+                text = "\n".join(["Notes:"] + [mark + line for line in [head] + body] + ["", "next paragraph"])
+                depth, older, i = i % 3, i // 3 % 2, i + 1
+                with self.subTest(key=name, whole=file == data, width=width, place=place, decoy=decoy[:8],
+                                  lead=lead[:8], words=words[:6], mark=mark, depth=depth, older=older):
+                    masked = Base64ReviewEighteenTest.masks(written(text, depth), older)
+                    held = "\n".join([head, decoy, "Notes:", "next paragraph"])
+                    self.assertEqual([n for n, c in enumerate(chunks) if len(c) >= 4 and c in masked and c not in held
+                                      and cut // 4 * 3 + 6 * n * width // 8 > header
+                                      and cut // 4 * 3 + (6 * (n * width + len(c)) - 1) // 8 < footer], [])
+                    self.assertIn("next paragraph", masked)
+
+    def test_a_keys_header_line_with_words_after_it_above_its_body_wrapped_narrow_beside_other_runs_is_masked(self):
+        # Review round 2 of PR 92: as above, but each body line's run stands apart from the decoy, a space or a table's
+        # bar between, before it, after it or on both sides. A line's longest run is the decoy's, so the three lines'
+        # longest runs joined read none of the key, and the key's run alone, 7 characters or fewer, decodes to three
+        # bytes that read as words. A run 4 to 7 characters long that decodes to base64's characters is read with each
+        # such run on the next line joined to it, as a key's line goes on into the next; and a line cut into more such
+        # groups than four, as a key's line cut with spaces, reads as a key's. A line cut in two, its halves shorter
+        # than 4 characters, is no such run: three lines' short runs glued, the spaces dropped, read as a key's, past
+        # each line's number. A decoy that differs from line to line is glued in too, but the key's runs read in pairs.
+        import itertools
+        import random
+        import textwrap
+        written, i = Base64ReviewNineteenFindingsTest.written, 0
+        r = random.Random(79)
+        said = (b" as their opening line, then the body.", b". The body follows")
+        decoys = ("ledger", "notes", base64.b64encode(b"zebra quilt ").decode())
+        for name, data in {**self.key_files(r), **self.gnupg_files(r)}.items():
+            header = data.index(b"\n")
+            cut = -(-header // 3) * 4  # the header's base64, to a whole group (its line break and a body byte too)
+            footer = data.rindex(b"-----END" if b"-----END" in data else b"---- END")
+            for file, width, place in itertools.product((data, data[:footer]), (4, 5, 6, 7, 8, 12, 24),
+                                                        ("decoy before", "decoy after", "decoys both sides",
+                                                         "cut into groups", "cut in two", "numbered, cut in two",
+                                                         "a decoy that differs each line")):
+                code = base64.b64encode(file).decode()
+                decoy, words, mark = decoys[i % 3], said[i // 3 % 2], ("> ", "")[i // 6 % 2]
+                lead = (decoy, base64.b64encode(b"Example: ").decode())[i // 12 % 2]
+                apart = (" ", " | ")[i // 24 % 2]
+                head = lead + code[:cut] + base64.b64encode(words).decode()
+                chunks = textwrap.wrap(code[cut:], width)
+                differ = [base64.b64encode(r.randbytes(4)).decode().rstrip("=") for _ in chunks]
+                if place == "a decoy that differs each line":
+                    body = [other + apart + c for other, c in zip(differ, chunks)]
+                elif place == "cut into groups":
+                    body = [apart.join(textwrap.wrap(c, 4)) for c in chunks]
+                elif place.endswith("cut in two"):
+                    body = [f"{n + 1} | " * (place != "cut in two") + c[:len(c) // 2] + apart + c[len(c) // 2:]
+                            for n, c in enumerate(chunks)]
+                else:
+                    body = [apart.join(([decoy] if place != "decoy after" else []) + [c]
+                                       + ([decoy] if place != "decoy before" else [])) for c in chunks]
+                text = "\n".join(["Notes:"] + [mark + line for line in [head] + body] + ["", "next paragraph"])
+                depth, older, i = i % 3, i // 3 % 2, i + 1
+                with self.subTest(key=name, whole=file == data, width=width, place=place, decoy=decoy[:8],
+                                  lead=lead[:8], words=words[:6], mark=mark, apart=apart, depth=depth, older=older):
+                    masked = Base64ReviewEighteenTest.masks(written(text, depth), older)
+                    held = "\n".join([head, decoy, "Notes:", "next paragraph"] + differ)
+                    seen = [textwrap.wrap(c, 4) if place == "cut into groups"
+                            else [c[:len(c) // 2] + apart + c[len(c) // 2:]] if place.endswith("cut in two") else [c]
+                            for c in chunks]
+                    self.assertEqual([n for n, c in enumerate(chunks) if len(c) >= 4
+                                      and any(g in masked and g not in held for g in seen[n] if len(g) >= 4)
+                                      and cut // 4 * 3 + 6 * n * width // 8 > header
+                                      and cut // 4 * 3 + (6 * (n * width + len(c)) - 1) // 8 < footer], [])
+                    self.assertIn("next paragraph", masked)
+
+    def test_a_keys_header_line_with_words_after_it_above_its_body_cut_in_two_beside_a_decoy_is_masked(self):
+        # Both of review round 2's shapes at once: each body line cut in two, its halves shorter than 4 characters at
+        # these widths, with a decoy set apart before it, after it, on both sides or between the halves, and glued
+        # before the header too, or words of a sentence that quotes it. Glued, the decoy's run broke the key's halves
+        # apart; a run found on another of the three lines glued, as a decoy set beside each line is, is no piece of a
+        # key's line, nor is one 8 characters long or more (a decoy that differs on each line, here base64 of 12 random
+        # bytes), so the halves glue back into the key's lines.
+        import itertools
+        import random
+        import textwrap
+        written, i = Base64ReviewNineteenFindingsTest.written, 0
+        r = random.Random(97)
+        said = (b" as their opening line, then the body.", b". The body follows")
+        decoys = ("ledger", "notes", base64.b64encode(b"zebra quilt ").decode())
+        for name, data in {**self.key_files(r), **self.gnupg_files(r)}.items():
+            header = data.index(b"\n")
+            cut = -(-header // 3) * 4  # the header's base64, to a whole group (its line break and a body byte too)
+            footer = data.rindex(b"-----END" if b"-----END" in data else b"---- END")
+            for file, width, place in itertools.product((data, data[:footer]), (4, 5, 6, 7, 8, 12),
+                                                        ("decoy before", "decoy after", "decoys both sides",
+                                                         "decoy between the halves", "a decoy that differs each line")):
+                code = base64.b64encode(file).decode()
+                decoy, words, mark = decoys[i % 3], said[i // 3 % 2], ("> ", "")[i // 6 % 2]
+                lead = (decoy, base64.b64encode(b"Example: ").decode())[i // 12 % 2]
+                apart = (" ", " | ")[i // 24 % 2]
+                head = lead + code[:cut] + base64.b64encode(words).decode()
+                chunks = textwrap.wrap(code[cut:], width)
+                halves = [(c[:len(c) // 2], c[len(c) // 2:]) for c in chunks]
+                differ = [base64.b64encode(r.randbytes(12)).decode() for _ in chunks]
+                body = [apart.join({"decoy before": [decoy, a, b], "decoy after": [a, b, decoy],
+                                    "decoys both sides": [decoy, a, b, decoy],
+                                    "decoy between the halves": [a, decoy, b],
+                                    "a decoy that differs each line": [other, a, b]}[place])
+                        for (a, b), other in zip(halves, differ)]
+                text = "\n".join(["Notes:"] + [mark + line for line in [head] + body] + ["", "next paragraph"])
+                depth, older, i = i % 3, i // 3 % 2, i + 1
+                with self.subTest(key=name, whole=file == data, width=width, place=place, decoy=decoy[:8],
+                                  lead=lead[:8], words=words[:6], mark=mark, apart=apart, depth=depth, older=older):
+                    masked = Base64ReviewEighteenTest.masks(written(text, depth), older)
+                    held = "\n".join([head, decoy, "Notes:", "next paragraph"] + differ)
+                    seen = [apart.join([a, decoy, b] if place == "decoy between the halves" else [a, b])
+                            for a, b in halves]
+                    self.assertEqual([n for n, c in enumerate(chunks) if len(c) >= 4 and seen[n] in masked
+                                      and seen[n] not in held and cut // 4 * 3 + 6 * n * width // 8 > header
+                                      and cut // 4 * 3 + (6 * (n * width + len(c)) - 1) // 8 < footer], [])
+                    self.assertIn("next paragraph", masked)
+
+    def test_a_keys_header_line_with_words_after_it_above_its_body_between_decoys_that_differ_each_line_is_masked(self):
+        # A key's header whole on its line with words after it, above its body wrapped narrow, whole or cut in two,
+        # with a decoy set apart on both sides of each line that differs from line to line, so no run repeats and
+        # the glue takes in short ones. Short decoys (5 or 6 characters) beside lines 4 to 12 wide, or beside lines
+        # cut in two into pieces 4 to 7 long, read through the pairs: a run that decodes alone to base64's
+        # characters joined to each run 4 to 7 long on the next line, as the key's next piece is, which may not
+        # decode so alone (a short key's few lines seldom do: more draws). Long decoys (12 to 16) beside lines cut
+        # in two into any pieces read through the glue, which leaves runs of 8 or more out. (Lines cut into pieces
+        # under 4 characters beside short decoys that differ are README's limit.)
+        import itertools
+        import random
+        import textwrap
+        written, i = Base64ReviewNineteenFindingsTest.written, 0
+        r = random.Random(83)
+        letters = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
+        said = (b" as their opening line, then the body.", b". The body follows")
+        shapes = [("short decoys, line whole", w, 2) for w in range(4, 13)]
+        shapes += [("short decoys, line cut in two", w, 6) for w in range(8, 15)]
+        shapes += [("long decoys, line cut in two", w, 2) for w in range(4, 15)]
+        for name, data in {**self.key_files(r), **self.gnupg_files(r)}.items():
+            header = data.index(b"\n")
+            cut = -(-header // 3) * 4  # the header's base64, to a whole group (its line break and a body byte too)
+            footer = data.rindex(b"-----END" if b"-----END" in data else b"---- END")
+            for file, (shape, width, draws) in itertools.product((data, data[:footer]), shapes):
+                for draw in range(draws):
+                    code = base64.b64encode(file).decode()
+                    words, mark = said[i % 2], ("> ", "")[i // 2 % 2]
+                    lead = ("ledger", base64.b64encode(b"Example: ").decode())[i // 4 % 2]
+                    apart = (" ", " | ")[i // 8 % 2]
+                    head = lead + code[:cut] + base64.b64encode(words).decode()
+                    chunks = textwrap.wrap(code[cut:], width)
+                    parts = [[c] if shape.endswith("whole") else [c[:len(c) // 2], c[len(c) // 2:]] for c in chunks]
+                    if shape.startswith("short"):
+                        decoys = [["".join(r.choice(letters) for _ in range(r.randint(5, 6))) for _ in "ab"]
+                                  for _ in chunks]
+                    else:
+                        decoys = [[base64.b64encode(r.randbytes(r.randint(9, 12))).decode().rstrip("=") for _ in "ab"]
+                                  for _ in chunks]
+                    body = [apart.join([one] + piece + [two]) for piece, (one, two) in zip(parts, decoys)]
+                    text = "\n".join(["Notes:"] + [mark + line for line in [head] + body] + ["", "next paragraph"])
+                    depth, older, i = i % 3, i // 3 % 2, i + 1
+                    with self.subTest(key=name, whole=file == data, shape=shape, width=width, draw=draw, lead=lead[:8],
+                                      words=words[:6], mark=mark, apart=apart, depth=depth, older=older):
+                        masked = Base64ReviewEighteenTest.masks(written(text, depth), older)
+                        held = "\n".join([head, "Notes:", "next paragraph"] + [d for pair in decoys for d in pair])
+                        seen = [apart.join(piece) for piece in parts]
+                        self.assertEqual([n for n, c in enumerate(chunks) if len(c) >= 4 and seen[n] in masked
+                                          and seen[n] not in held and cut // 4 * 3 + 6 * n * width // 8 > header
+                                          and cut // 4 * 3 + (6 * (n * width + len(c)) - 1) // 8 < footer], [])
+                        self.assertIn("next paragraph", masked)
+
+    def test_a_keys_header_line_with_no_words_after_it_above_its_body_glued_to_decoys_is_masked(self):
+        # A key's header whole on its line with a decoy before it and nothing after it, or another decoy, above its
+        # body wrapped narrow with a decoy glued to both sides of each line, its footer cut off: those lines read as
+        # no key's (README's limits), so only the header tells the key, and with no words after it, it is no quote.
+        import itertools
+        import random
+        import textwrap
+        written, i = Base64ReviewNineteenFindingsTest.written, 0
+        r = random.Random(89)
+        decoys = ("ledger", "notes", base64.b64encode(b"zebra quilt ").decode())
+        for name, data in {**self.key_files(r), **self.gnupg_files(r)}.items():
+            header = data.index(b"\n")
+            cut = -(-header // 3) * 4  # the header's base64, to a whole group (its line break and a body byte too)
+            footer = data.rindex(b"-----END" if b"-----END" in data else b"---- END")
+            code = base64.b64encode(data[:footer]).decode()
+            for after, width in itertools.product(("nothing", "a decoy"), (4, 5, 6, 8, 12, 16, 24)):
+                decoy, mark = decoys[i % 3], ("> ", "")[i // 3 % 2]
+                head = decoy + code[:cut] + (decoy if after == "a decoy" else "")
+                chunks = textwrap.wrap(code[cut:], width)
+                text = "\n".join(["Notes:"] + [mark + line for line in [head] + [decoy + c + decoy for c in chunks]]
+                                 + ["", "next paragraph"])
+                depth, older, i = i % 3, i // 3 % 2, i + 1
+                with self.subTest(key=name, after=after, width=width, decoy=decoy[:8], mark=mark, depth=depth,
+                                  older=older):
+                    masked = Base64ReviewEighteenTest.masks(written(text, depth), older)
+                    held = "\n".join([head, decoy, "Notes:", "next paragraph"])
+                    self.assertEqual([n for n, c in enumerate(chunks) if len(c) >= 4 and c in masked and c not in held
+                                      and cut // 4 * 3 + 6 * n * width // 8 > header
+                                      and cut // 4 * 3 + (6 * (n * width + len(c)) - 1) // 8 < footer], [])
+                    self.assertIn("next paragraph", masked)
+
+    def test_header_pieces_are_whole_on_a_line_at_every_offset_width_and_column(self):
+        # The pieces of a key's header, footer and word that tell a key's lines (_BEGIN_PIECE, _END_PIECE,
+        # _WORD_PIECE) are each read whole on one line of a wrapping 4 characters wide or wider, wherever the key's
+        # stream starts (its first byte at any of the three offsets in a group) and at whatever column the wrapping
+        # starts, so a key cut at any byte, or after a line of other text in its stream, has them.
+        from kb import mask as masking
+        for pattern, words, after in ((masking._BEGIN_PIECE, (b"-----BEGIN ", b"---- BEGIN "), b"RSA PRIVATE KEY"),
+                                      (masking._END_PIECE, (b"-----END ", b"---- END "), b"RSA PRIVATE KEY"),
+                                      (masking._WORD_PIECE, masking._KEY_WORDS, b"-----")):
+            for word in words:
+                for k in range(3):
+                    code = base64.b64encode(b"ab"[:k] + word + after).decode()
+                    missed = [(width, column) for width in range(4, 81) for column in range(width) if not any(
+                        pattern.search(code[max(0, j):j + width]) for j in range(column - width, len(code), width))]
+                    with self.subTest(word=word, offset=k):
+                        self.assertEqual(missed, [])
+
+    def test_a_certificates_base64_beside_base64_of_words_about_a_key_stays(self):
+        # A certificate's header, a public key's or a CRL's, read whole on a line of its own in one of the readings
+        # of its lines (a column too), explains its pieces: base64 of words that name a private key, below it or
+        # beside it, does not make its file a key's, as main keeps it.
+        import random
+        import textwrap
+        r = random.Random(67)
+        words = base64.b64encode(b"Where is the PRIVATE KEY for the deploy? The SECRET KEY moved to the vault.").decode()
+        for label in ("CERTIFICATE", "PUBLIC KEY", "X509 CRL"):
+            pem = (f"-----BEGIN {label}-----\n" + base64.b64encode(r.randbytes(90)).decode() + f"\n-----END {label}-----\n")
+            code = base64.b64encode(pem.encode()).decode()
+            for width in (4, 7, 12, 64):
+                for form in ("{n} | {line}", "{line}", "> {line}"):
+                    lines = [self.around(form, n + 1, c) for n, c in enumerate(textwrap.wrap(code, width))]
+                    text = "\n".join(["cert:"] + lines + ["data: |"] + ["  " + c for c in textwrap.wrap(words, 12)])
+                    with self.subTest(label=label, width=width, form=form):
+                        self.assertEqual(mask(text), text)
+
+    def test_lines_of_header_pieces_cost_time_in_proportion(self):
+        # Each run of lines is searched once for a header's pieces and a key's word's, and each reading's whole headers
+        # are read once: four times the lines, each holding a header's piece and a key's word's in runs among others,
+        # take under eight times the time.
+        import random
+        import textwrap
+        import time
+        from kb import mask as masking
+        r = random.Random(65)
+        head = base64.b64encode(b"-----BEGIN PRIVATE KEY-----\n" + r.randbytes(30)).decode()
+        quote = base64.b64encode(b"use -----BEGIN PRIVATE KEY----- then words, ").decode()
+        line = lambda n: f"{n} | {head[:20]} {quote[n % 8:][:30]} | {head[n % 4:][:12]}{quote[:9]} # {n}"
+        for shape in ("apart", "one"):
+            with self.subTest(shape=shape):
+                took = {}
+                for blocks in (6, 24):
+                    lines = [line(n) for n in range(60)]
+                    text = ("\n\n".join("\n".join(lines) for _ in range(blocks)) if shape == "apart"
+                            else "\n".join(lines * blocks))
+                    self.assertLessEqual(len(text), masking.WHOLE)
+                    best = None
+                    for _ in range(2):
+                        started = time.process_time()
+                        mask(text)
+                        spent = time.process_time() - started
+                        best = spent if best is None else min(best, spent)
+                    took[blocks] = best
+                self.assertLess(took[24], 8 * max(took[6], 0.05), took)
+
+    def test_lines_of_many_short_runs_below_a_quoted_header_cost_time_in_proportion(self):
+        # Review round 2 of PR 92: below a quoted header, each run 4 to 7 characters long that decodes to base64's
+        # characters is read with each run 4 to 7 characters long on the next line joined to it. A line with more than
+        # four such runs reads as a key's line and is not read so, so four times the runs on each line take under eight
+        # times the time: the same run on each line, and runs that differ, which no pair leaves out as repeated.
+        import random
+        import time
+        from kb import mask as masking
+        r = random.Random(83)
+        data = self.pem(r)
+        head = (base64.b64encode(data).decode()[:-(-data.index(b"\n") // 3) * 4]
+                + base64.b64encode(b" as their opening line, then the body.").decode())
+        letters = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
+        for kind in ("the same run", "runs that differ"):
+            took = {}
+            for runs in (60, 240):
+                if kind == "the same run":
+                    lines = [" ".join(["YWJj"] * runs)] * 8
+                else:
+                    lines = [" ".join(base64.b64encode(bytes(r.choice(letters) for _ in range(3))).decode()
+                                      for _ in range(runs)) for _ in range(8)]
+                text = "\n".join(["Notes:", head] + lines + ["", "next paragraph"])
+                self.assertLessEqual(len(text), masking.WHOLE)
+                best = None
+                for _ in range(2):
+                    started = time.process_time()
+                    mask(text)
+                    spent = time.process_time() - started
+                    best = spent if best is None else min(best, spent)
+                took[runs] = best
+            with self.subTest(kind=kind):
+                self.assertLess(took[240], 8 * max(took[60], 0.05), took)
+
+    def test_lines_of_words_below_a_quoted_header_stay(self):
+        # Base64 of a document that quotes a key's header, then lines of plain words, five to eight to a line: a word
+        # 4 to 7 letters long seldom decodes alone to base64's characters, so the pairs read few of them and the lines
+        # stay, as on main. Counting every such run as a key's piece would mask them.
+        import random
+        r = random.Random(79)
+        words = ("ledger", "garden", "walrus", "budget", "deploy", "review", "rotate", "plan", "team", "prod",
+                 "certs", "invoice", "notes", "keep", "body", "line", "after", "month", "files", "these", "every",
+                 "until", "older", "newer")
+        frames = ("-----BEGIN PRIVATE KEY-----", "-----BEGIN RSA PRIVATE KEY-----",
+                  "---- BEGIN SSH2 ENCRYPTED PRIVATE KEY ----", "-----BEGIN OPENSSH PRIVATE KEY-----")
+        for frame in frames:
+            head = base64.b64encode(f"PEM files use {frame} as their opening line, then the body.".encode()).decode()
+            for count in (5, 6, 8):
+                for k in range(8):
+                    lines = [" ".join(r.sample(words, count)) for _ in range(12)]
+                    text = "\n".join(["Notes:", head] + lines + ["", "next paragraph"])
+                    with self.subTest(frame=frame, count=count, k=k):
+                        masked = mask(text)
+                        self.assertEqual([line for line in lines if line not in masked], [])
 
 
 class Base64ReviewTwentyFifthTest(unittest.TestCase):

@@ -570,10 +570,35 @@ Known limits:
   its file ("key:") beside base64 of words, whose header no single line holds, is found and masked the same way. A
   column counts a key only where its base64 there holds the key's header and the column cut something (another run, a
   mark) off one of the key's lines, and a key main's reader reads through its footer is left to it, so a field after a
-  key, a line of words above a lone footer, or a field's name before a stream that quotes a header stays. A key whose
-  run stands fourth or further from both ends of its lines, or between runs that change in number from line to line,
-  a narrow key whose header is cut off, a decoy fused into the key's own run with no space, or a decoy's lines between
-  a narrow key's lines (12 characters a line or fewer), can still show. Main shows all of these.
+  key, a line of words above a lone footer, or a field's name before a stream that quotes a header stays. A key file's
+  header is also found in pieces: each 4 characters of its base64 whose bits all come from "--BEGIN " (ssh.com's
+  "- BEGIN "), and each whose bits all come from a key's word ("PRIVAT", "SECRET"), lie whole on some line however the
+  key is wrapped, 4 characters a line or wider, at any offset, in any run on the line. Where a run of lines that each
+  hold base64 holds a header's piece and a word's piece after it, on its line or up to 64 lines below, everything from
+  the header piece's line to the run's end is masked, unless the pieces lie in a header a reading of the lines shows
+  as quoted (words after it on its line, or prose on the next line, and no key's lines below it in the run: a line
+  that decodes to a run of base64 as long as a key's line, or lines that decode as a key's wrapped narrow do, with a
+  decoy glued to them, set apart from them or on lines between, or cut with spaces: a run, alone, joined to the next
+  two lines' longest runs, 4 to 7 characters long and decoding alone to base64's characters joined to a run 4 to 7
+  characters long on the next line, but runs on both lines, or three lines' runs under 8 characters glued, but runs of
+  digits and runs on two of the lines, that decodes from no offset to words and from one to bytes that start or end
+  with base64's characters, on two lines with 6 or more of them or on eight with 3 or more; or more than four such
+  short runs on one line; a footer also needs words before it, and only a line break after it is a key file's end, no
+  quote's; no reading joins lines across one it skips) or in a
+  certificate's, a public key's or a list's own header or footer. A footer's piece ("--END ") with a word's piece
+  after it and no header's piece before it masks the run from its first line through the footer, as a key whose header
+  is cut off (to the run's end where no reading holds the footer whole). So a key whose run stands fourth or further
+  on its lines, a decoy glued into the key's own run or on lines of its own between the key's lines, a narrow key
+  whose header is cut off, and a narrow key below a header with words after it with a decoy glued before or after each
+  of its lines, set apart from them by a space or a table's bar, or on lines between, or with its lines cut with
+  spaces, are masked; main shows all of these. A run of lines that quotes a header in base64 and holds a key's lines
+  below it (another key's, or a public key's or a certificate's read as one) is masked from the quote's line; this
+  only masks more. A key whose header and footer are both cut off shows, as on main. So does a key wrapped narrower
+  than 28 characters a line below a header with words after it, its footer cut off, where a decoy glued to both sides
+  of each of its lines leaves the key's bytes inside the line's, or where base64 of words with a space at each end
+  stands beside or between lines of it 4 characters wide. So does one below such a header whose lines are cut into
+  pieces shorter than 4 characters with a short run beside each that differs from line to line, its footer cut the
+  same way or not: no reading tells such a run from a piece of the key.
   Whether the words before a header on its decoded line make a sentence that quotes it is read from the few dozen
   bytes before it: a byte no text holds there starts a key where the words alone would quote it, and a space further
   back is not seen, so a header after a long word starts its key. This masks more.
