@@ -13,6 +13,7 @@ import itertools
 import json
 import logging
 import math
+import operator
 import os
 import re
 import shlex
@@ -889,7 +890,7 @@ def _gitleaks_edits(text):
 # Which mask() a stored row was masked with. A row of another version, or of none, is masked again when read and by
 # the next ingest. The patterns change it by themselves; bump REVISION when the code that applies them changes what
 # it masks.
-REVISION = 41
+REVISION = 42
 VERSION = f"r{REVISION}-" + hashlib.sha256(repr((REVISION, [p.pattern for p in SECRET_PATTERNS + PREFIXED_SECRETS], KEYED_SECRET.pattern,
                                 ENV_KEY_SECRET.pattern, JSON_SECRET.pattern, FLAG_SECRET.pattern, AUTH_SECRET.pattern,
                                 COMMAND_FLAGS, PASSWORD_NAME.pattern, sorted(PLACEHOLDERS), REFERENCE.pattern,
@@ -1595,9 +1596,15 @@ def _marked_key_spans(text, keys, through):
     reads short of its footer is not: a line put among a key's lines (words, a hash, a value) ends it there."""
     # where the lines of main's reader's blocks of two lines or more start, but each block's first: there it reads one
     # stream across lines, so a header it reads there after words as quoted is left to it (_file_starts)
-    later = {start for block in _written_blocks(text) for start, _ in block[1:]} if (
-        keys or _ENCODED_BEGIN.search(text)) else set()
-    read, cut, tops, run, at = [], [], [], [], 0  # read: the runs of lines whose runs, joined, hold a key's word
+    blocks = list(_written_blocks(text)) if (keys or _ENCODED_BEGIN.search(text) or _BEGIN_PIECE.search(text)
+                                             or _END_PIECE.search(text)) else []
+    later = {start for block in blocks for start, _ in block[1:]} if keys or _ENCODED_BEGIN.search(text) else set()
+    # main's reader's blocks of two lines or more, by where each starts, for a key's header read in pieces
+    # (_scattered_starts)
+    blocks = [block for block in blocks if len(block) > 1] if (_BEGIN_PIECE.search(text)
+                                                                or _END_PIECE.search(text)) else []
+    firsts_of_blocks = [block[0][0] for block in blocks]
+    read, cut, tops, run, at, ended = [], [], [], [], 0, []  # read: the runs of lines whose runs, joined, hold a key's word
     views = {}  # for each column (_column_cuts): what to cut so each line of the runs read shows that run alone, and
     # the lines it cuts any of
     for line in text.splitlines(True) + [""]:
@@ -1615,13 +1622,26 @@ def _marked_key_spans(text, keys, through):
                 cut += [(a, b) for line_start, line_end, start, stop in picks
                         for a, b in ((line_start, start), (stop, line_end)) if a < b]
             columns = _column_cuts(text, run)
-            for k, (stretches, parted) in columns.items():
+            for k, (stretches, parted, _) in columns.items():
                 view = views.setdefault(k, ([], []))
                 view[0].extend(stretches)
                 view[1].extend(parted)
-            if keyed or starts or columns:
+            scattered = []
+            if _BEGIN_PIECE.search(text, run[0][0], run[-1][1]) or _END_PIECE.search(text, run[0][0], run[-1][1]):
+                first, last = bisect.bisect_left(firsts_of_blocks, run[0][0]), bisect.bisect_right(
+                    firsts_of_blocks, run[-1][1])
+                scattered, footer_end = _scattered_starts(text, run, _unbroken(run, [[
+                    (start, stop) for _, _, start, stop in picks]] + _column_readings(text, run)) + blocks[first:last])
+                # a footer's piece before any header's: the key ends at the footer and starts where nothing tells
+                # (main's reader may read it from a line inside it), so the run of lines is masked from its first line
+                # through the footer's
+                if footer_end is not None:
+                    line_start, line_end = run[bisect.bisect_left([end for _, end in run], footer_end - 1)]
+                    ended.append((_MARKED_BASE64.search(text, *run[0]).start(),
+                                  [*_MARKED_BASE64.finditer(text, line_start, line_end)][-1].end()))
+            if keyed or starts or columns or scattered:
                 read.append(run)
-                tops += starts
+                tops += starts + scattered
         run = []
         at += len(line)
     spans, done, through = [], -1, set(through)  # done: the last run of lines masked to its end
@@ -1654,7 +1674,7 @@ def _marked_key_spans(text, keys, through):
         spans.append((_MARKED_BASE64.search(text, line, line_end).start(),
                       [*_MARKED_BASE64.finditer(text, *read[k][-1])][-1].end()))
         done = k
-    return spans
+    return spans + ended
 
 
 _COLUMNS = 3  # the runs on each line read as columns from either end (_column_cuts)
@@ -1683,8 +1703,247 @@ def _column_cuts(text, run):
                     cut = [(a, b) for a, b in ((line_start, start), (stop, line_end)) if a < b]
                     stretches += cut
                     parted += [(line_start, line_end)] if cut else []
-                cuts[side] = stretches, parted
+                cuts[side] = stretches, parted, [(start, stop) for _, _, start, stop in picks]
     return cuts
+
+
+def _column_readings(text, run):
+    """Each column of the lines of `run` (_column_cuts) as a reading: the (start, end) of its run on each line that has
+    one, for each column two lines or more hold, once each."""
+    runs = [[m.span() for m in _MARKED_BASE64.finditer(text, start, end)] for start, end in run]
+    out, seen = [], set()
+    for k in range(_COLUMNS):
+        for side in (k, -1 - k):
+            picks = tuple(spans[side] for spans in runs if len(spans) > k)
+            if len(picks) >= 2 and picks not in seen:
+                seen.add(picks)
+                out.append(list(picks))
+    return out
+
+
+def _unbroken(run, readings):
+    """`readings` (lists of the (start, end) pieces a reader joins, one a line) of the lines of `run`, each cut where
+    it passes over a line: a reader reads a stream on only into the next line, so what a reading joins across a line
+    it skips (the lines a chain leaves, a column's lines with fewer runs) is no one stream's, and can read as a file's
+    header or footer no line holds ("-----END RSA PR" and a footer's last dashes)."""
+    line_ends, out = [end for _, end in run], []
+    for pieces in readings:
+        lines = [bisect.bisect_left(line_ends, start) for start, _ in pieces]
+        k = 0
+        for j in range(1, len(pieces) + 1):
+            if j == len(pieces) or lines[j] > lines[j - 1] + 1:
+                out.append(pieces[k:j])
+                k = j
+    return out
+
+
+def _pieces_over(word, needed):
+    """The base64 of `word` at each of the three offsets it can start at, as its 4-character pieces whose bits are all
+    `word`'s and come from each byte (of `word`) for which `needed` is true of the set of bytes they come from."""
+    out = set()
+    for k in range(3):
+        code = base64.b64encode(b"\0" * k + word + b"\0" * 3).decode()
+        for i in range(-(-8 * k // 6), (8 * (k + len(word))) // 6 - 3):
+            covered = set(range(6 * i // 8 - k, (6 * i + 23) // 8 - k + 1))
+            if needed(covered):
+                out.add(code[i:i + 4])
+    return out
+
+
+# A key file's header in base64, by pieces that any wrapping 4 characters wide or wider keeps whole on one of its lines
+# (a line is a run of base64 or part of one), at any offset in its stream: the 4 characters at each offset whose bits
+# all come from "--BEGIN " ("- BEGIN ", ssh.com's) and hold some of the dash or space before "BEGIN" or of its "B",
+# and those whose bits all come from the first six letters of a key's word ("PRIVAT", "SECRET"), which no
+# certificate's or public key's header holds ("CERTIFICATE" and "PUBLIC KEY" share "ATE" and " KEY" with a key's
+# words, not these). Each spans seven characters or more of whole pieces' characters, so a line at least 4 wide holds
+# one (tests: every offset, width and column).
+_BEGIN_PIECE = re.compile("|".join(sorted(p for word in (b"-----BEGIN ", b"---- BEGIN ") for p in _pieces_over(
+    word, lambda covered: min(covered) >= 3 and max(covered) <= 10 and bool(covered & {4, 5})))))
+_WORD_PIECE = re.compile("|".join(sorted(p for word in _KEY_WORDS for p in _pieces_over(
+    word, lambda covered: min(covered) >= 0 and max(covered) <= 5))))
+# A key file's footer in base64, as its header (_BEGIN_PIECE): the 4 characters at each offset whose bits all come from
+# "--END " ("- END ") and hold some of the dash or space before "END" or of its "E".
+_END_PIECE = re.compile("|".join(sorted(p for word in (b"-----END ", b"---- END ") for p in _pieces_over(
+    word, lambda covered: min(covered) >= 3 and max(covered) <= 8 and bool(covered & {4, 5})))))
+# A file's header or footer whole in base64 ("-----BEGIN ", "-----END ", ssh.com's), as a reading that holds one does.
+_ENCODED_FRAME = re.compile("|".join(re.escape(code) for word in (b"-----BEGIN ", b"---- BEGIN ", b"-----END ",
+                                                                 b"---- END ") for code in _base64_of(word)))
+# How many lines past a header's piece its key's word may lie: its label, and lines of other text between its own.
+_SCATTER = 64
+# Words after a header on its line, as a sentence that quotes it goes on: a space or a mark, then a letter.
+_WORDS_AFTER = re.compile(rb"[ \t\"'),.;:!?]+[A-Za-z\x80-\xff]")
+# A run of base64 as long as 15 bytes of a key's line (or a certificate's), which a quote's words do not hold.
+_KEY_LINE_RUN = re.compile(rb"[A-Za-z0-9+/]{20,}")
+# The header or footer of a file that holds no key (a certificate's, a public key's, a CRL's).
+_OTHER_FRAME = re.compile(rb"-----(?:BEGIN|END) [A-Z0-9][A-Z0-9 ]{0,60}-----|---- (?:BEGIN|END) [A-Z0-9][A-Z0-9 ]{0,60} ----")
+
+
+def _headers_read(joined):
+    """The (start, end, b"BEGIN" or b"END" for a key's, None for another file's, whether it explains its pieces) of the
+    base64, in `joined` (a reading's runs, joined), of each file header or footer it holds whole (_scattered_starts): a
+    key's explains them where it reads as quoted (_frame_quoted), and a file's that holds no key (a certificate's, a
+    public key's) where it ends its line. Each stream, to its padding, is decoded once from each of the four offsets,
+    so many headers cost time in proportion."""
+    out, start = [], 0
+    for end in [m.end() for m in re.finditer("=+", joined)] + [len(joined)]:
+        padded = joined[start:end]
+        stream = padded.rstrip("=")
+        for offset in range(4):  # with its padding where it ends a whole group from this offset, else without it
+            whole = (len(padded) - offset) // 4 * 4
+            decoded = _base64_decoded(padded, offset, offset + whole) if whole > 0 else None
+            if decoded is None:
+                whole = (len(stream) - offset) // 4 * 4
+                decoded = _base64_decoded(stream, offset, offset + whole) if whole > 0 else None
+            if not decoded or b"BEGIN " not in decoded and b"END " not in decoded:
+                continue
+            base = start + offset
+            for m in _KEY_FRAME.finditer(decoded):
+                out.append((base + m.start() // 3 * 4 + m.start() % 3, base + (8 * m.end() + 5) // 6,
+                            m.group(1) or m.group(2), _frame_quoted(joined, decoded, m, base)))
+            for m in _OTHER_FRAME.finditer(decoded):
+                rest = _SPACE_OR_QUOTE_RUN.match(decoded, m.end()).end()
+                if not _KEY_FRAME.match(decoded, m.start()) and (rest == len(decoded)
+                                                                  or _BREAK_BYTES.match(decoded, rest)):
+                    out.append((base + m.start() // 3 * 4 + m.start() % 3, base + (8 * m.end() + 5) // 6, None, True))
+        start = end
+    return out
+
+
+def _frame_quoted(joined, decoded, frame, base):
+    """Whether a key's header or footer (`frame`, a match in `decoded`, which joined[base:] decodes to) reads as a
+    quote's: words after it on its line, as a sentence that quotes one goes on (_WORDS_AFTER), or, ending its line,
+    prose on the line after it (_prose_after), not the text's end (for a footer, nor a line break and the text's end, as
+    a key file ends); and, a footer, text before it in the 128 bytes
+    above it (a byte or more, with no run of base64 as long as a key's line), as a sentence that quotes one starts.
+    A reading that takes other runs into a key's lines decodes them to bytes no text holds."""
+    footer = (frame.group(1) or frame.group(2)) == b"END"
+    if footer:
+        before = decoded[max(frame.start() - 128, 0):frame.start()]
+        if not before or _KEY_LINE_RUN.search(before) or not _reads_as_text(before):
+            return False  # a key's line above it, or no sentence's words
+    rest = _SPACE_OR_QUOTE_RUN.match(decoded, frame.end()).end()
+    if rest == len(decoded) or footer and not decoded[rest:].strip():
+        return False  # nothing after it here (a footer: but a line break, as a key file ends): no words of a quote's
+    if _BREAK_BYTES.match(decoded, rest):
+        first = base + frame.start() // 3 * 4
+        return _prose_after(joined, (frame.group(1) or frame.group(2), first, first + frame.start() % 3,
+                                     base + (8 * frame.end() - 1) // 6, base + (frame.end() + 2) // 3 * 4))
+    line_end = _BREAK_BYTES_SEARCH.search(decoded, frame.end(), frame.end() + 256)
+    words = decoded[frame.end():line_end.start() if line_end else frame.end() + 256]
+    return bool(_WORDS_AFTER.match(words)) and _reads_as_text(words)
+
+
+def _key_lines(text, run):
+    """For each line of `run` (_marked_key_spans), whether a run of base64 on it, decoded from any of the four offsets,
+    holds a run as long as a key's line (_KEY_LINE_RUN)."""
+    out = []
+    for start, end in run:
+        found = False
+        for m in _MARKED_BASE64.finditer(text, start, end):
+            run_end = m.start() + len(m.group().rstrip("="))
+            for offset in range(4):
+                whole = (run_end - m.start() - offset) // 4 * 4
+                decoded = _base64_decoded(text, m.start() + offset, m.start() + offset + whole) if whole > 0 else None
+                if decoded and _KEY_LINE_RUN.search(decoded):
+                    found = True
+                    break
+            if found:
+                break
+        out.append(found)
+    return out
+
+
+def _explained(text, run, readings):
+    """The stretches of `text` whose base64 one of `readings` (each a list of the (start, end) pieces of `text` a reader
+    joins, in order) reads as a header or footer that explains its pieces (_headers_read): a key's only where no line
+    of `run` below a header's, or above a footer's, holds a key's line (_key_lines). A reading can end at a quote's
+    header, or at a key's read on into a decoy's words glued after it or on a line after it; the key's lines are a
+    key's whatever reading takes them. And the (start, end, where the footer ends) of the stretches of each key's footer
+    a reading holds whole that explains nothing, where the key it ends ends."""
+    out, footers, below, above, line_ends = [], [], None, None, [end for _, end in run]
+    for pieces in readings:
+        joined = "".join(text[start:end] for start, end in pieces)
+        if not _ENCODED_FRAME.search(joined):
+            continue
+        offsets = list(itertools.accumulate([0] + [end - start for start, end in pieces]))
+        for first, last, kind, quoted in _headers_read(joined):
+            k = bisect.bisect_right(offsets, first) - 1
+            stretches = []
+            while k < len(pieces) and offsets[k] < last:
+                start, end = pieces[k]
+                stretches.append((start + max(first - offsets[k], 0), start + min(last, offsets[k + 1]) - offsets[k]))
+                k += 1
+            if kind and quoted:
+                if below is None:  # whether any line below each line, or above it, holds a key's line
+                    lines = _key_lines(text, run)
+                    below = list(itertools.accumulate(lines[::-1], operator.or_, initial=False))[-2::-1]
+                    above = list(itertools.accumulate(lines, operator.or_, initial=False))[:-1]
+                line = min(bisect.bisect_left(line_ends, stretches[-1][1] if kind == b"BEGIN" else stretches[0][0]),
+                           len(run) - 1)
+                quoted = not (below if kind == b"BEGIN" else above)[line]  # no key's line below a header, above a footer
+            if quoted:
+                out += stretches
+            elif kind == b"END":
+                footers += [(start, end, stretches[-1][1]) for start, end in stretches]
+    return out, footers
+
+
+def _scattered_starts(text, run, readings):
+    """Where a key file's header starts on the lines of `run` (_marked_key_spans) though no reading of them shows it as
+    a quote, and where a footer ends one whose header none shows. A document that quotes a header or a footer writes
+    it plainly, so a reading of its lines (`readings`: the per-line reading's, each column's, main's reader's blocks)
+    holds it whole with the words after it (_frame_quoted). One no reading shows so is a key's wherever its base64
+    lies: whole in a reading, or only in pieces, glued into other runs, on lines between other lines, or in a run past
+    the columns read. A piece of a header (_BEGIN_PIECE) or a footer (_END_PIECE) with a piece of a key's word
+    (_WORD_PIECE) after it, on its line or within _SCATTER lines below, is a key's, unless either lies in the base64 of
+    a header or footer a reading explains (_explained): a quoted key's, or a certificate's or a public key's, whose
+    pieces are its own. Returns (where each such header's piece is, where the key of the last such footer before any
+    header's piece ends, or None): a key whose header is cut off ends at its footer, where a reading holds it whole,
+    and starts where nothing tells; a footer only in pieces ends it at the run's end."""
+    explaining, read_footers = _explained(text, run, readings)
+    merged = []
+    for start, end in sorted(explaining):
+        if merged and start <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+        else:
+            merged.append((start, end))
+    starts = [start for start, _ in merged]
+
+    def explained(m):
+        k = bisect.bisect_right(starts, m.start()) - 1
+        return k >= 0 and m.end() <= merged[k][1]
+
+    words = [m.start() for start, end in run for m in _WORD_PIECE.finditer(text, start, end) if not explained(m)]
+    if not words:
+        return [], None
+    line_ends, found = [end for _, end in run], ([], [])
+    for start, end in run:
+        for side, pieces in enumerate((_BEGIN_PIECE, _END_PIECE)):
+            for m in pieces.finditer(text, start, end):
+                if explained(m) or side and found[0]:
+                    continue
+                w = bisect.bisect_left(words, m.start())
+                if w < len(words) and (bisect.bisect_left(line_ends, words[w])
+                                       - bisect.bisect_left(line_ends, m.start()) <= _SCATTER):
+                    found[side].append(m.start())
+                    break
+    if not found[1]:
+        return found[0], None
+    # a footer read whole in a reading (that explains nothing) ends its key there; one read only in pieces, at the run's
+    # end
+    groups = []
+    for start, end, frame_end in sorted(read_footers):
+        if groups and start <= groups[-1][1]:
+            groups[-1] = (groups[-1][0], max(groups[-1][1], end), max(groups[-1][2], frame_end))
+        else:
+            groups.append((start, end, frame_end))
+    firsts, ended = [start for start, _, _ in groups], 0
+    for piece in found[1]:
+        k = bisect.bisect_right(firsts, piece) - 1
+        if k < 0 or piece + 4 > groups[k][1]:
+            return found[0], run[-1][1]
+        ended = max(ended, groups[k][2])
+    return found[0], ended
 
 
 _LEADING_BLANKS = re.compile(r"""[ \t"']*""")  # a line's leading spaces, tabs and quotes, before its first run

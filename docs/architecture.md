@@ -168,7 +168,15 @@ columns (so a key wrapped narrow beside a line's number, a label or another stre
 holds its header), are read only to find a key's header, and from the line it starts on
 everything is masked whole to the last run of base64 on the run's last line, since no one run on a line is known to be
 the key's; a key main's reader reads through its footer is left to it, and masked on from its end where a reading goes
-past it, and one it reads short of its footer (a line put among a key's lines ends it) is masked as any other. It is found
+past it, and one it reads short of its footer (a line put among a key's lines ends it) is masked as any other. A
+header is found in pieces too, so no run's place on its line, no decoy glued into the key's run or set on lines between
+its lines, and no cut-off header hides it: each 4 characters of base64 whose bits all come from "--BEGIN " or from the
+start of a key's word lie whole on some line at any wrap 4 wide or wider, and a header's piece with a word's piece
+after it in the run (64 lines at most) starts a key on its line, as a footer's piece with no header's before it masks
+from the run's first line through that footer, unless the pieces lie in a header a reading of the lines (the chained
+runs, each column, main's blocks, none joining lines across one it skips) shows as quoted, with words or prose after
+it and no line below it that holds a key's line, or in another file's header or footer (a certificate's, a public
+key's). It is found
 where its encoded "PRIVATE KEY" or "SECRET KEY" decodes inside the key's header or footer on a line of its own, so a field's name
 or a sentence that names one, or quotes a header, stays; a header after a label on its line, cut short of its footer,
 starts its key unless nothing or a line of prose follows it. It is read once over the text as written, and again with the
