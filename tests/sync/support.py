@@ -49,7 +49,7 @@ def put_rows(db, source, source_id, ts, title, texts, meta):
 def put_item(db, source, source_id, ts, title, content, meta):
     """put_rows for one text: a `doc` row, or `raw` chunks when long. Returns False when nothing changed."""
     title, content = clean(title or "")[:300], clean(content or "")
-    digest = hashlib.sha1(f"{title}\0{content}".encode()).hexdigest()[:16]
+    digest = store.item_hash(title, content)
     old = db.execute("SELECT json_extract(metadata, '$.hash') FROM docs WHERE source=? AND source_id=? "
                      "AND kind IN ('doc','raw') LIMIT 1", (source, source_id)).fetchone()
     if old and old[0] == digest:
