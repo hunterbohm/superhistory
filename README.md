@@ -594,7 +594,9 @@ Known limits:
   only masks more. A key whose header and footer are both cut off shows, as on main. So does a key wrapped narrower
   than 28 characters a line below a header with words after it, its footer cut off, where a decoy glued to both sides
   of each of its lines leaves the key's bytes inside the line's, or where base64 of words with a space at each end
-  stands beside or between lines of it 4 characters wide.
+  stands beside or between lines of it 4 characters wide. So does one below such a header whose lines are cut into
+  pieces shorter than 4 characters with a short run beside each that differs from line to line, its footer cut the
+  same way or not: no reading tells such a run from a piece of the key.
   Whether the words before a header on its decoded line make a sentence that quotes it is read from the few dozen
   bytes before it: a byte no text holds there starts a key where the words alone would quote it, and a space further
   back is not seen, so a header after a long word starts its key. This masks more.

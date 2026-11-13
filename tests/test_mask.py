@@ -5501,6 +5501,84 @@ class Base64ReviewTwentyFourthTest(unittest.TestCase):
                                       and cut // 4 * 3 + (6 * (n * width + len(c)) - 1) // 8 < footer], [])
                     self.assertIn("next paragraph", masked)
 
+    def test_a_keys_header_line_with_words_after_it_above_its_body_cut_in_two_beside_a_decoy_is_masked(self):
+        # Both of review round 2's shapes at once: each body line cut in two, its halves shorter than 4 characters at
+        # these widths, with a decoy set apart before it, after it, on both sides or between the halves, and glued
+        # before the header too, or words of a sentence that quotes it. Glued, the decoy's run broke the key's halves
+        # apart; a run found on another of the three lines glued, as a decoy set beside each line is, is no piece of a
+        # key's line, nor is one 8 characters long or more (a decoy that differs on each line, here base64 of 12 random
+        # bytes), so the halves glue back into the key's lines.
+        import itertools
+        import random
+        import textwrap
+        written, i = Base64ReviewNineteenFindingsTest.written, 0
+        r = random.Random(97)
+        said = (b" as their opening line, then the body.", b". The body follows")
+        decoys = ("ledger", "notes", base64.b64encode(b"zebra quilt ").decode())
+        for name, data in {**self.key_files(r), **self.gnupg_files(r)}.items():
+            header = data.index(b"\n")
+            cut = -(-header // 3) * 4  # the header's base64, to a whole group (its line break and a body byte too)
+            footer = data.rindex(b"-----END" if b"-----END" in data else b"---- END")
+            for file, width, place in itertools.product((data, data[:footer]), (4, 5, 6, 7, 8, 12),
+                                                        ("decoy before", "decoy after", "decoys both sides",
+                                                         "decoy between the halves", "a decoy that differs each line")):
+                code = base64.b64encode(file).decode()
+                decoy, words, mark = decoys[i % 3], said[i // 3 % 2], ("> ", "")[i // 6 % 2]
+                lead = (decoy, base64.b64encode(b"Example: ").decode())[i // 12 % 2]
+                apart = (" ", " | ")[i // 24 % 2]
+                head = lead + code[:cut] + base64.b64encode(words).decode()
+                chunks = textwrap.wrap(code[cut:], width)
+                halves = [(c[:len(c) // 2], c[len(c) // 2:]) for c in chunks]
+                differ = [base64.b64encode(r.randbytes(12)).decode() for _ in chunks]
+                body = [apart.join({"decoy before": [decoy, a, b], "decoy after": [a, b, decoy],
+                                    "decoys both sides": [decoy, a, b, decoy],
+                                    "decoy between the halves": [a, decoy, b],
+                                    "a decoy that differs each line": [other, a, b]}[place])
+                        for (a, b), other in zip(halves, differ)]
+                text = "\n".join(["Notes:"] + [mark + line for line in [head] + body] + ["", "next paragraph"])
+                depth, older, i = i % 3, i // 3 % 2, i + 1
+                with self.subTest(key=name, whole=file == data, width=width, place=place, decoy=decoy[:8],
+                                  lead=lead[:8], words=words[:6], mark=mark, apart=apart, depth=depth, older=older):
+                    masked = Base64ReviewEighteenTest.masks(written(text, depth), older)
+                    held = "\n".join([head, decoy, "Notes:", "next paragraph"] + differ)
+                    seen = [apart.join([a, decoy, b] if place == "decoy between the halves" else [a, b])
+                            for a, b in halves]
+                    self.assertEqual([n for n, c in enumerate(chunks) if len(c) >= 4 and seen[n] in masked
+                                      and seen[n] not in held and cut // 4 * 3 + 6 * n * width // 8 > header
+                                      and cut // 4 * 3 + (6 * (n * width + len(c)) - 1) // 8 < footer], [])
+                    self.assertIn("next paragraph", masked)
+
+    def test_a_keys_header_line_with_no_words_after_it_above_its_body_glued_to_decoys_is_masked(self):
+        # A key's header whole on its line with a decoy before it and nothing after it, or another decoy, above its
+        # body wrapped narrow with a decoy glued to both sides of each line, its footer cut off: those lines read as
+        # no key's (README's limits), so only the header tells the key, and with no words after it, it is no quote.
+        import itertools
+        import random
+        import textwrap
+        written, i = Base64ReviewNineteenFindingsTest.written, 0
+        r = random.Random(89)
+        decoys = ("ledger", "notes", base64.b64encode(b"zebra quilt ").decode())
+        for name, data in {**self.key_files(r), **self.gnupg_files(r)}.items():
+            header = data.index(b"\n")
+            cut = -(-header // 3) * 4  # the header's base64, to a whole group (its line break and a body byte too)
+            footer = data.rindex(b"-----END" if b"-----END" in data else b"---- END")
+            code = base64.b64encode(data[:footer]).decode()
+            for after, width in itertools.product(("nothing", "a decoy"), (4, 5, 6, 8, 12, 16, 24)):
+                decoy, mark = decoys[i % 3], ("> ", "")[i // 3 % 2]
+                head = decoy + code[:cut] + (decoy if after == "a decoy" else "")
+                chunks = textwrap.wrap(code[cut:], width)
+                text = "\n".join(["Notes:"] + [mark + line for line in [head] + [decoy + c + decoy for c in chunks]]
+                                 + ["", "next paragraph"])
+                depth, older, i = i % 3, i // 3 % 2, i + 1
+                with self.subTest(key=name, after=after, width=width, decoy=decoy[:8], mark=mark, depth=depth,
+                                  older=older):
+                    masked = Base64ReviewEighteenTest.masks(written(text, depth), older)
+                    held = "\n".join([head, decoy, "Notes:", "next paragraph"])
+                    self.assertEqual([n for n, c in enumerate(chunks) if len(c) >= 4 and c in masked and c not in held
+                                      and cut // 4 * 3 + 6 * n * width // 8 > header
+                                      and cut // 4 * 3 + (6 * (n * width + len(c)) - 1) // 8 < footer], [])
+                    self.assertIn("next paragraph", masked)
+
     def test_header_pieces_are_whole_on_a_line_at_every_offset_width_and_column(self):
         # The pieces of a key's header, footer and word that tell a key's lines (_BEGIN_PIECE, _END_PIECE,
         # _WORD_PIECE) are each read whole on one line of a wrapping 4 characters wide or wider, wherever the key's

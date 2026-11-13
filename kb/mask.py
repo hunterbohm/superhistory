@@ -1840,14 +1840,14 @@ def _key_lines(text, run):
     only together. Each run 4 to 7 characters long that decodes, from an offset, to base64's characters only, as a key's
     line wrapped so narrow does (_narrow_start), with each such run on the next line joined to it, as the key's next
     line is, beside other runs (a decoy set apart by a space or a table's bar, longer than it). And its runs shorter
-    than 8 characters, but runs of digits (a line's number), with the two lines' after it glued, the spaces between them
-    dropped, as a key's lines cut with spaces read: it counts where they decode to 9 of base64's characters or more at
-    an edge, as a key's do, and other runs glued so do by chance alone (about 1 in 4,000). A line with more runs that
-    read as a key's line wrapped so narrow than _NARROW_STARTS reads as a key's: a key's line cut into groups, or decoys
-    set to cost time."""
+    than 8 characters, but runs of digits (a line's number) and runs found on another of the three lines (a decoy set
+    beside each), with the two lines' after it glued, the spaces between them dropped, as a key's lines cut with spaces
+    read: it counts where they decode to 9 of base64's characters or more at an edge, as a key's do, and other runs
+    glued so do by chance alone (about 1 in 4,000). A line with more runs that read as a key's line wrapped so narrow
+    than _NARROW_STARTS reads as a key's: a key's line cut into groups, or decoys set to cost time."""
     runs = [[m.group().rstrip("=") for m in _MARKED_BASE64.finditer(text, start, end)] for start, end in run]
     longest = [max(found, key=len, default="") for found in runs]
-    glued = ["".join(read for read in found if len(read) < 8 and not read.isdigit()) for found in runs]
+    short = [[read for read in found if len(read) < 8 and not read.isdigit()] for found in runs]
     starts = [[read for read in found if _narrow_start(read)] for found in runs] + [[]]
     out = []
     for i, found in enumerate(runs):
@@ -1856,7 +1856,10 @@ def _key_lines(text, run):
             continue
         reads = [(read, 0) for read in found + [read + then for read in starts[i] for then in starts[i + 1]]]
         if i + 2 < len(runs):
-            reads += [("".join(longest[i:i + 3]), 0), ("".join(glued[i:i + 3]), 9)]
+            seen = [set(line) for line in short[i:i + 3]]
+            glued = "".join(read for k, line in enumerate(short[i:i + 3]) for read in line
+                            if not any(read in other for other in seen[:k] + seen[k + 1:]))
+            reads += [("".join(longest[i:i + 3]), 0), (glued, 9)]
         most = 0
         for read, least in reads:
             edge = _read_as_key_line(read)
