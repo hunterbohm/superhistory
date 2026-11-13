@@ -13,7 +13,6 @@ import itertools
 import json
 import logging
 import math
-import operator
 import os
 import re
 import shlex
@@ -1834,22 +1833,65 @@ def _frame_quoted(joined, decoded, frame, base):
 
 
 def _key_lines(text, run):
-    """For each line of `run` (_marked_key_spans), whether a run of base64 on it, decoded from any of the four offsets,
-    holds a run as long as a key's line (_KEY_LINE_RUN)."""
+    """For each line of `run` (_marked_key_spans), how it reads as a key's line: None where a run of base64 on it holds
+    a run as long as a key's line decoded; else the most that a run on it reads as a key's line wrapped narrow
+    (_read_as_key_line), or its longest run with the longest runs of the two lines after it joined to it, as a key's
+    lines 7 characters wide or narrower with a line of other base64 between each read only together."""
+    runs = [[m.group().rstrip("=") for m in _MARKED_BASE64.finditer(text, start, end)] for start, end in run]
+    longest = [max(found, key=len, default="") for found in runs]
     out = []
-    for start, end in run:
-        found = False
-        for m in _MARKED_BASE64.finditer(text, start, end):
-            run_end = m.start() + len(m.group().rstrip("="))
-            for offset in range(4):
-                whole = (run_end - m.start() - offset) // 4 * 4
-                decoded = _base64_decoded(text, m.start() + offset, m.start() + offset + whole) if whole > 0 else None
-                if decoded and _KEY_LINE_RUN.search(decoded):
-                    found = True
-                    break
-            if found:
+    for i, found in enumerate(runs):
+        most = 0
+        for read in found + ["".join(longest[i:i + 3])] * (i + 2 < len(runs)):
+            edge = _read_as_key_line(read)
+            if edge is None:
+                most = None
                 break
-        out.append(found)
+            most = max(most, edge)
+        out.append(most)
+    return out
+
+
+def _read_as_key_line(read):
+    """How a run of base64 (`read`, past its padding) reads as a key's line: None where, decoded from any of the four
+    offsets, it holds a run as long as a key's line (_KEY_LINE_RUN); else, where it decodes from no offset to words
+    (text with no run a key's body could be, _holds_token), as a key's line wrapped narrow decodes, a decoy glued to it
+    or none: the most base64 characters its bytes, decoded from one offset, start or end with; else 0. (Not those
+    inside them, past a decoy glued on both sides: a certificate's names and dates are such runs.)"""
+    edge, words = 0, False
+    for offset in range(4):
+        whole = (len(read) - offset) // 4 * 4
+        decoded = _base64_decoded(read, offset, offset + whole) if whole > 0 else None
+        if not decoded:
+            continue
+        if _KEY_LINE_RUN.search(decoded):
+            return None
+        if _reads_as_text(decoded) and not _holds_token(text := decoded.decode("utf-8", "replace"), 0, len(text)):
+            words = True
+        else:
+            edge = max(edge, _BASE64_BYTES.match(decoded).end(),
+                       len(decoded) - _BASE64_BYTES_END.search(decoded).start())
+    return 0 if words else edge
+
+
+# Base64's characters as bytes, at the start of a run's decoded bytes or at their end (_read_as_key_line).
+_BASE64_BYTES = re.compile(rb"[A-Za-z0-9+/]*")
+_BASE64_BYTES_END = re.compile(rb"[A-Za-z0-9+/]*\Z")
+# How many of a run's lines (_key_lines) below a quoted header, or above a quoted footer, hold a key's lines wrapped
+# narrow: a line's run that decodes, past a decoy's bytes, to as many base64 characters as a key's line 8 characters
+# wide does, or 4 (_read_as_key_line). Another file's base64, which decodes to bytes at random, does so on few of its
+# lines (64 characters wide: about 1 in 400, and 1 in 6).
+_NARROW_KEY_LINES = ((6, 2), (3, 8))
+
+
+def _held_key_lines(lines):
+    """For each of `lines` (_key_lines, in the order read), whether the lines before it hold a key's: one that holds a
+    run as long as a key's line, or as many of a key's lines wrapped narrow as _NARROW_KEY_LINES needs."""
+    out, whole, counts = [], False, [0] * len(_NARROW_KEY_LINES)
+    for line in lines:
+        out.append(whole or any(n >= need for n, (_, need) in zip(counts, _NARROW_KEY_LINES)))
+        whole = whole or line is None
+        counts = [n + (line is not None and line >= least) for n, (least, _) in zip(counts, _NARROW_KEY_LINES)]
     return out
 
 
@@ -1874,10 +1916,9 @@ def _explained(text, run, readings):
                 stretches.append((start + max(first - offsets[k], 0), start + min(last, offsets[k + 1]) - offsets[k]))
                 k += 1
             if kind and quoted:
-                if below is None:  # whether any line below each line, or above it, holds a key's line
+                if below is None:  # whether the lines below each line, or above it, hold a key's lines
                     lines = _key_lines(text, run)
-                    below = list(itertools.accumulate(lines[::-1], operator.or_, initial=False))[-2::-1]
-                    above = list(itertools.accumulate(lines, operator.or_, initial=False))[:-1]
+                    below, above = _held_key_lines(lines[::-1])[::-1], _held_key_lines(lines)
                 line = min(bisect.bisect_left(line_ends, stretches[-1][1] if kind == b"BEGIN" else stretches[0][0]),
                            len(run) - 1)
                 quoted = not (below if kind == b"BEGIN" else above)[line]  # no key's line below a header, above a footer

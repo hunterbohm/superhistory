@@ -5286,6 +5286,27 @@ class Base64ReviewTwentyFourthTest(unittest.TestCase):
                         masked = mask(text)
                         self.assertEqual([c for c in chunks if c not in masked], [])
 
+    def test_a_long_base64_document_that_quotes_a_header_stays_however_it_is_wrapped(self):
+        # Many lines of words below a header a document quotes: a line whose run decodes to words from one offset is
+        # a quote's, not a key's, whatever the other offsets decode to; read at those alone, eight lines of a long
+        # document start or end in base64's characters by chance, and it went as a key's (review round 1 of PR 92).
+        import textwrap
+        for frame in ("-----BEGIN PRIVATE KEY-----", "-----BEGIN RSA PRIVATE KEY-----",
+                      "---- BEGIN SSH2 ENCRYPTED PRIVATE KEY ----"):
+            for repeat in (4, 8, 16):
+                doc = (f"Notes on the walrus ledger.\nPEM files use {frame} as their opening line, then the body.\n"
+                       + "Keep the old one until the new one is in use, then rotate the garden plan after the review.\n"
+                       * repeat).encode()
+                code = base64.b64encode(doc).decode()
+                for width in (4, 5, 7, 8, 12, 16, 24, 64, 76):
+                    chunks = textwrap.wrap(code, width)
+                    for form in ("{line}", "> {line}", "{n:>6}\t{line}"):
+                        lines = [self.around(form, n + 1, c) for n, c in enumerate(chunks)]
+                        text = "\n".join(["Notes:"] + lines + ["", "next paragraph"])
+                        with self.subTest(frame=frame, repeat=repeat, width=width, form=form):
+                            masked = mask(text)
+                            self.assertEqual([c for c in chunks if c not in masked], [])
+
     def test_a_narrow_key_whose_header_is_cut_off_is_masked_to_its_footer(self):
         # A key's base64 from a line inside its body to its footer, wrapped narrow beside a line's number or in a
         # table's cells, or bare at 5 characters: no reader reads a key with no header, and the footer, split across
@@ -5382,6 +5403,49 @@ class Base64ReviewTwentyFourthTest(unittest.TestCase):
                             masked = Base64ReviewEighteenTest.masks(written(text, depth), older)
                             self.assertEqual(self.shown_body(data, chunks, width, masked, decoys), [])
                             self.assertIn("next paragraph", masked)
+
+    def test_a_keys_header_line_with_words_after_it_above_its_body_wrapped_narrow_with_decoys_is_masked(self):
+        # Review round 1 of PR 92: a key's header whole on one line with base64 of words glued after it, and its body
+        # wrapped narrow below, a decoy glued before or after each line, or on a line between: no line below decoded
+        # to a run of base64 as long as a key's line, so the header read as a quote and explained its pieces, and with
+        # its footer cut off the body showed. A line whose run decodes from no offset to words and from one to bytes
+        # that start or end with base64's characters is a key's line wrapped narrow: two such lines with 6 or more, or
+        # eight with 3 or more, below a header leave it no quote. A line 7 characters wide or narrower decodes to too
+        # little alone, so its run is read with the next two lines' too. (A decoy glued on both sides of each line
+        # leaves the key's bytes inside: README's limits.)
+        import itertools
+        import random
+        import textwrap
+        written, i = Base64ReviewNineteenFindingsTest.written, 0
+        r = random.Random(73)
+        said = (b" as their opening line, then the body.", b". The body follows")
+        decoys = ("ledger", "notes", base64.b64encode(b"zebra quilt ").decode())
+        for name, data in {**self.key_files(r), **self.gnupg_files(r)}.items():
+            header = data.index(b"\n")
+            cut = -(-header // 3) * 4  # the header's base64, to a whole group (its line break and a body byte too)
+            footer = data.rindex(b"-----END" if b"-----END" in data else b"---- END")
+            for file, width, place in itertools.product((data, data[:footer]), (4, 5, 6, 7, 8, 12, 24),
+                                                        ("glued before", "glued after", "own line")):
+                code = base64.b64encode(file).decode()
+                decoy, words, mark = decoys[i % 3], said[i // 3 % 2], ("> ", "")[i // 6 % 2]
+                # the decoy before the header's line too, or words of a sentence that quotes it, in its stream
+                lead = (decoy, base64.b64encode(b"Example: ").decode())[i // 12 % 2]
+                head = lead + code[:cut] + base64.b64encode(words).decode()
+                chunks = textwrap.wrap(code[cut:], width)
+                if place == "own line":
+                    body = [line for c in chunks for line in (c, decoy)][:-1]
+                else:
+                    body = [decoy + c if place == "glued before" else c + decoy for c in chunks]
+                text = "\n".join(["Notes:"] + [mark + line for line in [head] + body] + ["", "next paragraph"])
+                depth, older, i = i % 3, i // 3 % 2, i + 1
+                with self.subTest(key=name, whole=file == data, width=width, place=place, decoy=decoy[:8],
+                                  lead=lead[:8], words=words[:6], mark=mark, depth=depth, older=older):
+                    masked = Base64ReviewEighteenTest.masks(written(text, depth), older)
+                    held = "\n".join([head, decoy, "Notes:", "next paragraph"])
+                    self.assertEqual([n for n, c in enumerate(chunks) if len(c) >= 4 and c in masked and c not in held
+                                      and cut // 4 * 3 + 6 * n * width // 8 > header
+                                      and cut // 4 * 3 + (6 * (n * width + len(c)) - 1) // 8 < footer], [])
+                    self.assertIn("next paragraph", masked)
 
     def test_header_pieces_are_whole_on_a_line_at_every_offset_width_and_column(self):
         # The pieces of a key's header, footer and word that tell a key's lines (_BEGIN_PIECE, _END_PIECE,
