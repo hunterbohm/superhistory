@@ -709,18 +709,18 @@ class GluedCodeTest(unittest.TestCase):
         return (head + head_sep + out) if head else out
 
     @staticmethod
-    def shown(out, bodies):
-        """The first run of 8 characters of any code that is still in `out`, or None."""
+    def shown(out, bodies, width=8):
+        """The first run of `width` characters of any code that is still in `out`, or None."""
         flat = "".join(c for c in out.replace("[masked]", " ").upper() if c.isalnum())
         for body in bodies:
-            for i in range(len(body) - 7):
-                if body[i:i + 8] in flat:
-                    return body[i:i + 8]
+            for i in range(len(body) - width + 1):
+                if body[i:i + width] in flat:
+                    return body[i:i + width]
         return None
 
-    def check(self, text, bodies):
+    def check(self, text, bodies, width=8):
         for out in (egress.hide(text), egress.clean({"content": text})["content"]):
-            self.assertIsNone(self.shown(out, bodies), f"{text!r} left {out!r}")
+            self.assertIsNone(self.shown(out, bodies, width), f"{text!r} left {out!r}")
             self.assertEqual(egress.hide(out), out, "hiding twice changes nothing")
 
     def test_the_audits_text(self):
@@ -779,7 +779,7 @@ class GluedCodeTest(unittest.TestCase):
                 parts[-1] = parts[-1][:k] + glue + parts[-1][k:]
                 text = f"code: {''.join(parts)} end"
                 with self.subTest(count=count, sep=sep, lower=lower, glue=glue):
-                    self.check(text, bodies)
+                    self.check(text, bodies, 4)  # not a group of any of them left
         # A run of more than eight groups that mixes cases, as base64 does, or holds no letter past F, as a hash does,
         # is not a code: it leaves as it did.
         mixed = "".join(rng.choice(self.CODE_CHARS + self.CODE_CHARS.lower()) for _ in range(64))
@@ -802,8 +802,10 @@ class GluedCodeTest(unittest.TestCase):
                 sep = rng.choice(("", "-", " "))
                 parts = [self.written("", b.lower() if lower else b, sep, "", ()) for b in bodies]
                 word, joint = rng.choice(words), rng.choice((" ", "-", "", " "))
+                two = f"{self.body(rng, 4)}{joint}{self.body(rng, 4)}"
                 text = rng.choice((f"{''.join(parts)}{joint}{word} end", f"{word}{joint}{''.join(parts)} end",
-                                   f"x {''.join(parts)}{joint}{word}.\n", f"{''.join(parts)}{joint}{self.body(rng, 4)} end"))
+                                   f"x {''.join(parts)}{joint}{word}.\n", f"{''.join(parts)}{joint}{self.body(rng, 4)} end",
+                                   f"{two}{joint}{''.join(parts)} end", f"{''.join(parts)}{joint}{two} end"))
                 with self.subTest(count=count, sep=sep, lower=lower, text=text):
                     self.check(text, bodies)
         code = self.body(rng, 32)
@@ -811,6 +813,22 @@ class GluedCodeTest(unittest.TestCase):
                      f"data: {code}{code[:8]}.", f"data: {code.lower()}{code[:4].lower()}."):
             with self.subTest(text=text):
                 self.check(text, [code])
+
+    def test_a_break_in_a_second_code_anywhere_in_it_hides_it_whole(self):
+        # kb's mask hides what is glued to a hidden code up to the first break; the rest of a second code past a break
+        # that is not between groups of four is no group of eight to read as a code, so it is read as part of the first
+        # (behind it) or the second's front (before it), and the break may be a space or a dash anywhere.
+        rng = random.Random("break-anywhere")
+        for sep in (" ", "-"):
+            for cut in range(1, 32):
+                one, two = self.body(rng, rng.choice((32, 32, 28, 24, 20))), self.body(rng, 32)
+                after = "VRC1" + one + two[:cut] + sep + two[cut:] + "."
+                with self.subTest(case="after", sep=sep, cut=cut, first=len(one)):
+                    self.check(after, (one, two))
+                coded, bare = self.body(rng, 32), self.body(rng, 32)
+                before = bare[:cut] + sep + bare[cut:] + rng.choice(self.INVISIBLES) + "VRC1" + coded
+                with self.subTest(case="before", sep=sep, cut=cut):
+                    self.check(before, (bare, coded))
 
     def test_words_after_a_code_that_nothing_is_glued_to_stay(self):
         # Only a code with a letter or digit touching it takes more with it. kb's mask already reads the word after a
