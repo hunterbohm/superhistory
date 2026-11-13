@@ -3,7 +3,8 @@
     superhistory context --session ID < {"message": "...", "before": [{"role": "user" or "assistant", "text": "..."}]}
 
 "before" holds the conversation turns just ahead of the message, oldest first; hooks send the last two.
-Every failure prints nothing. One JSON line per call goes to the check log, never with the message text.
+Every failure prints nothing. One JSON line per call goes to the check log, never with the message text, only its
+length and the seconds each stage took.
 """
 import fcntl
 import hashlib
@@ -18,7 +19,7 @@ from typing import NamedTuple, Optional
 
 from kb import COMMAND, ai, search, store
 from kb.ai import BadAnswer, Prompt
-from kb.mask import mask, mask_all
+from kb.mask import mask, mask_all, mask_head, mask_tail
 
 QUERY_SYSTEM = """The user types a message to one of their AI agents. You see the message and the conversation turns \
 just before it. Their knowledge base holds their past email, texts, notes, meeting notes, commits, GitHub threads \
@@ -80,22 +81,19 @@ def read_request(text):
 
 def prompt_text(message, before):
     parts = []
-    # Masked whole before it is cut, so a cut cannot drop a secret's field name and keep its value.
+    # Masked as the whole text is, then cut, so a cut cannot drop a secret's field name and keep its value: mask_head()
+    # and mask_tail() give that result, read from a window where the text is long.
     for turn in before:
         limit = BEFORE_CHARS[turn["role"]]
-        text = mask(turn["text"])
-        text = text[-limit:] if turn["role"] == "assistant" else text[:limit]
+        text = mask_tail(turn["text"], limit) if turn["role"] == "assistant" else mask_head(turn["text"], limit)
         parts.append(f"[{turn['role']} turn before]\n{text}")
-    parts.append("[The user's message]\n" + mask(message)[:MESSAGE_CHARS])
+    parts.append("[The user's message]\n" + mask_head(message, MESSAGE_CHARS))
     return "\n\n".join(parts)
 
 
-def plan(message, before, model, timeout, hedge_after):
-    """The search query for this message, or None for no search."""
-    if not worth_asking(message, before):
-        return None
-    answer = ai.ask_json(model, Prompt(QUERY_SYSTEM, prompt_text(message, before)), timeout, "query", "search",
-                         hedge_after=hedge_after)
+def plan(text, model, timeout, hedge_after):
+    """The search query for the prompt text (prompt_text), or None for no search."""
+    answer = ai.ask_json(model, Prompt(QUERY_SYSTEM, text), timeout, "query", "search", hedge_after=hedge_after)
     if answer.get("search") is False:
         return None
     query = answer.get("query")
@@ -110,27 +108,41 @@ class Lookup(NamedTuple):
     hits: list
 
 
-def lookup(db, message, before, session, seen, model, budget, hedge_after=None):
+def lookup(db, message, before, session, seen, model, budget, hedge_after=None, stages=None):
     """The check over one store. before: the conversation turns just ahead of the message, as [{"role", "text"}],
-    oldest first. Both model calls share `budget` seconds."""
+    oldest first. Both model calls share `budget` seconds. `stages` is filled as in lookup_with."""
     return lookup_with(lambda query, limit, keep: search.search(db, query, limit=limit, keep=keep),
-                       message, before, session, seen, model, budget, hedge_after)
+                       message, before, session, seen, model, budget, hedge_after, stages)
 
 
-def lookup_with(search_fn, message, before, session, seen, model, budget, hedge_after=None):
+def lookup_with(search_fn, message, before, session, seen, model, budget, hedge_after=None, stages=None):
     """The check over any search: search_fn(query, limit, keep) returns hits as search.search does, such as
-    search.search_stores over several stores."""
+    search.search_stores over several stores. `stages`, a dict, gets the seconds of each stage that ends, "mask",
+    "plan", "search" and "pick": one that fails or runs out of time is the one missing."""
     deadline = time.monotonic() + budget
-    query = plan(message, before, model, budget, hedge_after)
+    stages = {} if stages is None else stages
+    if not worth_asking(message, before):
+        return Lookup(None, [], [])
+    text = _timed(stages, "mask", prompt_text, message, before)
+    query = _timed(stages, "plan", plan, text, model, budget, hedge_after)
     if not query:
         return Lookup(None, [], [])
-    candidates = records(search_fn, query, session, seen)
+    candidates = _timed(stages, "search", records, search_fn, query, session, seen)
     if not candidates:
         return Lookup(query, [], [])
     remaining = deadline - time.monotonic()
     if remaining <= 0:
         raise TimeoutError("no time left to pick")
-    return Lookup(query, candidates, pick(message, before, candidates, model, remaining, hedge_after)[:SHOWN])
+    hits = _timed(stages, "pick", pick, text, candidates, model, remaining, hedge_after)
+    return Lookup(query, candidates, hits[:SHOWN])
+
+
+def _timed(stages, name, step, *args):
+    """step(*args), with its seconds put in `stages` under `name` once it returns."""
+    started = time.monotonic()
+    found = step(*args)
+    stages[name] = round(time.monotonic() - started, 2)
+    return found
 
 
 def records(search_fn, query, session, seen):
@@ -140,11 +152,12 @@ def records(search_fn, query, session, seen):
     return search_fn(query, PICK_FROM, fresh)
 
 
-def pick(message, before, hits, model, timeout, hedge_after=None):
-    """The hits the model scored useful, in search order. Raises BadAnswer when it gives no scores."""
+def pick(text, hits, model, timeout, hedge_after=None):
+    """The hits the model scored useful for the prompt text (prompt_text), in search order. Raises BadAnswer when it
+    gives no scores."""
     lines = [f"{i}. {h['ts'][:10]} {h['source']} | {_line(mask(h['title']))[:120]} | {_line(h['content'])[:PICK_CHARS]}"
              for i, h in enumerate(hits, 1)]
-    user = prompt_text(message, before) + "\n\n[Records]\n" + "\n".join(lines)
+    user = text + "\n\n[Records]\n" + "\n".join(lines)
     scores = ai.ask_json(model, Prompt(PICK_SYSTEM, user), timeout, "scores", hedge_after=hedge_after).get("scores")
     if not isinstance(scores, dict):
         raise BadAnswer("no scores in the pick answer")
@@ -231,10 +244,11 @@ def answer(paths, config, text, session, model=None, still_wanted=None):
     can still be shown; when it says no they are neither shown nor marked as seen."""
     started = time.monotonic()
     entry = {"session": session, "asked": False, "searched": False, "query": None, "candidates": 0, "shown": [],
-             "late": False, "seconds": 0.0, "error": None}
+             "late": False, "seconds": 0.0, "error": None, "chars": 0, "stages": {}}
     output = ""
     try:
         message, before = read_request(text)
+        entry["chars"] = len(message)
         entry["asked"] = config.check.enabled and worth_asking(message, before)
         if entry["asked"]:
             model = model or ai.load(config.ai)
@@ -243,7 +257,8 @@ def answer(paths, config, text, session, model=None, still_wanted=None):
             shown = seen.load(session)
             db = store.connect(paths.db, readonly=True)
             try:
-                found = lookup(db, message, before, session, shown, model, budget, model.traits.hedge_after)
+                found = lookup(db, message, before, session, shown, model, budget, model.traits.hedge_after,
+                               entry["stages"])
             finally:
                 db.close()
             entry.update(searched=bool(found.query), query=found.query, candidates=len(found.candidates))

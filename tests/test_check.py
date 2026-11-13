@@ -5,12 +5,26 @@ import re
 import threading
 import time
 import unittest
+from unittest import mock
 
-from kb import ai, check, search, store
+from kb import ai, check, mask, search, store
+from tests.speed import scaled
 from tests.support import (FakeModel, TRAITS, add_item, open_db, parse_config, plan_and_pick, scratch_paths,
                            unused_model)
+from tests.test_mask_edges import dense, paragraphs
+from tests.test_mask_long import fresh_memo
 
 ASK = "what did Dana say about the Connect launch"
+
+
+def never_whole(real=mask._mask_whole):
+    """A patch under which a text of 100,000 characters or more masked whole is an error: the short ones a lookup also
+    masks (a query, a title) still are."""
+    def guard(text):
+        if len(text) >= 100_000:
+            raise AssertionError("masked a long text whole")
+        return real(text)
+    return mock.patch.object(mask, "_mask_whole", side_effect=guard)
 
 
 class CheckTest(unittest.TestCase):
@@ -344,7 +358,97 @@ class CheckTest(unittest.TestCase):
         self.assertNotIn("zebrafish", text)
         for entry in self.log_entries():
             self.assertEqual(set(entry), {"ts", "session", "asked", "searched", "query", "candidates", "shown",
-                                          "late", "seconds", "error"})
+                                          "late", "seconds", "error", "chars", "stages"})
+            self.assertIsInstance(entry["chars"], int)
+            self.assertTrue(all(isinstance(v, float) for v in entry["stages"].values()))
+
+    def test_the_log_line_holds_the_message_length_and_the_seconds_of_each_stage(self):
+        self.add("gmail", "test:a", "Dana on the Connect launch date")
+        inner = plan_and_pick("Dana Connect launch")
+
+        def slow_pick(prompt):
+            if prompt.system == check.PICK_SYSTEM:
+                time.sleep(0.2)
+            return inner.reply(prompt)
+        self.ask(ASK, model=FakeModel(slow_pick))
+        entry = self.log_entries()[-1]
+        self.assertEqual(entry["chars"], len(ASK))
+        self.assertEqual(list(entry["stages"]), ["mask", "plan", "search", "pick"])
+        for seconds in entry["stages"].values():
+            self.assertEqual(seconds, round(seconds, 2))
+            self.assertGreaterEqual(seconds, 0)
+        self.assertGreaterEqual(entry["stages"]["pick"], 0.15)
+        self.assertLess(entry["stages"]["plan"], 0.15)
+
+    def test_stages_that_were_not_reached_are_not_logged(self):
+        self.ask("yes do it", model=unused_model())
+        self.ask("please refactor the parser module into smaller functions", model=FakeModel('{"search": false}'))
+        self.ask(ASK, model=plan_and_pick("Dana Connect launch"))
+        short, no_search, no_records = self.log_entries()
+        self.assertEqual((short["chars"], short["stages"]), (len("yes do it"), {}))
+        self.assertEqual(list(no_search["stages"]), ["mask", "plan"])
+        self.assertEqual(list(no_records["stages"]), ["mask", "plan", "search"])
+
+    def test_a_lookup_that_runs_out_of_time_logs_the_stages_it_finished(self):
+        self.add("gmail", "test:a", "Dana on the Connect launch date")
+        inner = plan_and_pick("Dana Connect launch")
+        config = parse_config("[check]\nbudget_seconds = 0.3\n")
+        for slow, finished in ((check.QUERY_SYSTEM, ["mask"]), (check.PICK_SYSTEM, ["mask", "plan", "search"])):
+            def reply(prompt, slow=slow):
+                if prompt.system == slow:
+                    time.sleep(0.6)
+                return inner.reply(prompt)
+            with self.subTest(slow=slow[:20]):
+                self.assertEqual(self.ask("zebrafish " + ASK, model=FakeModel(reply), config=config), "")
+                entry = self.log_entries()[-1]
+                self.assertEqual((entry["error"], list(entry["stages"]), entry["chars"]),
+                                 ("TimeoutError", finished, len("zebrafish " + ASK)))
+        with open(self.paths.log("check"), encoding="utf-8") as fh:
+            self.assertNotIn("zebrafish", fh.read())
+
+    def test_the_prompt_is_built_once_and_both_calls_carry_it(self):
+        self.add("gmail", "test:a", "Dana on the Connect launch date")
+        model = plan_and_pick("Dana Connect launch")
+        before = [{"role": "user", "text": "draft the note to Dana"}, {"role": "assistant", "text": "Which launch?"}]
+        with mock.patch.object(check, "prompt_text", wraps=check.prompt_text) as built:
+            self.ask(ASK, model=model, before=before)
+        built.assert_called_once()
+        plan_prompt, pick_prompt = (p.user for p in model.prompts)
+        self.assertTrue(pick_prompt.startswith(plan_prompt + "\n\n[Records]\n"))
+
+    def test_a_message_of_600_kb_is_masked_in_a_window_and_its_secrets_stay_masked(self):
+        # Read whole, masking it took minutes: 91 seconds for 520 KB of a git diff, and twice for each lookup. The
+        # secret starts before the 4,000th character, and what the prompt keeps ends inside its placeholder.
+        secret = "x7Rt9Lm2Kq4Zp8Vb"
+        message = paragraphs(3984, 25) + "\npassword = " + secret + "\n\n" + dense(600_000, 26)
+        self.assertGreater(len(message), 600_000)
+        expected = "[The user's message]\n" + mask._mask_whole(message[:100_000])[:check.MESSAGE_CHARS]
+        self.assertTrue(expected.endswith("password = [mas"))
+        self.add("gmail", "test:a", "Dana on the Connect launch date")
+        model = plan_and_pick("Dana Connect launch")
+        fresh_memo()
+        with never_whole():
+            self.ask(message, model=model)
+        entry = self.log_entries()[-1]
+        self.assertEqual(entry["chars"], len(message))
+        self.assertLess(entry["stages"]["mask"], scaled(12))
+        self.assertEqual(model.prompts[0].user, expected)
+        self.assertNotIn(secret[:6], model.prompts[0].user)
+
+    def test_long_turns_before_the_message_are_masked_in_a_window_too(self):
+        turns = [dense(200_000, 27), dense(200_000, 28)]
+        before = [{"role": "user", "text": turns[0]}, {"role": "assistant", "text": turns[1]}]
+        expected_user = mask._mask_whole(turns[0][:100_000])[:600]
+        expected_assistant = mask._mask_whole(turns[1][-100_000:])[-1500:]
+        model = FakeModel('{"search": false}')
+        fresh_memo()
+        with never_whole():
+            self.ask("yes cover all three items", model=model, before=before)
+        user_turn, _, rest = model.prompts[0].user.partition("\n\n[assistant turn before]\n")
+        assistant_turn, _, message = rest.partition("\n\n[The user's message]\n")
+        self.assertEqual(user_turn, "[user turn before]\n" + expected_user)
+        self.assertEqual(assistant_turn, expected_assistant)
+        self.assertEqual(message, "yes cover all three items")
 
     def test_stalled_first_call_is_beaten_by_a_copy_at_the_models_hedge_time(self):
         self.add("gmail", "test:a", "Dana on the Connect launch date")
