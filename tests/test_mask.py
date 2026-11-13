@@ -5447,6 +5447,51 @@ class Base64ReviewTwentyFourthTest(unittest.TestCase):
                                       and cut // 4 * 3 + (6 * (n * width + len(c)) - 1) // 8 < footer], [])
                     self.assertIn("next paragraph", masked)
 
+    def test_a_keys_header_line_with_words_after_it_above_its_body_wrapped_narrow_beside_other_runs_is_masked(self):
+        # Review round 2 of PR 92: as above, but each body line's run stands apart from the decoy, a space or a table's
+        # bar between, before it, after it or on both sides. A line's longest run is the decoy's, so the three lines'
+        # longest runs joined read none of the key, and the key's run alone, 7 characters or fewer, decodes to three
+        # bytes that read as words. A run 4 to 7 characters long that decodes to base64's characters is read with each
+        # such run on the next line joined to it, as a key's line goes on into the next; and a line cut into more such
+        # groups than four, as a key's line cut with spaces, reads as a key's.
+        import itertools
+        import random
+        import textwrap
+        written, i = Base64ReviewNineteenFindingsTest.written, 0
+        r = random.Random(79)
+        said = (b" as their opening line, then the body.", b". The body follows")
+        decoys = ("ledger", "notes", base64.b64encode(b"zebra quilt ").decode())
+        for name, data in {**self.key_files(r), **self.gnupg_files(r)}.items():
+            header = data.index(b"\n")
+            cut = -(-header // 3) * 4  # the header's base64, to a whole group (its line break and a body byte too)
+            footer = data.rindex(b"-----END" if b"-----END" in data else b"---- END")
+            for file, width, place in itertools.product((data, data[:footer]), (4, 5, 6, 7, 8, 12, 24),
+                                                        ("decoy before", "decoy after", "decoys both sides",
+                                                         "cut into groups")):
+                code = base64.b64encode(file).decode()
+                decoy, words, mark = decoys[i % 3], said[i // 3 % 2], ("> ", "")[i // 6 % 2]
+                lead = (decoy, base64.b64encode(b"Example: ").decode())[i // 12 % 2]
+                apart = (" ", " | ")[i // 24 % 2]
+                head = lead + code[:cut] + base64.b64encode(words).decode()
+                chunks = textwrap.wrap(code[cut:], width)
+                if place == "cut into groups":
+                    body = [apart.join(textwrap.wrap(c, 4)) for c in chunks]
+                else:
+                    body = [apart.join(([decoy] if place != "decoy after" else []) + [c]
+                                       + ([decoy] if place != "decoy before" else [])) for c in chunks]
+                text = "\n".join(["Notes:"] + [mark + line for line in [head] + body] + ["", "next paragraph"])
+                depth, older, i = i % 3, i // 3 % 2, i + 1
+                with self.subTest(key=name, whole=file == data, width=width, place=place, decoy=decoy[:8],
+                                  lead=lead[:8], words=words[:6], mark=mark, apart=apart, depth=depth, older=older):
+                    masked = Base64ReviewEighteenTest.masks(written(text, depth), older)
+                    held = "\n".join([head, decoy, "Notes:", "next paragraph"])
+                    seen = [textwrap.wrap(c, 4) if place == "cut into groups" else [c] for c in chunks]
+                    self.assertEqual([n for n, c in enumerate(chunks) if len(c) >= 4
+                                      and any(g in masked and g not in held for g in seen[n] if len(g) >= 4)
+                                      and cut // 4 * 3 + 6 * n * width // 8 > header
+                                      and cut // 4 * 3 + (6 * (n * width + len(c)) - 1) // 8 < footer], [])
+                    self.assertIn("next paragraph", masked)
+
     def test_header_pieces_are_whole_on_a_line_at_every_offset_width_and_column(self):
         # The pieces of a key's header, footer and word that tell a key's lines (_BEGIN_PIECE, _END_PIECE,
         # _WORD_PIECE) are each read whole on one line of a wrapping 4 characters wide or wider, wherever the key's
@@ -5510,6 +5555,30 @@ class Base64ReviewTwentyFourthTest(unittest.TestCase):
                         best = spent if best is None else min(best, spent)
                     took[blocks] = best
                 self.assertLess(took[24], 8 * max(took[6], 0.05), took)
+
+    def test_lines_of_many_short_runs_below_a_quoted_header_cost_time_in_proportion(self):
+        # Review round 2 of PR 92: below a quoted header, each run 4 to 7 characters long that decodes to base64's
+        # characters is read with each such run on the next line joined to it. A line with more than four such runs
+        # reads as a key's line and is not read so, so four times the runs on each line take under eight times the time.
+        import random
+        import time
+        from kb import mask as masking
+        r = random.Random(83)
+        data = self.pem(r)
+        head = (base64.b64encode(data).decode()[:-(-data.index(b"\n") // 3) * 4]
+                + base64.b64encode(b" as their opening line, then the body.").decode())
+        took = {}
+        for runs in (60, 240):
+            text = "\n".join(["Notes:", head] + [" ".join(["YWJj"] * runs)] * 8 + ["", "next paragraph"])
+            self.assertLessEqual(len(text), masking.WHOLE)
+            best = None
+            for _ in range(2):
+                started = time.process_time()
+                mask(text)
+                spent = time.process_time() - started
+                best = spent if best is None else min(best, spent)
+            took[runs] = best
+        self.assertLess(took[240], 8 * max(took[60], 0.05), took)
 
 
 class Base64ReviewTwentyFifthTest(unittest.TestCase):

@@ -1834,22 +1834,52 @@ def _frame_quoted(joined, decoded, frame, base):
 
 def _key_lines(text, run):
     """For each line of `run` (_marked_key_spans), how it reads as a key's line: None where a run of base64 on it holds
-    a run as long as a key's line decoded; else the most that a run on it reads as a key's line wrapped narrow
-    (_read_as_key_line), or its longest run with the longest runs of the two lines after it joined to it, as a key's
-    lines 7 characters wide or narrower with a line of other base64 between each read only together."""
+    a run as long as a key's line decoded; else the most that it reads as a key's line wrapped narrow
+    (_read_as_key_line), read four ways. Each run on it alone. Its longest run with the longest runs of the two lines
+    after it joined to it, as a key's lines 7 characters wide or narrower with a line of other base64 between each read
+    only together. Each run 4 to 7 characters long that decodes, from an offset, to base64's characters only, as a
+    key's line wrapped so narrow does (_narrow_start), with each such run on the next line joined to it, as the key's
+    next line is, beside other runs (a decoy set apart by a space or a table's bar, longer than it): it counts where
+    they decode on to 6 of base64's characters or more, as two of a key's lines do, and two runs of other base64 or of
+    words do by chance alone (about 1 in 64; a document's own lines decode to its words). And its runs shorter than 8
+    characters with the two lines' after it glued, the spaces between them dropped, as a key's lines cut with spaces
+    read: all of them, all but runs of digits (a line's number), and those shorter than 4 but runs of digits (pieces
+    of a key's line set apart from longer runs). It counts where they decode to 9 of base64's characters or more at an
+    edge, as a key's do, and other runs glued so do by chance alone (about 1 in 4,000). A line with more runs that read
+    as a key's line wrapped so narrow than _NARROW_STARTS reads as a key's: a key's line cut into groups, or decoys set
+    to cost time."""
     runs = [[m.group().rstrip("=") for m in _MARKED_BASE64.finditer(text, start, end)] for start, end in run]
     longest = [max(found, key=len, default="") for found in runs]
+    glued = [["".join(read for read in found if len(read) < shorter and not (digits and read.isdigit()))
+               for shorter, digits in ((8, False), (8, True), (4, True))] for found in runs]
+    starts = [[read for read in found if _narrow_start(read)] for found in runs] + [[]]
     out = []
     for i, found in enumerate(runs):
+        if len(starts[i]) > _NARROW_STARTS:
+            out.append(None)
+            continue
+        reads = [(read, 0) for read in found] + [(read + then, 6) for read in starts[i] for then in starts[i + 1]]
+        if i + 2 < len(runs):
+            reads.append(("".join(longest[i:i + 3]), 0))
+            reads += [(read, 9) for read in dict.fromkeys("".join(line[k] for line in glued[i:i + 3]) for k in range(3))
+                      if read and read != reads[-1][0]]
         most = 0
-        for read in found + ["".join(longest[i:i + 3])] * (i + 2 < len(runs)):
+        for read, least in reads:
             edge = _read_as_key_line(read)
             if edge is None:
                 most = None
                 break
-            most = max(most, edge)
+            if edge >= least:
+                most = max(most, edge)
         out.append(most)
     return out
+
+
+def _narrow_start(read):
+    """Whether a run of base64 (`read`, past its padding) 4 to 7 characters long decodes, from one of its offsets, to
+    base64's characters only, as a key's line wrapped so narrow does (_key_lines); a line's number never does."""
+    return 4 <= len(read) < 8 and any(_BASE64_BYTES.fullmatch(_base64_decoded(read, offset, offset + 4) or b"-")
+                                      for offset in range(len(read) - 3))
 
 
 def _read_as_key_line(read):
@@ -1882,6 +1912,9 @@ _BASE64_BYTES_END = re.compile(rb"[A-Za-z0-9+/]*\Z")
 # wide does, or 4 (_read_as_key_line). Another file's base64, which decodes to bytes at random, does so on few of its
 # lines (64 characters wide: about 1 in 400, and 1 in 6).
 _NARROW_KEY_LINES = ((6, 2), (3, 8))
+# How many runs on a line below a quoted header, 4 to 7 characters long, may each decode to base64's characters only
+# before the line reads as a key's (_key_lines).
+_NARROW_STARTS = 4
 
 
 def _held_key_lines(lines):
