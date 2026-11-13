@@ -1838,22 +1838,26 @@ def _key_lines(text, run):
     (_read_as_key_line), read four ways. Each run on it alone. Its longest run with the longest runs of the two lines
     after it joined to it, as a key's lines 7 characters wide or narrower with a line of other base64 between each read
     only together. Each run 4 to 7 characters long that decodes, from an offset, to base64's characters only, as a key's
-    line wrapped so narrow does (_narrow_start), with each such run on the next line joined to it, as the key's next
-    line is, beside other runs (a decoy set apart by a space or a table's bar, longer than it). And its runs shorter
-    than 8 characters, but runs of digits (a line's number) and runs found on another of the three lines (a decoy set
-    beside each), with the two lines' after it glued, the spaces between them dropped, as a key's lines cut with spaces
-    read. A line with more runs that read as a key's line wrapped so narrow than _NARROW_STARTS reads as a key's: a
-    key's line cut into groups, or decoys set to cost time."""
+    line wrapped so narrow does (_narrow_start), with each run 4 to 7 characters long on the next line joined to it,
+    as the key's next line or piece is (which may not decode so alone, cut at another offset), beside other runs (a
+    decoy set apart by a space or a table's bar, longer than it, or one that differs on each line); a run found on
+    both lines (a decoy set beside each, a label's word) joins none. And its runs shorter than 8 characters, but runs
+    of digits (a line's number) and runs found on another of the three lines (a decoy set beside each), with the two
+    lines' after it glued, the spaces between them dropped, as a key's lines cut with spaces read. A line with more
+    runs that read as a key's line wrapped so narrow than _NARROW_STARTS reads as a key's: a key's line cut into groups,
+    or decoys set to cost time (it also keeps the pairs, each of which holds one of the line's own, in proportion)."""
     runs = [[m.group().rstrip("=") for m in _MARKED_BASE64.finditer(text, start, end)] for start, end in run]
     longest = [max(found, key=len, default="") for found in runs]
     short = [[read for read in found if len(read) < 8 and not read.isdigit()] for found in runs]
-    starts = [[read for read in found if _narrow_start(read)] for found in runs] + [[]]
+    starts = [[read for read in found if _narrow_start(read)] for found in runs]
+    pieces = [{read for read in found if 4 <= len(read) < 8} for found in runs] + [set()]
     out = []
     for i, found in enumerate(runs):
         if len(starts[i]) > _NARROW_STARTS:
             out.append(None)
             continue
-        reads = found + [read + then for read in starts[i] for then in starts[i + 1]]
+        after = pieces[i + 1] - pieces[i]
+        reads = found + [read + then for read in starts[i] if read not in pieces[i + 1] for then in after]
         if i + 2 < len(runs):
             seen = [set(line) for line in short[i:i + 3]]
             glued = "".join(read for k, line in enumerate(short[i:i + 3]) for read in line
