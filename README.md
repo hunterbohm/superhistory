@@ -578,11 +578,12 @@ Known limits:
   as quoted (words after it on its line, or prose on the next line, and no key's lines below it in the run: a line
   that decodes to a run of base64 as long as a key's line, or lines that decode as a key's wrapped narrow do, with a
   decoy glued to them, set apart from them or on lines between, or cut with spaces: a run, alone, joined to the next
-  two lines' longest runs, or 4 to 7 characters long and decoding alone to base64's characters, joined to such a run
-  on the next line, that decodes from no offset to words and from one to bytes that start or end with base64's
-  characters, on two lines with 6 or more of them or on eight with 3 or more; three lines' runs glued that decode to
-  9 or more at an edge; or more than four such short runs on one line; a footer also needs words before it, and
-  only a line break after it is a key file's end, no quote's; no reading joins lines across one it skips) or in a
+  two lines' longest runs, 4 to 7 characters long and decoding alone to base64's characters joined to such a run on
+  the next line, or three lines' runs under 8 characters glued, but runs of digits and runs on two of the lines, that
+  decodes from no offset to words and from one to bytes that start or end with base64's characters, on two lines with
+  6 or more of them or on eight with 3 or more; or more than four such short runs on one line; a footer also needs
+  words before it, and only a line break after it is a key file's end, no quote's; no reading joins lines across one
+  it skips) or in a
   certificate's, a public key's or a list's own header or footer. A footer's piece ("--END ") with a word's piece
   after it and no header's piece before it masks the run from its first line through the footer, as a key whose header
   is cut off (to the run's end where no reading holds the footer whole). So a key whose run stands fourth or further
