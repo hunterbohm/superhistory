@@ -13,7 +13,9 @@ from kb.sync.client import SyncError
 from .network import Network, run_cli
 from .support import EMAIL, World
 
-GMAIL = '[sources.gmail]\naddress = "person@gmail.com"\n'
+DOMAIN = "gmail.com"
+ADDRESS = f"person@{DOMAIN}"
+GMAIL = f'[sources.gmail]\naddress = "{ADDRESS}"\n'
 GMAIL_SPELLED_OTHERWISE = '[sources.work_mail]\ntype = "gmail"\naddress = "Per.Son@GoogleMail.com"\n'
 GITHUB = '[sources.github]\ninvolves = "octocat"\n'
 SECRETS = ("person@", "gmail.com", "googlemail", "octocat")
@@ -119,17 +121,17 @@ class AccountsTest(unittest.TestCase):
         a = self.start("laptop", GMAIL)
         b = self.join(a, "desk", GITHUB)
         self.assertEqual(self.accounts_of(b, a), [digest("github:octocat")])
-        self.assertEqual(self.accounts_of(a, b), [digest("gmail:person@gmail.com")])
+        self.assertEqual(self.accounts_of(a, b), [digest(f"gmail:{ADDRESS}")])
 
     def test_init_and_recover_put_the_digests_of_this_computer_s_accounts_in_its_entry(self):
         a = self.start("laptop", GMAIL, GITHUB)
-        self.assertEqual(self.accounts_of(a), sorted([digest("gmail:person@gmail.com"), digest("github:octocat")]))
+        self.assertEqual(self.accounts_of(a), sorted([digest(f"gmail:{ADDRESS}"), digest("github:octocat")]))
         code, gone = a.client.new_recovery_code(), a.client.device_id
         a.lose_everything()
         c = self.world.computer("replacement")
         c.reads(GMAIL)
         c.client.recover(code, self.world.browser())
-        self.assertEqual(self.accounts_of(c), [digest("gmail:person@gmail.com")], "it replaces the computer it revokes")
+        self.assertEqual(self.accounts_of(c), [digest(f"gmail:{ADDRESS}")], "it replaces the computer it revokes")
         self.assertIsNotNone(c.client.roster.entry(gone)["removed"])
         raw = repr(c.client.roster.link)
         self.assertNotIn("person@", raw)
@@ -172,10 +174,10 @@ class AccountsTest(unittest.TestCase):
         self.assertEqual(a.client.roster.version, before + 1)
         link = a.client.roster.link
         self.assertEqual(link["signer"], a.client.device_id)
-        self.assertEqual(self.accounts_of(a), [digest("gmail:person@gmail.com")])
+        self.assertEqual(self.accounts_of(a), [digest(f"gmail:{ADDRESS}")])
         self.assertEqual(self.accounts_of(b, a), [], "only its own entry changed")
         self.assertIsNone(b.sync().stalled)
-        self.assertEqual(self.accounts_of(a, b), [digest("gmail:person@gmail.com")])
+        self.assertEqual(self.accounts_of(a, b), [digest(f"gmail:{ADDRESS}")])
         self.assertIsNone(a.sync().stalled)
         self.assertEqual(a.client.roster.version, before + 1, "a claim that has not changed writes no link")
 
@@ -248,7 +250,7 @@ class AccountsTest(unittest.TestCase):
         self.assertIsNone(a.sync().stalled)
         self.assertEqual(self.accounts_of(a), [], "its claim went with the source")
         self.assertIsNone(b.sync().stalled)
-        self.assertEqual(self.accounts_of(b), [digest("gmail:person@gmail.com")])
+        self.assertEqual(self.accounts_of(b), [digest(f"gmail:{ADDRESS}")])
 
         a.reads(GMAIL)
         with self.assertRaises(SyncError) as back:
@@ -267,7 +269,7 @@ class AccountsTest(unittest.TestCase):
         self.assertIsNone(b.sync().stalled)
         self.assertIsNotNone(b.client.roster.entry(a.client.device_id)["removed"])
         self.assertIsNone(c.sync().stalled, "the removal link landed, so the claim is free")
-        self.assertEqual(self.accounts_of(c), [digest("gmail:person@gmail.com")])
+        self.assertEqual(self.accounts_of(c), [digest(f"gmail:{ADDRESS}")])
 
     def test_two_computers_adding_one_account_at_once_land_exactly_one_claim(self):
         a = self.start("laptop")
@@ -289,9 +291,9 @@ class AccountsTest(unittest.TestCase):
                 b.sync()
         self.assertIsNone(landed[0].stalled)
         self.assertIn('"laptop"', str(refused.exception))
-        self.assertEqual(self.accounts_of(a, b), [digest("gmail:person@gmail.com")])
+        self.assertEqual(self.accounts_of(a, b), [digest(f"gmail:{ADDRESS}")])
         self.assertEqual(self.accounts_of(b, b), [])
-        holders = [e["label"] for e in b.client.roster.active() if digest("gmail:person@gmail.com") in e["accounts"]]
+        holders = [e["label"] for e in b.client.roster.active() if digest(f"gmail:{ADDRESS}") in e["accounts"]]
         self.assertEqual(holders, ["laptop"])
 
 
@@ -356,7 +358,7 @@ class RosterRulesTest(unittest.TestCase):
         self.assertEqual(got.entry(c.client.device_id)["accounts"], [digest("github:octocat")])
 
     def test_no_link_gives_one_digest_to_two_active_entries(self):
-        taken = digest("gmail:person@gmail.com")
+        taken = digest(f"gmail:{ADDRESS}")
         entries = self.with_accounts(self.b, [taken])
         with self.assertRaisesRegex(keys.Refused, "online account"):
             roster.check_link(roster.new_link(self.ro, self.ro.epoch, self.a.client.device_id, entries, self.ring))
@@ -364,7 +366,7 @@ class RosterRulesTest(unittest.TestCase):
             self.ro.accept(*self.link(self.b, entries))
 
     def test_a_removed_entry_holds_nothing(self):
-        taken = digest("gmail:person@gmail.com")
+        taken = digest(f"gmail:{ADDRESS}")
         removed = {"in_version": 2, "head_dseq": 0, "head_hash": "", "clear": False}
         entries = [{**e, "removed": removed} if e["device_id"] == self.a.client.device_id else
                    {**e, "accounts": [taken]} for e in self.ro.entries]
@@ -374,7 +376,7 @@ class RosterRulesTest(unittest.TestCase):
         entry = self.ro.entry(self.a.client.device_id)
         one, two = sorted([digest("github:octocat"), digest("github:other")])
         roster.check_entry({**entry, "accounts": [one, two]})
-        for bad in ([two, one], [one, one], ["person@gmail.com"], [one.upper()], "x", None):
+        for bad in ([two, one], [one, one], [ADDRESS], [one.upper()], "x", None):
             with self.subTest(bad=bad), self.assertRaises(keys.Refused):
                 roster.check_entry({**entry, "accounts": bad})
         with self.assertRaises(keys.Refused):

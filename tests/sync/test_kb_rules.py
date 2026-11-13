@@ -45,7 +45,7 @@ class KbRulesTest(unittest.TestCase):
         """A seeded search, not a proof: shapes of id the mask has rules for, with and without an install prefix, a host
         and a profile name, joined at random."""
         pieces = ["password=", "token:", "secret=", "API_KEY=", "Authorization: ", "Basic ", "Bearer ", "cookie: ",
-                  "hunter2pw", "Pw7abcDEF12345xyz", "ghp_" + "A" * 36, "sk-ant-api03-" + "B" * 40, "dXNlcjpodW50ZXIycHc=",
+                  "tiger7xpw", "Pw7abcDEF12345xyz", "ghp_" + "A" * 36, "sk-ant-api03-" + "B" * 40, "dXNlcjp0aWdlcjd4cHc=",
                   "https://u:pw12345@h.example/", "postgres://:pw12345@h/", "u:p@", "AKIA" + "C" * 16, "x", "/", ".", "-",
                   " ", "​", "note.md", "2026Q4 plan", "the password is changed"]
         rnd = random.Random(11)

@@ -47,9 +47,9 @@ class CommandTest(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, proc.stderr)
 
     def test_a_mistyped_value_is_not_quoted_back(self):
-        code, out = run_cli("/nonexistent-home", "sync", "remove", "--bogus=hunter2-the-password")
+        code, out = run_cli("/nonexistent-home", "sync", "remove", "--bogus=tiger7x-the-password")
         self.assertEqual(code, 2)
-        self.assertNotIn("hunter2-the-password", out)
+        self.assertNotIn("tiger7x-the-password", out)
 
     def test_not_signed_in_names_the_full_command(self):
         world = World()

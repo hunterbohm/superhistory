@@ -338,7 +338,7 @@ class BoundaryTest(unittest.TestCase):
     def test_login_refuses_a_secret_in_the_label_or_an_address_and_writes_nothing(self):
         home = os.path.join(self.tmp, "home")
         code, pairing = keys.new_recovery_code()[0], keys.new_pairing_code()[0]
-        for label, relay_url in ((f"laptop {self.secret}", "https://relay.test"), ("laptop", "http://u:hunter2pw@127.0.0.1:3001"),
+        for label, relay_url in ((f"laptop {self.secret}", "https://relay.test"), ("laptop", "http://u:tiger7xpw@127.0.0.1:3001"),
                                  ("password=Pw7xYz9q", "https://relay.test"), (code, "https://relay.test"),
                                  (f"laptop {pairing.lower().replace('-', ' ')}", "https://relay.test"),
                                  ("laptop", f"http://127.0.0.1:3001/{code}")):

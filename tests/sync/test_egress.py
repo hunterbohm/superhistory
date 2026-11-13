@@ -398,7 +398,7 @@ class HideInvisibleTest(unittest.TestCase):
 # ones it reads as breaks, alone and mixed.
 SEPARATORS = ("", "\u200b", "\f", "\u2028", "\ue000", "\u200b\f", "\f\u200b")
 MIXED_PIECES = (("sk-proj-" + "a1" * 7, "ghp_" + "a1" * 16), ("sk-proj-" + "a1" * 16, "b2" * 8),
-                ("ghp_" + "a1" * 10, "a1" * 10), ("password", "=hunter2hunter2"), ("A1G2" * 4, "A1G2" * 4))
+                ("ghp_" + "a1" * 10, "a1" * 10), ("password", "=tiger7xtiger7x"), ("A1G2" * 4, "A1G2" * 4))
 SPLITTERS = HideInvisibleTest.MARKS + ("\f", "\v", "\u2028", "\ue000", "\x1c", "\ufe0f", "\u034f")
 
 
