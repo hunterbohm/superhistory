@@ -783,15 +783,34 @@ class GluedCodeTest(unittest.TestCase):
         # A run of more than eight groups that mixes cases, as base64 does, or holds no letter past F, as a hash does,
         # is not a code: it leaves as it did.
         mixed = "".join(rng.choice(self.CODE_CHARS + self.CODE_CHARS.lower()) for _ in range(64))
-        code, hash_ = self.body(rng, 32), "3F2A9C0B" * 4  # a run of 32 that is a code, and one that is a hash
-        for text in (f"data: {mixed}.", f"data: {mixed.lower()[:32]}{mixed.upper()[32:]}.",  # both cases
+        for text in (f"data: {mixed}.",  # both cases, a character at a time
                      f"data: {'3F2A9C0B' * 8}.", f"data: {'3f2a9c0b' * 8}.", f"hash: {'3f2a9c0b' * 8}",
                      f"data: {'3f2a9c0b-' * 7}3f2a9c0b.",  # no letter past F
-                     f"data: {code}{hash_}.", f"data: {hash_}{code}.",  # only some of its 32s are codes
-                     f"data: {code}{code[:4]}.", f"data: {code}{code[:8]}.", f"data: {code}{code[:28]}.",  # not whole codes
-                     f"data: {code.lower()}{code[:4].lower()}."):
+                     f"data: {'3f2a9c0b' * 5}", f"sums {'3F2A9C0B' * 4} and {'3F2A9C0B' * 4}"):
             with self.subTest(text=text):
                 self.assertEqual(egress.hide(text), text)
+
+    def test_a_code_without_its_head_beside_other_groups_or_a_word_is_masked(self):
+        # A word of four letters before or after a code, or two codes and a word, is a run of 9 groups or more; the
+        # code in it hides whatever else is in the run (a hash beside it, a word, part of another code).
+        rng = random.Random("glued-word")
+        words = ("DONE", "done", "Done", "next", "HASH", "then", "A1B2", "ZZZZ", "0000", "word")
+        for count in (1, 2, 3):
+            for _ in range(20):
+                bodies = [self.body(rng, 32) for _ in range(count)]
+                lower = rng.random() < 0.5
+                sep = rng.choice(("", "-", " "))
+                parts = [self.written("", b.lower() if lower else b, sep, "", ()) for b in bodies]
+                word, joint = rng.choice(words), rng.choice((" ", "-", "", " "))
+                text = rng.choice((f"{''.join(parts)}{joint}{word} end", f"{word}{joint}{''.join(parts)} end",
+                                   f"x {''.join(parts)}{joint}{word}.\n", f"{''.join(parts)}{joint}{self.body(rng, 4)} end"))
+                with self.subTest(count=count, sep=sep, lower=lower, text=text):
+                    self.check(text, bodies)
+        code = self.body(rng, 32)
+        for text in (f"data: {code}{'3F2A9C0B' * 4}.", f"data: {'3F2A9C0B' * 4}{code}.", f"data: {code}{code[:4]}.",
+                     f"data: {code}{code[:8]}.", f"data: {code.lower()}{code[:4].lower()}."):
+            with self.subTest(text=text):
+                self.check(text, [code])
 
     def test_words_after_a_code_that_nothing_is_glued_to_stay(self):
         # Only a code with a letter or digit touching it takes more with it. kb's mask already reads the word after a
@@ -807,12 +826,14 @@ class GluedCodeTest(unittest.TestCase):
 
     def test_what_is_past_a_glued_run_that_is_no_second_code_stays(self):
         # A run glued on, then groups that bring it past 32 (or to under 20), is not a second code written in two
-        # pieces: kb's mask hides the run to the break, and the groups past it stay, as they did.
+        # pieces: kb's mask hides the run to the break, and the groups past it stay, as they did. (Groups of four past
+        # it read as part of a run of groups, and a code in that run hides with all of it: they are not used here. A
+        # word after a run of 20 to 31 that the groups before it bring to 20 goes with it, as the rest of a code.)
         code = "VRC1" + "A1G2" * 8
-        for glued, group in (("AB12CD34EF56GH78JK90", "WXYZ" * 4), ("AB12CD34EF56GH78JK90MN", "PQ34RS56TV78"),
-                             ("AB12", "WXYZ" * 3), ("AB12CD34EF56GH78JK90MN34PQ56", "RS78TV90WX12")):
+        for glued, group in (("AB12CD34EF56GH78JK90", "WXYZWXYZWXYZWXYZW"), ("AB12CD34EF56GH78JK90MN", "PQ34RS56TV789"),
+                             ("AB12", "WXYZWXYZWXYZW"), ("AB12CD34EF56GH78JK90MN34PQ56", "RS78TV90WX123")):
             with self.subTest(glued=glued, group=group):
-                self.assertEqual(egress.hide(f"{code}{glued} {group} end"), f"[masked] {group} end")
+                self.assertEqual(egress.hide(f"{code}{glued} {group}."), f"[masked] {group}.")
 
     def test_a_key_glued_onto_the_end_of_a_code_is_masked_whole(self):
         # Masking a code first would cut the key into pieces kb no longer reads; the key hides whole as it always did.

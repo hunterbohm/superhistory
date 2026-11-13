@@ -287,8 +287,9 @@ def _code_stream(text):
     return chars, where
 
 
-# More than eight groups of four, as two or more codes without their heads run together are: one run, with no break
-# between the codes to tell where one ends.
+# More than eight groups of four, as two or more codes without their heads run together are, or one with a word of four
+# letters before or after it: one run, with no break to tell where a code starts or ends.
+_GROUP = re.compile(r"[0-9A-Za-z]{4}")
 _HEADLESS_RUN = re.compile(r"(?<![0-9A-Za-z])[0-9A-Za-z]{4}(?:[ \t\r\n-]{0,3}[0-9A-Za-z]{4}){8,}(?![0-9A-Za-z])")
 
 
@@ -303,18 +304,20 @@ def _a_code_body(chars):
 def headless_spans(text):
     """Where `text` may hold a recovery code written without its VRC1 head: 32 code characters in any case, run
     together or in the printed groups of four. A code holds a digit and a letter past F, all but about one in 150,000
-    do, so a hex run, such as a hash or a uuid without its dashes, and a run of words, are never taken for one. A run
-    of 16, 24 or more groups is two or more codes without heads run together, when it is all in one case, as a code
-    prints, and each 32 of it is a code: text with both cases, base64's or a word's, is not."""
+    do, so a hex run, such as a hash or a uuid without its dashes, and a run of words, are never taken for one. In a
+    run of nine or more groups, two or more codes without heads run together, or one with a word beside it, each eight
+    groups in a row that are in one case, as a code prints, and read as a code are one: text with both cases, base64's
+    or a word's, has none."""
     out = []
     for m in _HEADLESS.finditer(text):
         if _a_code_body(re.sub(r"[ \t\r\n-]", "", m.group(1))):
             out.append((m.start(), m.start() + len(m.group(1))))
     for m in _HEADLESS_RUN.finditer(text):
-        chars = re.sub(r"[ \t\r\n-]", "", m.group())
-        if len(chars) % 32 == 0 and chars in (chars.upper(), chars.lower()) and all(
-                _a_code_body(chars[i:i + 32]) for i in range(0, len(chars), 32)):
-            out.append((m.start(), m.end()))
+        groups = [(m.start() + g.start(), m.start() + g.end()) for g in _GROUP.finditer(m.group())]
+        for i in range(len(groups) - 7):
+            chars = "".join(text[a:b] for a, b in groups[i:i + 8])
+            if chars in (chars.upper(), chars.lower()) and _a_code_body(chars):
+                out.append((groups[i][0], groups[i + 7][1]))
     return out
 
 
