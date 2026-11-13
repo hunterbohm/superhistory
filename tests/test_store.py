@@ -4,6 +4,7 @@ import os
 import random
 import sqlite3
 import tempfile
+import time
 import unittest
 from datetime import datetime, timedelta, timezone
 from unittest import mock
@@ -79,6 +80,79 @@ class ConnectTest(TempDB):
                 self.assertFalse(second)
         with store.exclusive(lock) as again:
             self.assertTrue(again)
+
+
+def without_indexes(path):
+    """Leaves the store at `path` as a version before docs_brief and docs_item_masked left it: neither, and
+    docs_item."""
+    with sqlite3.connect(path) as raw:
+        raw.executescript("DROP INDEX docs_brief; DROP INDEX docs_item_masked; "
+                          "CREATE INDEX docs_item ON docs(source, source_id, kind);")
+    raw.close()
+
+
+class IndexTest(TempDB):
+    """Two indexes say which item, kind and mask version a row has without reading its text. A writer adds them to a
+    store from before them; until one has, a reader answers the same from the rows."""
+
+    def chunks(self, count, version=None):
+        text = "an ordinary line of a session\n" * 1300
+        self.db.executemany(
+            "INSERT INTO docs(kind, source, source_id, ts, title, content, metadata, masked) "
+            "VALUES ('raw', 's', 'long', ?, 't', ?, ?, ?)",
+            [(iso(), text, json.dumps({"chunk": n, "chunks": count}), version or store.VERSION) for n in range(count)])
+        self.db.commit()
+        return [r[0] for r in self.db.execute("SELECT id FROM docs WHERE source_id = 'long' ORDER BY id")]
+
+    def reader(self):
+        self.db.close()
+        db = store.connect(self.path, readonly=True)
+        self.addCleanup(db.close)
+        return db
+
+    def test_a_writer_adds_them_to_a_store_from_before_them(self):
+        self.add("a", "short note")
+        self.db.close()
+        without_indexes(self.path)
+        again = store.connect(self.path)
+        self.addCleanup(again.close)
+        names = {name for (name,) in again.execute("SELECT name FROM sqlite_master WHERE type = 'index'")}
+        self.assertLessEqual({"docs_brief", "docs_item_masked"}, names)
+        self.assertNotIn("docs_item", names, "docs_item_masked answers what it did")
+
+    def test_a_reader_of_a_store_from_before_them_tells_current_and_unversioned_rows_the_same(self):
+        self.add("a", "short note")
+        self.add("b", long_body("kumquat"))
+        chunks = self.chunks(3)
+        stale = self.chunks(2, version=STALE)[len(chunks):]
+        ids = [r[0] for r in self.db.execute("SELECT id FROM docs ORDER BY id")]
+        with_them = store.current(self.db, ids), store.unversioned(self.db, ids)
+        self.assertFalse(with_them[0] & set(chunks + stale), "one stale chunk makes every chunk of its item old")
+        self.assertTrue(with_them[0])
+        self.db.close()
+        without_indexes(self.path)
+        db = store.connect(self.path, readonly=True)
+        self.addCleanup(db.close)
+        self.assertEqual(store.by_id(db), "")
+        self.assertEqual((store.current(db, ids), store.unversioned(db, ids)), with_them)
+
+    def test_telling_whether_a_chunk_is_current_does_not_read_its_items_text(self):
+        # Each chunk's text fills ten pages, and a row's mask version comes after its text. Read from the rows, the
+        # question costs every page of the item; from the index, a handful.
+        first = self.chunks(150)[:1]
+
+        def cost(db):
+            def once():
+                start = time.perf_counter()
+                for _ in range(20):
+                    self.assertEqual(store.current(db, first), set(first))
+                return time.perf_counter() - start
+            return min(once() for _ in range(3))
+
+        with_them = cost(self.reader())
+        without_indexes(self.path)
+        from_the_rows = cost(store.connect(self.path, readonly=True))
+        self.assertLess(with_them * 5, from_the_rows)
 
 
 class ChunkTest(unittest.TestCase):
@@ -582,7 +656,7 @@ class MaskVersionTest(TempDB):
         writer.close()
         old = sqlite3.connect(path)
         old.execute("DROP TRIGGER docs_unmask")
-        old.execute("DROP INDEX docs_masked")
+        old.executescript("DROP INDEX docs_masked; DROP INDEX docs_brief; DROP INDEX docs_item_masked;")
         old.execute("ALTER TABLE docs DROP COLUMN masked")
         old.execute("INSERT INTO docs(kind, source, source_id, ts, title, content) VALUES ('doc','s','a',?,'t','x')",
                     (iso(),))
@@ -887,7 +961,8 @@ class UnversionedRowTest(TempDB):
     def test_a_store_from_before_versions_does_not_open_and_is_left_as_it_was(self):
         self.db.close()
         old = sqlite3.connect(self.path)
-        old.executescript("DROP TRIGGER docs_unmask; DROP INDEX docs_masked; ALTER TABLE docs DROP COLUMN masked;")
+        old.executescript("DROP TRIGGER docs_unmask; DROP INDEX docs_masked; DROP INDEX docs_brief; "
+                          "DROP INDEX docs_item_masked; ALTER TABLE docs DROP COLUMN masked;")
         old.commit()
         old.close()
         with open(self.path, "rb") as fh:

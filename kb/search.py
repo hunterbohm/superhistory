@@ -73,7 +73,7 @@ def _grouped(db, rows, rows_arg, after, sources, n, before):
     kinds = ("doc",) + SUMMARY_KINDS + ("raw",)
     # CROSS JOIN keeps the rows first; otherwise SQLite may walk every doc and run the full-text match for each.
     sql = (f"SELECT d.id, d.source, d.source_id, d.kind = 'raw' AS raw, r.score FROM ({rows}) r "
-           f"CROSS JOIN docs d ON d.id = r.id WHERE d.kind IN ({','.join('?' * len(kinds))})")
+           f"CROSS JOIN docs d {store.by_id(db)} ON d.id = r.id WHERE d.kind IN ({','.join('?' * len(kinds))})")
     args = [rows_arg, *kinds]
     if after:
         sql += " AND d.ts >= ?"
