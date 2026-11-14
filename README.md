@@ -440,7 +440,7 @@ Known limits:
   setValue, Puppeteer's page.type), whose locator's strings or regex name the field, or none (keyboard.type), with
   comments and keyword arguments read past. A value typed from a variable, or built at run time (joined, templated),
   stays, and other ways of writing such code are not read. A call written as an object in text, as a transcript
-  holds it (JSON or Python's repr, plain or escaped inside a string any number of times up to three, in any key
+  holds it (JSON or Python's repr, plain, written inside a string with the other kind of quote, or escaped inside a string any number of times up to three, in any key
   order, from any tool), is read the same way where the object has one of the keys a typing call holds (ref, uid,
   element, selector, label, placeholder, aria label, locator, field), a typing tool's name stands within 600
   characters before it, or its action is "type": its text, value, keys, input, content or string is masked, whether

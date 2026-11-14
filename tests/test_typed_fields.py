@@ -322,6 +322,16 @@ class FailClosedInTextTest(unittest.TestCase):
         out = mask("TOOL browser_type: " + repr({"element": "Backup code", "text": ("Z", "q"), "ref": "e1", "submit": True}))
         self.assertIn("'ref': 'e1'", out)
         self.assertNotIn("'Z'", out)
+        # the same repr written as JSON writes a string, once, twice or three times: the prefix stands before escaped quotes
+        for value in (secret.encode(), "Fluffy's".encode(), (secret.encode(), 1), [b"Z", b"q"]):
+            for call in ({"ref": "e1", "text": value}, {"element": "Backup code", "ref": "e1", "keys": value}):
+                text = repr(call)
+                for form in (json.dumps(text), json.dumps(json.dumps(text)), json.dumps({"stored": text})):
+                    with self.subTest(form=form):
+                        out = mask(form)
+                        self.assertNotIn("walrusLedger93", out)
+                        self.assertNotIn("Fluffy", out)
+                        self.assertNotIn("Z", out.replace("[masked]", "").replace("Backup code", ""))
         for call in ({"element": "Search", "ref": "e1", "text": ("pelican", "plan")},
                      {"element": "Search", "ref": "e1", "text": b"pelican plan"}):
             with self.subTest(call=call):
@@ -337,6 +347,33 @@ class FailClosedInTextTest(unittest.TestCase):
                      "my_f'x' bu'y' {'element': 'Backup code', 'ref': 'e1', 'text': 'Zq7!walrusLedger93'}"):
             with self.subTest(text=text):
                 self.assertNotIn("walrusLedger93", mask(text))
+
+    def test_a_call_written_in_a_string_with_the_other_kind_of_quote_is_read(self):
+        secret = "Zq7!walrusLedger93"
+        for value in (secret, secret.encode(), [secret, "x"], (secret, 1), {"a": [secret]}, 483920):
+            for call in ({"element": "Backup code", "ref": "e1", "text": value}, {"ref": "e1", "text": value},
+                         {"ref": "e1", "label": "Auth code", "keys": value}):
+                forms = {"JSON string of a repr": json.dumps(repr(call)),
+                         "key holds a repr": json.dumps({"stored": repr(call)}),
+                         "repr of a JSON string": repr(json.dumps(call, default=repr)),
+                         "repr holds JSON": repr({"stored": json.dumps(call, default=repr)}),
+                         "JSON of a JSON of a repr": json.dumps(json.dumps(repr(call))),
+                         "repr of a repr": repr(repr(call)),
+                         "log line": "tool said: " + json.dumps({"output": repr(call)}) + " done"}
+                for name, text in forms.items():
+                    with self.subTest(form=name, text=text[:90]):
+                        out = mask(text)
+                        self.assertNotIn("walrusLedger93", out)
+                        self.assertNotIn("483920", out)
+        for call in ({"element": "Search", "ref": "e1", "text": "pelican plan"},
+                     {"element": "Search", "ref": "e1", "text": ["pelican", "plan"]}):
+            for text in (json.dumps(repr(call)), json.dumps({"stored": repr(call)}), repr(json.dumps(call, default=repr))):
+                with self.subTest(search=text[:90]):
+                    self.assertEqual(mask(text), text)
+        # a string with brackets and quotes in prose is no call
+        for text in (json.dumps({"note": "he said ('hello') and left [\"x\"] {'a': 1}"}), json.dumps(["(\"quoted\")", "{'k': 'v'}"])):
+            with self.subTest(prose=text):
+                self.assertEqual(mask(text), text)
 
     def test_a_call_in_a_list_is_read_for_itself_and_not_by_the_calls_beside_it(self):
         secret = "Zq7!walrusLedger93"
