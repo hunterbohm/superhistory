@@ -123,13 +123,14 @@ def lookup(db, message, before, session, seen, model, budget, hedge_after=None, 
 
 def lookup_with(search_fn, message, before, session, seen, model, budget, hedge_after=None, stages=None):
     """The check over any search: search_fn(query, limit, keep) returns hits as search.search does, such as
-    search.search_stores over several stores. It is called only on this thread. `stages`, a dict, gets the seconds of
-    each stage that ends, "mask", "plan", "search" and "pick": one that fails or runs out of time is the one missing.
+    search.search_stores over several stores. It is called only on this thread, so its stores stay on the thread that
+    opened them. `stages`, a dict, gets the seconds of each stage that ends, "mask", "plan", "search" and "pick": one
+    that fails or runs out of time is the one missing.
 
-    The plan call can be slow, in a burst, for every call at once, so its hedge copy is no faster. When the hedge goes
-    out the check also starts a fallback (_Fallback) beside the plan, and the stages it ends are "fallback_search" and
-    "fallback_pick". The result is the plan's when it comes to a result before the deadline, else the fallback's if that
-    has finished, else the failure is raised."""
+    Models run slow in bursts, every call at once, so the plan's hedge copy is no faster. When that hedge goes out, the
+    plan being slow or failed, a fallback (_Fallback) starts beside the plan; its stages are "fallback_search" and
+    "fallback_pick". The result is the plan's path when it ends with one before the deadline. If it fails or runs out
+    of time, the result is the fallback's when that has finished, and the failure is raised when it has not."""
     deadline = time.monotonic() + budget
     stages = {} if stages is None else stages
     if not worth_asking(message, before):
