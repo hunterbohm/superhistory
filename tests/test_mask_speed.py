@@ -918,25 +918,26 @@ class ReadingsBoundTest(unittest.TestCase):
         for n in range(300):
             key, value = self.entry(r, r.choice((50, 400, 1_500, 4_000, 9_000)))
             readings[key] = value
-            held = {id(o): o for k, (v, _) in readings.kept.items() for o in (*k, *v) if isinstance(o, (str, array.array))}
+            held = {id(o): o for k, v in readings.items() for o in (*k, *v) if isinstance(o, (str, array.array))}
             self.assertEqual(readings.size, sum(map(sys.getsizeof, held.values())), n)
-            self.assertTrue(readings.size <= readings.limit or len(readings.kept) == 1, n)
-            self.assertIn(key, readings.kept)  # the latest is kept whatever it weighs
+            self.assertTrue(readings.size <= readings.limit or len(readings) == 1, n)
+            self.assertIn(key, readings)  # the latest is kept whatever it weighs
             self.assertEqual(readings.held.keys(), held.keys())
-        self.assertLess(len(readings.kept), 40)
+            self.assertEqual(readings.weights.keys(), readings.keys())
+        self.assertLess(len(readings), 40)
 
-    def test_the_reading_used_longest_ago_goes_first(self):
+    def test_the_oldest_reading_goes_first(self):
         readings = head._Readings(0)
         readings.limit = 3_000
         big = lambda c: ("k" + c, c * 1_000)
         a, b, c = big("a"), big("b"), big("c")
         readings[a[0]] = (a[1],)
         readings[b[0]] = (b[1],)
-        readings.get(a[0])  # a is used after b
         readings[c[0]] = (c[1],)
-        self.assertEqual(list(readings.kept), [a[0], c[0]])
-        self.assertIsNone(readings.get(b[0]))
-        self.assertEqual(readings.get(a[0]), (a[1],))
+        self.assertEqual(list(readings), [b[0], c[0]])
+        self.assertIsNone(readings.get(a[0]))
+        self.assertEqual(readings.get(b[0]), (b[1],))
+        self.assertEqual(readings.get(c[0]), (c[1],))
 
     def test_a_text_two_readings_hold_is_counted_once_and_freed_with_the_last(self):
         readings = head._Readings(0)
@@ -947,9 +948,9 @@ class ReadingsBoundTest(unittest.TestCase):
         self.assertLess(readings.size - one, 500)  # the text again adds its table and no more of it
         readings.limit = 0
         readings[("z", 3)] = ("z",)  # past the bound: the older readings go, the text with the last of them
-        self.assertEqual(list(readings.kept), [("z", 3)])
+        self.assertEqual(list(readings), [("z", 3)])
         self.assertLess(readings.size, 500)
-        self.assertEqual(set(readings.held), set(readings.kept[("z", 3)][1]))
+        self.assertEqual(set(readings.held), set(readings.weights[("z", 3)]))
 
     def test_a_key_set_again_is_counted_again(self):
         readings = head._Readings(0)
@@ -958,7 +959,7 @@ class ReadingsBoundTest(unittest.TestCase):
         readings[("k", 1)] = ("b" * 8_000,)
         self.assertGreater(readings.size, first + 3_000)
         self.assertLess(readings.size, first + 5_000)
-        self.assertEqual(len(readings.kept), 1)
+        self.assertEqual(len(readings), 1)
 
     def test_the_bound_is_the_text_s_length_times_PER_CHAR_and_at_least_LEAST(self):
         for size in (0, 10, 1_000, 100_000, 10_000_000):
@@ -1022,8 +1023,9 @@ class ReadingsBoundTest(unittest.TestCase):
         same = "nothing to read here, a plain line of words"
         self.assertEqual(head._run(same, head._TEXT_RULES, head._fresh(same)), (same, list(range(len(same)))))
         self.assertEqual(head._run(same, head._TEXT_RULES, head._fresh(same)), (same, list(range(len(same)))))
-        kept = [value for key, (value, _) in readings.kept.items() if key[0] == same]
+        kept = [value for key, value in readings.items() if key[0] == same]
         self.assertEqual([value[1] for value in kept], [head._SAME])  # a text a reading left as it was is not kept twice
+        self.assertEqual([value[2] for value in kept], [len(same)])  # nor its origin, which no edit carried over
 
     def test_every_output_and_origin_is_the_same_with_nothing_kept(self):
         # Each reading is made again where it is asked for again, so the mask with a bound that keeps the latest reading
@@ -1057,6 +1059,9 @@ class ReadingsBoundTest(unittest.TestCase):
         head.mask(text)
         self.assertEqual(head._FOLDED, [])
         head.mask_with_origin(text)
+        self.assertEqual(head._FOLDED, [])
+        fresh_memo()
+        head._part(text)  # a piece or a window, which mask_head() and mask_tail() read
         self.assertEqual(head._FOLDED, [])
         head._may_find(head.SECRET_PATTERNS[0], text)  # outside a call it is kept for the next reading, two at most
         for n in range(4):

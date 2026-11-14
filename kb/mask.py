@@ -4662,10 +4662,13 @@ def _edit(text, origin, edits):
 _READINGS = contextvars.ContextVar("kb_mask_readings", default=None)
 
 
+_WEIGHED = frozenset((str, bytes, array.array, list, tuple, set, frozenset))  # what _weigh counts: the rest is small
+
+
 def _weigh(obj, out, depth=2):
     """Adds to `out`, by id, what `obj` holds in memory that a reading's key or value may share with another reading's:
     a string or an array as it is, a container as its own table and, to `depth`, what is in it (a guess of 100 bytes
-    for each item past eight of them)."""
+    for each item past eight of them). Of a number, a flag, None or an object, which are small, it adds nothing."""
     kind = type(obj)
     if kind is str or kind is bytes or kind is array.array:
         out[id(obj)] = sys.getsizeof(obj)
@@ -4673,53 +4676,53 @@ def _weigh(obj, out, depth=2):
         size = sys.getsizeof(obj)
         if depth and len(obj) <= 8:
             for each in obj:
-                _weigh(each, out, depth - 1)
+                if type(each) in _WEIGHED:
+                    _weigh(each, out, depth - 1)
         else:
             size += 100 * len(obj)
         out[id(obj)] = size
 
 
-class _Readings:
+class _Readings(collections.OrderedDict):
     """One call's readings (_READINGS): the latest of them kept while what they hold weighs `limit` bytes or less, which
     is PER_CHAR bytes for each character of the text the call reads, and at least LEAST. A reading dropped is made again
     where it is asked for again, to the same result, as it is a function of what it is asked with and of its context
     (the key): what is kept changes what a call costs and what it holds in memory, never what it gives. A text or an
-    array that two readings hold is counted once, and the latest reading is kept whatever it weighs. It stands for a
-    dict of the readings, as _run, _read_once, _gitleaks_spans and _named_found use it."""
+    array that two readings hold is counted once, and the latest reading is kept whatever it weighs. It is a dict of
+    the readings, as _run, _read_once, _gitleaks_spans and _named_found use it, that drops its oldest first."""
     PER_CHAR = 16
     LEAST = 16 * 1024 * 1024
 
     def __init__(self, size=0):
+        super().__init__()
         self.limit = max(self.LEAST, self.PER_CHAR * size)
-        self.kept = collections.OrderedDict()  # key: (value, {id of what it holds: its size})
+        self.weights = {}  # key: {id of what it holds: its size}
         self.held = {}  # id of what some reading holds: how many hold it
         self.size = 0
 
-    def get(self, key):
-        found = self.kept.get(key)
-        if found is None:
-            return None
-        self.kept.move_to_end(key)
-        return found[0]
-
     def __setitem__(self, key, value):
-        old = self.kept.pop(key, None)
-        if old is not None:
-            self._release(old[1])
+        if key in self:
+            self._release(self.weights.pop(key))
+            del self[key]
         objects = {}
         for part in key:
-            _weigh(part, objects)
+            if type(part) in _WEIGHED:
+                _weigh(part, objects)
         for part in value if type(value) is tuple else (value,):
-            _weigh(part, objects)
-        self.kept[key] = (value, objects)
+            if type(part) in _WEIGHED:
+                _weigh(part, objects)
+        super().__setitem__(key, value)
+        self.weights[key] = objects
         for obj, size in objects.items():
             if obj in self.held:
                 self.held[obj] += 1
             else:
                 self.held[obj] = 1
                 self.size += size
-        while self.size > self.limit and len(self.kept) > 1:
-            self._release(self.kept.popitem(last=False)[1][1])
+        while self.size > self.limit and len(self) > 1:
+            oldest = next(iter(self))
+            del self[oldest]
+            self._release(self.weights.pop(oldest))
 
     def _release(self, objects):
         for obj, size in objects.items():
@@ -4729,12 +4732,10 @@ class _Readings:
                 del self.held[obj]
                 self.size -= size
 
-    def __len__(self):
-        return len(self.kept)
-
 
 # A reading's origin kept in runs: where each run of characters that came one after another starts, and the first
-# source of each, or the origin as an array where its runs are not far fewer than its characters.
+# source of each, or the origin as an array where its runs are not far fewer than its characters. The fresh origin
+# (no edit made) is kept as its length.
 def _pack(came):
     most = len(came) // 4  # more runs than this, and the array is the smaller
     starts = [0, *itertools.islice(itertools.compress(itertools.count(1), map(operator.ne, map(
@@ -4745,6 +4746,8 @@ def _pack(came):
 
 
 def _unpack(packed):
+    if type(packed) is int:
+        return list(range(packed))
     if type(packed) is array.array:
         return packed.tolist()
     starts, firsts, size = packed
@@ -4976,7 +4979,7 @@ def _run(text, rules, origin=None, named=None, fired=None, look=False):
     the reading consults besides its arguments (the variables in the key). What a piece's reading notes of gitleaks'
     rules (_FAR, _SAW) goes to sets of the piece alone, so a piece has readings of its own: one made again in it adds
     to those sets what the first added. A reading is kept as the text it gave (or _SAME, where that is the text) and its
-    origin in runs (_pack), so what a call keeps is small beside the text (_Readings)."""
+    origin in runs (_pack) or as its length, so what a call keeps is small beside the text (_Readings)."""
     global capped
     readings = _READINGS.get()
     if readings is None or not (origin is None or type(origin) is _Fresh):
@@ -4990,7 +4993,10 @@ def _run(text, rules, origin=None, named=None, fired=None, look=False):
         masked, came = _reading(text, rules, origin, named, fired, look)
         if came is origin and came is not None:
             came = list(came)  # no edit, so the fresh origin itself: it stays out of the caller's hands
-        readings[key] = (rules, _SAME if masked == text else masked, None if came is None else _pack(came),
+            packed = len(came)
+        else:
+            packed = None if came is None else _pack(came)
+        readings[key] = (rules, _SAME if masked == text else masked, packed,
                          None if named is None else named[names:], None if fired is None else fired[fires:],
                          capped - caps)
         return masked, came
@@ -5892,6 +5898,7 @@ def _part_record(text):
             _FAR.reset(tokens[0])
             _SAW.reset(tokens[1])
             _READINGS.reset(tokens[2])
+            del _FOLDED[:]  # the texts the piece's reading folded last are not kept past it
         found = (result, array.array("q", origin), still)
         _MEMO.put("far", text, json.dumps(record))
         _MEMO.put("piece", text, found, _far_how(record["far"]))
