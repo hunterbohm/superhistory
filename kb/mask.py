@@ -7381,9 +7381,21 @@ _ACTION_TYPE = re.compile(r"(?i)\baction(?:\\*[\"'])?\s*[:=]\s*\\*[\"']type\b")
 _JSON_TOKEN = re.compile(r"(?<!\\)\\*[\"']|[{}\[\]():,]|-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?|[A-Za-z_$][\w$-]*")
 _ESCAPED_QUOTE = re.compile(r"\\[\"']")  # a quote a string holds escaped: JSON, or code, written inside it
 _QUOTE_AT = re.compile(r"\\*[\"']")  # a quote, with the backslashes that escape it
-# An object, a list or a tuple of strings written inside a string, with the other kind of quote: Python's repr in a JSON
-# string ("{'ref': 'e1', ...}"), JSON in a Python string ('{"ref": "e1", ...}').
-_NESTED_STRUCTURE = re.compile(r"[{\[(]\s*[\"']")
+# An object, a list or a tuple written inside a string (Python's repr in a JSON string, "{'ref': 'e1', ...}", JSON in a Python
+# string, pretty JSON in one, '{\\n  "ref"...'): a bracket, and a quote of either kind after it.
+_OPEN_BRACKET = re.compile(r"[{\[(]")
+_ANY_QUOTE = re.compile(r"[\"']")
+
+
+def _holds_a_structure(text, a, b):
+    """Whether the string text[a:b] holds an object, a list or a tuple of strings of its own: an escaped quote, or a
+    bracket with a quote after it."""
+    if _ESCAPED_QUOTE.search(text, a, b):
+        return True
+    m = _OPEN_BRACKET.search(text, a, b)
+    return m is not None and _ANY_QUOTE.search(text, m.end(), b) is not None
+
+
 _JSON_STRING_LIMIT = 4096  # a string past this is no field's label or password
 _JSON_TYPING_REACH = 600  # how far past a typing tool's name an object with no label is read as its input
 _JSON_BAG_DEPTH = 16  # how many levels of objects and lists inside a typed value decide for themselves
@@ -7581,7 +7593,7 @@ def _json_scan(text, pos, stop, names, edits, level):
                 top["shared"].append((a, b, top["serial"], False))
             else:
                 pending = _json_name(text[a:b])
-            if level < 4 and (_ESCAPED_QUOTE.search(text, a, b) or _NESTED_STRUCTURE.search(text, a, b)):
+            if level < 4 and _holds_a_structure(text, a, b):
                 _json_scan(text, a, b, names, edits, level + 1)
         elif tok == "{" or tok == "[" or tok == "(":
             # an object or a list that is a typed key's value, or inside one, is a bag: every string and number in it, at

@@ -359,6 +359,12 @@ class FailClosedInTextTest(unittest.TestCase):
                          "repr holds JSON": repr({"stored": json.dumps(call, default=repr)}),
                          "JSON of a JSON of a repr": json.dumps(json.dumps(repr(call))),
                          "repr of a repr": repr(repr(call)),
+                         "repr of pretty JSON": repr(json.dumps(call, indent=2, default=repr)),
+                         "repr of tabbed JSON": repr(json.dumps(call, indent="\t", default=repr)),
+                         "JSON of pretty JSON": json.dumps(json.dumps(call, indent=4, default=repr)),
+                         "repr of repr of pretty JSON": repr(repr(json.dumps(call, indent=2, default=repr))),
+                         "pretty repr in JSON": json.dumps({"stored": repr(call).replace("{'", "{\n  '").replace(", '", ",\n  '")}),
+                         "CRLF JSON in repr": repr(json.dumps(call, indent=2, default=repr).replace("\n", "\r\n")),
                          "log line": "tool said: " + json.dumps({"output": repr(call)}) + " done"}
                 for name, text in forms.items():
                     with self.subTest(form=name, text=text[:90]):
