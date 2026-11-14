@@ -303,6 +303,35 @@ class FailClosedInTextTest(unittest.TestCase):
                 with self.subTest(kept=kept):
                     self.assertEqual(mask(kept), kept)
 
+    def test_a_value_typed_as_a_tuple_or_bytes_in_a_python_repr_is_hidden(self):
+        secret = "Zq7!walrusLedger93"
+        for value in ((secret, "x"), ("Z", "q", "7", secret), [("a", (secret,))], {"a": (secret,)}, secret.encode(),
+                      [secret.encode(), "Z"], {"a": [secret.encode()]}, (1, 2, 483920)):
+            for name in ("text", "value", "keys", "input", "content", "string"):
+                for call in ({"element": "Backup code", "ref": "e1", name: value},
+                             {"ref": "e1", "label": "Auth code", name: value},
+                             {"ref": "e1", name: value}):
+                    text = "TOOL browser_type: " + repr(call)
+                    with self.subTest(text=text):
+                        out = mask(text)
+                        self.assertNotIn("walrusLedger93", out)
+                        self.assertNotIn("Zq7", out)
+                        self.assertNotIn("483920", out)
+                        self.assertNotIn("'q'", out)
+        for call in ({"element": "Search", "ref": "e1", "text": ("pelican", "plan")},
+                     {"element": "Search", "ref": "e1", "text": b"pelican plan"}):
+            with self.subTest(call=call):
+                text = "TOOL browser_type: " + repr(call)
+                self.assertEqual(mask(text), text)
+        # a word before a quote that is no string's prefix opens no string
+        text = "it's don't b it's {'element': 'Search', 'ref': 'e1', 'text': 'pelican'}"
+        self.assertEqual(mask(text), text)
+        for text in ("stuff'it's fine' {'element': 'Backup code', 'ref': 'e1', 'text': 'Zq7!walrusLedger93'}",
+                     "buf'it's fine' {'element': 'Backup code', 'ref': 'e1', 'text': b'Zq7!walrusLedger93'}",
+                     "my_f'x' bu'y' {'element': 'Backup code', 'ref': 'e1', 'text': 'Zq7!walrusLedger93'}"):
+            with self.subTest(text=text):
+                self.assertNotIn("walrusLedger93", mask(text))
+
     def test_a_call_in_a_list_is_read_for_itself_and_not_by_the_calls_beside_it(self):
         secret = "Zq7!walrusLedger93"
         keep = {"element": "Search", "ref": "e1", "text": "pelican plan"}

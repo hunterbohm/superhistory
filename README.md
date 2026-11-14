@@ -444,7 +444,7 @@ Known limits:
   order, from any tool), is read the same way where the object has one of the keys a typing call holds (ref, uid,
   element, selector, label, placeholder, aria label, locator, field), a typing tool's name stands within 600
   characters before it, or its action is "type": its text, value, keys, input, content or string is masked, whether
-  that is a string or a number, or a list or an object of them at any depth (a key sequence, a nested object), unless
+  that is a string or a number, or a list, a tuple or an object of them at any depth (a key sequence, a nested object), unless
   its field is on the short list, and a string a clipped call never closes is masked to the end of its line. A call
   nested in that value (a message block's input, a form's fields) is read for itself where the object that holds it is
   read as a call only for a tool's name before it; an object with one of the call's keys, or a label that asks for a
@@ -499,8 +499,9 @@ Known limits:
   input, content or string; a label in another object than the one that holds the value; an object with only a name, a
   type, an id, a title, a description or a target for a label, and none of a typing call's other keys, no typing tool's
   name before it and no "type" action, which is read as a setting or a note; a quote that closes after more than 4,096
-  characters, or one that follows a letter ("don't"), which opens no string; and a string escaped more than three
-  times. Over-masking is the other side of the rule for typed values: a search typed with the keyboard and no field
+  characters, or one that follows a letter ("don't"), which opens no string (a Python string's prefix, as in b'..' or
+  rb'..', is read); a typed value that is a set literal ({'a'}) or a call (Secret('a')); and a string escaped more than
+  three times. Over-masking is the other side of the rule for typed values: a search typed with the keyboard and no field
   named (page.keyboard.type), a username, an email address or a name typed into any field but a harmless one, and
   an object with a "label" and a "value" that is no call (an option of a list), are masked.
 - Escaping hides some secrets from the readers. A provider's token split by an invisible character and written as JSON

@@ -7378,7 +7378,7 @@ _TYPING_NAME_AT = re.compile(rf"(?i)(?<![\w$])(?:mcp__[\w-]+__(?:{_TYPING_TOOL.p
                              rf"|(?:browser|puppeteer|playwright)_{_TYPING_NAMES})(?![\w])")
 _ACTION_TYPE = re.compile(r"(?i)\baction(?:\\*[\"'])?\s*[:=]\s*\\*[\"']type\b")
 # A string's quote with the backslashes that escape it, a mark, a number, a name.
-_JSON_TOKEN = re.compile(r"(?<!\\)\\*[\"']|[{}\[\]:,]|-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?|[A-Za-z_$][\w$-]*")
+_JSON_TOKEN = re.compile(r"(?<!\\)\\*[\"']|[{}\[\]():,]|-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?|[A-Za-z_$][\w$-]*")
 _ESCAPED_QUOTE = re.compile(r"\\[\"']")  # a quote a string holds escaped: JSON, or code, written inside it
 _JSON_STRING_LIMIT = 4096  # a string past this is no field's label or password
 _JSON_TYPING_REACH = 600  # how far past a typing tool's name an object with no label is read as its input
@@ -7390,6 +7390,11 @@ def _opens_a_json_string(text, at):
     "="), past spaces and breaks, escaped or not, as JSON in JSON writes them, so an apostrophe in a word ("don't")
     opens none."""
     j = at
+    k = j  # a Python string's prefix (b'', u'', r'', f'', rb'') stands before the quote
+    while k > 0 and j - k < 2 and text[k - 1] in "bBuUrRfF":
+        k -= 1
+    if k < j and (k == 0 or not (text[k - 1].isalnum() or text[k - 1] in "_$")):
+        j = k
     while j > 0:
         if text[j - 1] in " \t\r\n":
             j -= 1
@@ -7577,7 +7582,7 @@ def _json_scan(text, pos, stop, names, edits, level):
                 pending = _json_name(text[a:b])
             if level < 4 and _ESCAPED_QUOTE.search(text, a, b):
                 _json_scan(text, a, b, names, edits, level + 1)
-        elif tok == "{" or tok == "[":
+        elif tok == "{" or tok == "[" or tok == "(":
             # an object or a list that is a typed key's value, or inside one, is a bag: every string and number in it, at
             # any depth ({"a": "x"}, a key sequence, ["Z", "q", "7"]), is typed, whatever its key. The bag shares the
             # list of typed spans of the object that holds the key, which hides them or not by its labels.
@@ -7593,7 +7598,7 @@ def _json_scan(text, pos, stop, names, edits, level):
                            "serial": serial, "action": False, "field": False, "key": None, "value": False,
                            "start": m.start()})
             pending = None
-        elif tok == "}" or tok == "]":
+        elif tok == "}" or tok == "]" or tok == ")":
             if frames:
                 frame = frames.pop()
                 if frame["dict"]:
@@ -7618,7 +7623,8 @@ def _json_scan(text, pos, stop, names, edits, level):
             elif top is not None and top["bag"] and not top["dict"]:
                 top["shared"].append((m.start(), pos, top["serial"], False))
         elif top is not None and top["value"]:
-            top["value"], top["key"] = False, None
+            if not (len(tok) < 3 and text[pos:pos + 1] in ("'", '"') and not tok.strip("bBuUrRfF")):
+                top["value"], top["key"] = False, None  # (a word is a value, as true is; a string's prefix is not)
         else:
             pending = tok.lower()
     for frame in reversed(frames):  # a call clipped before its objects close
