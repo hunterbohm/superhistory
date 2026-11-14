@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Run tools on the made-up month, then print the table.
 
-    python3 bench/run.py month [--tools none,oracle,check,check-cards] [--limit N] [--fresh]
+    python3 bench/run.py month [--tools none,oracle,check,check-cards,check-fallback] [--limit N] [--fresh]
     python3 bench/run.py month --month a|b --label NAME --tools check   # a split run: month A is dev, B is test
     python3 bench/run.py table [DIR]
     python3 bench/run.py heldout-table   # month B with the rivals, from the committed rows
@@ -46,6 +46,8 @@ ANSWER_MODEL = "claude-sonnet-5-5"
 JUDGE_MODEL = "gpt-6.1-sol"
 MAX_TOOL_TURNS = 8
 DEFAULT_TOOLS = ("none", "oracle", "check", "check-cards")
+# What a held-out month run may measure: the check, its fallback alone, and the no-lookup row they are compared with.
+HELDOUT_TOOLS = ("none", "check", "check-fallback")
 
 MONTH_SYSTEM = """You are an AI agent working for Jules Marlow, who runs Marlow Works, a one-person automation \
 business in Denver. Today is Thursday, October 1, 2026. Knowledge base records may come before Jules's message. \
@@ -448,8 +450,8 @@ def main(argv=None):
             if args.limit or args.fresh:
                 raise SystemExit("a held-out run takes the whole month and cannot start over; rerunning its label "
                                  "fills in only the questions with no row")
-            if args.tools != "check":
-                raise SystemExit("a held-out month run measures the check alone: pass --tools check")
+            if not set(args.tools.split(",")) <= set(HELDOUT_TOOLS):
+                raise SystemExit("a held-out month run takes only " + ", ".join(HELDOUT_TOOLS) + " in --tools")
             from tools import check
             splits.held_out_run("month", args.label, check.code_id(), git_head(), f"b-{args.label}:check")
         items = read_jsonl(os.path.join(month, "items.jsonl"))

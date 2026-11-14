@@ -104,9 +104,10 @@ def load(settings):
     return _Masked(PLUGINS[settings.plugin].make(settings.options))
 
 
-def hedged(model, prompt, timeout, hedge_after=None):
+def hedged(model, prompt, timeout, hedge_after=None, when_slow=None):
     """The first good answer before the deadline. With hedge_after set, a call still running then, or one that fails
-    first, gets an identical copy. Raises TimeoutError at the deadline, else the last call's error."""
+    first, gets an identical copy, and when_slow(), if given, then runs once on this thread. Raises TimeoutError at the
+    deadline, else the last call's error."""
     deadline = time.monotonic() + timeout
     answers = queue.Queue()
     prompt = masked(prompt)  # also for a model a caller made itself, not through load()
@@ -119,9 +120,11 @@ def hedged(model, prompt, timeout, hedge_after=None):
 
     stages = (deadline,) if hedge_after is None else (min(deadline, time.monotonic() + hedge_after), deadline)
     running, error = 0, None
-    for wait_until in stages:
+    for stage, wait_until in enumerate(stages):
         threading.Thread(target=call, daemon=True).start()
         running += 1
+        if stage and when_slow:
+            when_slow()
         while running:
             try:
                 answer, error = answers.get(timeout=max(wait_until - time.monotonic(), 0))
@@ -164,5 +167,5 @@ def find_json(text, *keys):
     raise BadAnswer("no JSON object in the answer" + (f" with {' or '.join(keys)}" if keys else ""))
 
 
-def ask_json(model, prompt, timeout, *keys, hedge_after=None):
-    return find_json(hedged(model, prompt, timeout, hedge_after), *keys)
+def ask_json(model, prompt, timeout, *keys, hedge_after=None, when_slow=None):
+    return find_json(hedged(model, prompt, timeout, hedge_after, when_slow), *keys)

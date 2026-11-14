@@ -15,6 +15,8 @@ from tests.test_mask_edges import dense, paragraphs
 from tests.test_mask_long import fresh_memo
 
 ASK = "what did Dana say about the Connect launch"
+HEDGE = 0.1
+BUDGET = 1.0
 
 
 def never_whole(real=mask._mask_whole):
@@ -358,7 +360,7 @@ class CheckTest(unittest.TestCase):
         self.assertNotIn("zebrafish", text)
         for entry in self.log_entries():
             self.assertEqual(set(entry), {"ts", "session", "asked", "searched", "query", "candidates", "shown",
-                                          "late", "seconds", "error", "chars", "stages"})
+                                          "late", "seconds", "error", "chars", "stages", "fallback"})
             self.assertIsInstance(entry["chars"], int)
             self.assertTrue(all(isinstance(v, float) for v in entry["stages"].values()))
 
@@ -481,6 +483,141 @@ class CheckTest(unittest.TestCase):
         self.assertLess(time.monotonic() - started, 0.35)
         self.assertEqual(self.log_entries()[-1]["error"], "TimeoutError")
 
+    def slow_plan(self, delay, inner, gate=None):
+        """A model whose plan calls wait `delay` seconds, or on `gate`, and whose pick calls answer at once."""
+        gate = gate or threading.Event()
+        self.addCleanup(gate.set)
+
+        def reply(prompt):
+            if prompt.system == check.QUERY_SYSTEM:
+                gate.wait(delay)
+            return inner.reply(prompt)
+        return FakeModel(reply, TRAITS._replace(hedge_after=HEDGE, check_budget=BUDGET))
+
+    def fallback_store(self):
+        """One record the message's own words find, and one only the plan's query finds."""
+        self.add("gmail", "test:words", "Dana on the Connect launch date", ts="2026-10-04T10:00:00Z")
+        self.add("gmail", "test:plan", "Pelican kickoff notes", ts="2026-10-03T10:00:00Z")
+
+    def test_a_plan_that_answers_before_the_hedge_starts_no_fallback(self):
+        self.fallback_store()
+        model = plan_and_pick("Pelican", traits=TRAITS._replace(hedge_after=HEDGE, check_budget=BUDGET))
+        out = self.ask(ASK, model=model)
+        time.sleep(2 * HEDGE)
+        self.assertIn("/archive/test:plan", out)
+        self.assertEqual(model.systems, [check.QUERY_SYSTEM, check.PICK_SYSTEM])
+        entry = self.log_entries()[-1]
+        self.assertFalse(entry["fallback"])
+        self.assertEqual(list(entry["stages"]), ["mask", "plan", "search", "pick"])
+
+    def test_a_slow_plan_and_a_fast_pick_give_the_fallbacks_records_within_the_budget(self):
+        self.fallback_store()
+        model = self.slow_plan(30, plan_and_pick("Pelican"))
+        message = "zebrafish " + ASK
+        started = time.monotonic()
+        out = self.ask(message, model=model)
+        self.assertLess(time.monotonic() - started, BUDGET + 0.5)
+        self.assertIn("/archive/test:words", out)
+        self.assertNotIn("/archive/test:plan", out)
+        entry = self.log_entries()[-1]
+        self.assertEqual((entry["fallback"], entry["error"], entry["searched"], entry["query"]), (True, None, True, None))
+        self.assertEqual(len(entry["shown"]), 1)
+        self.assertEqual(list(entry["stages"]), ["mask", "fallback_search", "fallback_pick"])
+        with open(self.paths.log("check"), encoding="utf-8") as fh:
+            self.assertNotIn("zebrafish", fh.read())
+        pick = next(p for p in model.prompts if p.system == check.PICK_SYSTEM)
+        self.assertEqual(pick.user.split("\n\n[Records]\n")[0], check.prompt_text(message, []))
+
+    def test_a_slow_plan_whose_pick_follows_in_time_gives_the_plans_records(self):
+        self.fallback_store()
+        model = self.slow_plan(3 * HEDGE, plan_and_pick("Pelican"))
+        out = self.ask(ASK, model=model)
+        self.assertIn("/archive/test:plan", out)
+        self.assertNotIn("/archive/test:words", out)
+        entry = self.log_entries()[-1]
+        self.assertEqual((entry["fallback"], entry["query"]), (False, "Pelican"))
+        self.assertIn("fallback_pick", entry["stages"])
+
+    def test_a_plan_and_a_pick_too_slow_for_the_budget_still_time_out(self):
+        self.fallback_store()
+        inner = plan_and_pick("Pelican")
+        gate = threading.Event()
+        self.addCleanup(gate.set)
+
+        def reply(prompt):
+            gate.wait(30)
+            return inner.reply(prompt)
+        model = FakeModel(reply, TRAITS._replace(hedge_after=HEDGE, check_budget=BUDGET))
+        started = time.monotonic()
+        self.assertEqual(self.ask(ASK, model=model), "")
+        self.assertLess(time.monotonic() - started, BUDGET + 0.5)
+        entry = self.log_entries()[-1]
+        self.assertEqual((entry["error"], entry["fallback"], entry["shown"]), ("TimeoutError", False, []))
+
+    def test_a_fallback_pick_with_no_scores_leaves_the_plans_timeout(self):
+        self.fallback_store()
+        inner = plan_and_pick("Pelican", pick_text="the first one")
+        model = self.slow_plan(30, inner)
+        self.assertEqual(self.ask(ASK, model=model), "")
+        self.assertEqual((self.log_entries()[-1]["error"], self.log_entries()[-1]["fallback"]), ("TimeoutError", False))
+
+    def test_a_plan_that_fails_uses_the_fallback_without_waiting_for_the_deadline(self):
+        self.fallback_store()
+        inner = plan_and_pick("Pelican")
+
+        def reply(prompt):
+            if prompt.system == check.QUERY_SYSTEM:
+                raise OSError("refused")
+            return inner.reply(prompt)
+        model = FakeModel(reply, TRAITS._replace(hedge_after=HEDGE, check_budget=BUDGET))
+        started = time.monotonic()
+        out = self.ask(ASK, model=model)
+        self.assertLess(time.monotonic() - started, BUDGET / 2)
+        self.assertIn("/archive/test:words", out)
+        self.assertEqual(model.systems.count(check.QUERY_SYSTEM), 2)
+        self.assertEqual(model.systems.count(check.PICK_SYSTEM), 1)
+        entry = self.log_entries()[-1]
+        self.assertEqual((entry["fallback"], entry["error"]), (True, None))
+
+    def test_a_model_with_no_hedge_has_no_fallback(self):
+        self.fallback_store()
+        model = FakeModel(OSError("refused"))
+        self.assertEqual(self.ask(ASK, model=model), "")
+        self.assertEqual(len(model.prompts), 1)
+        entry = self.log_entries()[-1]
+        self.assertEqual((entry["error"], entry["fallback"]), ("OSError", False))
+
+    def test_a_message_with_no_keywords_has_no_fallback(self):
+        self.fallback_store()
+        model = FakeModel(OSError("refused"), TRAITS._replace(hedge_after=HEDGE, check_budget=BUDGET))
+        before = [{"role": "assistant", "text": "Want me to write Dana about the Connect launch date?"}]
+        self.assertEqual(self.ask("do it", model=model, before=before), "")
+        entry = self.log_entries()[-1]
+        self.assertEqual((entry["error"], entry["fallback"]), ("OSError", False))
+
+    def test_the_fallback_searches_on_the_lookups_own_thread(self):
+        self.fallback_store()
+        db = store.connect(self.paths.db, readonly=True)
+        self.addCleanup(db.close)
+        threads = []
+
+        def search_fn(query, limit, keep):
+            threads.append(threading.get_ident())
+            return search.search(db, query, limit=limit, keep=keep)
+        found = check.lookup_with(search_fn, ASK, [], "sess-1", set(), self.slow_plan(30, plan_and_pick("Pelican")),
+                                  BUDGET, HEDGE)
+        self.assertTrue(found.fallback)
+        self.assertEqual([h["source_id"] for h in found.hits], ["test:words"])
+        self.assertEqual(set(threads), {threading.get_ident()})
+
+    def test_the_fallbacks_query_is_the_longest_keywords_of_the_message_in_its_order(self):
+        message = ("Dana's Connect launch moved, so which of Fernbrook's three bakery locations hear about the "
+                   "Pelican kickoff first? Also the Copperline deposit")
+        self.assertEqual(check.local_query(message),
+                         '"Connect" "launch" "Fernbrook" "locations" "Pelican" "kickoff" "Copperline" "deposit"')
+        self.assertEqual(check.local_query("the Connect launch"), '"Connect" "launch"')
+        self.assertEqual(check.local_query("do it"), "")
+
     def test_lookup_with_runs_the_check_over_several_stores(self):
         self.add("gmail", "test:a", "Dana on the Connect launch date", ts="2026-10-04T10:00:00Z")
         team_path = os.path.join(os.path.dirname(self.paths.db), "team.sqlite")
@@ -568,6 +705,27 @@ class HedgedTest(unittest.TestCase):
         with self.assertRaises(TimeoutError):
             ai.hedged(model, self.PROMPT, 0.2, None)
         self.assertEqual(len(calls), 1)
+
+    def test_when_slow_runs_once_as_a_stalled_calls_copy_goes_out(self):
+        model, _ = self.model((0.8, "stalled"), (0, "copy"))
+        slow = []
+        self.assertEqual(ai.hedged(model, self.PROMPT, 1.0, self.HEDGE, lambda: slow.append(time.monotonic())), "copy")
+        self.assertEqual(len(slow), 1)
+
+    def test_when_slow_runs_as_the_copy_of_a_failed_call_goes_out(self):
+        model, _ = self.model((0, OSError("refused")), (0, "copy"))
+        slow = []
+        self.assertEqual(ai.hedged(model, self.PROMPT, 1.0, self.HEDGE, lambda: slow.append(1)), "copy")
+        self.assertEqual(len(slow), 1)
+
+    def test_when_slow_does_not_run_for_a_fast_answer_or_a_model_with_no_hedge(self):
+        model, _ = self.model((0, "first"))
+        slow = []
+        ai.hedged(model, self.PROMPT, 1.0, self.HEDGE, lambda: slow.append(1))
+        model, _ = self.model((0, OSError("refused")))
+        with self.assertRaises(OSError):
+            ai.hedged(model, self.PROMPT, 1.0, None, lambda: slow.append(1))
+        self.assertEqual(slow, [])
 
     def test_each_call_gets_the_time_left(self):
         model, _ = self.model((0, "first"))

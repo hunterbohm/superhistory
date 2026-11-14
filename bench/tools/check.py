@@ -137,6 +137,16 @@ class Counted:
             return self.tokens
 
 
+class PlanRefused(Counted):
+    """A model whose plan calls fail at once, as a model that is down would, so every lookup is the fallback's: its
+    keywords from the message, the search, and the picker. Pick calls go out as usual."""
+
+    def ask(self, prompt, timeout):
+        if prompt.system == check.QUERY_SYSTEM:
+            raise ai.Refused("the plan call is off in this run")
+        return super().ask(prompt, timeout)
+
+
 @contextlib.contextmanager
 def counting(counted):
     """Threads kb.ai starts on this thread meanwhile count as `counted`'s running calls."""
@@ -148,8 +158,9 @@ def counting(counted):
 
 
 class _Threads:
-    """The threading module as kb.ai sees it. A thread started inside counting() is counted when it is created, on
-    the thread that creates it, so no delay before it runs can hide it."""
+    """The threading module as kb.ai and kb.check see it. A thread started inside counting() is counted when it is
+    created, on the thread that creates it, so no delay before it runs can hide it, and the threads it starts count
+    too: the fallback's pick thread starts hedged calls."""
 
     def __getattr__(self, name):
         return getattr(threading, name)
@@ -161,6 +172,7 @@ class _Threads:
         counted.started()
 
         def run():
+            _local.lookup = counted
             try:
                 target()
             finally:
@@ -168,7 +180,7 @@ class _Threads:
         return threading.Thread(target=run, **kwargs)
 
 
-ai.threading = _Threads()
+ai.threading = check.threading = _Threads()
 
 
 _search = search.search
@@ -248,8 +260,9 @@ class Store:
         db.close()
         return cls(paths), stats
 
-    def lookup(self, message, before=()):
-        counted = Counted(model())
+    def lookup(self, message, before=(), plan=True):
+        """The check's lookup. With plan=False the model refuses the plan call, so the lookup is the fallback's."""
+        counted = (Counted if plan else PlanRefused)(model())
         started = time.monotonic()
         db = store.connect(self.paths.db, readonly=True)
         try:
@@ -341,3 +354,11 @@ class Check(Tool):
 class Cards(Check):
     label = f"{product.NAME} check, cards only"
     agent_tools = ()
+
+
+class Fallback(Check):
+    """The fallback alone: no plan call, so a lookup is its own keywords, the search and the picker."""
+    label = f"{product.NAME} check, fallback alone"
+
+    def retrieve(self, question):
+        return self.store.lookup(question["question"], plan=False)
