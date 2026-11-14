@@ -436,7 +436,12 @@ Known limits:
   Selenium's send_keys, WebdriverIO's setValue, Puppeteer's page.type), whose locator's strings or regex name the
   field, with comments and keyword arguments read past. With no label, only typing into the focused field
   (keyboard.type) is read, by the value's shape. A value typed from a variable, or built at run time (joined,
-  templated), stays, and other ways of writing such code are not read.
+  templated), stays, and other ways of writing such code are not read. A call written as an object in text, as a
+  transcript holds it (JSON or Python's repr, plain or escaped inside a string any number of times up to three, in any
+  key order, from any tool), is read the same way: an object whose labels ask for a secret has its text, value, keys,
+  input, content or string masked, whether that is a string or a number, and a string a clipped call never closes is
+  masked to the end of its line. With no label, a value shaped like a credential is masked when a typing tool's name
+  stands within 600 characters before the object, or its action is "type".
 - Superhistory reads a secret that one colour code or one invisible character splits, or glues to a word, and still hides all
   that Superhistory's earlier mask hid. Shapes built from more than that are not all read: a secret split by two kinds of
   invisible character at once ("pass<soft hyphen>word=..." with a link inside the value), what an older Superhistory left
@@ -482,6 +487,10 @@ Known limits:
   reads as one about the type of a secret; three or more spaces between a mark and a regular expression, or a regular
   expression that ends in an escaped backslash, which keep a typing call after them from being read; and values built at
   run time, or typed by other automation libraries and recorder formats.
+- A call written as an object in text leaves a few shapes unread: a value typed under a key other than text, value, keys,
+  input, content or string; a label in another object than the one that holds the value; a quote that closes after more
+  than 4,096 characters, or one that follows a letter ("don't"), which opens no string; and a string escaped more than
+  three times.
 - Escaping hides some secrets from the readers. A provider's token split by an invisible character and written as JSON
   inside JSON inside JSON shows a fragment. A password line of base64 after a placeholder and lines of base64 that
   decode to words, written as JSON escaped twice, shows, though it is masked when plain or escaped once.

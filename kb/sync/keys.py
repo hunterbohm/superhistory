@@ -256,6 +256,9 @@ def _parse(text, head, nbytes, nchars):
 
 
 _CODE_READ = re.compile(r"VRC1[0-9A-Z]{20,32}|VP1[0-9A-Z]{20,26}")
+# The same, from every head, including one inside the characters of the code before it: a code cut short, and a second
+# code glued behind it, whose head the first code's read would take as its own characters.
+_EACH_CODE = re.compile(r"(?=(VRC1[0-9A-Z]{20,32}|VP1[0-9A-Z]{20,26}))")
 
 
 # Eight groups of four, with spaces, dashes or a line break between them in any mix, or none. A lookahead, so that a
@@ -268,33 +271,113 @@ def code_spans(text):
     """Where `text` holds most or all of a recovery or pairing code, read the way `_parse` reads one: upper-cased, with
     every space and dash skipped, and every line break too, since a code can be wrapped. Returns (start, end) pairs in
     `text`."""
+    chars, where = _code_stream(text)
+    return [(where[m.start()], where[m.end() - 1] + 1) for m in _CODE_READ.finditer("".join(chars))]
+
+
+def _code_stream(text):
+    """`text` upper-cased with every space, dash and line break skipped, as a code is read, and the place in `text` of
+    each of its characters."""
     chars, where = [], []
     for i, c in enumerate(text):
         if c not in " -\n\r\t":
             for u in c.upper():
                 chars.append(u)
                 where.append(i)
-    return [(where[m.start()], where[m.end() - 1] + 1) for m in _CODE_READ.finditer("".join(chars))]
+    return chars, where
+
+
+# More than eight groups of four, as two or more codes without their heads run together are, or one with a word of four
+# letters before or after it: one run, with no break to tell where a code starts or ends.
+_GROUP = re.compile(r"[0-9A-Za-z]{4}")
+_HEADLESS_RUN = re.compile(r"(?<![0-9A-Za-z])[0-9A-Za-z]{4}(?:[ \t\r\n-]{0,3}[0-9A-Za-z]{4}){8,}(?![0-9A-Za-z])")
+
+
+def _a_code_body(chars):
+    """Whether 32 characters are what a code written without its head holds (`headless_spans`): code characters, a digit
+    and a letter past F."""
+    chars = chars.upper()
+    return chars.isascii() and set(chars) <= _CODE_CHARS and any(c.isdigit() for c in chars) and any(
+        c.isalpha() and c > "F" for c in chars)
 
 
 def headless_spans(text):
     """Where `text` may hold a recovery code written without its VRC1 head: 32 code characters in any case, run
     together or in the printed groups of four. A code holds a digit and a letter past F, all but about one in 150,000
-    do, so a hex run, such as a hash or a uuid without its dashes, and a run of words, are never taken for one."""
+    do, so a hex run, such as a hash or a uuid without its dashes, and a run of words, are never taken for one. In a
+    run of nine or more groups, two or more codes without heads run together, or one with a word beside it, each eight
+    groups in a row that are in one case, as a code prints, and read as a code are one: text with both cases, base64's
+    or a word's, has none."""
     out = []
     for m in _HEADLESS.finditer(text):
-        chars = re.sub(r"[ \t\r\n-]", "", m.group(1)).upper()
-        if chars.isascii() and set(chars) <= _CODE_CHARS and any(c.isdigit() for c in chars) and any(
-                c.isalpha() and c > "F" for c in chars):
+        if _a_code_body(re.sub(r"[ \t\r\n-]", "", m.group(1))):
             out.append((m.start(), m.start() + len(m.group(1))))
+    for m in _HEADLESS_RUN.finditer(text):
+        groups = [(m.start() + g.start(), m.start() + g.end()) for g in _GROUP.finditer(m.group())]
+        for i in range(len(groups) - 7):
+            chars = "".join(text[a:b] for a, b in groups[i:i + 8])
+            if chars in (chars.upper(), chars.lower()) and _a_code_body(chars):
+                out.append((groups[i][0], groups[i + 7][1]))
     return out
 
 
-def code_mask_spans(text, headless=False):
+# A code's head, as _CODE_READ reads it from text with its breaks skipped: a code is known by its head.
+_HEAD_READ = re.compile(r"(?i)v[ \t\r\n-]*(?:r[ \t\r\n-]*c|p)[ \t\r\n-]*1")
+_BARE_WIDTH = 32  # the characters of a code written without its head
+_BARE_LEAST = 20  # and the fewest of one that a first code cut short leaves: its read takes up to 12 of the second's
+_GAP = 4  # the widest gap in the text between two characters of one code: a break of up to three characters
+
+
+def glued_code_spans(text):
+    """`code_spans`, with each span grown over what is glued to it. A code with a letter or digit touching it, on either
+    side, has something glued on: the whole run of letters and digits is part of it. And a run of fewer than 32 that
+    the groups past the next break bring to 32, or to 20 or more when the first code is cut short and its read has
+    taken the front of the second, is a second code, written without its head and in two pieces, so those groups
+    are too. A second code's last groups past a space would otherwise stay, since kb's mask hides the
+    run glued to a hidden code only up to the break and what is left is too short to read as a code. A code with
+    nothing glued to it comes back as `code_spans` has it."""
+    if not _HEAD_READ.search(text):
+        return code_spans(text)
+    chars, where = _code_stream(text)
+    alnum = [c.isascii() and c.isalnum() for c in chars]
+    size = len(chars)
+    # Where the run of letters and digits touching a character stops (`stop`) and starts (`start`), found once, so a long
+    # run with a head at every few characters is read in the time it takes to read it, not once for each head.
+    stop = [size] * (size + 1)
+    for i in range(size - 1, -1, -1):
+        stop[i] = stop[i + 1] if i and alnum[i] and where[i] == where[i - 1] + 1 else i
+    start = list(range(size))
+    for i in range(1, size):
+        start[i] = start[i - 1] if alnum[i - 1] and where[i] == where[i - 1] + 1 else i
+    spans = []
+    for m in _EACH_CODE.finditer("".join(chars)):
+        lo, hi = m.start(1), stop[m.end(1)]  # the run touching its end
+        total, j = hi - m.end(1), hi
+        while 0 < total < _BARE_WIDTH and j < size and alnum[j] and where[j] - where[j - 1] <= _GAP:
+            k = stop[j + 1]  # a group past a break, up to the next
+            total, j = total + k - j, k
+            hi = j if _BARE_LEAST <= total <= _BARE_WIDTH else hi
+        lo = start[lo]  # and the run touching its front
+        total, j = m.start(1) - lo, lo
+        while 0 < total < _BARE_WIDTH and j > 0 and alnum[j - 1] and where[j] - where[j - 1] <= _GAP:
+            k = start[j - 1]
+            total, j = total + j - k, k
+            lo = j if total == _BARE_WIDTH else lo
+        spans.append((where[lo], where[hi - 1] + 1))
+    return spans
+
+
+def has_glued_code(text):
+    """Whether `text` holds a code with a letter or digit touching it, which `glued_code_spans` grows."""
+    return bool(_HEAD_READ.search(text)) and glued_code_spans(text) != code_spans(text)
+
+
+def code_mask_spans(text, headless=False, glued=False):
     """The spans `mask_codes` replaces: every code `code_spans` finds, and with `headless`, every one `headless_spans`
-    finds, those that touch or overlap merged."""
+    finds, those that touch or overlap merged. With `glued`, the codes as `glued_code_spans` grows them."""
     merged = []
-    for start, end in sorted(code_spans(text) + (headless_spans(text) if headless else [])):
+    for start, end in sorted((glued_code_spans(text) if glued else code_spans(text))
+                             + (headless_spans(text) if headless else [])):
         if merged and start <= merged[-1][1]:
             merged[-1] = (merged[-1][0], max(end, merged[-1][1]))
         else:

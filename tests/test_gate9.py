@@ -8,6 +8,7 @@ import tempfile
 import time
 import unittest
 
+from kb import mask as masking
 from kb import store
 from kb.mask import mask, mask_all, typed_secrets
 from kb.sources import claude_code, codex, hermes
@@ -188,6 +189,185 @@ class TypedSecretTest(unittest.TestCase):
                          {"element": "Search", "text": "pelican"})
         self.assertNotIn(PASSWORD, json.dumps(mask_all(typed_secrets("mcp__chrome-devtools__fill_form", {
             "elements": [{"uid": "1_3", "value": "Sam"}, {"uid": "1_7", "value": PASSWORD}]}))))
+
+
+class TypedSecretInTextTest(unittest.TestCase):
+    """The mask itself hides what a call types into a field labelled for a secret when the call is written in text, as
+    JSON or as Python's repr, plain or escaped as JSON in JSON writes it, so a row a reader stored before it hid the
+    value, and any text that quotes a call, hold none. The ordinary fields beside it stay."""
+
+    CORE = "Zk9qWm2x"  # in every value below, so a value is hidden when its core is
+    VALUES = ("Tr0ub4dor-Zk9qWm2x", "pa}ss{w0rd-Zk9qWm2x", 'p"q\\r9Zk9qWm2x', "it's-Zk9qWm2x", "Zk9qWm2x" * 5,
+              "correct horse Zk9qWm2x staple", "été-Zk9qWm2x!", "Zk9qWm2x#a[b]c,d:e")
+
+    @staticmethod
+    def calls(label, value, r):
+        """Each tool that types or fills, with `value` typed into a field labelled `label`: (tool name, input, the
+        text of its field's label as the input holds it)."""
+        ref = f"e{r.randint(2, 99)}"
+        selector = f"input[name={label.lower().replace(' ', '_')}]"
+        return [("mcp__playwright__browser_type", {"element": label, "ref": ref, "text": value, "submit": False}, label),
+                ("mcp__playwright__browser_type", {"text": value, "ref": ref, "element": label}, label),
+                ("mcp__plugin_playwright_playwright__browser_type",
+                 {"element": f"{label} field", "text": value, "slowly": True}, f"{label} field"),
+                ("mcp__playwright__browser_fill_form",
+                 {"fields": [{"name": "Email", "type": "textbox", "ref": "e5", "value": "me@example.com"},
+                             {"name": label, "type": "textbox", "ref": ref, "value": value}]}, label),
+                ("mcp__puppeteer__puppeteer_fill", {"selector": selector, "value": value}, selector),
+                ("browser_type", {"element": label, "text": value}, label),
+                ("mcp__other__type_text", {"label": label, "text": value}, label),
+                ("mcp__x__fill_field", {"placeholder": label, "value": value}, label),
+                ("mcp__x__input_text", {"aria_label": label, "keys": value}, label)]
+
+    @staticmethod
+    def writings(name, args):
+        """One call as text writes it, in each form a transcript holds one."""
+        block = {"type": "tool_use", "id": "toolu_01", "name": name, "input": args}
+        call = {"type": "function_call", "name": name, "arguments": json.dumps(args)}
+        once = json.dumps(call)
+        return {
+            "TOOL line": f"TOOL {name}: {json.dumps(args)}",
+            "TOOL line, ASCII": f"TOOL {name}: {json.dumps(args, ensure_ascii=True)}",
+            "content block": json.dumps(block, separators=(",", ":")),
+            "content block, pretty": json.dumps(block, indent=2),
+            "arguments string": once,
+            "escaped twice": json.dumps(once),
+            "escaped three times": json.dumps(json.dumps(once)),
+            "Python repr": f"TOOL {name}: {args!r}",
+            "repr of a block": str(block),
+            "after prose with apostrophes": f"I don't think it's wise, but here: TOOL {name}: {json.dumps(args)} it's done",
+            "between two apostrophes": f"I don't think so: TOOL {name}: {json.dumps(args)} but it's done",
+            "in a list of calls": json.dumps([{"name": name, "input": {"element": "Search", "text": "pelican"}}, block]),
+            "inside a message": json.dumps({"role": "assistant", "content": [block, {"type": "text", "text": "ok"}]}),
+        }
+
+    def hidden(self, label, value, name, args, kept, form, text):
+        with self.subTest(name=name, label=label, form=form):
+            out = mask(text)
+            self.assertNotIn(self.CORE, out)
+            self.assertIn(kept if "ASCII" not in form else kept.split("[")[0], out)
+            self.assertEqual(mask(out), out, "masking again changes nothing")
+
+    def test_a_value_typed_into_a_secret_field_is_hidden_in_every_form_of_every_tool(self):
+        r = random.Random("typed-text:forms")
+        for k, label in enumerate(SECRET_LABELS):
+            for name, args, kept in self.calls(label, self.VALUES[k % len(self.VALUES)], r):
+                for form, text in self.writings(name, args).items():
+                    if (k + len(name) + len(form)) % 4 == 0:  # each tool and each form meets about a quarter of the labels
+                        self.hidden(label, None, name, args, kept, form, text)
+
+    def test_a_value_typed_into_a_secret_field_is_hidden_whatever_the_value_and_the_label(self):
+        for seed in range(3):
+            r = random.Random(f"typed-text:{seed}")
+            for label in SECRET_LABELS:
+                value = r.choice(self.VALUES)
+                for name, args, kept in self.calls(label, value, r):
+                    form, text = r.choice(sorted(self.writings(name, args).items()))
+                    self.hidden(label, value, name, args, kept, form, text)
+
+    def test_a_value_typed_into_an_ordinary_field_stays(self):
+        for seed in range(2):
+            r = random.Random(f"typed-ordinary:{seed}")
+            for label in ORDINARY_LABELS:
+                value = r.choice(ORDINARY_VALUES)
+                for name, args, kept in self.calls(label, value, r):
+                    for form, text in r.sample(sorted(self.writings(name, args).items()), 3):
+                        with self.subTest(seed=seed, name=name, label=label, form=form):
+                            self.assertEqual(mask(text), text)
+
+    def test_a_number_a_clipped_call_and_an_unlabelled_credential(self):
+        for text in ('TOOL mcp__playwright__browser_type: {"element": "PIN", "text": 4829173}',
+                     'TOOL mcp__playwright__browser_type: {"element": "Password", "text": "Zk9qWm2xTr0ub4dor',
+                     'TOOL mcp__playwright__browser_type: {"element": "Password", "text": "Zk9qWm2x\\"Tr0ub',
+                     'TOOL mcp__chrome-devtools__fill: {"uid": "1_7", "value": "Zk9qWm2x-Tr0ub4dor"}',
+                     'TOOL mcp__chrome-devtools__fill_form: {"elements": [{"uid": "1_3", "value": "Sam"}, '
+                     '{"uid": "1_7", "value": "Zk9qWm2x-Tr0ub4dor"}]}',
+                     'TOOL computer: {"action": "type", "text": "Zk9qWm2x-Tr0ub4dor"}'):
+            with self.subTest(text=text):
+                out = mask(text)
+                self.assertNotIn("Zk9qWm2x", out)
+                self.assertNotIn("4829173", out)
+                self.assertEqual(mask(out), out)
+        for kept in ('TOOL mcp__chrome-devtools__fill: {"uid": "1_7", "value": "pelican plan"}',
+                     'TOOL mcp__chrome-devtools__fill_form: {"elements": [{"uid": "1_3", "value": "Sam"}]}',
+                     'TOOL computer: {"action": "type", "text": "hello there"}',
+                     '{"value": "Zk9qWm2x-Tr0ub4dor"}', 'TOOL other: {"uid": "1_7", "value": "Zk9qWm2x-Tr0ub4dor"}',
+                     # a value that reads as a credential, in an object with no label and no typing tool before it, in
+                     # a text that has a word about a key
+                     '{"ref": "key7", "value": "Zk9qWm2x-Tr0ub4dor"}'):
+            with self.subTest(kept=kept):
+                self.assertEqual(mask(kept), kept)
+
+    def test_every_key_that_holds_what_a_call_types_is_read(self):
+        for key in ("text", "value", "keys", "input", "content", "string"):
+            for text in (f'{{"element": "Password", "{key}": "Zk9qWm2x-1"}}',
+                         f"{{'{key}': 'Zk9qWm2x-1', 'label': 'Password'}}",
+                         f'TOOL mcp__x__tool: {{"selector": "#password", "{key}": "Zk9qWm2x-1"}}',
+                         json.dumps(json.dumps({"element": "Password", key: "Zk9qWm2x-1"})),
+                         f'TOOL mcp__chrome-devtools__fill: {{"uid": "1_7", "{key}": "Zk9qWm2x-Tr0ub4dor"}}'):
+                with self.subTest(text=text):
+                    out = mask(text)
+                    self.assertNotIn("Zk9qWm2x", out)
+                    self.assertEqual(mask(out), out)
+
+    def test_an_object_literal_in_code_that_looks_like_a_typed_field_is_hidden(self):
+        # The mask reads any object whose label asks for a secret and that has a text, value or the like, since an
+        # object in text cannot be told from a call's input. A validation object or an array's fill with one is hidden
+        # too: over-masking, taken over leaving a password in (it was shown before, and the code around it still is).
+        for text, shown in (('Array(3).fill({label: "Password", text: "Use at least twelve characters."})',
+                             'Array(3).fill({label: "Password", text: "[masked]"})'),
+                            ('new Array(8).fill({name: "Password", value: "hint"})',
+                             'new Array(8).fill({name: "Password", value: "[masked]"})'),
+                            ('const validation = {label: "Password", text: "Use at least twelve characters."};',
+                             'const validation = {label: "Password", text: "[masked]"};')):
+            with self.subTest(text=text):
+                self.assertEqual(mask(text), shown)
+
+    def test_a_typed_value_that_holds_a_call_of_its_own_is_masked_once_and_whole(self):
+        inner = {"element": "Password", "text": "Zk9qWm2x-1"}
+        outer = {"element": "Password", "text": json.dumps(inner)}
+        out = mask(json.dumps(outer))
+        self.assertEqual(json.loads(out), {"element": "Password", "text": "[masked]"})
+        twice = mask("TOOL x: " + json.dumps(json.dumps(outer)))
+        self.assertEqual(json.loads(json.loads(twice.split(": ", 1)[1])), {"element": "Password", "text": "[masked]"})
+        # the edits are made in order, one after another: two that overlap would repeat the text between them
+        for text in (json.dumps(outer), "TOOL x: " + json.dumps(json.dumps(outer)), json.dumps(json.dumps(json.dumps(outer)))):
+            edits = masking._typed_json_edits(text)
+            self.assertTrue(edits)
+            for (_, end, _), (start, _, _) in zip(edits, edits[1:]):
+                self.assertLess(end, start)
+
+    def test_a_key_or_a_label_written_with_an_escape_or_an_invisible_character_or_in_capitals(self):
+        for text in ('{"element": "Pass\\u200bword", "text": "Zk9qWm2x-1"}', '{"element": "Pass​word", "text": "Zk9qWm2x-1"}',
+                     '{"element": "\\u0050assword", "text": "Zk9qWm2x-1"}', '{"element": "Password", "te\\u0078t": "Zk9qWm2x-1"}',
+                     '{"element": "Password", "te​xt": "Zk9qWm2x-1"}', '{"element": "Password", "TEXT": "Zk9qWm2x-1"}',
+                     '{"Element": "Password", "Text": "Zk9qWm2x-1"}', '{"el⁠ement": "Pass﻿word", "text": "Zk9qWm2x-1"}',
+                     "{element: 'Password', text: 'Zk9qWm2x-1'}", "{'element': 'Password', \"text\": 'Zk9qWm2x-1'}",
+                     '{\n  "element": "Password",\n  "text": "Zk9qWm2x-1"\n}', 'TOOL x: {"element":"Password","text":"Zk9qWm2x-1","submit":true}'):
+            with self.subTest(text=text):
+                out = mask(text)
+                self.assertNotIn("Zk9qWm2x", out)
+                self.assertEqual(mask(out), out)
+
+    def test_the_text_around_a_call_is_not_read_as_one(self):
+        # "Password" in a key's name, a word about a password, a call quoted in prose with no field, and braces in text.
+        for kept in ('{"element": "Password hint", "text": "your first pet"}',
+                     '{"element": "Password reset link", "text": "click to reset"}',
+                     '{"label": "Search passwords", "value": "pelican"}',
+                     'the tool takes {"element": ..., "text": ...} where element is a label such as "Password"',
+                     "set {a: 1, text: 'hello'} and {b: 2}", '{"title": "Notes", "text": "remember the milk"}'):
+            with self.subTest(kept=kept):
+                self.assertEqual(mask(kept), kept)
+
+    def test_a_row_a_reader_stored_before_it_hid_the_value_is_hidden_by_the_mask(self):
+        for name, args in (("mcp__playwright__browser_type", {"element": "Password textbox", "ref": "e23",
+                                                              "text": PASSWORD, "submit": True}),
+                           ("mcp__chrome-devtools__fill", {"uid": "1_7", "value": PASSWORD})):
+            with self.subTest(name=name):
+                # what the readers wrote before typed_secrets: the call's input as it was, masked by field only
+                old = f"TOOL {name}: {json.dumps(mask_all(args), ensure_ascii=False)}"
+                self.assertIn(PASSWORD, old)
+                self.assertNotIn(PASSWORD, mask(old))
 
 
 SUB = "q8Zr2Lm7Xk4Vp9Nt3Bw6Hc1"
@@ -1829,8 +2009,10 @@ class ReviewThirtyTwoTest(unittest.TestCase):
         "await $('#password').setValue('Tr0ub{4dor}-Zk9q');",
     )
     ORDINARY = (
-        'await tools.mcp__playwright__browser_type({element: "Search", text: "release notes"});\n'
-        'const validation = {label: "Password", text: "Use at least twelve characters."};',
+        'await tools.mcp__playwright__browser_type({element: "Search", text: "release notes"});',
+        # (repinned with the mask's reading of an object in text, TypedSecretInTextTest: an object literal with
+        # `label: "Password"` and a `text` is read as a typed field wherever it stands, so a validation object's text
+        # is hidden now; see TypedSecretInTextTest.test_an_object_literal_in_code_that_looks_like_a_typed_field_is_hidden)
         'await page.get_by_label("Email").fill("me@example.com")',
         'driver.find_element(By.ID, "search").send_keys("pelican plan")',
         'await page.getByRole("button", {\n  name: "Password reset"\n}).click();',
@@ -1871,8 +2053,9 @@ class ReviewThirtyThreeTest(unittest.TestCase):
         ("await page.getByLabel('Password').fill('H4wk${nest}9!');", "H4wk${nest}9!"),
     )
     ORDINARY = (
-        'Array(3).fill({label: "Password", text: "Use at least twelve characters."})',
-        'new Array(8).fill({name: "Password", value: "hint"})',
+        # (two lines moved to TypedSecretInTextTest.test_an_object_literal_in_code_that_looks_like_a_typed_field_is_hidden:
+        # an array's fill with an object literal `{label: "Password", text: ...}` is read as a typed field, as any
+        # object is, so its text is hidden now)
         "await page.getByLabel('Password').fill(`${password}`);",
         'page.get_by_label("Password").fill(f"{password}")',
         'page.get_by_label("Password").fill(value=password)',
