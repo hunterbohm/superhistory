@@ -532,7 +532,8 @@ def _base64_of(word):
 
 
 _KEY_WORDS = (b"PRIVATE KEY", b"SECRET KEY")
-_ENCODED_KEY = re.compile("|".join(re.escape(code) for word in _KEY_WORDS for code in _base64_of(word)))
+_ENCODED_KEY_CODES = [code for word in _KEY_WORDS for code in _base64_of(word)]
+_ENCODED_KEY = re.compile("|".join(re.escape(code) for code in _ENCODED_KEY_CODES))
 # Six characters of a key's word in base64, as one of a key's lines holds wherever the word breaks across its lines
 # (as a word that only shares three letters with it, a certificate's "CERTIFICATE", does not): lines holding none hold
 # no key's word (_chained_key_lines). And a key file's header, "-----BEGIN" or ssh.com's "---- BEGIN", as the start of
@@ -540,8 +541,20 @@ _ENCODED_KEY = re.compile("|".join(re.escape(code) for word in _KEY_WORDS for co
 _KEY_PIECE = re.compile("|".join(sorted({re.escape(code[i:i + 6]) for word in _KEY_WORDS for code in _base64_of(word)
                                          for i in range(len(code) - 5)})))
 _FILE_STARTS = ("LS0tLS1CRUdJT", "LS0tLSBCRUdJT")
-_ENCODED_BEGIN = re.compile("|".join(re.escape(code) for word in (b"-----BEGIN ", b"---- BEGIN ")
-                                     for code in _base64_of(word)))
+_ENCODED_BEGIN_CODES = [code for word in (b"-----BEGIN ", b"---- BEGIN ") for code in _base64_of(word)]
+_ENCODED_BEGIN = re.compile("|".join(re.escape(code) for code in _ENCODED_BEGIN_CODES))
+# What _chained_key_lines asks of a run before it decodes it (_takes_no_key_line): the length of the shortest text
+# _ENCODED_BEGIN finds, every prefix of a file start that a run's first 13 characters can be (what `start.startswith`
+# of them asks), and how the first three groups of four characters of base64 that decodes to ASCII start. Each group's
+# characters c1 c2 c3 c4 write the bytes c1 c2 (6 bits and 2 of 6), c2 c3 (4 and 4) and c3 c4 (2 and 6), each under
+# 0x80 where c1 is under 32 (the first bit of the 6 it holds is 0), c2's third bit is 0 and c3's two low bits are under
+# 2 (c4 holds six bits of the third byte and may be any).
+_ENCODED_BEGIN_LEAST = min(map(len, _ENCODED_BEGIN_CODES))
+_FILE_START_PREFIXES = frozenset(start[:n] for start in _FILE_STARTS for n in range(len(start) + 1))
+_BASE64_DIGITS = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"  # in the order of their values
+_ASCII_START = re.compile("".join(
+    "[" + "][".join("".join(c for v, c in enumerate(_BASE64_DIGITS) if keep(v)) for keep in (
+        lambda v: v < 32, lambda v: not v & 8, lambda v: v & 3 < 2, lambda v: True)) + "]" for _ in range(3)))
 # A line break: any that Python's splitlines reads (a lone carriage return too, as an old Mac file ends its lines),
 # escaped once or more as JSON writes it, and JSON in JSON: a line feed or carriage return as \n, \r or \u000a, a form
 # feed as \f, and the others as \u000b, \u0085 or  , so a stream's lines read as one block at every depth.
@@ -877,7 +890,7 @@ def _gitleaks_read(text, rules):
         read = _rule_read(pattern, keywords, lower)
         if read is None:
             continue
-        for m in pattern.finditer(text):
+        for m in _finditer(pattern, text):  # not run where the text lacks what a match of the rule holds (_may_find)
             span = _gitleaks_secret(m, group, entropy, allowed, stopwords)
             if span:
                 if read is not True:  # read for a keyword elsewhere in the text, or only to say whether that matters
@@ -1423,6 +1436,8 @@ def _key_spans(text, lines, through=None):
     lines, and those of keys read through their footers also added to `through`, where given. The block is joined
     once, and each key's lines are read once."""
     joined = "".join(text[a:b] for a, b in lines)
+    if not _holds_key_word(joined):
+        return []  # no key's word in the block, so none starts a key: each key starts at one
     ends = list(itertools.accumulate(b - a for a, b in lines))
     starts = [0] + ends[:-1]
     widths = [b - a for a, b in lines]
@@ -1626,20 +1641,26 @@ def _marked_key_spans(text, keys, through):
             at += len(line)
             continue
         if len(run) >= 2:
+            # A run of lines whose text cannot spell a key's word (_spells_key) has no line a chain goes on from that
+            # reads as a key's, nor a column that holds it, and one with no header's base64 (_ENCODED_BEGIN) starts no key
+            # file: those readings are made only where the run can give them something.
+            low, high = run[0][0], run[-1][1]
+            piece = _BEGIN_PIECE.search(text, low, high) or _END_PIECE.search(text, low, high)
+            spells = _spells_key(text, low, high)
             picks = [(line_start, line_end, *pick) for (line_start, line_end), pick in zip(
-                run, _chained_key_lines(text, run)) if pick]
-            keyed = _ENCODED_KEY.search("".join(text[start:stop] for _, _, start, stop in picks))
-            starts = _file_starts(text, run, later)
+                run, _chained_key_lines(text, run)) if pick] if spells or piece else []
+            keyed = spells and _ENCODED_KEY.search("".join(text[start:stop] for _, _, start, stop in picks))
+            starts = _file_starts(text, run, later) if _may_start_key_file(text, low, high) else []
             if keyed:
                 cut += [(a, b) for line_start, line_end, start, stop in picks
                         for a, b in ((line_start, start), (stop, line_end)) if a < b]
-            columns = _column_cuts(text, run)
+            columns = _column_cuts(text, run) if spells else {}
             for k, (stretches, parted, _) in columns.items():
                 view = views.setdefault(k, ([], []))
                 view[0].extend(stretches)
                 view[1].extend(parted)
             scattered = []
-            if _BEGIN_PIECE.search(text, run[0][0], run[-1][1]) or _END_PIECE.search(text, run[0][0], run[-1][1]):
+            if piece:
                 first, last = bisect.bisect_left(firsts_of_blocks, run[0][0]), bisect.bisect_right(
                     firsts_of_blocks, run[-1][1])
                 scattered, footer_end = _scattered_starts(text, run, _unbroken(run, [[
@@ -1690,6 +1711,32 @@ def _marked_key_spans(text, keys, through):
 
 
 _COLUMNS = 3  # the runs on each line read as columns from either end (_column_cuts)
+
+
+def _holds_key_word(joined):
+    """Whether `joined` holds a key's word in base64 (_ENCODED_KEY)."""
+    return _ENCODED_KEY.search(joined) is not None
+
+
+def _may_start_key_file(text, low, high):
+    """Whether text[low:high] holds a key file's header whole in base64 (_ENCODED_BEGIN). _file_starts reads a key file's
+    start only on a line that holds one, so none starts in lines that lie within text[low:high] and hold none."""
+    return _ENCODED_BEGIN.search(text, low, high) is not None
+
+
+def _spells_key(text, low, high):
+    """Whether a key's word in base64 (_ENCODED_KEY) can be joined from stretches of text[low:high] taken in the order
+    they stand in, as _marked_key_spans joins the base64 it picks on each line of a run of lines (_chained_key_lines) and
+    that of each column (_column_cuts): one of the word's encodings, each of its characters found after the one before."""
+    for code in _ENCODED_KEY_CODES:
+        at = low
+        for character in code:
+            at = text.find(character, at, high) + 1
+            if not at:
+                break
+        else:
+            return True
+    return False
 
 
 def _column_cuts(text, run):
@@ -2104,12 +2151,16 @@ def _chained_key_lines(text, run):
     for line, line_end in run:
         best = None  # (rank, start, end, what it leaves past its groups)
         for m in _MARKED_BASE64.finditer(text, line, line_end):
-            signs = len(m.group()) - len(m.group().lstrip("+/"))
+            run_text = m.group()
+            signs = len(run_text) - len(run_text.lstrip("+/"))
             for k in range(max(0, signs - 3), signs + 1):
-                piece = m.group()[k:]
+                piece = run_text[k:]
                 if not piece.strip("+/"):
                     break
-                read, header = _reads_on(carry, piece), any(start.startswith(piece[:13]) for start in _FILE_STARTS)
+                header = piece[:13] in _FILE_START_PREFIXES  # a prefix of a file's start (_FILE_STARTS)
+                if closed and not header and _takes_no_key_line(piece):
+                    continue
+                read = _reads_on(carry, piece)
                 decodes = read is not None
                 if not decodes and (not closed and len(piece) == width or _ENCODED_BEGIN.search(piece)):
                     # within a key, a run as long as the line above's goes on whatever it decodes to, and one holding a
@@ -2133,6 +2184,18 @@ def _chained_key_lines(text, run):
         column, width = start - line, end - start
         carry, tail = ("", "") if closed else (carry, (tail + text[start:end])[-5:])
     return lines
+
+
+def _takes_no_key_line(piece):
+    """Whether a run of base64, `piece`, that is no prefix of a key file's start (_FILE_STARTS) goes on no line a key's
+    base64 is on (_chained_key_lines), after a line none went on from (`closed`, nothing carried). Such a run is read
+    only where it decodes to ASCII and is 16 characters or more, or holds a key file's header (_ENCODED_BEGIN, which
+    needs at least _ENCODED_BEGIN_LEAST characters). So a run with no header that is shorter than 16 or does not start
+    in ASCII (_ASCII_START: its first three groups of four are 12 characters, where the run reaches 16) is read
+    as no line of a key's, without decoding it."""
+    if len(piece) >= _ENCODED_BEGIN_LEAST and _ENCODED_BEGIN.search(piece):
+        return False
+    return len(piece) < 16 or not _ASCII_START.match(piece)
 
 
 def _reads_on(carry, piece):
