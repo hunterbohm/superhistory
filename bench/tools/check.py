@@ -186,14 +186,14 @@ ai.threading = check.threading = _Threads()
 _search = search.search
 
 
-def _visible_search(db, query, after=None, sources=(), limit=10, before=None, keep=None):
+def _visible_search(db, query, after=None, sources=(), limit=10, before=None, keep=None, history=False):
     if not HIDE:
-        return _search(db, query, after, sources, limit, before, keep)
+        return _search(db, query, after, sources, limit, before, keep, history)
 
     def visible(hit):
         where = hit["source_id"] + " " + json.dumps(hit["meta"])
         return not any(part in where for part in HIDE) and (keep is None or keep(hit))
-    return _search(db, query, after, sources, limit, before, visible)
+    return _search(db, query, after, sources, limit, before, visible, history)
 
 
 search.search = _visible_search
