@@ -1,0 +1,49 @@
+{
+ "date": "2026-11-14T08:45:40Z",
+ "month": "a",
+ "month_commit": "",
+ "check_commit": "+uncommitted",
+ "answer_model": "claude-sonnet-5-5",
+ "judge_model": "gpt-6.1-sol",
+ "base_url": "http://127.0.0.1:8317",
+ "questions": 171,
+ "workers": 1,
+ "tools": [
+  {
+   "tool": "check",
+   "load": {
+    "store_seconds": 8.33,
+    "summarized": 42,
+    "summary_failures": 0,
+    "summarize_seconds": 95.3,
+    "rows": {
+     "atom": 283,
+     "doc": 429,
+     "raw": 95,
+     "segment": 130
+    },
+    "code": "2f0339822c72345f"
+   },
+   "ran": 171,
+   "failed": 0
+  },
+  {
+   "tool": "check-fallback",
+   "load": {
+    "store_seconds": 8.33,
+    "summarized": 42,
+    "summary_failures": 0,
+    "summarize_seconds": 95.3,
+    "rows": {
+     "atom": 283,
+     "doc": 429,
+     "raw": 95,
+     "segment": 130
+    },
+    "code": "2f0339822c72345f"
+   },
+   "ran": 171,
+   "failed": 0
+  }
+ ]
+}

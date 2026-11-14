@@ -15,7 +15,7 @@ printed text come from them, so a rename is one edit.
 | `kb/mask.py` | Secret masking and the 2FA filter. Every stored row passes through `mask()`. |
 | `kb/gitleaks.py` | Provider token rules taken from gitleaks, with its licence. `tools/vendor_gitleaks.py` writes it from a gitleaks release and says which rules it took and why it left the rest. |
 | `kb/search.py` | Keyword search with rank fusion, term coverage and recency. |
-| `kb/check.py` | The check: one model call writes a query, search finds candidates, a second call keeps the ones that fit. |
+| `kb/check.py` | The check: one model call writes a query, search finds candidates, a second call keeps the ones that fit. When that first call is late or fails (as its hedge copy goes out), a fallback starts beside it: the query is the message's longest keywords, with no model call, and the same picker keeps the records. The first call's result wins if it ends before the deadline; the fallback's is used if not. The log entry says which (`fallback`). |
 | `kb/summarize.py` | Segment and atom rows for long items. |
 | `kb/decisions.py` | The decision pass: who made each decision atom, which newer one replaces it, and instruction lines it contradicts. Its `decisions` table keys a judgment by item and text hash, and search leaves out replaced decisions. It never changes `docs`. A personal install carries a copy of it, which matches this file from the `# BODY` line on. |
 | `kb/ingest.py` | The runner that reads every source and stores what changed. |
@@ -86,7 +86,8 @@ The Sync client is `kb/sync/`, imported as `kb.sync`.
   a winning clear means the item is not superseded. A rebuild copies every mark and clear to the item's new id with
   its `marked_by`, `at` and `v` as they were, and names the ones whose item the new store lacks.
 - For the client and the engine to import: `store.replace_rows`, `search.search_stores`, `check.lookup_with`,
-  `gmail.render_thread`, and `summarize.request`, `parse` and `rows`.
+  `gmail.render_thread`, and `summarize.request`, `parse` and `rows`. `lookup_with` calls its `search_fn` only on the
+  thread that called it, so the stores it searches stay on the thread that opened them.
 
 Each online account has one reader. Gmail, GitHub, YouTube and Eden read an account, not a computer, so two computers reading one
 would store every thread twice under two prefixes. `config.account_keys()` names the account each source reads, one

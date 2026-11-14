@@ -10,6 +10,7 @@ The made-up month is `demo/month/` (see its README). One command loads it into e
 
 ```bash
 python3 bench/run.py month --tools none,oracle,check,check-cards
+python3 bench/run.py month --month a --label fallback --tools none,check,check-fallback   # a dev run
 python3 bench/run.py table            # print the table from the saved rows
 python3 bench/run.py rejudge --why "REASON"            # grade saved answers again, after a gold or judge change
 python3 bench/run.py rejudge --why "REASON" --only ID,ID   # just those questions; every other verdict stays
@@ -29,6 +30,8 @@ The rival tools need their own setup, all local, with no account:
 | `mem0` | A Python with `pip install "mem0ai[nlp,extras]==2.2.1" sentence-transformers` and the spaCy model `en_core_web_sm`. Run `run.py` with that Python. The endpoint `BENCH_BASE_URL` names must also serve OpenAI Chat Completions at `/v1/chat/completions`. |
 | `supermemory` | `docker run -d --name sm-bench --network host -e OPENAI_API_KEY=<your key> -e OPENAI_BASE_URL=<an OpenAI-compatible endpoint> -e OPENAI_MODEL=claude-haiku-5-5 -e SUPERMEMORY_DISABLE_TELEMETRY=1 -v <dir>:/data supermemory/supermemory:0.0.9`, then `SUPERMEMORY_KEY_FILE=<dir>/api-key`. |
 | `claude-mem` | `HOME=<scratch> npx claude-mem@15.3.0 install --provider claude --no-auto-start`; in `<scratch>/.claude-mem/settings.json` set `CLAUDE_MEM_CLAUDE_AUTH_METHOD` to `gateway` and `CLAUDE_MEM_MODEL` to `claude-haiku-5-5`; put `ANTHROPIC_BASE_URL` and `ANTHROPIC_AUTH_TOKEN` in `<scratch>/.claude-mem/.env`; run `HOME=<scratch> claude-mem start`, then set `CLAUDE_MEM_HOME=<scratch>` for the run; the adapter and claude-mem's MCP server both read the worker's address from the settings there. |
+
+`check-fallback` is the check's fallback alone: the model refuses the plan call, so each lookup is the message's own keywords, the search and the picker, which is what the hook falls back to when the plan call is slow (`kb/check.py`). It measures the fallback's accuracy, not how often the hook uses it.
 
 `python3 bench/run.py latency --tools check,supermemory,claude-mem` times lookups alone, one at a time and alternating between tools, into `bench/results/month/latency.jsonl`.
 
@@ -86,7 +89,7 @@ A seed alone cannot make a held-out month: it changes only ids and the seconds o
 bench/dev.sh LABEL [--slice]                        # one pass over the three dev halves; --slice: 100 and 150 questions
 python3 bench/compare.py LABEL --noise noise1,noise2,noise3   # dev numbers beside the baseline's repeat runs
 python3 bench/lookups.py LABEL                      # the check's lookups alone: a screen with no answer model or judge
-python3 bench/run.py month --month b --label baseline --tools check   # a held-out run
+python3 bench/run.py month --month b --label baseline --tools check   # a held-out run; month B also takes none and check-fallback
 python3 bench/public/longmemeval.py --set s --split test --label baseline
 python3 bench/public/locomo.py --split test --label baseline
 ```

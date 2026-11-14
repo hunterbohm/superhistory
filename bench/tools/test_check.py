@@ -69,6 +69,21 @@ class TokenCountTest(unittest.TestCase):
             self.assertEqual(model.settle(2), 200)
         self.assertEqual(model.detail, {"input": 180, "output": 20, "thinking": 8, "models": ["claude-haiku-5-5"]})
 
+    def test_the_search_the_agent_runs_passes_history_on_whether_or_not_hits_are_hidden(self):
+        for hidden in ([], ["secret-session"]):
+            with self.subTest(hidden=hidden), mock.patch.object(check, "HIDE", hidden), \
+                    mock.patch.object(check, "_search", return_value=[]) as package_search:
+                check._visible_search(None, "query", history=True)
+                self.assertIs(package_search.call_args.args[-1], True)
+
+    def test_the_fallback_tool_refuses_only_the_plan_call(self):
+        model = check.PlanRefused(check.model())
+        with self.assertRaises(ai.Refused):
+            model.ask(ai.Prompt(check.check.QUERY_SYSTEM, "user"), 1)
+        with mock.patch.object(check, "_post", answered_after(0)):
+            self.assertEqual(model.ask(ai.Prompt(check.check.PICK_SYSTEM, "user"), 1), "ok")
+        self.assertEqual(model.calls, 1)
+
     def test_the_summarizer_is_held_to_two_calls_at_once(self):
         self.assertLessEqual(check.model().traits.parallel, 2)
 

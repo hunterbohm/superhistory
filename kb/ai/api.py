@@ -10,7 +10,8 @@ from kb.ai import Busy, NotReady, PluginSpec, Refused, Traits
 from kb.config import Secret, SecretError
 from kb.mask import mask
 
-TRAITS = Traits(check_budget=10.0, hedge_after=3.0, parallel=4, max_prompt_chars=600_000)
+# The plan call's p95 was 2.6 s on the mini (Nov 14, 2026): a fallback after 2 s starts beside about one plan in five.
+TRAITS = Traits(check_budget=10.0, hedge_after=3.0, parallel=4, max_prompt_chars=600_000, fallback_after=2.0)
 AUTH_CODES = (401, 403)
 PAYMENT_REQUIRED = 402
 SETUP_CODES = AUTH_CODES + (PAYMENT_REQUIRED, 404)

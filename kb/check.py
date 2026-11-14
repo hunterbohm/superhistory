@@ -4,7 +4,7 @@
 
 "before" holds the conversation turns just ahead of the message, oldest first; hooks send the last two.
 Every failure prints nothing. One JSON line per call goes to the check log, never with the message text, only its
-length and the seconds each stage took.
+length and the seconds each stage took, and whether the fallback made the result (see lookup_with).
 """
 import fcntl
 import hashlib
@@ -12,6 +12,7 @@ import json
 import os
 import re
 import tempfile
+import threading
 import time
 import urllib.parse
 from datetime import datetime, timezone
@@ -42,6 +43,8 @@ MIN_TERMS = 3
 AUTOMATED = re.compile(r"^\s*(<task-notification>|\[SYSTEM NOTIFICATION|Delegated task node:|T3 Code stopped watching"
                        r"|\[IMPORTANT: Background process)")
 MESSAGE_CHARS = 4000
+LOCAL_TERMS = 8
+POSSESSIVE = re.compile(r"[\u2019']s\b")
 # T3 Code sends a quoted reply as a link whose query string holds the quote and the user's comment.
 CITATION = re.compile(r"\[[^\]\n]*\]\(t3-citation://[^\s?)]*\?([^\s)]*)\)")
 PICK_FROM = 8
@@ -91,9 +94,12 @@ def prompt_text(message, before):
     return "\n\n".join(parts)
 
 
-def plan(text, model, timeout, hedge_after):
-    """The search query for the prompt text (prompt_text), or None for no search."""
-    answer = ai.ask_json(model, Prompt(QUERY_SYSTEM, text), timeout, "query", "search", hedge_after=hedge_after)
+def plan(text, model, timeout, hedge_after, when_slow=None):
+    """The search query for the prompt text (prompt_text), or None for no search. when_slow() runs after the model's
+    fallback_after seconds, or as the call's hedge goes out (ai.hedged)."""
+    slow_after = getattr(getattr(model, "traits", None), "fallback_after", None)
+    answer = ai.ask_json(model, Prompt(QUERY_SYSTEM, text), timeout, "query", "search", hedge_after=hedge_after,
+                         when_slow=when_slow, slow_after=slow_after)
     if answer.get("search") is False:
         return None
     query = answer.get("query")
@@ -106,6 +112,7 @@ class Lookup(NamedTuple):
     query: Optional[str]
     candidates: list
     hits: list
+    fallback: bool = False  # the fallback made it, so its query is words of the message
 
 
 def lookup(db, message, before, session, seen, model, budget, hedge_after=None, stages=None):
@@ -117,24 +124,40 @@ def lookup(db, message, before, session, seen, model, budget, hedge_after=None, 
 
 def lookup_with(search_fn, message, before, session, seen, model, budget, hedge_after=None, stages=None):
     """The check over any search: search_fn(query, limit, keep) returns hits as search.search does, such as
-    search.search_stores over several stores. `stages`, a dict, gets the seconds of each stage that ends, "mask",
-    "plan", "search" and "pick": one that fails or runs out of time is the one missing."""
+    search.search_stores over several stores. It is called only on this thread, so its stores stay on the thread that
+    opened them. `stages`, a dict, gets the seconds of each stage that ends, "mask", "plan", "search" and "pick": one
+    that fails or runs out of time is the one missing.
+
+    Models run slow in bursts, every call at once, so the plan's hedge copy is no faster. When the plan is slow (the
+    model's fallback_after) or its hedge goes out, a fallback (_Fallback) starts beside the plan; its stages are
+    "fallback_search" and "fallback_pick". The result is the plan's path when it ends with one before the deadline. If
+    it fails or runs out of time, the result is the fallback's when that has finished, and the failure is raised when
+    it has not."""
     deadline = time.monotonic() + budget
     stages = {} if stages is None else stages
     if not worth_asking(message, before):
         return Lookup(None, [], [])
     text = _timed(stages, "mask", prompt_text, message, before)
-    query = _timed(stages, "plan", plan, text, model, budget, hedge_after)
-    if not query:
-        return Lookup(None, [], [])
-    candidates = _timed(stages, "search", records, search_fn, query, session, seen)
-    if not candidates:
-        return Lookup(query, [], [])
-    remaining = deadline - time.monotonic()
-    if remaining <= 0:
-        raise TimeoutError("no time left to pick")
-    hits = _timed(stages, "pick", pick, text, candidates, model, remaining, hedge_after)
-    return Lookup(query, candidates, hits[:SHOWN])
+    fallback = _Fallback(search_fn, message, text, session, seen, model, deadline, hedge_after)
+    try:
+        query = _timed(stages, "plan", plan, text, model, budget, hedge_after, fallback.start)
+        if not query:
+            return Lookup(None, [], [])
+        candidates = _timed(stages, "search", records, search_fn, query, session, seen)
+        if not candidates:
+            return Lookup(query, [], [])
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("no time left to pick")
+        hits = _timed(stages, "pick", pick, text, candidates, model, remaining, hedge_after)
+        return Lookup(query, candidates, hits[:SHOWN])
+    except Exception:
+        found = fallback.result()
+        if found is None:
+            raise
+        return found
+    finally:
+        stages.update(fallback.stages)
 
 
 def _timed(stages, name, step, *args):
@@ -143,6 +166,57 @@ def _timed(stages, name, step, *args):
     found = step(*args)
     stages[name] = round(time.monotonic() - started, 2)
     return found
+
+
+class _Fallback:
+    """The check without its plan call: the query is made from the message, so no model call comes before the pick. It
+    searches on the thread that calls start(), where search_fn's stores belong, and picks on a thread of its own."""
+
+    def __init__(self, search_fn, message, text, session, seen, model, deadline, hedge_after):
+        self.search_fn, self.message, self.text, self.session, self.seen = search_fn, message, text, session, seen
+        self.model, self.deadline, self.hedge_after = model, deadline, hedge_after
+        self.query, self.candidates, self.hits, self.thread = None, [], None, None
+        self.stages = {}  # its own: the pick thread writes here while the lookup's stages are being logged
+
+    def start(self):
+        """Never raises: a failure here leaves the plan to go on alone."""
+        try:
+            self.query = local_query(self.message)
+            if not self.query or self.deadline <= time.monotonic():
+                return
+            self.candidates = _timed(self.stages, "fallback_search", records, self.search_fn, self.query, self.session,
+                                     self.seen)
+            if self.candidates:
+                self.thread = threading.Thread(target=self._pick, daemon=True)
+                self.thread.start()
+            else:
+                self.hits = []
+        except Exception:
+            pass
+
+    def _pick(self):
+        try:
+            self.hits = _timed(self.stages, "fallback_pick", pick, self.text, self.candidates, self.model,
+                               self.deadline - time.monotonic(), self.hedge_after)
+        except Exception:
+            pass
+
+    def result(self):
+        """Its Lookup once the pick is in, waiting no longer than the deadline; None when it has none."""
+        if self.thread:
+            self.thread.join(max(self.deadline - time.monotonic(), 0))
+        if self.hits is None:
+            return None
+        return Lookup(self.query, self.candidates, self.hits[:SHOWN], True)
+
+
+def local_query(message):
+    """The search for a message with no model: its LOCAL_TERMS longest keywords, in the message's order. Long words are
+    the specific ones, and a query of every word in a long message took 7.8 s on a store of 2 GB, against 0.2 s for
+    12."""
+    terms = search.fts_terms(POSSESSIVE.sub("", mask_head(message, MESSAGE_CHARS)))
+    longest = sorted(range(len(terms)), key=lambda i: (-len(re.findall(r"\w", terms[i])), i))[:LOCAL_TERMS]
+    return " ".join(terms[i] for i in sorted(longest))
 
 
 def records(search_fn, query, session, seen):
@@ -244,7 +318,7 @@ def answer(paths, config, text, session, model=None, still_wanted=None):
     can still be shown; when it says no they are neither shown nor marked as seen."""
     started = time.monotonic()
     entry = {"session": session, "asked": False, "searched": False, "query": None, "candidates": 0, "shown": [],
-             "late": False, "seconds": 0.0, "error": None, "chars": 0, "stages": {}}
+             "late": False, "seconds": 0.0, "error": None, "chars": 0, "stages": {}, "fallback": False}
     output = ""
     try:
         message, before = read_request(text)
@@ -261,7 +335,9 @@ def answer(paths, config, text, session, model=None, still_wanted=None):
                                entry["stages"])
             finally:
                 db.close()
-            entry.update(searched=bool(found.query), query=found.query, candidates=len(found.candidates))
+            # A fallback's query is words of the message, so it stays out of the log.
+            entry.update(searched=bool(found.query), query=None if found.fallback else found.query,
+                         candidates=len(found.candidates), fallback=found.fallback)
             if found.hits and still_wanted and not still_wanted():
                 entry["late"] = True
             elif found.hits:

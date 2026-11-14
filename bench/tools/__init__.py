@@ -33,6 +33,7 @@ REGISTRY = {
     "oracle": ("tools.baselines", "Oracle"),
     "check": ("tools.check", "Check"),
     "check-cards": ("tools.check", "Cards"),
+    "check-fallback": ("tools.check", "Fallback"),
     "mem0": ("tools.mem0", "Mem0"),
     "supermemory": ("tools.supermemory", "Supermemory"),
     "claude-mem": ("tools.claude_mem", "ClaudeMem"),
