@@ -206,17 +206,29 @@ class SameAsBeforeTest(unittest.TestCase):
         self.assertEqual(blob(data.replace(SPLIT, b"mi" + b"ni")), MAIN_BLOB)
 
     def test_every_output_and_origin_is_the_one_from_before(self):
-        problems, checked = [], 0
+        # The mask now also hides what a typing call written as an object in text types into a field labelled for a
+        # secret (kb.mask._typed_json_edits), which d512b6d showed. A text that differs is checked with that step
+        # switched off: it must give d512b6d's result then, character for character and origin for origin, so
+        # that step is the only difference, and the step only hides more (the characters it leaves are d512b6d's).
+        problems, checked, differ, extra = [], 0, [], 0
         ours, theirs = head.capped, before.capped
         for where, text in texts():
             checked += 1
             for name in ("mask", "mask_with_origin"):
                 got, want = getattr(head, name)(text), getattr(before, name)(text)
                 if got != want:
-                    problems.append(f"{where}: {name} gives {got!r}, before {want!r} (text {text!r})")
+                    before_off = head.capped
+                    with mock.patch.object(head, "_typed_json_edits", lambda text: []):
+                        off = getattr(head, name)(text)
+                    extra += head.capped - before_off
+                    if off != want:
+                        problems.append(f"{where}: {name} gives {got!r}, before {want!r} (text {text!r})")
+                    else:
+                        differ.append(where)
         self.assertGreater(checked, 3000)
         self.assertEqual(problems[:3], [])
-        self.assertEqual(head.capped - ours, before.capped - theirs)
+        self.assertLessEqual(len(differ), 4, "only a typing call written as an object differs")
+        self.assertEqual(head.capped - ours - extra, before.capped - theirs)
 
     def test_a_long_text_read_in_pieces_is_the_one_from_before_and_keeps_what_it_did(self):
         # Pieces and windows each keep what they found in the memo (_part): the keywords a piece's reading needed, as
@@ -224,7 +236,9 @@ class SameAsBeforeTest(unittest.TestCase):
         block = session(9_000, "block", "colour")
         longs = [session(100_000, "long", "colour"), session(100_000, "long", "plain"), (block + "\n\n") * 9,
                  code(60_000).replace("\n", "\n\x1b[32mok\x1b[0m ", 1)]
-        with in_pieces(40_000, 12_000, 3_000):
+        # (The memo's keys hold the mask's VERSION, which REVISION 43 changed: head reads under d512b6d's here, so the
+        # keys are the same and what the memo kept is compared.)
+        with in_pieces(40_000, 12_000, 3_000), mock.patch.object(head, "VERSION", before.VERSION):
             for text in longs:
                 for name in ("mask", "mask_with_origin"):
                     fresh_memo()
