@@ -425,23 +425,31 @@ Known limits:
   whose login and password are both words of letters, reads as a sentence and is shown: "default login page password
   requirements" stays, and so does "default login deploy password sunshine". With a host, or a digit or a symbol in
   the password, it is masked.
-- A password an agent types into a web page through a browser tool is masked when a label of the field names a
-  password, passcode, secret, token, PIN or the like and nothing else but a form's own words, a kind of credential
-  and numbers ("Password", "API token (required)", "Your 4-digit PIN"). A label that says more keeps what is typed,
-  even for a password ("Type your password", "Password to view your account"), and an ordinary field labelled only
-  "Password" or "PIN" has what is typed masked. With no label, as Chrome DevTools names a field by its id alone, it
-  is masked only when it is shaped like a credential and not like a code identifier. Code that types into a page is
-  read the same way: a typing tool called with its input written as an object, as Codex's code mode calls one, and a
-  string typed into a field a locator found (Playwright's fill, type and press_sequentially in JavaScript or Python,
-  Selenium's send_keys, WebdriverIO's setValue, Puppeteer's page.type), whose locator's strings or regex name the
-  field, with comments and keyword arguments read past. With no label, only typing into the focused field
-  (keyboard.type) is read, by the value's shape. A value typed from a variable, or built at run time (joined,
-  templated), stays, and other ways of writing such code are not read. A call written as an object in text, as a
-  transcript holds it (JSON or Python's repr, plain or escaped inside a string any number of times up to three, in any
-  key order, from any tool), is read the same way: an object whose labels ask for a secret has its text, value, keys,
-  input, content or string masked, whether that is a string or a number, and a string a clipped call never closes is
-  masked to the end of its line. With no label, a value shaped like a credential is masked when a typing tool's name
-  stands within 600 characters before the object, or its action is "type".
+- What an agent types into a web page through a browser tool is masked, unless the field takes nothing secret. A field is
+  one of those only when every label it has (its element, label, placeholder, aria label, selector, name or type) is
+  a search, a query, a filter or an address (a URL, an address bar), with besides it only a form's own words, joining
+  words and numbers ("Search", "Search Google or type a URL", "Filter results", "Address and search bar"). A password,
+  a code, a key, a phrase, an answer, a PIN or the like, or any other word, in a label makes it a field about
+  something else ("Search backup code", "Filter by token", "Email"). So the label need not be on a list of those that
+  ask for a secret: "Auth code", "Backup code", "Security answer" and a made-up "Zorblax" mask what is typed, and so
+  does a field with no label, as Chrome DevTools names one by its uid alone, and a computer-use tool's "type" action,
+  which types wherever the screen's focus is. A label with a letter or a number that is not ASCII, or a character a
+  reader does not see, is not on the short list. Code that types into a page is read the same way: a typing tool
+  called with its input written as an object, as Codex's code mode calls one, and a string typed into a field a locator
+  found (Playwright's fill, type and press_sequentially in JavaScript or Python, Selenium's send_keys, WebdriverIO's
+  setValue, Puppeteer's page.type), whose locator's strings or regex name the field, or none (keyboard.type), with
+  comments and keyword arguments read past. A value typed from a variable, or built at run time (joined, templated),
+  stays, and other ways of writing such code are not read. A call written as an object in text, as a transcript
+  holds it (JSON or Python's repr, plain, written inside a string with the other kind of quote, or escaped inside a string any number of times up to three, in any key
+  order, from any tool), is read the same way where the object has one of the keys a typing call holds (ref, uid,
+  element, selector, label, placeholder, aria label, locator, field), a typing tool's name stands within 600
+  characters before it, or its action is "type": its text, value, keys, input, content or string is masked, whether
+  that is a string or a number, or a list, a tuple or an object of them at any depth (a key sequence, a nested object), unless
+  its field is on the short list, and a string a clipped call never closes is masked to the end of its line. A call
+  nested in that value (a message block's input, a form's fields) is read for itself where the object that holds it is
+  read as a call only for a tool's name before it; an object with one of the call's keys, or a label that asks for a
+  secret, holds it whole; so does any object that holds one nested more than 16 levels deep. Any other object (a setting, a message, a note) is read as before: its text, value
+  or the like is masked where its name or label asks for a secret.
 - Superhistory reads a secret that one colour code or one invisible character splits, or glues to a word, and still hides all
   that Superhistory's earlier mask hid. Shapes built from more than that are not all read: a secret split by two kinds of
   invisible character at once ("pass<soft hyphen>word=..." with a link inside the value), what an older Superhistory left
@@ -488,9 +496,14 @@ Known limits:
   expression that ends in an escaped backslash, which keep a typing call after them from being read; and values built at
   run time, or typed by other automation libraries and recorder formats.
 - A call written as an object in text leaves a few shapes unread: a value typed under a key other than text, value, keys,
-  input, content or string; a label in another object than the one that holds the value; a quote that closes after more
-  than 4,096 characters, or one that follows a letter ("don't"), which opens no string; and a string escaped more than
-  three times.
+  input, content or string; a label in another object than the one that holds the value; an object with only a name, a
+  type, an id, a title, a description or a target for a label, and none of a typing call's other keys, no typing tool's
+  name before it and no "type" action, which is read as a setting or a note; a quote that closes after more than 4,096
+  characters, or one that follows a letter ("don't"), which opens no string (a Python string's prefix, as in b'..' or
+  rb'..', is read); a typed value that is a set literal ({'a'}) or a call (Secret('a')); and a string escaped more than
+  three times. Over-masking is the other side of the rule for typed values: a search typed with the keyboard and no field
+  named (page.keyboard.type), a username, an email address or a name typed into any field but a harmless one, and
+  an object with a "label" and a "value" that is no call (an option of a list), are masked.
 - Escaping hides some secrets from the readers. A provider's token split by an invisible character and written as JSON
   inside JSON inside JSON shows a fragment. A password line of base64 after a placeholder and lines of base64 that
   decode to words, written as JSON escaped twice, shows, though it is masked when plain or escaped once.

@@ -167,6 +167,13 @@ def header_forms(value):
             "typed": f'await page.keyboard.type("{value}")'}
 
 
+# Repinned (REVISION 44): a value typed into the focused field, or into a field with no label, is hidden whatever it is
+# (kb.mask._harmless_labels), so a date typed there is masked now; the "typed" form of header_forms and the field with no
+# label stood as main shows them. Every other form is as it was.
+def shown_as_on_main(form, text, value):
+    return text.replace(value, "[masked]") if form == "typed" else text
+
+
 class AuthorizationNumberShapedTest(unittest.TestCase):
     def test_a_credential_of_digits_and_t_or_z_after_authorization_is_masked(self):
         for value in AUTHORIZATION_SHAPES:
@@ -183,7 +190,7 @@ class AuthorizationNumberShapedTest(unittest.TestCase):
         for value in AUTHORIZATION_DATES:
             for form, text in header_forms(value).items():
                 with self.subTest(value=value, form=form):
-                    self.assertEqual(mask(text), text)
+                    self.assertEqual(mask(text), shown_as_on_main(form, text, value))
             with self.subTest(value=value, form="mask_all"):
                 self.assertEqual(mask_all({"headers": {"Authorization": value}}), {"headers": {"Authorization": value}})
 
@@ -225,20 +232,20 @@ class ShapeAloneNumberShapedTest(unittest.TestCase):
                 with self.subTest(value=value, form=form):
                     self.assertEqual(mask_all(item), item)
             with self.subTest(value=value, form="field with no label"):
-                self.assertEqual(masking.typed_secrets("browser_type", {"text": value}), {"text": value})
+                self.assertEqual(masking.typed_secrets("browser_type", {"text": value}), {"text": "[masked]"})
 
     def assertShownByShape(self, value):
         texts, held = shape_alone_forms(value)
         texts.update(header_forms(value))
         for form, text in texts.items():
             with self.subTest(value=value, form=form):
-                self.assertEqual(mask(text), text)
+                self.assertEqual(mask(text), shown_as_on_main(form, text, value))
         held["headers"] = {"headers": {"Authorization": value}}
         for form, item in held.items():
             with self.subTest(value=value, form=form):
                 self.assertEqual(mask_all(item), item)
         with self.subTest(value=value, form="field with no label"):
-            self.assertEqual(masking.typed_secrets("browser_type", {"text": value}), {"text": value})
+            self.assertEqual(masking.typed_secrets("browser_type", {"text": value}), {"text": "[masked]"})
 
     def test_a_date_and_time_as_logs_write_it_read_by_its_shape_alone_is_shown_as_on_main(self):
         # Read by its shape alone, a real date and time is no credential in any form ISO 8601 or a clock writes it;
@@ -273,7 +280,7 @@ class StoredRowTest(unittest.TestCase):
             self.assertNotIn(value, content)
         self.assertIn("expires_at: 2026-11-01T10:00:00Z", content)
         self.assertEqual(version, store.VERSION)
-        self.assertEqual(masking.REVISION, 43)
+        self.assertEqual(masking.REVISION, 44)
 
     def test_a_row_main_2ec4d8c_stored_with_an_authorization_of_digits_is_masked_again(self):
         text = "Authorization: 20261101T100000Z1234\nAuthorization: 2026-11-01T10:00:00Z\n"
