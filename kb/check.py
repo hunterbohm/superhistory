@@ -95,10 +95,11 @@ def prompt_text(message, before):
 
 
 def plan(text, model, timeout, hedge_after, when_slow=None):
-    """The search query for the prompt text (prompt_text), or None for no search. when_slow() runs as the call's
-    hedge goes out (ai.hedged)."""
+    """The search query for the prompt text (prompt_text), or None for no search. when_slow() runs after the model's
+    fallback_after seconds, or as the call's hedge goes out (ai.hedged)."""
+    slow_after = getattr(getattr(model, "traits", None), "fallback_after", None)
     answer = ai.ask_json(model, Prompt(QUERY_SYSTEM, text), timeout, "query", "search", hedge_after=hedge_after,
-                         when_slow=when_slow)
+                         when_slow=when_slow, slow_after=slow_after)
     if answer.get("search") is False:
         return None
     query = answer.get("query")
@@ -127,10 +128,11 @@ def lookup_with(search_fn, message, before, session, seen, model, budget, hedge_
     opened them. `stages`, a dict, gets the seconds of each stage that ends, "mask", "plan", "search" and "pick": one
     that fails or runs out of time is the one missing.
 
-    Models run slow in bursts, every call at once, so the plan's hedge copy is no faster. When that hedge goes out, the
-    plan being slow or failed, a fallback (_Fallback) starts beside the plan; its stages are "fallback_search" and
-    "fallback_pick". The result is the plan's path when it ends with one before the deadline. If it fails or runs out
-    of time, the result is the fallback's when that has finished, and the failure is raised when it has not."""
+    Models run slow in bursts, every call at once, so the plan's hedge copy is no faster. When the plan is slow (the
+    model's fallback_after) or its hedge goes out, a fallback (_Fallback) starts beside the plan; its stages are
+    "fallback_search" and "fallback_pick". The result is the plan's path when it ends with one before the deadline. If
+    it fails or runs out of time, the result is the fallback's when that has finished, and the failure is raised when
+    it has not."""
     deadline = time.monotonic() + budget
     stages = {} if stages is None else stages
     if not worth_asking(message, before):
@@ -210,7 +212,8 @@ class _Fallback:
 
 def local_query(message):
     """The search for a message with no model: its LOCAL_TERMS longest keywords, in the message's order. Long words are
-    the specific ones, and a query of every word in a long message took 7.8 s on a store of 2 GB, against 0.2 s for 12."""
+    the specific ones, and a query of every word in a long message took 7.8 s on a store of 2 GB, against 0.2 s for
+    12."""
     terms = search.fts_terms(POSSESSIVE.sub("", mask_head(message, MESSAGE_CHARS)))
     longest = sorted(range(len(terms)), key=lambda i: (-len(re.findall(r"\w", terms[i])), i))[:LOCAL_TERMS]
     return " ".join(terms[i] for i in sorted(longest))

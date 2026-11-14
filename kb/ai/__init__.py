@@ -26,6 +26,7 @@ class Traits(NamedTuple):
     hedge_after: Optional[float]   # seconds before a slow check call gets an identical copy; None: never
     parallel: int                  # calls the summarizer may run at once
     max_prompt_chars: int          # the summarizer caps an item's text to fit
+    fallback_after: Optional[float] = None  # seconds before the check's fallback starts; None: as the hedge goes out
 
 
 class AIError(Exception):
@@ -104,10 +105,11 @@ def load(settings):
     return _Masked(PLUGINS[settings.plugin].make(settings.options))
 
 
-def hedged(model, prompt, timeout, hedge_after=None, when_slow=None):
+def hedged(model, prompt, timeout, hedge_after=None, when_slow=None, slow_after=None):
     """The first good answer before the deadline. With hedge_after set, a call still running then, or one that fails
-    first, gets an identical copy, and when_slow(), if given, then runs once on this thread. Raises TimeoutError at the
-    deadline, else the last call's error."""
+    first, gets an identical copy. when_slow(), if given, runs once on this thread: after slow_after seconds with no
+    answer, or as the copy goes out, whichever comes first. Raises TimeoutError at the deadline, else the last call's
+    error."""
     deadline = time.monotonic() + timeout
     answers = queue.Queue()
     prompt = masked(prompt)  # also for a model a caller made itself, not through load()
@@ -118,17 +120,30 @@ def hedged(model, prompt, timeout, hedge_after=None, when_slow=None):
         except Exception as exc:
             answers.put((None, exc))
 
+    slow_at = None if when_slow is None or slow_after is None else time.monotonic() + slow_after
+    fired = when_slow is None
+
+    def slow():
+        nonlocal fired
+        if not fired:
+            fired = True
+            when_slow()
+
     stages = (deadline,) if hedge_after is None else (min(deadline, time.monotonic() + hedge_after), deadline)
     running, error = 0, None
     for stage, wait_until in enumerate(stages):
         threading.Thread(target=call, daemon=True).start()
         running += 1
-        if stage and when_slow:
-            when_slow()
+        if stage:
+            slow()
         while running:
+            until = wait_until if fired or slow_at is None else min(wait_until, slow_at)
             try:
-                answer, error = answers.get(timeout=max(wait_until - time.monotonic(), 0))
+                answer, error = answers.get(timeout=max(until - time.monotonic(), 0))
             except queue.Empty:
+                if until < wait_until:
+                    slow()
+                    continue
                 break
             running -= 1
             if error is None:
@@ -167,5 +182,5 @@ def find_json(text, *keys):
     raise BadAnswer("no JSON object in the answer" + (f" with {' or '.join(keys)}" if keys else ""))
 
 
-def ask_json(model, prompt, timeout, *keys, hedge_after=None, when_slow=None):
-    return find_json(hedged(model, prompt, timeout, hedge_after, when_slow), *keys)
+def ask_json(model, prompt, timeout, *keys, hedge_after=None, when_slow=None, slow_after=None):
+    return find_json(hedged(model, prompt, timeout, hedge_after, when_slow, slow_after), *keys)

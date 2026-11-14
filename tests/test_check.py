@@ -528,6 +528,23 @@ class CheckTest(unittest.TestCase):
         pick = next(p for p in model.prompts if p.system == check.PICK_SYSTEM)
         self.assertEqual(pick.user.split("\n\n[Records]\n")[0], check.prompt_text(message, []))
 
+    def test_a_plan_slower_than_fallback_after_starts_the_fallback_before_the_hedge(self):
+        self.fallback_store()
+        inner = plan_and_pick("Pelican")
+        gate = threading.Event()
+        self.addCleanup(gate.set)
+
+        def reply(prompt):
+            if prompt.system == check.QUERY_SYSTEM:
+                gate.wait(30)
+            return inner.reply(prompt)
+        traits = TRAITS._replace(hedge_after=10 * BUDGET, check_budget=BUDGET, fallback_after=HEDGE)
+        started = time.monotonic()
+        out = self.ask("zebrafish " + ASK, model=FakeModel(reply, traits))
+        self.assertLess(time.monotonic() - started, BUDGET + 0.5)
+        self.assertIn("/archive/test:words", out)
+        self.assertTrue(self.log_entries()[-1]["fallback"])
+
     def test_a_slow_plan_whose_pick_follows_in_time_gives_the_plans_records(self):
         self.fallback_store()
         model = self.slow_plan(3 * HEDGE, plan_and_pick("Pelican"))
