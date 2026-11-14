@@ -7455,15 +7455,17 @@ def _json_object_edits(text, frame, typing):
     holds under a key that no typing call types under, its label and its ref, stays unless the holder hides it). An
     object that is read as a call only for a typing tool's name before it (a message block that holds a call as its
     input, after another call) leaves the calls in its bag, objects with a field key or an action, to read for
-    themselves; one with a field key or an action itself, or a label that asks, hides all of its bag."""
+    themselves; one with a field key or an action itself, or a label that asks for a secret, hides all of its bag. So
+    does one that holds an object nested too deep (_JSON_BAG_DEPTH) to read for itself, whatever its field is."""
     strong = frame["field"] or frame["action"]
     shared, start = frame["shared"], frame["from"] if frame["bag"] else 0
     if frame["bag"] and frame["depth"] > _JSON_BAG_DEPTH:
-        return []  # too deep to read for itself: the object above it hides it, or not
+        return []  # too deep to read for itself: the object above it hides it
+    deep = frame["meta"]["deep"] > frame["serial"]  # an object in this one, nested too deep to read for itself
     entries = shared[start:]
-    if typing and not strong:
+    if typing and not strong and not deep and not (frame["labels"] and _json_labels_ask(frame["labels"])):
         merged = []
-        for lo, hi in sorted(frame["calls"][frame["calls_from"]:]):
+        for lo, hi in sorted(frame["meta"]["calls"][frame["calls_from"]:]):
             if merged and lo <= merged[-1][1]:
                 merged[-1][1] = max(merged[-1][1], hi)
             else:
@@ -7482,7 +7484,7 @@ def _json_object_edits(text, frame, typing):
     if not typed:
         return []
     if strong or typing:
-        return [] if frame["labels"] and _json_labels_harmless(frame["labels"]) else typed
+        return [] if frame["labels"] and not deep and _json_labels_harmless(frame["labels"]) else typed
     return typed if frame["labels"] and _json_labels_ask(frame["labels"]) else []
 
 
@@ -7490,8 +7492,8 @@ def _json_close(text, frame, names, edits):
     """An object closes, or the text ends before it does: its masked spans go to `edits`, and one in a bag that is
     read as a call, by a field key or an action, is noted for the objects around it, which leave it to read itself."""
     edits += _json_object_edits(text, frame, _typing_named_before(names, frame["start"]))
-    if frame["bag"] and (frame["field"] or frame["action"]):
-        frame["calls"].append((frame["from"], len(frame["shared"])))
+    if frame["bag"] and frame["depth"] <= _JSON_BAG_DEPTH and (frame["field"] or frame["action"]):
+        frame["meta"]["calls"].append((frame["from"], len(frame["shared"])))
 
 
 def _typed_json_edits(text):
@@ -7578,12 +7580,15 @@ def _json_scan(text, pos, stop, names, edits, level):
             # list of typed spans of the object that holds the key, which hides them or not by its labels.
             bag = top is not None and (top["bag"] and (top["value"] or not top["dict"])
                                        or top["dict"] and top["value"] and top["key"] in _JSON_TYPED_KEYS)
-            shared, calls = (top["shared"], top["calls"]) if bag else ([], [])
+            shared, meta = (top["shared"], top["meta"]) if bag else ([], {"calls": [], "deep": 0})
             serial += 1
+            depth = top["depth"] + 1 if bag else 0
+            if depth > _JSON_BAG_DEPTH:
+                meta["deep"] = serial
             frames.append({"dict": tok == "{", "labels": [], "typed": [], "shared": shared, "from": len(shared),
-                           "calls": calls, "calls_from": len(calls), "bag": bag,
-                           "depth": top["depth"] + 1 if bag else 0, "serial": serial, "action": False,
-                           "field": False, "key": None, "value": False, "start": m.start()})
+                           "meta": meta, "calls_from": len(meta["calls"]), "bag": bag, "depth": depth,
+                           "serial": serial, "action": False, "field": False, "key": None, "value": False,
+                           "start": m.start()})
             pending = None
         elif tok == "}" or tok == "]":
             if frames:

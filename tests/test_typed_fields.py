@@ -339,6 +339,26 @@ class FailClosedInTextTest(unittest.TestCase):
         out = mask('TOOL browser_type: ' + json.dumps({"input": {"action": "type", "text": secret}}))
         self.assertNotIn("walrusLedger93", out)
         self.assertIn('"action": "type"', out)
+        # a call nested deeper than the reading goes for itself (16 levels) is not left to read itself, and an object
+        # that holds one hides it whatever its field is
+        deep = {"element": "Backup code", "ref": "e1", "text": secret}
+        for levels in (14, 15, 16, 17, 18, 20, 40):
+            nested = deep
+            for _ in range(levels):
+                nested = {"input": nested}
+            for text in ('TOOL browser_type: ' + json.dumps(nested),
+                         json.dumps({"element": "Search", "ref": "e0", "text": nested}),
+                         'TOOL browser_type: ' + json.dumps({"name": "x", "content": nested})):
+                with self.subTest(levels=levels, text=text[:60]):
+                    self.assertNotIn("walrusLedger93", mask(text))
+        # a call nested in an object whose own label asks for a secret hides with it, as the rest of what it holds
+        for text in ('TOOL browser_type: ' + json.dumps({"name": "Password", "input": keep}),
+                     'TOOL browser_type: ' + json.dumps({"label": "Password", "ref": "e0", "input": [keep]}),
+                     'TOOL browser_type: ' + json.dumps({"name": "Passcode", "content": [{"input": dict(keep, text=secret)}]})):
+            with self.subTest(text=text):
+                out = mask(text)
+                self.assertNotIn("pelican plan", out)
+                self.assertNotIn("walrusLedger93", out)
         # and an object in a typed value that is no call is hidden, where a typing tool's name stands before it
         for text in ('TOOL browser_type: ' + json.dumps({"text": {"a": secret}}),
                      'TOOL browser_type: ' + json.dumps({"input": {"a": [secret], "b": {"c": secret}}})):
