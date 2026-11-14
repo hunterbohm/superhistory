@@ -348,7 +348,9 @@ class FailClosedInTextTest(unittest.TestCase):
                 nested = {"input": nested}
             for text in ('TOOL browser_type: ' + json.dumps(nested),
                          json.dumps({"element": "Search", "ref": "e0", "text": nested}),
-                         'TOOL browser_type: ' + json.dumps({"name": "x", "content": nested})):
+                         'TOOL browser_type: ' + json.dumps({"name": "x", "content": nested}),
+                         json.dumps({"content": nested}), json.dumps({"role": "assistant", "content": [nested]}),
+                         json.dumps({"value": [nested], "id": 7}), json.dumps({"keys": {"a": nested}})):
                 with self.subTest(levels=levels, text=text[:60]):
                     self.assertNotIn("walrusLedger93", mask(text))
         # a call nested in an object whose own label asks for a secret hides with it, as the rest of what it holds

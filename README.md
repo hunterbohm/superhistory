@@ -448,7 +448,7 @@ Known limits:
   its field is on the short list, and a string a clipped call never closes is masked to the end of its line. A call
   nested in that value (a message block's input, a form's fields) is read for itself where the object that holds it is
   read as a call only for a tool's name before it; an object with one of the call's keys, or a label that asks for a
-  secret, or one that holds an object nested more than 16 levels deep, holds it whole. Any other object (a setting, a message, a note) is read as before: its text, value
+  secret, holds it whole; so does any object that holds one nested more than 16 levels deep. Any other object (a setting, a message, a note) is read as before: its text, value
   or the like is masked where its name or label asks for a secret.
 - Superhistory reads a secret that one colour code or one invisible character splits, or glues to a word, and still hides all
   that Superhistory's earlier mask hid. Shapes built from more than that are not all read: a secret split by two kinds of

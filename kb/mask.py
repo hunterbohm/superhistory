@@ -7456,7 +7456,8 @@ def _json_object_edits(text, frame, typing):
     object that is read as a call only for a typing tool's name before it (a message block that holds a call as its
     input, after another call) leaves the calls in its bag, objects with a field key or an action, to read for
     themselves; one with a field key or an action itself, or a label that asks for a secret, hides all of its bag. So
-    does one that holds an object nested too deep (_JSON_BAG_DEPTH) to read for itself, whatever its field is."""
+    does any object that holds an object nested too deep (_JSON_BAG_DEPTH) to read for itself: it hides all it holds,
+    whatever its field is, or whether it is read as a call at all."""
     strong = frame["field"] or frame["action"]
     shared, start = frame["shared"], frame["from"] if frame["bag"] else 0
     if frame["bag"] and frame["depth"] > _JSON_BAG_DEPTH:
@@ -7483,8 +7484,10 @@ def _json_object_edits(text, frame, typing):
         typed = frame["typed"] + [(e[0], e[1]) for e in entries]
     if not typed:
         return []
+    if deep:
+        return typed  # an object in this one is nested too deep to read for itself: this one hides it, whatever it is
     if strong or typing:
-        return [] if frame["labels"] and not deep and _json_labels_harmless(frame["labels"]) else typed
+        return [] if frame["labels"] and _json_labels_harmless(frame["labels"]) else typed
     return typed if frame["labels"] and _json_labels_ask(frame["labels"]) else []
 
 
