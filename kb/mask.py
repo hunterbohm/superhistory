@@ -7382,6 +7382,7 @@ _JSON_TOKEN = re.compile(r"(?<!\\)\\*[\"']|[{}\[\]:,]|-?\d+(?:\.\d+)?(?:[eE][+-]
 _ESCAPED_QUOTE = re.compile(r"\\[\"']")  # a quote a string holds escaped: JSON, or code, written inside it
 _JSON_STRING_LIMIT = 4096  # a string past this is no field's label or password
 _JSON_TYPING_REACH = 600  # how far past a typing tool's name an object with no label is read as its input
+_JSON_BAG_DEPTH = 16  # how many levels of objects and lists inside a typed value decide for themselves
 
 
 def _opens_a_json_string(text, at):
@@ -7448,13 +7449,49 @@ def _typing_named_before(names, start):
 def _json_object_edits(text, frame, typing):
     """The spans an object's typed values mask. An object read as a typing tool's input (_JSON_FIELD_KEYS, or a typing
     tool's name stands just before it, or its action is "type") hides all of them unless its labels are on the short
-    list of harmless fields: no label hides them too. Any other object hides them where its labels ask for a secret."""
-    typed = frame["typed"]
+    list of harmless fields: no label hides them too. Any other object hides them where its labels ask for a secret.
+    The values a typed value holds, an object or a list inside it, at any depth, are typed values of the object that
+    holds the key (a bag): the holder's reading hides them all, and each object in the bag reads its own too (what it
+    holds under a key that no typing call types under, its label and its ref, stays unless the holder hides it). An
+    object that is read as a call only for a typing tool's name before it (a message block that holds a call as its
+    input, after another call) leaves the calls in its bag, objects with a field key or an action, to read for
+    themselves; one with a field key or an action itself, or a label that asks, hides all of its bag."""
+    strong = frame["field"] or frame["action"]
+    shared, start = frame["shared"], frame["from"] if frame["bag"] else 0
+    if frame["bag"] and frame["depth"] > _JSON_BAG_DEPTH:
+        return []  # too deep to read for itself: the object above it hides it, or not
+    entries = shared[start:]
+    if typing and not strong:
+        merged = []
+        for lo, hi in sorted(frame["calls"][frame["calls_from"]:]):
+            if merged and lo <= merged[-1][1]:
+                merged[-1][1] = max(merged[-1][1], hi)
+            else:
+                merged.append([lo, hi])
+        if merged:
+            entries, at = [], start
+            for lo, hi in merged:
+                entries += shared[at:max(lo, at)]
+                at = max(at, hi)
+            entries += shared[at:]
+    if frame["bag"]:
+        # what the object holds under a key that is no typed key (its label, its ref) stays; all else in it is typed
+        typed = [(e[0], e[1]) for e in entries if not (e[3] and e[2] == frame["serial"])]
+    else:
+        typed = frame["typed"] + [(e[0], e[1]) for e in entries]
     if not typed:
         return []
-    if frame["field"] or frame["action"] or typing:
+    if strong or typing:
         return [] if frame["labels"] and _json_labels_harmless(frame["labels"]) else typed
     return typed if frame["labels"] and _json_labels_ask(frame["labels"]) else []
+
+
+def _json_close(text, frame, names, edits):
+    """An object closes, or the text ends before it does: its masked spans go to `edits`, and one in a bag that is
+    read as a call, by a field key or an action, is noted for the objects around it, which leave it to read itself."""
+    edits += _json_object_edits(text, frame, _typing_named_before(names, frame["start"]))
+    if frame["bag"] and (frame["field"] or frame["action"]):
+        frame["calls"].append((frame["from"], len(frame["shared"])))
 
 
 def _typed_json_edits(text):
@@ -7485,10 +7522,16 @@ def _typed_json_edits(text):
     return merged
 
 
+def _in_a_bag(frame):
+    """Whether a string a quote opens in `frame` is a typed value of a bag: a list's item, or an object's value."""
+    return frame["bag"] and (frame["value"] or not frame["dict"])
+
+
 def _json_scan(text, pos, stop, names, edits, level):
     """The objects in text[pos:stop], each read when it closes, or at the end for one the text clips; their masked
     spans added to `edits`. `level` is how many strings deep this stretch is."""
     frames = []
+    serial = 0
     pending = None  # the last string or name, which a ":" makes a key
     while True:
         m = _JSON_TOKEN.search(text, pos, stop)
@@ -7501,10 +7544,13 @@ def _json_scan(text, pos, stop, names, edits, level):
             end = _code_string_end(text, m.start(), min(stop, m.start() + _JSON_STRING_LIMIT)) if quoted else None
             if end is None:
                 # a value a quote opens and the line never closes: a clipped call. It masks to the line's end.
-                if quoted and top is not None and (top["key"] in _JSON_TYPED_KEYS and top["value"] or top["typed_list"]):
+                if quoted and top is not None and (top["key"] in _JSON_TYPED_KEYS and top["value"] or _in_a_bag(top)):
                     line = text.find("\n", pos, stop)
                     line = stop if line < 0 else line
-                    top["typed"].append((pos, line))
+                    if top["bag"]:
+                        top["shared"].append((pos, line, top["serial"], False))
+                    else:
+                        top["typed"].append((pos, line))
                     top["value"] = False
                     pos = line
                 continue
@@ -7513,32 +7559,37 @@ def _json_scan(text, pos, stop, names, edits, level):
             if top is not None and top["value"]:
                 if top["key"] in _JSON_LABEL_KEYS:
                     top["labels"].append(text[a:b])
-                if top["key"] in _JSON_TYPED_KEYS:
+                if top["bag"]:
+                    top["shared"].append((a, b, top["serial"], top["key"] not in _JSON_TYPED_KEYS))
+                elif top["key"] in _JSON_TYPED_KEYS:
                     top["typed"].append((a, b))
                 if top["key"] == "action" and _json_name(text[a:b]) == "type":
                     top["action"] = True
                 top["value"], top["key"] = False, None
-            elif top is not None and top["typed_list"]:
-                top["typed"].append((a, b))
+            elif top is not None and top["bag"] and not top["dict"]:
+                top["shared"].append((a, b, top["serial"], False))
             else:
                 pending = _json_name(text[a:b])
             if level < 4 and _ESCAPED_QUOTE.search(text, a, b):
                 _json_scan(text, a, b, names, edits, level + 1)
         elif tok == "{" or tok == "[":
-            # a list that is a typed key's value, or inside one, holds typed values: its strings and numbers, at any depth
-            # (a key sequence, ["Z", "q", "7"]), which the object that holds the key hides or not, by its labels
-            inside = top is not None and (top.get("typed_list") or top["dict"] and top["value"] and top["key"] in _JSON_TYPED_KEYS)
-            frames.append({"dict": tok == "{", "labels": [], "typed": [], "action": False, "field": False,
-                           "key": None, "value": False, "start": m.start(),
-                           "typed_list": bool(inside) and tok == "["})
+            # an object or a list that is a typed key's value, or inside one, is a bag: every string and number in it, at
+            # any depth ({"a": "x"}, a key sequence, ["Z", "q", "7"]), is typed, whatever its key. The bag shares the
+            # list of typed spans of the object that holds the key, which hides them or not by its labels.
+            bag = top is not None and (top["bag"] and (top["value"] or not top["dict"])
+                                       or top["dict"] and top["value"] and top["key"] in _JSON_TYPED_KEYS)
+            shared, calls = (top["shared"], top["calls"]) if bag else ([], [])
+            serial += 1
+            frames.append({"dict": tok == "{", "labels": [], "typed": [], "shared": shared, "from": len(shared),
+                           "calls": calls, "calls_from": len(calls), "bag": bag,
+                           "depth": top["depth"] + 1 if bag else 0, "serial": serial, "action": False,
+                           "field": False, "key": None, "value": False, "start": m.start()})
             pending = None
         elif tok == "}" or tok == "]":
             if frames:
                 frame = frames.pop()
                 if frame["dict"]:
-                    edits += _json_object_edits(text, frame, _typing_named_before(names, frame["start"]))
-                elif frame["typed_list"] and frames:
-                    frames[-1]["typed"] += frame["typed"]  # the list's typed values are the object's, or the list's above it
+                    _json_close(text, frame, names, edits)
             pending = None
         elif tok == ":":
             if top is not None and top["dict"] and pending is not None:
@@ -7551,21 +7602,20 @@ def _json_scan(text, pos, stop, names, edits, level):
             pending = None
         elif tok[0] in "-0123456789":
             if top is not None and top["value"]:
-                if top["key"] in _JSON_TYPED_KEYS:
+                if top["bag"]:
+                    top["shared"].append((m.start(), pos, top["serial"], top["key"] not in _JSON_TYPED_KEYS))
+                elif top["key"] in _JSON_TYPED_KEYS:
                     top["typed"].append((m.start(), pos))
                 top["value"], top["key"] = False, None
-            elif top is not None and top["typed_list"]:
-                top["typed"].append((m.start(), pos))
+            elif top is not None and top["bag"] and not top["dict"]:
+                top["shared"].append((m.start(), pos, top["serial"], False))
         elif top is not None and top["value"]:
             top["value"], top["key"] = False, None
         else:
             pending = tok.lower()
-    for k in range(len(frames) - 1, -1, -1):  # a call clipped before its objects close
-        frame = frames[k]
+    for frame in reversed(frames):  # a call clipped before its objects close
         if frame["dict"]:
-            edits += _json_object_edits(text, frame, _typing_named_before(names, frame["start"]))
-        elif frame["typed_list"] and k:
-            frames[k - 1]["typed"] += frame["typed"]
+            _json_close(text, frame, names, edits)
 
 
 def _exc_text(exc_info):

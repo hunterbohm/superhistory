@@ -444,8 +444,10 @@ Known limits:
   order, from any tool), is read the same way where the object has one of the keys a typing call holds (ref, uid,
   element, selector, label, placeholder, aria label, locator, field), a typing tool's name stands within 600
   characters before it, or its action is "type": its text, value, keys, input, content or string is masked, whether
-  that is a string or a number, or a list of them (a key sequence), unless its field is on the short list, and a
-  string a clipped call never closes is masked to the end of its line. Any other object (a setting, a message, a note) is read as before: its text, value
+  that is a string or a number, or a list or an object of them at any depth (a key sequence, a nested object), unless
+  its field is on the short list, and a string a clipped call never closes is masked to the end of its line. A call
+  nested in that value (a message block's input, a form's fields) is read for itself where the object that holds it is
+  read as a call only for a tool's name before it; an object with one of the call's keys holds it whole. Any other object (a setting, a message, a note) is read as before: its text, value
   or the like is masked where its name or label asks for a secret.
 - Superhistory reads a secret that one colour code or one invisible character splits, or glues to a word, and still hides all
   that Superhistory's earlier mask hid. Shapes built from more than that are not all read: a secret split by two kinds of

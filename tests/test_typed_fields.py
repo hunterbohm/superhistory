@@ -148,6 +148,8 @@ class FailClosedAtIngestTest(unittest.TestCase):
         value = "Zq7!walrusLedger93"
         for depth in (3, 6, 7, 8, 12, 40):
             nested = {"text": value, "value": [value]}
+            if depth > 7:
+                nested["other"] = value  # under a key no typing call types under, but nested deeper than the reading goes
             for k in range(depth):  # each level holds the one below once, as a dict or as a list
                 nested = {"o": nested, "n": k} if k % 2 else {"l": [nested], "n": k}
             args = {"element": "Search", "ref": "e1", "text": "pelican", "options": nested}
@@ -301,6 +303,48 @@ class FailClosedInTextTest(unittest.TestCase):
                 with self.subTest(kept=kept):
                     self.assertEqual(mask(kept), kept)
 
+    def test_a_call_in_a_list_is_read_for_itself_and_not_by_the_calls_beside_it(self):
+        secret = "Zq7!walrusLedger93"
+        keep = {"element": "Search", "ref": "e1", "text": "pelican plan"}
+        hide = {"element": "Backup code", "ref": "e2", "text": secret}
+        texts = [json.dumps({"content": blocks}) for blocks in ([keep, hide], [keep, hide, keep], [hide, keep])]
+        # a message block holds the call as its input; the next block has a typing tool's name within 600 characters
+        # before it, which reads it as a call with no label, but it leaves the call it holds to read for itself
+        texts.append(json.dumps({"role": "assistant", "content": [
+            {"type": "tool_use", "name": "browser_type", "input": keep},
+            {"type": "tool_use", "name": "browser_type", "input": hide}]}))
+        for text in texts:
+            with self.subTest(text=text):
+                out = mask(text)
+                self.assertNotIn("walrusLedger93", out)
+                self.assertIn("pelican plan", out)
+        text = json.dumps({"role": "assistant", "content": [{"type": "tool_use", "name": "browser_type", "input": hide},
+                                                              {"type": "tool_use", "name": "browser_type", "input": keep}]})
+        out = mask(text)
+        self.assertNotIn("walrusLedger93", out)
+        self.assertIn("pelican plan", out)
+        self.assertIn("Backup code", out)  # the label of a call that hides its value stays
+        # an object in a typed value, whatever it holds under its own keys (a label, a ref), is typed: it hides
+        for call in ({"element": "Backup code", "ref": "e1", "text": [{"label": secret}, {"x": secret}]},
+                     {"element": "Backup code", "ref": "e1", "text": {"label": secret, "ref": "e3"}},
+                     {"element": "Backup code", "ref": "e1", "keys": [[{"element": secret}]]}):
+            for text in (json.dumps({"type": "tool_use", "name": "browser_type", "input": call}),
+                         json.dumps({"content": [call]}), json.dumps(call)):
+                with self.subTest(text=text):
+                    self.assertNotIn("walrusLedger93", mask(text))
+        # but a call that claims a harmless field inside a typed value of a call with a field key hides with it
+        text = json.dumps({"element": "Backup code", "ref": "e1", "text": {"element": "Search", "ref": "e2", "text": secret}})
+        self.assertNotIn("walrusLedger93", mask(text))
+        # a call with an action "type" and no field key, in a block, is a call too: its action stays, its text hides
+        out = mask('TOOL browser_type: ' + json.dumps({"input": {"action": "type", "text": secret}}))
+        self.assertNotIn("walrusLedger93", out)
+        self.assertIn('"action": "type"', out)
+        # and an object in a typed value that is no call is hidden, where a typing tool's name stands before it
+        for text in ('TOOL browser_type: ' + json.dumps({"text": {"a": secret}}),
+                     'TOOL browser_type: ' + json.dumps({"input": {"a": [secret], "b": {"c": secret}}})):
+            with self.subTest(text=text):
+                self.assertNotIn("walrusLedger93", mask(text))
+
     def test_a_clipped_call_and_a_call_in_a_longer_text(self):
         for label in ("Backup code", "Zorblax"):
             for text in ('TOOL mcp__playwright__browser_type: {"element": "%s", "ref": "e1", "text": "Zq7!walrusLedger93' % label,
@@ -354,7 +398,9 @@ class FailClosedInCodeTest(unittest.TestCase):
         for label in ("Backup code", "Zorblax", ""):
             for key in ("text", "value", "keys", "input", "content", "string"):
                 for value in (["Zq7!walrusLedger93"], ["Zq7!", "walrusLedger93"], [["Zq7!walrusLedger93", "x"]],
-                              ["a", ["b", ["Zq7!walrusLedger93"]]], [483920], [1.5, "Zq7!walrusLedger93"]):
+                              ["a", ["b", ["Zq7!walrusLedger93"]]], [483920], [1.5, "Zq7!walrusLedger93"],
+                              [{"x": "Zq7!walrusLedger93"}], {"a": "Zq7!walrusLedger93"}, {"a": {"b": [1, "Zq7!walrusLedger93"]}},
+                              [{"a": [{"b": "Zq7!walrusLedger93"}]}], {"n": 483920, "m": ["x", {"o": 1.5}]}):
                     o = {"element": label, "ref": "e2", key: value} if label else {"ref": "e2", key: value}
                     j = json.dumps(o)
                     for text in (j, json.dumps(o, indent=2), repr(o), json.dumps(j)[1:-1], "TOOL browser_type: " + j,
@@ -364,10 +410,25 @@ class FailClosedInCodeTest(unittest.TestCase):
                             for part in ("walrusLedger93", "Zq7!", "483920", "1.5"):
                                 if part in json.dumps(value):
                                     self.assertNotIn(part, out)
+        # a typed value that is an object holding a call's own shape, and a message block around a call, as before
+        inner = {"element": "Backup code", "ref": "e1", "text": "Zq7!walrusLedger93"}
+        for text in (json.dumps({"type": "tool_use", "name": "browser_type", "input": inner}),
+                     json.dumps({"role": "assistant", "content": [{"type": "tool_use", "name": "browser_type", "input": inner}]}),
+                     json.dumps({"type": "tool_use", "name": "browser_type", "input": json.dumps(inner)})):
+            with self.subTest(text=text):
+                self.assertNotIn("walrusLedger93", mask(text))
+        for kept in (json.dumps({"type": "tool_use", "name": "browser_type", "input": {
+                        "element": "Search", "ref": "e1", "text": "pelican plan"}}),
+                     json.dumps({"role": "user", "content": [{"type": "text", "text": "pelican plan"}]}),
+                     json.dumps({"content": {"a": "pelican plan"}, "id": 7})):
+            with self.subTest(kept=kept):
+                self.assertEqual(mask(kept), kept)
         # a clipped call: the list never closes
         for text in ('TOOL browser_type: {"element": "Backup code", "ref": "e1", "keys": ["Zq7!walrusLedger93',
                      'TOOL browser_type: {"element": "Backup code", "ref": "e1", "keys": ["Zq7!", "walrusLedger93"',
-                     'TOOL browser_type: {"element": "Backup code", "ref": "e1", "text": [["Zq7!walrusLedger93"'):
+                     'TOOL browser_type: {"element": "Backup code", "ref": "e1", "text": [["Zq7!walrusLedger93"',
+                     'TOOL browser_type: {"element": "Backup code", "ref": "e1", "text": {"a": "Zq7!walrusLedger93',
+                     'TOOL browser_type: {"element": "Backup code", "ref": "e1", "keys": [{"a": ["Zq7!walrusLedger93"'):
             with self.subTest(text=text):
                 self.assertNotIn("walrusLedger93", mask(text))
         for kept in ('{"element": "Search", "ref": "e2", "keys": ["pelican", "plan"]}',
