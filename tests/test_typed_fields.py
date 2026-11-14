@@ -318,6 +318,10 @@ class FailClosedInTextTest(unittest.TestCase):
                         self.assertNotIn("Zq7", out)
                         self.assertNotIn("483920", out)
                         self.assertNotIn("'q'", out)
+        # what follows a tuple is read as it was before it: the call's ref and the next keys are no typed values
+        out = mask("TOOL browser_type: " + repr({"element": "Backup code", "text": ("Z", "q"), "ref": "e1", "submit": True}))
+        self.assertIn("'ref': 'e1'", out)
+        self.assertNotIn("'Z'", out)
         for call in ({"element": "Search", "ref": "e1", "text": ("pelican", "plan")},
                      {"element": "Search", "ref": "e1", "text": b"pelican plan"}):
             with self.subTest(call=call):
@@ -326,7 +330,9 @@ class FailClosedInTextTest(unittest.TestCase):
         # a word before a quote that is no string's prefix opens no string
         text = "it's don't b it's {'element': 'Search', 'ref': 'e1', 'text': 'pelican'}"
         self.assertEqual(mask(text), text)
-        for text in ("stuff'it's fine' {'element': 'Backup code', 'ref': 'e1', 'text': 'Zq7!walrusLedger93'}",
+        for text in ("stuff'a {\"element\": \"Backup code\", \"ref\": \"e1\", \"text\": \"Zq7!walrusLedger93\"} it's done",
+                     "buf'a {'element': 'Backup code', 'ref': 'e1', 'text': 'Zq7!walrusLedger93'} it's done",
+                     "stuff'it's fine' {'element': 'Backup code', 'ref': 'e1', 'text': 'Zq7!walrusLedger93'}",
                      "buf'it's fine' {'element': 'Backup code', 'ref': 'e1', 'text': b'Zq7!walrusLedger93'}",
                      "my_f'x' bu'y' {'element': 'Backup code', 'ref': 'e1', 'text': 'Zq7!walrusLedger93'}"):
             with self.subTest(text=text):

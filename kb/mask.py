@@ -7390,11 +7390,8 @@ def _opens_a_json_string(text, at):
     "="), past spaces and breaks, escaped or not, as JSON in JSON writes them, so an apostrophe in a word ("don't")
     opens none."""
     j = at
-    k = j  # a Python string's prefix (b'', u'', r'', f'', rb'') stands before the quote
-    while k > 0 and j - k < 2 and text[k - 1] in "bBuUrRfF":
-        k -= 1
-    if k < j and (k == 0 or not (text[k - 1].isalnum() or text[k - 1] in "_$")):
-        j = k
+    while j > 0 and at - j < 2 and text[j - 1] in "bBuUrRfF":  # a Python string's prefix: b'', u'', r'', f'', rb''
+        j -= 1
     while j > 0:
         if text[j - 1] in " \t\r\n":
             j -= 1
@@ -7469,7 +7466,7 @@ def _json_object_edits(text, frame, typing):
         return []  # too deep to read for itself: the object above it hides it
     deep = frame["meta"]["deep"] > frame["serial"]  # an object in this one, nested too deep to read for itself
     entries = shared[start:]
-    if typing and not strong and not deep and not (frame["labels"] and _json_labels_ask(frame["labels"])):
+    if typing and not strong and not (frame["labels"] and _json_labels_ask(frame["labels"])):
         merged = []
         for lo, hi in sorted(frame["meta"]["calls"][frame["calls_from"]:]):
             if merged and lo <= merged[-1][1]:
