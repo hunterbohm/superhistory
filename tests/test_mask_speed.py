@@ -13,15 +13,23 @@ comparisons with main build, the sixteenth review's shapes, typing calls, made-u
 texts read in pieces, and they count the same texts masked whole at the pass limit (`capped`). The cost tests time both
 on the same text in this process, so they hold under load. A test checks the fixture's git blob, so it is never edited:
 one word of its list of code words is written across a line continuation, which Python reads as the same string, and
-with that undone the file is d512b6d's blob."""
+with that undone the file is d512b6d's blob.
+
+A call keeps the readings it made only to a bound of its text's size (kb.mask._Readings), so a long text read in many
+passes does not hold a reading of each: the tests below hold it to a bound over what the mask from before held, on a
+text and on one four times as long, and hold every output to what it is with nothing kept."""
+import array
 import contextlib
+import gc
 import hashlib
 import importlib.util
 import json
 import os
 import random
 import re
+import sys
 import time
+import tracemalloc
 import unittest
 from unittest import mock
 
@@ -821,6 +829,245 @@ class ReadingsTest(unittest.TestCase):
         self.assertEqual(first, [["facebook"]])
         self.assertEqual(far(), first)
         self.assertEqual(head._READINGS.get(), {})
+
+
+def peak(module, text):
+    """The most memory, in bytes, that `module`'s mask(text) holds at once (tracemalloc's peak over the call), with what
+    the module keeps for the next call cleared."""
+    fresh_memo(module)
+    gc.collect()
+    tracemalloc.start()
+    try:
+        module.mask(text)
+        return tracemalloc.get_traced_memory()[1]
+    finally:
+        tracemalloc.stop()
+
+
+def generated(size, seed="memory"):
+    """About `size` characters of the texts Generated makes (secrets of every shape, some split or glued by characters a
+    reader does not see), one after another: the texts that take the most passes, so a call reads many texts of its own
+    and, with each kept, holds more of them than the text is long."""
+    parts, total = [], 0
+    while total < size:
+        parts.append(Generated(random.Random(f"{seed}:{len(parts)}")).text())
+        total += len(parts[-1]) + 1
+    return "\n".join(parts)
+
+
+@contextlib.contextmanager
+def short_floor():
+    """The least the readings of a call may hold (kb.mask._Readings.LEAST) is nothing, so a text of a few KB stands for a
+    long one, as in_pieces() makes a short text stand for a long one; where the mask has no bound (before it had one),
+    nothing changes."""
+    readings = getattr(head, "_Readings", None)
+    with mock.patch.object(readings, "LEAST", 0) if readings is not None else contextlib.nullcontext():
+        yield
+
+
+class MemoryTest(unittest.TestCase):
+    """A call's peak memory, in this process (tracemalloc), is what the mask from before held, and no more than a bound
+    of the text's size over it: the readings it keeps (kb.mask._Readings) are bounded by it, and do not grow with how
+    long the call runs. Both are measured on the same text one after the other, so a slow or busy machine changes
+    neither."""
+    SIZE = 2_400
+    # What each character of the text may add to what the mask from before held: the readings' bound (PER_CHAR), the
+    # text and its fold kept for the next reading (2 each, as characters past ASCII take), the origin a reading
+    # returns, which before it made as well but not while another of the same size stood (36 for each item of a list),
+    # and room. The mask before this change kept 230 to 300 on these texts.
+    BOUND = 56
+
+    def setUp(self):
+        for module in (head, before):
+            module.mask(generated(300))  # whatever a first call makes once (compiled patterns, caches) is not measured
+
+    def excess(self, size, *plants):
+        """What each character of `size` adds to the memory the mask from before held, with `plants` applied."""
+        text = generated(size)
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(short_floor())
+            for plant in plants:
+                stack.enter_context(plant)
+            ours = peak(head, text)
+        return (ours - peak(before, text)) / len(text)
+
+    def test_a_long_text_holds_a_bound_of_its_length_over_what_the_mask_from_before_held(self):
+        for size in (self.SIZE, 4 * self.SIZE):
+            with self.subTest(size=size):
+                self.assertLess(self.excess(size), self.BOUND)
+
+    def test_a_memory_that_grows_with_the_call_is_found(self):
+        # The readings of a call kept whole, as they were, hold each reading of each text a call makes: the bound is
+        # then passed by far, and more with the text's length.
+        unbounded = mock.patch.object(getattr(head, "_Readings", head), "PER_CHAR", 10 ** 9, create=True)
+        self.assertGreater(self.excess(self.SIZE, unbounded), 2 * self.BOUND)
+
+
+class ReadingsBoundTest(unittest.TestCase):
+    """kb.mask._Readings: the readings of a call, the latest kept to a bound, and an origin kept in runs."""
+
+    def entry(self, r, size):
+        """(a key, a value) whose strings are `size` characters, made up."""
+        text = "".join(r.choice("abcdefgh ") for _ in range(size))
+        return (text, r.random()), (None, text[::-1], array.array("i", range(size // 8)))
+
+    def test_what_is_kept_is_what_is_counted_and_is_at_most_the_bound_but_for_the_latest(self):
+        r = random.Random("bound")
+        readings = head._Readings(100)
+        readings.limit = 6_000
+        for n in range(300):
+            key, value = self.entry(r, r.choice((50, 400, 1_500, 4_000, 9_000)))
+            readings[key] = value
+            held = {id(o): o for k, v in readings.items() for o in (*k, *v) if isinstance(o, (str, array.array))}
+            self.assertEqual(readings.size, sum(map(sys.getsizeof, held.values())), n)
+            self.assertTrue(readings.size <= readings.limit or len(readings) == 1, n)
+            self.assertIn(key, readings)  # the latest is kept whatever it weighs
+            self.assertEqual(readings.held.keys(), held.keys())
+            self.assertEqual(readings.weights.keys(), readings.keys())
+        self.assertLess(len(readings), 40)
+
+    def test_the_oldest_reading_goes_first(self):
+        readings = head._Readings(0)
+        readings.limit = 3_000
+        big = lambda c: ("k" + c, c * 1_000)
+        a, b, c = big("a"), big("b"), big("c")
+        readings[a[0]] = (a[1],)
+        readings[b[0]] = (b[1],)
+        readings[c[0]] = (c[1],)
+        self.assertEqual(list(readings), [b[0], c[0]])
+        self.assertIsNone(readings.get(a[0]))
+        self.assertEqual(readings.get(b[0]), (b[1],))
+        self.assertEqual(readings.get(c[0]), (c[1],))
+
+    def test_a_text_two_readings_hold_is_counted_once_and_freed_with_the_last(self):
+        readings = head._Readings(0)
+        text = "x" * 5_000
+        readings[(text, 1)] = (text, "y" * 10)
+        one = readings.size
+        readings[(text, 2)] = (text,)
+        self.assertLess(readings.size - one, 500)  # the text again adds its table and no more of it
+        readings.limit = 0
+        readings[("z", 3)] = ("z",)  # past the bound: the older readings go, the text with the last of them
+        self.assertEqual(list(readings), [("z", 3)])
+        self.assertLess(readings.size, 500)
+        self.assertEqual(set(readings.held), set(readings.weights[("z", 3)]))
+
+    def test_a_key_set_again_is_counted_again(self):
+        readings = head._Readings(0)
+        readings[("k", 1)] = ("a" * 4_000,)
+        first = readings.size
+        readings[("k", 1)] = ("b" * 8_000,)
+        self.assertGreater(readings.size, first + 3_000)
+        self.assertLess(readings.size, first + 5_000)
+        self.assertEqual(len(readings), 1)
+
+    def test_the_bound_is_the_text_s_length_times_PER_CHAR_and_at_least_LEAST(self):
+        for size in (0, 10, 1_000, 100_000, 10_000_000):
+            self.assertEqual(head._Readings(size).limit, max(head._Readings.LEAST, head._Readings.PER_CHAR * size))
+        with mock.patch.object(head._Readings, "LEAST", 0):
+            self.assertEqual(head._Readings(1_000).limit, head._Readings.PER_CHAR * 1_000)
+
+    def test_a_call_and_each_piece_have_readings_of_the_size_of_their_text(self):
+        made, real = [], head._Readings
+
+        class Spied(real):
+            def __init__(self, size=0):
+                made.append(size)
+                super().__init__(size)
+        text = generated(3_000)
+        with mock.patch.object(head, "_Readings", Spied):
+            head.mask(text)
+            self.assertEqual(made, [len(text)])
+            del made[:]
+            fresh_memo()
+            with in_pieces(1_000, 1_000, 200):
+                head.mask(text)
+        self.assertGreater(len(made), 2)
+        self.assertEqual(made[0], len(text))  # the call's own
+        self.assertTrue(all(0 < size <= len(text) for size in made), made)  # and each piece's, each window's
+        self.assertLess(min(made), len(text))
+
+    def test_an_origin_kept_in_runs_is_the_origin(self):
+        r = random.Random("pack")
+        origins = [[], [0], [-1], [-1] * 8, list(range(1_000)), [7, 7, 7], [3, 2, 1], list(range(50, 0, -1))]
+        for _ in range(300):
+            origin, source = [], 0
+            for _ in range(r.randint(1, 40)):
+                if r.random() < 0.3:
+                    origin += [-1] * r.randint(1, 9)
+                else:
+                    count = r.randint(1, 3_000)
+                    origin += range(source, source + count)
+                    source += count + r.randint(0, 20)
+            origins.append(origin)
+        origins.append([r.randint(-1, 500) for _ in range(2_000)])  # no runs at all
+        for origin in origins:
+            packed = head._pack(origin)
+            self.assertEqual(head._unpack(packed), origin)
+            self.assertIs(type(head._unpack(packed)), list)
+        # An origin with few runs is kept in far less room than an array of it, one with many in no more.
+        sparse = list(range(100_000))
+        sparse[500:500] = [-1] * 8
+        self.assertLess(sum(map(head.sys.getsizeof, head._pack(sparse))), 2_000)
+        dense = [r.randint(-1, 500) for _ in range(2_000)]
+        self.assertLessEqual(head.sys.getsizeof(head._pack(dense)), head.sys.getsizeof(array.array("i", dense)))
+
+    def test_a_reading_given_back_is_the_reading_and_not_the_memo_s(self):
+        text = "token ghp_" + "A1b2C3d4" * 5 + " and more text after it"
+        readings = head._Readings(len(text))
+        token = head._READINGS.set(readings)
+        self.addCleanup(head._READINGS.reset, token)
+        first = head._run(text, head._TEXT_RULES, head._fresh(text))
+        self.assertIsNot(first[1], head._run(text, head._TEXT_RULES, head._fresh(text))[1])
+        self.assertEqual(first, head._run(text, head._TEXT_RULES, head._fresh(text)))
+        same = "nothing to read here, a plain line of words"
+        self.assertEqual(head._run(same, head._TEXT_RULES, head._fresh(same)), (same, list(range(len(same)))))
+        self.assertEqual(head._run(same, head._TEXT_RULES, head._fresh(same)), (same, list(range(len(same)))))
+        kept = [value for key, value in readings.items() if key[0] == same]
+        self.assertEqual([value[1] for value in kept], [head._SAME])  # a text a reading left as it was is not kept twice
+        self.assertEqual([value[2] for value in kept], [len(same)])  # nor its origin, which no edit carried over
+
+    def test_every_output_and_origin_is_the_same_with_nothing_kept(self):
+        # Each reading is made again where it is asked for again, so the mask with a bound that keeps the latest reading
+        # only gives what the mask with the bound it has gives: the readings are a function of their keys.
+        checked = 0
+        for k, (where, text) in enumerate(texts()):
+            if k % 5:
+                continue
+            checked += 1
+            for name in ("mask", "mask_with_origin"):
+                want = getattr(head, name)(text)
+                with mock.patch.object(head._Readings, "LEAST", 0), mock.patch.object(head._Readings, "PER_CHAR", 0):
+                    got = getattr(head, name)(text)
+                self.assertEqual(got, want, f"{where}: {name}")
+        self.assertGreater(checked, 500)
+
+    def test_a_long_text_read_in_pieces_is_the_same_with_nothing_kept(self):
+        longs = [session(60_000, "long", "colour"), generated(12_000)]
+        for text in longs:
+            for name in ("mask", "mask_with_origin"):
+                with in_pieces(40_000, 12_000, 3_000):
+                    fresh_memo()
+                    want = getattr(head, name)(text)
+                    fresh_memo()
+                    with mock.patch.object(head._Readings, "LEAST", 0), mock.patch.object(head._Readings, "PER_CHAR", 0):
+                        got = getattr(head, name)(text)
+                self.assertEqual(got, want, name)
+
+    def test_the_texts_a_call_folded_last_are_not_kept_past_it(self):
+        text = "x" * 20_000 + " ghp_" + "A1b2C3d4" * 5
+        head.mask(text)
+        self.assertEqual(head._FOLDED, [])
+        head.mask_with_origin(text)
+        self.assertEqual(head._FOLDED, [])
+        fresh_memo()
+        head._part(text)  # a piece or a window, which mask_head() and mask_tail() read
+        self.assertEqual(head._FOLDED, [])
+        head._may_find(head.SECRET_PATTERNS[0], text)  # outside a call it is kept for the next reading, two at most
+        for n in range(4):
+            head._may_find(head.SECRET_PATTERNS[0], text + str(n))
+        self.assertEqual(len(head._FOLDED), 2)
+        del head._FOLDED[:]
 
 
 if __name__ == "__main__":

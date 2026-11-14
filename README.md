@@ -515,6 +515,8 @@ Known limits:
   `aws configure set`) costs more than in proportion: about 3 s at 16 KB and 11 s at 32 KB for one shape, and about 47 s
   at 16 KB for another, on a loaded machine. Typing calls cost about 30 microseconds a byte of text that holds one: 19 s
   for 640 KB.
+  A call keeps the readings it made to at most 16 bytes for each character of its text (and at least 16 MB), so that
+  part of its memory does not grow with how long it runs.
 - Where a later pass cuts into a placeholder, a bracket can be left beside it ("[masked]]"), or two placeholders stand
   side by side ("[masked][masked]"); no character of the secret is left.
 - A password with a comma, a semicolon or a bracket in it is masked whole in quotes, in an XML element or on a line of
