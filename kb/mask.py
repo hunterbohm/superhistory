@@ -858,7 +858,19 @@ def _far_found(keywords):
 
 def _gitleaks_spans(text, rules=None):
     """Where gitleaks' rules find a secret in `text`, ordered and merged; each rule read only where a keyword of it
-    is in the text."""
+    is in the text. All of them are read once in a call for each text (_READINGS), as every reading of it asks."""
+    readings = _READINGS.get()
+    if rules is not None or readings is None:
+        return _gitleaks_read(text, rules)
+    key = (_GITLEAKS_READ, text, _SEEN_KEYWORDS.get(), _FAR.get() is None)
+    found = readings.get(key)
+    if found is None:
+        found = readings[key] = _gitleaks_read(text, None)
+    return list(found)
+
+
+def _gitleaks_read(text, rules):
+    """_gitleaks_spans, read."""
     lower, spans = text.lower(), []
     for pattern, group, entropy, keywords, allowed, stopwords in (_GITLEAKS if rules is None else rules):
         read = _rule_read(pattern, keywords, lower)
@@ -2189,7 +2201,7 @@ def _encoded_key_spans(text):
 
 def _docker_login_edits(text):
     """Each Docker "auth" login, base64 of "user:password", as an edit that masks it."""
-    return [(m.end(1), m.end(), "[masked]") for m in _AUTH_FIELD.finditer(text) if _basic_credential(m.group(2))]
+    return [(m.end(1), m.end(), "[masked]") for m in _finditer(_AUTH_FIELD, text) if _basic_credential(m.group(2))]
 
 
 def _command_line(text, start, stop=None, known=None, keyed=True):
@@ -2433,6 +2445,8 @@ def _command_password_edits(text, line_pattern, flag, always, unseen=False):
     main's spelling too, and masks what either reading finds: read as a command, a name main does not read can hold
     another command main reads as one in an argument of its line ('az.exe login failed with "mongosh $(echo "") -p
     ..."'), which then shows nothing main hides."""
+    if not _may_find(line_pattern, text):
+        return []
     edits = _read_password_edits(text, line_pattern, flag, always, unseen)
     narrower = _MAIN_SPELLING.get(line_pattern)
     if narrower is not None and any(not narrower.match(text, m.start()) for m in line_pattern.finditer(text)):
@@ -2803,7 +2817,7 @@ def _unread_flag_edits(text, line_pattern, flag, always, done, literals=()):
     left for that string read decoded (_container_edits), where its end bounds the mask, or another's, which the
     command's line does not reach; either way the mask never leaves the string. Elsewhere it runs to the line's end."""
     edits, covered = [], 0
-    for line in line_pattern.finditer(text):
+    for line in _finditer(line_pattern, text):
         if line.start() < covered:
             continue
         begin = _past_closing_quote(text, covered, line.start(), line.end())
@@ -4640,7 +4654,273 @@ def _edit(text, origin, edits):
     return "".join(out), kept
 
 
+# One call's readings of whole texts (_run), by what each was given: set for one mask() or mask_with_origin() call
+# (_one_call) and, inside a long text's mask, for each piece or window alone (_part). A reading made again in that call,
+# of the same text with the same rules and in the same context, is the first.
+_READINGS = contextvars.ContextVar("kb_mask_readings", default=None)
+
+
+class _Fresh(list):
+    """An origin no edit has carried over yet, list(range(n)) for a text of n characters (_fresh), which _run may answer
+    from _READINGS."""
+
+
+def _fresh(text):
+    return _Fresh(range(len(text)))
+
+
+# What a key of _READINGS starts with, where it is not a reading's (_run's keys start with the text): gitleaks' rules read
+# a text (_gitleaks_spans), and a pattern that reads a value by its name reads a text (_named_found).
+_GITLEAKS_READ, _NAMED_FOUND, _SPLIT_SECRETS, _MAIN_SPLIT, _SPLIT_SEEN = (object() for _ in range(5))
+
+
+def _read_once(kind, read, text, rules, *more):
+    """read(text, rules, *more), the spans of a split view, made once in a call for each text, rules, the rest it is
+    given (the patterns by what they are, the spans by what they hold) and context, as _run makes a reading once: made
+    again, it gives the first's spans and counts again the texts the first masked whole at the pass limit (`capped`)."""
+    global capped
+    readings = _READINGS.get()
+    if readings is None:
+        return read(text, rules, *more)
+    key = (kind, id(rules), text, *(tuple(map(tuple, m)) if isinstance(m, list) else id(m) for m in more),
+           _WRAPPINGS.get(), _READ_DEPTH.get(), _STORED_ROW.get(), _KEY_PLACES.get(), _KEY_HERE.get(),
+           _SEEN_KEYWORDS.get(), _FAR.get() is None)
+    made = readings.get(key)
+    if made is None:
+        caps = capped
+        found = read(text, rules, *more)
+        readings[key] = (rules, more, list(found), capped - caps)
+        return found
+    capped += made[3]
+    return list(made[2])
+
+
+# A pattern that needs something no text before it holds finds nothing in it, and most texts lack what most patterns
+# need: a token shape's first characters, a command's name. What a pattern needs is read once, the first time it is
+# asked about, from sre's own parse of it, and a text that lacks one of its needs is not searched for it (_may_find).
+# The characters past ASCII that sre, ignoring case, takes for an ASCII character, each as the letter it is taken for:
+# "İ" and "ı" for "i", "ſ" for "s", the Kelvin sign for "k". A test checks it over every character.
+_ASCII_FOLDS = {"\u0130": "i", "\u0131": "i", "\u017f": "s", "\u212a": "k"}
+# What each pattern _may_find is asked about needs (_required), by id, with the pattern, which keeps the id its own.
+_NEEDS = {}
+# The last texts _may_find read, newest first (_fold).
+_FOLDED = []
+# The shortest text _may_find reads: a shorter one costs less to search than a pattern's needs cost to find the first
+# time, which a short-lived process, such as a hook's, pays.
+_CHECKED_FROM = 8192
+
+
+def _required(pattern):
+    """What `pattern` needs in a text to find anything in it, read from sre's own parse of it: up to eight needs, each
+    met by every text the pattern finds something in, or None where nothing is known it needs. A need is the literals
+    one of which a text must hold, in its fold (_folded), lowered and in ASCII. An item the parse gives that holds a
+    character past ASCII, a class that is not a few characters, a negation and what may match nothing add no need."""
+    if not isinstance(pattern.pattern, str):
+        return None
+    try:
+        parsed = list(_sre_parse.parse(pattern.pattern, pattern.flags))
+    except Exception:  # a parser of another Python: the pattern is searched
+        return None
+    return tuple(_telling(_sequence_needs(parsed))[:8]) or None
+
+
+def _telling(needs):
+    """`needs` with the most telling first: the longest shortest literal, then the fewest literals."""
+    return sorted(needs, key=lambda need: (-min(map(len, need)), len(need)))
+
+
+def _sequence_needs(items):
+    """What a run of sre's parsed items needs: what each item needs, with a run of items that each match one of a few
+    strings (_strings) as one need, each way to spell the run a literal, lowered."""
+    needs, run = [], None
+    for op, av in items:
+        strings = _strings(op, av)
+        if strings is not None and run is not None and len(run) * len(strings) <= 64:
+            run = {start + string for start in run for string in strings}
+            continue
+        if run is not None and "" not in run:
+            needs.append(tuple(sorted(run)))
+        run = strings
+        if strings is None:
+            needs += _item_needs(op, av)
+    if run is not None and "" not in run:
+        needs.append(tuple(sorted(run)))
+    return needs
+
+
+def _strings(op, av):
+    """The few strings, lowered, one parsed item matches one of, each whole, or None: an ASCII character, a class of a
+    few ASCII characters, or a group or branch of runs of them."""
+    c = _sre
+    if op is c.LITERAL:
+        return {chr(av).lower()} if av < 128 else None
+    if op is c.IN:
+        chars = set()
+        for kind, value in av:
+            if kind is c.LITERAL and value < 128:
+                chars.add(chr(value).lower())
+            elif kind is c.RANGE and value[1] < 128 and value[1] - value[0] < 8:
+                chars.update(chr(x).lower() for x in range(value[0], value[1] + 1))
+            else:
+                return None
+        return chars if len(chars) <= 8 else None
+    if op is c.SUBPATTERN or op is c.BRANCH:
+        found = set()
+        for way in ([av[-1]] if op is c.SUBPATTERN else av[1]):
+            spelled = {""}
+            for item in way:
+                strings = _strings(*item)
+                if strings is None or len(spelled) * len(strings) > 64:
+                    return None
+                spelled = {start + string for start in spelled for string in strings}
+            found |= spelled
+        return found if len(found) <= 64 else None
+    return None
+
+
+def _item_needs(op, av):
+    """What one parsed item needs, as _sequence_needs gives it. A group, a repeat at least once and a lookaround that
+    holds something need what is inside them, and a class of ASCII characters one of its few; a branch needs, for
+    each way of choosing one of the two most telling needs of each of its ways, one of those: all of them where that
+    makes 16 or fewer."""
+    c = _sre
+    if op is c.IN:
+        literals = set()
+        for kind, value in av:
+            if kind is c.LITERAL:
+                low, high = value, value
+            elif kind is c.RANGE:
+                low, high = value
+            else:  # a negated class, or a category such as \d
+                return []
+            if high >= 128:  # a character past ASCII may meet it
+                return []
+            literals.update(chr(x).lower() for x in range(low, high + 1))
+        return [tuple(sorted(literals))] if len(literals) <= 32 else []
+    if op is c.BRANCH:
+        ways = []
+        for way in av[1]:
+            needs = _telling(_sequence_needs(list(way)))
+            if not needs:
+                return []
+            ways.append(needs[:2])
+        if math.prod(map(len, ways)) > 16:
+            ways = [needs[:1] for needs in ways]
+        return [tuple(sorted({literal for need in chosen for literal in need})) for chosen in itertools.product(*ways)]
+    if op is c.SUBPATTERN:
+        return _sequence_needs(list(av[-1]))
+    if op in (c.MAX_REPEAT, c.MIN_REPEAT) or op is getattr(c, "POSSESSIVE_REPEAT", None):
+        return _sequence_needs(list(av[2])) if av[0] >= 1 else []
+    if op is c.ASSERT:  # a lookahead or a lookbehind that holds what it names; ASSERT_NOT needs nothing
+        return _sequence_needs(list(av[1]))
+    if op is getattr(c, "ATOMIC_GROUP", None):
+        return _sequence_needs(list(av))
+    return []
+
+
+def _folded(text):
+    """`text` lowered, with each character _ASCII_FOLDS holds written as its letter first: wherever sre finds an ASCII
+    character, ignoring case or not, this holds it lowered."""
+    if not text.isascii():
+        for ch, letter in _ASCII_FOLDS.items():
+            text = text.replace(ch, letter)
+    return text.lower()
+
+
+def _fold(text):
+    """[text, its fold (_folded), whether the fold holds each literal asked about], kept for the last few texts read."""
+    for read in _FOLDED:
+        if read[0] is text:
+            return read
+    read = [text, _folded(text), {}]
+    _FOLDED[:] = [read, *_FOLDED[:3]]
+    return read
+
+
+def _may_find(pattern, text):
+    """False where `pattern` can find nothing in `text`, which fails a need of it (_required)."""
+    if len(text) < _CHECKED_FROM:
+        return True
+    entry = _NEEDS.get(id(pattern))
+    if entry is None or entry[0] is not pattern:
+        if len(_NEEDS) > 1024:
+            _NEEDS.clear()
+        entry = _NEEDS[id(pattern)] = (pattern, _required(pattern))
+    if entry[1] is None:
+        return True
+    read = _fold(text)
+    fold, held = read[1], read[2]
+    for literals in entry[1]:
+        for literal in literals:
+            found = held.get(literal)
+            if found is None:
+                found = held[literal] = literal in fold
+            if found:
+                break
+        else:
+            return False
+    return True
+
+
+def _search(pattern, text, *bounds):
+    """pattern.search(text, *bounds), not run where the pattern can find nothing in `text` (_may_find)."""
+    return pattern.search(text, *bounds) if _may_find(pattern, text) else None
+
+
+def _finditer(pattern, text, *bounds):
+    """pattern.finditer(text, *bounds), not run where the pattern can find nothing in `text` (_may_find)."""
+    return pattern.finditer(text, *bounds) if _may_find(pattern, text) else iter(())
+
+
 def _run(text, rules, origin=None, named=None, fired=None, look=False):
+    """_reading, made once in a call for each text, rules, origin untracked or fresh, and context: made again, it gives
+    the first reading's text and origin, adds to `named` and `fired` what the first added, and counts again the texts
+    the first masked whole at the pass limit (`capped`), as a header's value is read with mask(). The context is what
+    the reading consults besides its arguments (the variables in the key). What a piece's reading notes of gitleaks'
+    rules (_FAR, _SAW) goes to sets of the piece alone, so a piece has readings of its own: one made again in it adds
+    to those sets what the first added."""
+    global capped
+    readings = _READINGS.get()
+    if readings is None or not (origin is None or type(origin) is _Fresh):
+        return _reading(text, rules, origin, named, fired, look)
+    key = (text, id(rules), origin is None, named is None, fired is None, bool(fired), look, _WRAPPINGS.get(),
+           _READ_DEPTH.get(), _STORED_ROW.get(), _KEY_PLACES.get(), _KEY_HERE.get(), _SEEN_KEYWORDS.get(),
+           _FAR.get() is None)
+    made = readings.get(key)
+    if made is None:
+        names, fires, caps = len(named or ()), len(fired or ()), capped
+        masked, came = _reading(text, rules, origin, named, fired, look)
+        if came is origin and came is not None:
+            came = list(came)  # no edit, so the fresh origin itself: it stays out of the caller's hands
+        readings[key] = (rules, masked, None if came is None else array.array("i", came),
+                         None if named is None else named[names:], None if fired is None else fired[fires:],
+                         capped - caps)
+        return masked, came
+    _, masked, came, names, fires, caps = made
+    if named is not None:
+        named += names
+    if fired is not None:
+        fired += fires
+    capped += caps
+    return masked, None if came is None else came.tolist()
+
+
+def _one_call(fn):
+    """`fn`, mask() or mask_with_origin(), with readings of its own (_READINGS) unless a caller's are set: one call of it,
+    the mask() a header's value is read with inside it among them, makes each reading once."""
+    @functools.wraps(fn)
+    def call(text):
+        if _READINGS.get() is not None:
+            return fn(text)
+        token = _READINGS.set({})
+        try:
+            return fn(text)
+        finally:
+            _READINGS.reset(token)
+    return call
+
+
+def _reading(text, rules, origin=None, named=None, fired=None, look=False):
     """One pass of every pattern, as (the text masked, where each of its characters came from): the secrets known by
     their shape, then an older kb's leftovers, links, cookies and commands, then the patterns that read a value by its
     name. With `origin` None, nothing is tracked and the second is None. With `named` a list, each named value masked
@@ -4662,7 +4942,7 @@ def _run(text, rules, origin=None, named=None, fired=None, look=False):
         origin = list(range(size))
     given = origin
     for pattern in patterns:
-        edits = [(m.start(), m.end(), "[masked]") for m in pattern.finditer(text)
+        edits = [(m.start(), m.end(), "[masked]") for m in _finditer(pattern, text)
                  if pattern not in (BASIC, BEARER) or not _scheme_words(m)]
         if edits and pattern is ENCODED_PRIVATE_KEY:
             note(pattern)
@@ -4675,7 +4955,7 @@ def _run(text, rules, origin=None, named=None, fired=None, look=False):
         finally:
             _KEY_HERE.reset(here)
     for pattern, main in zip(PREFIXED_SECRETS if reading != "main" else _MAIN_PREFIXED, _MAIN_PREFIXED):
-        found = list(pattern.finditer(text))
+        found = list(_finditer(pattern, text))
         if pattern is not main and any(not main.fullmatch(text, m.start(), m.end()) for m in found):
             note(pattern)  # a link with no user name
         text, origin = _edit(text, origin, [(m.end(1), m.end(), "[masked]") for m in found])
@@ -4684,13 +4964,13 @@ def _run(text, rules, origin=None, named=None, fired=None, look=False):
         if edits:
             note(_WRAPPINGS)  # which _masked looks for: it then hides what the mask without this reading hides too
         text, origin = _edit(text, origin, edits)
-    if _ANY_COMMAND.search(text) and reading == "today":  # every row as main reads it today
+    if _search(_ANY_COMMAND, text) and reading == "today":  # every row as main reads it today
         for n, command in enumerate(_TODAYS_COMMANDS):
-            edits = _todays_password_edits(text, *command, n >= _MAIN_COMMANDS)
+            edits = _todays_password_edits(text, *command, n >= _MAIN_COMMANDS) if _may_find(command[0], text) else []
             if edits and n >= _MAIN_COMMANDS:
                 note(command)
             text, origin = _edit(text, origin, edits)
-    elif _ANY_COMMAND.search(text):
+    elif _search(_ANY_COMMAND, text):
         rows = _COMMANDS[:_MAIN_COMMANDS] if reading == "main" else _COMMANDS
         before, moves, mains = text, [], None
         for n, command in enumerate(rows):
@@ -4703,17 +4983,18 @@ def _run(text, rules, origin=None, named=None, fired=None, look=False):
             moves.append(_moves(edits))
             text, origin = _edit(text, origin, edits)
         if look and mains is not None and fired is not None and not fired \
-                and any(_todays_password_edits(mains, *row, True) for row in _TODAYS_COMMANDS[_MAIN_COMMANDS:]):
+                and any(_todays_password_edits(mains, *row, True) for row in _TODAYS_COMMANDS[_MAIN_COMMANDS:]
+                        if _may_find(row[0], mains)):
             note(_TODAYS_COMMANDS)  # main reads a password with one of these rows where this reading found none
         if reading != "main":  # where a row before masked, each row reads the text as it was before too
             edits, row = _before_edits(before, rows, moves)
             if edits:
                 note(row)
             text, origin = _edit(text, origin, edits)
-    if reading == "named" and _SUBSCRIPTION_KEY.search(text):
+    if reading == "named" and _search(_SUBSCRIPTION_KEY, text):
         note(_SUBSCRIPTION_KEY)  # a name main's own do not read, which moves where their searches go on
     for pattern, span_of in keyed:
-        found = list(_named(pattern, span_of, text, "named" if reading == "today" else reading, note))
+        found = _named_found(pattern, span_of, text, "named" if reading == "today" else reading, note)
         if found and pattern in _NEW_READINGS:
             note(pattern)
         if named is not None:
@@ -4775,13 +5056,37 @@ def _name_value_edits(text):
     return edits
 
 
+def _named_found(pattern, span_of, text, reading, note):
+    """list(_named(...)), made once in a call for each pattern, what masks it, text, way of reading and context, as _run
+    makes a reading once: the second reading of a text that comes to a pattern with the text the first came to it with
+    gets the first's matches and what it noted, and the texts it masked whole at the pass limit (`capped`) counted
+    again."""
+    global capped
+    readings = _READINGS.get()
+    if readings is None:
+        return list(_named(pattern, span_of, text, reading, note))
+    key = (_NAMED_FOUND, id(pattern), id(span_of), text, reading, _WRAPPINGS.get(), _READ_DEPTH.get(), _STORED_ROW.get(),
+           _KEY_PLACES.get(), _KEY_HERE.get(), _SEEN_KEYWORDS.get(), _FAR.get() is None)
+    made = readings.get(key)
+    if made is None:
+        noted, caps = [], capped
+        found = list(_named(pattern, span_of, text, reading, noted.append))
+        readings[key] = (pattern, span_of, found, noted, capped - caps)
+    else:
+        _, _, found, noted, caps = made
+        capped += caps
+    for each in noted:
+        note(each)
+    return list(found)
+
+
 def _named(pattern, span_of, text, reading, note=lambda _: None):
     """Each of `pattern`'s matches, a name, a separator and a value, whose secret `span_of` finds, with that span. In
     text a match that holds none is tried again at its value, which can be the next name, as in "secrets: db_password:
     <value>"; so is one that holds a secret, where the value it masks is a name and its separator whose own value
     follows, as in "passwd: Ppasswd: <password>". Past that the search goes on after the match, as re.sub's does, so a
     long value is read once. An id reads as re.sub reads it."""
-    m = pattern.search(text)
+    m = _search(pattern, text)
     while m:
         span = span_of(m)
         if span:
@@ -4880,7 +5185,7 @@ def _once(text, rules, origin=None, novel=None):
         novel.append(spans)
     if not spans:
         return _read(text, rules, origin, novel)
-    masked, came = _read(text, rules, list(range(len(text))), novel)
+    masked, came = _read(text, rules, _fresh(text), novel)
     added = bytearray(len(text))
     for start, end in spans:
         added[start:end] = b"\x01" * (end - start)
@@ -4895,13 +5200,13 @@ def _read(text, rules, origin=None, novel=None):
     if rules[2] not in ("named", "today"):
         return _run(text, rules, origin)
     fired = []
-    masked, came = _run(text, rules, list(range(len(text))), fired=fired, look=novel is not None and not novel)
+    masked, came = _run(text, rules, _fresh(text), fired=fired, look=novel is not None and not novel)
     if fired and novel is not None:
         novel.append(fired)
     if not fired:  # no reading main's lack masked anything, so theirs mask just as this did
         return masked, None if origin is None else [origin[c] if c >= 0 else -1 for c in came]
     added = bytearray(b"\x01") * len(text)
-    for c in _run(text, _MAIN_RULES, list(range(len(text))))[1]:
+    for c in _run(text, _MAIN_RULES, _fresh(text))[1]:
         if c >= 0:
             added[c] = 0
     masked, came = _hide(masked, came, added)
@@ -4930,6 +5235,11 @@ def _hide(masked, came, added):
 
 
 def _split_secrets(text, rules):
+    """_split_secrets_read, made once in a call for each text."""
+    return _read_once(_SPLIT_SECRETS, _split_secrets_read, text, rules)
+
+
+def _split_secrets_read(text, rules):
     """Where in `text` a secret reads only across characters a reader does not see, as ordered (start, end) spans of
     the text as written: a token split or interleaved by them, even where its first part is a token by itself, the
     rest of one an older kb masked only up to them ("[masked]<ZWSP>rest"), or a secret's name split by them, whose
@@ -4970,6 +5280,11 @@ def _todays_view_differs(text):
 
 
 def _split_secrets_seen(text, rules, run, starts, seen_by_main):
+    """_split_secrets_seen_read, made once in a call for each text."""
+    return _read_once(_SPLIT_SEEN, _split_secrets_seen_read, text, rules, run, starts, seen_by_main)
+
+
+def _split_secrets_seen_read(text, rules, run, starts, seen_by_main):
     """_split_secrets in the view without the characters `run` finds, a run before where `starts` finds a reading
     starting kept, with what main's own view hides (`seen_by_main`), as merged (start, end) spans of the text as
     written."""
@@ -5050,6 +5365,11 @@ def _glued_tokens(v, found, after_a_break, vendored):
 
 
 def _main_split_spans(text, rules=_TEXT_RULES):
+    """_main_split_spans_read, made once in a call for each text."""
+    return _read_once(_MAIN_SPLIT, _main_split_spans_read, text, rules)
+
+
+def _main_split_spans_read(text, rules):
     """Where main's own pass hides what `text` holds only across main's invisible characters: its view, its token
     shapes, an older kb's leftovers and its own named values, as main's _split_secrets reads them; for text by main's
     own readings (_MAIN_RULES), for an id by its own."""
@@ -5068,7 +5388,7 @@ def _main_split_spans(text, rules=_TEXT_RULES):
 def _main_once(text, origin):
     """One pass as main's own mask makes it, and where each character of its result came from: main's readings over
     the text as written (_MAIN_RULES), and what its own view holds split (_main_split_spans)."""
-    masked, came = _run(text, _MAIN_RULES, list(range(len(text))))
+    masked, came = _run(text, _MAIN_RULES, _fresh(text))
     spans = _main_split_spans(text) if _MAIN_INVISIBLE_RUN.search(text) else []
     if spans:
         added = bytearray(len(text))
@@ -5088,7 +5408,7 @@ def _passes(text, step, places=frozenset()):
     for _ in range(MAX_PASSES):
         marker = _KEY_PLACES.set(places)
         try:
-            masked, came = step(text, list(range(len(text))))
+            masked, came = step(text, _fresh(text))
         finally:
             _KEY_PLACES.reset(marker)
         origin = [origin[c] if c >= 0 else -1 for c in came]
@@ -5144,9 +5464,9 @@ def _named_spans(view, rules):
     the one before, so a value ends at a token's placeholder as main ends it. As _read reads the text as written, where
     a reading main's own lack masked anything, theirs read the view too, so none can take a split name first."""
     spans, fired = [], []
-    _run(view, rules, list(range(len(view))), spans, fired if rules[2] in ("named", "today") else None)
+    _run(view, rules, _fresh(view), spans, fired if rules[2] in ("named", "today") else None)
     if fired:
-        _run(view, _MAIN_RULES, list(range(len(view))), spans)
+        _run(view, _MAIN_RULES, _fresh(view), spans)
     return spans
 
 
@@ -5455,24 +5775,31 @@ def _part(text):
     reads gitleaks' rules for keywords anywhere in the whole text (_SEEN_KEYWORDS), so its result is kept by which of
     the rules that find a secret in it without a keyword of their own there are read (_far_how): a keyword new
     elsewhere in a growing text changes how a piece reads only where such a rule of it finds one."""
+    return _part_record(text)[0]
+
+
+def _part_record(text):
+    """_part(), and with it the record of what the piece's reading holds: {"far": the keywords of each rule that finds a
+    secret in it with none of them there, "saw": the keywords the texts it reads hold}."""
     record = _MEMO.get("far", text)
     record = json.loads(record) if record is not None else None
     found = _MEMO.get("piece", text, _far_how(record["far"])) if isinstance(record, dict) else None
     if found is None:
-        tokens = _FAR.set(set()), _SAW.set(set())
+        tokens = _FAR.set(set()), _SAW.set(set()), _READINGS.set({})
         try:
             result, origin, still = _masked(text)
             record = {"far": sorted(list(k) for k in _FAR.get()), "saw": sorted(_SAW.get())}
         finally:
             _FAR.reset(tokens[0])
             _SAW.reset(tokens[1])
+            _READINGS.reset(tokens[2])
         found = (result, array.array("q", origin), still)
         _MEMO.put("far", text, json.dumps(record))
         _MEMO.put("piece", text, found, _far_how(record["far"]))
     saw = _SAW_ALL.get()
     if saw is not None:
         saw.update(record["saw"])
-    return found
+    return found, record
 
 
 def _far_how(far):
@@ -5491,6 +5818,28 @@ def _span(result, origin, base, low, high):
     return result[first:last + 1], [c + base if c >= 0 else -1 for c in origin[first:last + 1]]
 
 
+_LETTERS = re.compile(r"[A-Za-z]{3,}")
+# What a view of the mask may read as other characters or as none: an escape, a percent code, a character a reader does
+# not see (INVISIBLE). Its letters are not letters every view keeps.
+_ESCAPE_LIKE = re.compile(r"\\+(?:u[0-9A-Fa-f]{4}|U[0-9A-Fa-f]{8}|x[0-9A-Fa-f]{2}|[A-Za-z])|%[0-9A-Fa-f]{2}|"
+                          + INVISIBLE.pattern)
+
+
+def _wordless(text):
+    """Whether `text` holds a stretch of REACH // 8 characters with no three letters in a row that every view the mask
+    reads keeps (_ESCAPE_LIKE blanked out first, at its own length). A field and its value may stand any gap apart,
+    farther than REACH: whitespace, "+", "%20", "%2520", characters a reader does not see, as written or escaped
+    (KEYED_SECRET's _GAP). No gap holds such letters, so where they come at least that often, no gap runs past a cut
+    there; elsewhere the cut does not hold and the text is read whole there. Distances are the text's own: a view
+    without its unseen characters would make a gap look shorter than it stands."""
+    view, at, most = _ESCAPE_LIKE.sub(lambda m: " " * len(m.group()), text), 0, REACH // 8
+    for m in _LETTERS.finditer(view):
+        if m.start() - at >= most:
+            return True
+        at = m.end()
+    return len(view) - at >= most
+
+
 def _cut_holds(text, before, after):
     """Whether the cut between two pieces, each (start, end, (result, origin, still)), masks as the text read whole
     there: neither piece's mask hides the characters at the cut, and the two say what a window of the text read whole
@@ -5498,6 +5847,8 @@ def _cut_holds(text, before, after):
     start, cut, (left, left_origin, _) = before
     _, end, (right, right_origin, _) = after
     if not left or not right or left_origin[-1] != cut - 1 - start or right_origin[0] != 0:
+        return False
+    if _wordless(text[max(0, cut - REACH):cut + REACH]):
         return False
     low, high = max(0, cut - 2 * REACH), min(len(text), cut + 2 * REACH)
     window, window_origin, still = _part(text[low:high])
@@ -5579,6 +5930,7 @@ def _plain():
             and not _KEY_HERE.get() and _READ_DEPTH.get() == (0, 0))
 
 
+@_one_call
 def mask_with_origin(text):
     """mask(), and where each character of the result came from in `text`, -1 for a placeholder's (kb.mask._edit)."""
     if not _plain():
@@ -5591,6 +5943,7 @@ def mask_with_origin(text):
         _TOP.reset(token)
 
 
+@_one_call
 def mask(text):
     """The text with every secret replaced by "[masked]". A placeholder can make the text next to it read as a secret
     or as a key's leftovers, so masking repeats until a pass changes nothing: masked text masks to itself, and text
@@ -5613,6 +5966,135 @@ def mask(text):
     if kept:
         _MEMO.put("text", text, found)
     return found
+
+
+# The two ends of a long text's mask. A caller that wants only the first or the last n characters of mask(text), as the
+# check does of a message, would wait for the text read whole, which took minutes at 500 KB. They are read from a window
+# instead: the text up to a cut, or from one, that stands n + 2 * REACH from the end it keeps. The window is read as a
+# piece is (_part), so what holds of the pieces of a long text holds of it (above):
+# - A character more than REACH from the cut reads as the text read whole reads it, so the characters kept do, once
+#   their sources stand that far (_edge).
+# - What a window cannot see is a run that crosses its cut, which a piece sees by the piece beside it. A run that goes
+#   on to the window's edge hides the edge's last character (or first, from the other side), which is checked, as
+#   _pieces checks it. A run that comes in over the cut from the far side is a key's paragraph, masked on to its end
+#   from a header before a tail's cut, or back to its start from a footer after a head's (_headless_key_edits); a
+#   blank line ends it, and none crosses more than two (a PGP key's one, an encrypted key's two), so _BARRIER blank
+#   lines between the kept part and the cut stop every one. A field and its value can also stand any gap apart,
+#   so the text there must not be _wordless either.
+# - A rule that finds a secret in the window with no keyword of its own there reads as the whole text's keywords say
+#   (_far_how); the window is used only where each such rule has a keyword in the text (_keywords_in), as a keyword
+#   in a view only the far text makes could turn it on.
+# Where the window does not hold, the text is masked whole, as it was. A text that does not settle in MAX_PASSES
+# beyond the window has everything that changed masked as one place there (_mask_whole); the window hides no secret
+# that does not hide, and leaves the kept part's own secrets masked each.
+_BARRIER = 3
+
+
+def _edge_cut(text, n, head):
+    """Where mask_head()'s window ends or mask_tail()'s starts, or None where there is no cut that holds: the kept part
+    stands n + 2 * REACH from it, and _BARRIER blank lines, the first (or last) of those past 2 * n from the end kept,
+    stand between the two. It is at a line break, else a space or tab, within PIECE of that distance, as _piece_cuts
+    looks for one, else exactly there; where the blank lines stand farther it is at the last of them, within PIECE."""
+    floor = n + 2 * REACH
+    if head:
+        ends = [m.end() for m in itertools.islice(_BLANK_LINE.finditer(text, 2 * n), _BARRIER)]
+        if len(ends) < _BARRIER or ends[-1] - floor > PIECE:
+            return None
+        if ends[-1] >= floor:
+            return ends[-1]
+        most = floor + PIECE
+        cut = text.find("\n", floor, most)
+        if cut < 0:
+            spaces = [i for i in (text.find(" ", floor, most), text.find("\t", floor, most)) if i >= 0]
+            cut = min(spaces) if spaces else floor - 1
+        return cut + 1
+    most = len(text) - floor
+    starts = collections.deque((m.start() for m in _BLANK_LINE.finditer(text, 0, len(text) - 2 * n)), maxlen=_BARRIER)
+    if len(starts) < _BARRIER or most - starts[0] > PIECE:
+        return None
+    if starts[0] <= most:
+        return starts[0]
+    least = max(0, most - PIECE)
+    cut = text.rfind("\n", least, most)
+    if cut < 0:
+        spaces = [i for i in (text.rfind(" ", least, most), text.rfind("\t", least, most)) if i >= 0]
+        cut = max(spaces) if spaces else most - 1
+    return cut + 1
+
+
+def _read_window(text, window):
+    """_part() of `window`, a piece of `text`, as (result, origin), or None where it cannot be read as `text` reads it:
+    it still changes after MAX_PASSES, or a rule finds a secret in it with no keyword of its own in it, and none in
+    `text`. A window with no such rule reads alike whatever keywords the rest of the text holds, so they are not looked
+    for then."""
+    def read(seen):
+        token = _SEEN_KEYWORDS.set(seen)
+        try:
+            return _part_record(window)
+        finally:
+            _SEEN_KEYWORDS.reset(token)
+
+    def held(far, seen):
+        return all(any(word in seen for word in keywords) for keywords in far)
+    (result, origin, still), record = read(frozenset())
+    if not still and record["far"]:
+        seen = _keywords_in(text)
+        if not held(record["far"], seen):
+            return None
+        (result, origin, still), record = read(seen)
+        if not held(record["far"], seen):
+            return None
+    return None if still else (result, origin)
+
+
+def _edge(text, n, head):
+    """mask(text)[:n] (`head`) or mask(text)[-n:] from a window, or None where the window does not hold: it is read as
+    the text is (_read_window); its edge at the cut is not hidden; the characters kept came from sources REACH or more
+    from the cut; and _BARRIER blank lines stand between them and the cut."""
+    if not _plain():
+        return None
+    cut = _edge_cut(text, n, head)
+    if cut is None:
+        return None
+    window = text[:cut] if head else text[cut:]
+    token = _TOP.set(False)
+    try:
+        found = _read_window(text, window)
+    finally:
+        _TOP.reset(token)
+    if found is None:
+        return None
+    result, origin = found
+    if len(result) < n or origin[-1 if head else 0] != (len(window) - 1 if head else 0):
+        return None
+    if head:
+        k = n - 1
+        while origin[k] < 0:  # in a placeholder: its source ends where the next character kept starts
+            k += 1
+        away = origin[k] + 1 if k == n - 1 else origin[k]
+        apart, far = window[away:], len(window) - away
+    else:
+        k = first = len(result) - n
+        while origin[k] < 0:  # in a placeholder: its source starts where the last character kept before it ends
+            k -= 1
+        away = origin[first] if k == first else origin[k] + 1
+        apart, far = window[:away], away
+    breaks = sum(1 for _ in itertools.islice(_BLANK_LINE.finditer(apart), _BARRIER))
+    if far < REACH or breaks < _BARRIER or _wordless(apart):
+        return None
+    return result[:n] if head else result[-n:]
+
+
+def mask_head(text, n):
+    """mask(text)[:n], read from a window of a long text (above)."""
+    found = _edge(text, n, True) if n > 0 and len(text) > n + 4 * REACH else None
+    return found if found is not None else mask(text)[:n]
+
+
+def mask_tail(text, n):
+    """mask(text)[-n:], read from a window of a long text (above)."""
+    found = _edge(text, n, False) if n > 0 and len(text) > n + 4 * REACH else None
+    return found if found is not None else mask(text)[-n:]
 
 
 # The memo: what mask() worked out, by the text and how it was read, so a text masked again costs a lookup. A session

@@ -283,7 +283,7 @@ def shown(db, path):
         if hits:
             model = Recorder()
             with contextlib.suppress(Exception):
-                check.pick("What does the walrus ledger say?", [], hits, model, 5)
+                check.pick(check.prompt_text("What does the walrus ledger say?", []), hits, model, 5)
             out += model.sent
     paths, config = types.SimpleNamespace(db=pathlib.Path(path)), types.SimpleNamespace(machine="desk")
     for (rid,) in db.execute("SELECT min(id) FROM docs GROUP BY source, source_id, kind"):
