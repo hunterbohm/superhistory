@@ -6761,6 +6761,22 @@ _TYPED_KEYS = ("text", "value", "keys", "input", "content", "string")
 _COMPUTER_TOOL = re.compile(r"(?i)computer(?:_\d+)?")
 
 
+def _masked_scalars(value, level=0):
+    """`value` with every string and number in it, at any depth, replaced by "[masked]" (a typed value is a string or
+    a number, and a list of keys or an object holds them), an empty string and a boolean as they are."""
+    if isinstance(value, bool) or value is None:
+        return value
+    if isinstance(value, (str, int, float)):
+        return "[masked]" if str(value) else value
+    if level > 20:
+        return "[masked]"
+    if isinstance(value, dict):
+        return {key: _masked_scalars(each, level + 1) for key, each in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_masked_scalars(each, level + 1) for each in value]
+    return "[masked]"
+
+
 def typed_secrets(name, args):
     """A typing or form-filling tool's input with what it types masked whole, unless it types into a field on the short
     list of harmless ones (_harmless_labels): a password typed into a page is in no form a mask knows by its shape, and
@@ -6773,16 +6789,18 @@ def typed_secrets(name, args):
         return args
 
     def field(item, level):
+        if level > 6:  # nested deeper than a call's input goes: whatever is there, strings and numbers, is hidden
+            return _masked_scalars(item)
         if isinstance(item, list):
-            return [field(each, level) for each in item]
-        if not isinstance(item, dict) or level > 6:
+            return [field(each, level + 1) for each in item]
+        if not isinstance(item, dict):
             return item
         labels = [str(item[key]) for key in _LABEL_KEYS if isinstance(item.get(key), str)]
         hide = not _harmless_labels(labels)
         out = {}
         for key, value in item.items():
-            if key in _TYPED_KEYS and hide and isinstance(value, (str, int)) and not isinstance(value, bool) and str(value):
-                out[key] = "[masked]"
+            if key in _TYPED_KEYS and hide:
+                out[key] = _masked_scalars(value)  # a list of keys or an object typed holds its strings and numbers too
             else:
                 out[key] = field(value, level + 1) if isinstance(value, (dict, list)) else value
         return out
@@ -6824,6 +6842,8 @@ _CODE_VALUE_KEYWORDS = frozenset(("value", "text", "keys"))
 # What a call's own selector argument needs: a page's or a frame's fill or type (page.fill(selector, value)), not an
 # element's, a locator's or the keyboard's, which take the text first (send_keys("...", "\\n"), keyboard.type).
 _CODE_SELECTOR_METHODS = frozenset(("fill", "type"))
+# The receivers whose fill and type take a selector first, even where the value that follows is a variable.
+_CODE_SELECTOR_RECEIVERS = frozenset(("page", "frame", "mainFrame", "main_frame"))
 _CODE_ELEMENT_NAMES = _CODE_LOCATOR_NAMES - {"page", "frame", "mainFrame", "main_frame", "browser", "driver"}
 # A variable for a page, a frame or a driver, by its name's last word ("loginPage", "login_page", "page2").
 _CODE_PAGE_WORDS = frozenset(("page", "frame", "driver", "browser", "element", "locator", "keyboard"))
@@ -7283,7 +7303,10 @@ def _typed_code_edits(text):
                     and bool(positional) and [t[0] for t in positional[0] if t[0] not in "()"] == ["s"]
                     and {t[0] for t in positional[0]} <= {"s", "(", ")"} and (
             bool(second) and (second[0][0] == "s" or second[0][0] == "(" and any(t[0] == "s" for t in second)
-                              or second[0][0] != "{")  # a value from a variable: page.fill(selector, password, {...})
+                              # a value from a variable, page.fill(selector, password, {...}), on a page or a frame
+                              # only: on any other receiver the first string may be the text (locator.fill(text, {...}))
+                              or second[0][0] != "{" and any(
+                                  name.rstrip("0123456789") in _CODE_SELECTOR_RECEIVERS for name in names))
             or any(kw in _CODE_VALUE_KEYWORDS and any(t[0] == "s" for t in ts) for kw, ts in args)))
         if selector:
             own.append(positional[0])
@@ -7478,7 +7501,7 @@ def _json_scan(text, pos, stop, names, edits, level):
             end = _code_string_end(text, m.start(), min(stop, m.start() + _JSON_STRING_LIMIT)) if quoted else None
             if end is None:
                 # a value a quote opens and the line never closes: a clipped call. It masks to the line's end.
-                if quoted and top is not None and top["key"] in _JSON_TYPED_KEYS and top["value"]:
+                if quoted and top is not None and (top["key"] in _JSON_TYPED_KEYS and top["value"] or top["typed_list"]):
                     line = text.find("\n", pos, stop)
                     line = stop if line < 0 else line
                     top["typed"].append((pos, line))
@@ -7495,19 +7518,27 @@ def _json_scan(text, pos, stop, names, edits, level):
                 if top["key"] == "action" and _json_name(text[a:b]) == "type":
                     top["action"] = True
                 top["value"], top["key"] = False, None
+            elif top is not None and top["typed_list"]:
+                top["typed"].append((a, b))
             else:
                 pending = _json_name(text[a:b])
             if level < 4 and _ESCAPED_QUOTE.search(text, a, b):
                 _json_scan(text, a, b, names, edits, level + 1)
         elif tok == "{" or tok == "[":
+            # a list that is a typed key's value, or inside one, holds typed values: its strings and numbers, at any depth
+            # (a key sequence, ["Z", "q", "7"]), which the object that holds the key hides or not, by its labels
+            inside = top is not None and (top.get("typed_list") or top["dict"] and top["value"] and top["key"] in _JSON_TYPED_KEYS)
             frames.append({"dict": tok == "{", "labels": [], "typed": [], "action": False, "field": False,
-                           "key": None, "value": False, "start": m.start()})
+                           "key": None, "value": False, "start": m.start(),
+                           "typed_list": bool(inside) and tok == "["})
             pending = None
         elif tok == "}" or tok == "]":
             if frames:
                 frame = frames.pop()
                 if frame["dict"]:
                     edits += _json_object_edits(text, frame, _typing_named_before(names, frame["start"]))
+                elif frame["typed_list"] and frames:
+                    frames[-1]["typed"] += frame["typed"]  # the list's typed values are the object's, or the list's above it
             pending = None
         elif tok == ":":
             if top is not None and top["dict"] and pending is not None:
@@ -7523,13 +7554,18 @@ def _json_scan(text, pos, stop, names, edits, level):
                 if top["key"] in _JSON_TYPED_KEYS:
                     top["typed"].append((m.start(), pos))
                 top["value"], top["key"] = False, None
+            elif top is not None and top["typed_list"]:
+                top["typed"].append((m.start(), pos))
         elif top is not None and top["value"]:
             top["value"], top["key"] = False, None
         else:
             pending = tok.lower()
-    for frame in reversed(frames):  # a call clipped before its objects close
+    for k in range(len(frames) - 1, -1, -1):  # a call clipped before its objects close
+        frame = frames[k]
         if frame["dict"]:
             edits += _json_object_edits(text, frame, _typing_named_before(names, frame["start"]))
+        elif frame["typed_list"] and k:
+            frames[k - 1]["typed"] += frame["typed"]
 
 
 def _exc_text(exc_info):

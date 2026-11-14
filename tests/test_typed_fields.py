@@ -126,6 +126,42 @@ class FailClosedAtIngestTest(unittest.TestCase):
             with self.subTest(args=args):
                 self.assertNotIn(value, json.dumps(typed_secrets("mcp__playwright__browser_fill_form", args)))
 
+    def test_a_value_typed_as_a_list_or_a_nested_object_or_a_float_is_hidden_whole(self):
+        # A typed key may hold a list (a key sequence), a list of lists, an object, or a float: every string and number
+        # under it, at any depth, is hidden, as the string under it is; a field on the short list keeps them.
+        for value in (["Z", "q", "7", "!"], ["Zq7!", ["walrus", "Ledger93"]], {"a": "Zq7!walrusLedger93"}, 4829.173,
+                      [{"x": "Zq7!walrusLedger93"}], [["Zq7!walrusLedger93"]], ["Zq7!walrusLedger93", 483920, 1.5]):
+            for key in ("text", "value", "keys", "input", "content", "string"):
+                for label in ("Backup code", "Zorblax", "Auth code"):
+                    args = {"element": label, "ref": "e2", key: value}
+                    with self.subTest(args=args):
+                        out = json.dumps(typed_secrets("mcp__playwright__browser_type", args))
+                        for part in ("Z", "Zq7", "walrus", "Ledger93", "483920", "4829", "1.5"):
+                            if part not in ("Z",) and part in json.dumps(value):
+                                self.assertNotIn(part, out)
+                        self.assertEqual(typed_secrets("mcp__playwright__browser_type", typed_secrets(
+                            "mcp__playwright__browser_type", args)), typed_secrets("mcp__playwright__browser_type", args))
+        keep = {"element": "Search", "ref": "e2", "keys": ["p", "e", "l"]}
+        self.assertEqual(typed_secrets("mcp__playwright__browser_type", keep), keep)
+
+    def test_an_object_nested_deeper_than_the_reading_goes_hides_what_it_holds(self):
+        value = "Zq7!walrusLedger93"
+        for depth in (3, 6, 7, 8, 12, 40):
+            nested = {"text": value, "value": [value]}
+            for k in range(depth):  # each level holds the one below once, as a dict or as a list
+                nested = {"o": nested, "n": k} if k % 2 else {"l": [nested], "n": k}
+            args = {"element": "Search", "ref": "e1", "text": "pelican", "options": nested}
+            with self.subTest(depth=depth):
+                out = typed_secrets("mcp__playwright__browser_type", args)
+                self.assertNotIn("walrusLedger93", json.dumps(out))
+                self.assertEqual(out["text"], "pelican")
+        # a value nested past the interpreter's own limit is hidden, and costs no crash
+        deep = value
+        for _ in range(5000):
+            deep = [deep]
+        out = typed_secrets("mcp__playwright__browser_type", {"element": "Backup code", "text": deep})
+        self.assertIn("[masked]", repr(out)[:200])
+
     def test_a_label_names_its_field_only_by_its_own_words(self):
         # label keys other than the first still count: a harmless one never takes back another label that is not
         for args in ({"element": "Search", "placeholder": "Backup code", "text": "Zq7!walrusLedger93"},
@@ -314,6 +350,32 @@ class FailClosedInCodeTest(unittest.TestCase):
                 with self.subTest(script=script):
                     self.assertFalse(shows(mask(script), value))
 
+    def test_a_value_typed_as_a_list_or_a_number_in_text_is_hidden_whole(self):
+        for label in ("Backup code", "Zorblax", ""):
+            for key in ("text", "value", "keys", "input", "content", "string"):
+                for value in (["Zq7!walrusLedger93"], ["Zq7!", "walrusLedger93"], [["Zq7!walrusLedger93", "x"]],
+                              ["a", ["b", ["Zq7!walrusLedger93"]]], [483920], [1.5, "Zq7!walrusLedger93"]):
+                    o = {"element": label, "ref": "e2", key: value} if label else {"ref": "e2", key: value}
+                    j = json.dumps(o)
+                    for text in (j, json.dumps(o, indent=2), repr(o), json.dumps(j)[1:-1], "TOOL browser_type: " + j,
+                                 json.dumps({"stored": j}), "```json\n" + j + "\n```"):
+                        with self.subTest(text=text):
+                            out = mask(text)
+                            for part in ("walrusLedger93", "Zq7!", "483920", "1.5"):
+                                if part in json.dumps(value):
+                                    self.assertNotIn(part, out)
+        # a clipped call: the list never closes
+        for text in ('TOOL browser_type: {"element": "Backup code", "ref": "e1", "keys": ["Zq7!walrusLedger93',
+                     'TOOL browser_type: {"element": "Backup code", "ref": "e1", "keys": ["Zq7!", "walrusLedger93"',
+                     'TOOL browser_type: {"element": "Backup code", "ref": "e1", "text": [["Zq7!walrusLedger93"'):
+            with self.subTest(text=text):
+                self.assertNotIn("walrusLedger93", mask(text))
+        for kept in ('{"element": "Search", "ref": "e2", "keys": ["pelican", "plan"]}',
+                     '{"ref": "e2", "element": "Search", "text": ["pelican"]}',
+                     '{"name": "files", "value": ["a.txt", "b.txt"]}'):
+            with self.subTest(kept=kept):
+                self.assertEqual(mask(kept), kept)
+
     def test_a_call_written_with_keywords_hides_what_it_types_under_any_label_but_a_harmless_one(self):
         # A typing tool called as a function, its input given as keywords (Python), or as an object of unquoted keys
         # (JavaScript): read at the call's own level, with no field named too.
@@ -331,6 +393,26 @@ class FailClosedInCodeTest(unittest.TestCase):
                      'await tools.mcp__playwright__browser_type({element: "Search box", text: "pelican plan"})'):
             with self.subTest(kept=text):
                 self.assertEqual(mask(text), text)
+
+    def test_what_a_call_on_a_page_variable_types_is_hidden_unless_the_receiver_is_a_page(self):
+        # page.fill(selector, value) takes the selector first, so with a variable value the selector stays; on any other
+        # receiver the first string may be the text itself (locator.fill(text, options)), so it is hidden.
+        for receiver in ("loginPage", "signInFrame", "driver", "browser", "locator", "element", "emailElement",
+                         "usernameLocator", "this.loginPage", "ctx.driver"):
+            for tail in ("password, {timeout: 5000}", "pw", "{force: true}", "pw, {delay: 20}"):
+                for method in ("fill", "type"):
+                    text = f'{receiver}.{method}("Zq7!walrusLedger93", {tail})'
+                    with self.subTest(text=text):
+                        self.assertNotIn("walrusLedger93", mask(text))
+        # a receiver that names no page and no locator is not read at all, as before: Buffer.from("x").fill("y")
+        for kept in ('box.fill("pelican plan", {force: true})', 'new Array(3).fill("pelican plan", 1)'):
+            with self.subTest(kept=kept):
+                self.assertEqual(mask(kept), kept)
+        for kept in ('page.fill("#password", password, {timeout: 5000})', 'page.type("#password", pw, {delay: 20})',
+                     'await page.fill("#password", password)', 'frame.fill("#password", pw)',
+                     'this.page.fill("#password", password)', 'mainFrame.type("#password", pw, {delay: 20})'):
+            with self.subTest(kept=kept):
+                self.assertEqual(mask(kept), kept)
 
     def test_a_value_from_a_variable_or_a_call_on_no_page_stays(self):
         for kept in ('await page.getByLabel("Backup code").fill(code);', 'Buffer.from("x").fill("y")',
