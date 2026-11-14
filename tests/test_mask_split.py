@@ -188,12 +188,13 @@ class NameStartsTest(unittest.TestCase):
         patterns, matches = name_patterns(), 0
         for text in name_texts(8, "split cover", (LEAST, LEAST + 3_000)):
             starts = head._name_starts_read(text)
-            self.assertEqual(len(starts), len(text))
+            self.assertEqual(list(starts), sorted(set(starts)), "in order, each once")
+            marked = set(starts)
             for pattern in patterns:
                 for i in range(len(text)):
                     if pattern.match(text, i):
                         matches += 1
-                        self.assertEqual(starts[i], 1, (pattern.pattern[:40], text[max(0, i - 20):i + 30]))
+                        self.assertIn(i, marked, (pattern.pattern[:40], text[max(0, i - 20):i + 30]))
         self.assertGreater(matches, 500)
 
     def test_a_search_gives_the_match_the_pattern_s_own_search_gives(self):
@@ -206,7 +207,9 @@ class NameStartsTest(unittest.TestCase):
                     want = spans(plain_search(pattern, text))
                     found += len(want)
                     self.assertEqual(spans(head._name_search(pattern, text)), want, pattern.pattern[:40])
-                    for pos in [r.randrange(len(text)) for _ in range(6)] + [0, len(text), len(text) + 5]:
+                    here = head._name_starts_read(text)
+                    for pos in [r.randrange(len(text)) for _ in range(6)] + [0, len(text), len(text) + 5] \
+                            + [c + d for c in list(here)[:12] for d in (-1, 0, 1)]:  # at a start, and beside it
                         got, want = head._name_search(pattern, text)(pos), pattern.search(text, pos)
                         self.assertEqual(got and (got.span(), got.groups()), want and (want.span(), want.groups()))
         self.assertGreater(found, 1_000)
@@ -239,10 +242,12 @@ class NameStartsTest(unittest.TestCase):
         # session), and a text of runs none of which holds one has none.
         text = session(100_000, "split starts", "plain")
         starts, runs = head._name_starts_read(text), len(re.findall(r"[A-Za-z0-9_.-]+", text))
-        self.assertGreater(starts.count(1), 20)
-        self.assertLess(starts.count(1), runs / 20)
+        self.assertGreater(len(starts), 20)
+        self.assertLess(len(starts), runs / 20)
+        # They are kept as places, not a byte for each character: a few bytes in a hundred of the text's.
+        self.assertLess(len(starts) * starts.itemsize, len(text) / 25)
         quiet = " ".join(["pelican", "plan", "build"] * 4000)
-        self.assertEqual(head._name_starts_read(quiet).count(1), 0)
+        self.assertEqual(len(head._name_starts_read(quiet)), 0)
         self.assertEqual(spans(head._name_search(name_patterns()[0], quiet)), [])
 
     def test_a_degenerate_text_costs_what_it_did(self):
@@ -408,10 +413,37 @@ class SameWithTheShortcutsOffTest(unittest.TestCase):
                     self.assertEqual(outputs(text), want, off)
 
 
-class StepMemoTest(unittest.TestCase):
-    STEPS = ("_command_password_edits", "_todays_password_edits", "_docker_login_edits", "_typed_code_edits",
-             "_typed_json_edits")
+STEPS = ("_command_password_edits", "_todays_password_edits", "_docker_login_edits", "_typed_code_edits",
+         "_typed_json_edits")
 
+
+def step_keys(text):
+    """(the keys of the call's readings that hold a step made once, the ids of the texts the readings' own keys hold)."""
+    keys, real = [], head._Readings.__setitem__
+
+    def spy(readings, key, value):
+        keys.append(key)
+        real(readings, key, value)
+    with mock.patch.object(head._Readings, "__setitem__", spy):
+        fresh_memo(head)
+        head.mask(text)
+    steps = [k for k in keys if k[0] in (head._COMMAND_ROW, head._TODAYS_ROW, head._TEXT_STEP)]
+    return steps, {id(k[0]) for k in keys if isinstance(k[0], str)}
+
+
+def short_calls():
+    """(how many times each step is made for a text of a few thousand characters with the memo, and without it)."""
+    text = session(3_000, "split short", "colour") + "\nmysql -u root -pTr0ub4dor\u200b-Zk9q app\n"
+    assert len(text) < head._CHECKED_FROM
+    calls(head, text, STEPS)
+    now = calls(head, text, STEPS)
+    with shortcuts_off(names=False, tokens=False):
+        calls(head, text, STEPS)
+        was = calls(head, text, STEPS)
+    return now, was
+
+
+class StepMemoTest(unittest.TestCase):
     @staticmethod
     def reach(root, defs):
         seen, stack = set(), [root]
@@ -434,7 +466,7 @@ class StepMemoTest(unittest.TestCase):
         impure |= {"_reading", "_run", "_read_once", "_named_found", "_gitleaks_spans", "_one_call", "mask",
                    "mask_with_origin", "_mask_whole", "_masked", "_split_secrets"}
         self.assertGreaterEqual(len(impure), 14)
-        for step in self.STEPS:
+        for step in STEPS:
             reached = self.reach(step, defs)
             self.assertGreater(len(reached), 5, step)
             self.assertEqual(sorted(name for f in reached for name in {n.id for n in ast.walk(defs[f])
@@ -492,6 +524,36 @@ class StepMemoTest(unittest.TestCase):
             with a_call(text):
                 self.assertEqual(head._read_once(head._TEXT_STEP, head._step_read, text, step), step(text))
 
+    def test_a_step_is_made_once_only_for_the_text_a_reading_was_given_and_for_a_long_one(self):
+        text = "x " * 5_000 + "mysql -u root -pTr0ub4dor-Zk9q app"
+        command = next(c for c in head._COMMANDS if head._command_row(text, c, False))
+        real = head._command_password_edits
+        copy = "".join(list(text))
+        short = text[-60:]
+        with a_call(text), mock.patch.object(head, "_command_password_edits", mock.Mock(wraps=real)) as step:
+            once = lambda first, t: head._once_for(first, head._COMMAND_ROW, head._command_row, t, command, False)
+            once(text, text)
+            once(text, copy)
+            self.assertEqual(step.call_count, 1, "the text a reading was given, or one equal to it, made once")
+            edited = text.replace("Tr0ub4dor", "[masked]")
+            self.assertNotEqual(edited, text)
+            once(text, edited)
+            once(text, edited)
+            self.assertEqual(step.call_count, 3, "a text an edit changed is read each time")
+            once(short, short)
+            once(short, short)
+            self.assertEqual(step.call_count, 5, "so is a short one")
+        now, was = short_calls()
+        self.assertEqual(now, was)
+
+    def test_a_step_keeps_no_text_of_its_own(self):
+        # A text the readings hold already is the key's: the call's memo of the steps adds no text to the call, however
+        # many an edit made. This one starts with a password the rows mask, so each step after reads an edited text.
+        text = "mysql -u root -pTr0ub4dor-Zk9q app\n" + session(60_000, "split holds", "colour")
+        steps, held = step_keys(text)
+        self.assertGreater(len(steps), 20)
+        self.assertEqual([k[:2] for k in steps if id(k[2]) not in held], [])
+
     def test_a_row_is_read_with_the_flag_of_its_place_in_the_list(self):
         # The rows from _MAIN_COMMANDS on read a text twice (`unseen`), the rows before it and every row of main's own
         # reading once: the flag is what a row's place says, in the rows and in today's, as it was read before.
@@ -518,13 +580,13 @@ class StepMemoTest(unittest.TestCase):
     def test_a_split_view_makes_each_step_fewer_times_and_never_more(self):
         for shape, least in (("colour", 0.9), ("typing", 0.9), ("oneline", 0.9)):
             text = session(60_000, "split calls", shape)
-            calls(head, text, self.STEPS)  # what a first call keeps for the next (_NEEDS, caches) is read already
-            now = calls(head, text, self.STEPS)
+            calls(head, text, STEPS)  # what a first call keeps for the next (_NEEDS, caches) is read already
+            now = calls(head, text, STEPS)
             with shortcuts_off(names=False, tokens=False):
-                calls(head, text, self.STEPS)
-                was = calls(head, text, self.STEPS)
+                calls(head, text, STEPS)
+                was = calls(head, text, STEPS)
             with self.subTest(shape):
-                for name in self.STEPS:
+                for name in STEPS:
                     self.assertLessEqual(now[name], was[name], name)
                 self.assertLess(sum(now.values()), least * sum(was.values()))
                 for name in ("_command_password_edits", "_docker_login_edits", "_typed_code_edits", "_typed_json_edits"):
@@ -601,14 +663,13 @@ class PlantedBreakTest(unittest.TestCase):
 
     def test_a_start_put_at_the_word_and_not_at_the_start_of_its_run_is_found(self):
         def at_the_word(text):
-            words, fold = head._name_words(), head._folded(text)
-            marks = bytearray(len(text))
+            words, fold, found = head._name_words(), head._folded(text), set()
             for word in words:
                 at = fold.find(word)
                 while at >= 0:
-                    marks[at] = 1
+                    found.add(at)
                     at = fold.find(word, at + 1)
-            return bytes(marks)
+            return head.array.array("q", sorted(found))
         self.planted_search("_name_starts_read", at_the_word)
 
     def test_a_run_cut_at_a_dot_is_found(self):
@@ -733,6 +794,27 @@ class PlantedBreakTest(unittest.TestCase):
             kept = list(first)
             first.append((0, 1, "[masked]"))
             self.assertEqual(head._read_once(head._COMMAND_ROW, head._command_row, text, command, False), kept)
+
+    def test_a_step_made_once_for_a_text_an_edit_made_is_found(self):
+        def any_text(first, kind, read, text, rules, *more):
+            return head._read_once(kind, read, text, rules, *more) if len(text) >= head._CHECKED_FROM \
+                else read(text, rules, *more)
+        text = "mysql -u root -pTr0ub4dor-Zk9q app\n" + session(60_000, "split holds", "colour")
+        steps, held = step_keys(text)
+        self.assertEqual([k for k in steps if id(k[2]) not in held], [])
+        with mock.patch.object(head, "_once_for", any_text):
+            steps, held = step_keys(text)
+        self.assertTrue([k for k in steps if id(k[2]) not in held])
+
+    def test_a_step_made_once_for_a_short_text_is_found(self):
+        def any_length(first, kind, read, text, rules, *more):
+            return head._read_once(kind, read, first, rules, *more) if text is first or text == first \
+                else read(text, rules, *more)
+        now, was = short_calls()
+        self.assertEqual(now, was)
+        with mock.patch.object(head, "_once_for", any_length):
+            now, was = short_calls()
+        self.assertNotEqual(now, was)
 
     def assertStepsDiffer(self, planted):
         texts = [text for where, text in split_texts() if where in ("case 0", "case 1", "case 5", "case 6", "case 8",
