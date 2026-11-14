@@ -161,8 +161,11 @@ class TypedSecretTest(unittest.TestCase):
         for seed in range(150):
             r = random.Random(f"typed:{seed}")
             secret = "".join(r.choice(alnum) for _ in range(r.randint(6, 16))) + r.choice("!#%*")
+            ordinary = r.choice(ORDINARY_LABELS)
+            # Repinned (REVISION 44): an ordinary field is not on the short list of harmless ones
+            # (kb.mask._harmless_labels), so what is typed into it is hidden too, a search excepted.
             for label, value, hidden in ((r.choice(SECRET_LABELS), secret, True),
-                                         (r.choice(ORDINARY_LABELS), r.choice(ORDINARY_VALUES), False)):
+                                         (ordinary, r.choice(ORDINARY_VALUES), ordinary != "Search")):
                 for name, args in typing_calls(r, label, value):
                     for reader in READERS:
                         with self.subTest(seed=seed, reader=reader, name=name, label=label):
@@ -172,9 +175,11 @@ class TypedSecretTest(unittest.TestCase):
                             else:
                                 self.assertIn(value, text)
 
-    def test_an_unlabelled_fill_masks_a_credential_and_keeps_ordinary_text(self):
-        for value, hidden in ((PASSWORD, True), ("q8Zr2Lm7Xk4Vp9Nt3Bw6Hc1", True), ("pelican plan", False),
-                              ("me@example.com", False), ("Sam Lee", False), ("2026-11-02", False)):
+    def test_an_unlabelled_fill_masks_what_is_typed(self):
+        # Repinned (REVISION 44): a field with no label is not on the short list of harmless ones, so every value is
+        # hidden, not only one shaped like a credential (the ordinary text was kept).
+        for value, hidden in ((PASSWORD, True), ("q8Zr2Lm7Xk4Vp9Nt3Bw6Hc1", True), ("pelican plan", True),
+                              ("me@example.com", True), ("Sam Lee", True), ("2026-11-02", True)):
             for reader in READERS:
                 with self.subTest(value=value, reader=reader):
                     text = stored(reader, tool_call(reader, "mcp__chrome-devtools__fill", {"uid": "1_7", "value": value}))
@@ -265,7 +270,9 @@ class TypedSecretInTextTest(unittest.TestCase):
                     form, text = r.choice(sorted(self.writings(name, args).items()))
                     self.hidden(label, value, name, args, kept, form, text)
 
-    def test_a_value_typed_into_an_ordinary_field_stays(self):
+    def test_a_value_typed_into_an_ordinary_field_is_hidden_and_a_search_stays(self):
+        # Repinned (REVISION 44): an ordinary field ("Email", "Full name") is not on the short list of harmless ones
+        # (kb.mask._harmless_labels), so what is typed into it is hidden too (it stayed); a search stays.
         for seed in range(2):
             r = random.Random(f"typed-ordinary:{seed}")
             for label in ORDINARY_LABELS:
@@ -273,7 +280,10 @@ class TypedSecretInTextTest(unittest.TestCase):
                 for name, args, kept in self.calls(label, value, r):
                     for form, text in r.sample(sorted(self.writings(name, args).items()), 3):
                         with self.subTest(seed=seed, name=name, label=label, form=form):
-                            self.assertEqual(mask(text), text)
+                            if label == "Search":
+                                self.assertIn(value, mask(text))
+                            else:
+                                self.assertNotIn(value, mask(text))
 
     def test_a_number_a_clipped_call_and_an_unlabelled_credential(self):
         for text in ('TOOL mcp__playwright__browser_type: {"element": "PIN", "text": 4829173}',
@@ -288,13 +298,17 @@ class TypedSecretInTextTest(unittest.TestCase):
                 self.assertNotIn("Zk9qWm2x", out)
                 self.assertNotIn("4829173", out)
                 self.assertEqual(mask(out), out)
-        for kept in ('TOOL mcp__chrome-devtools__fill: {"uid": "1_7", "value": "pelican plan"}',
-                     'TOOL mcp__chrome-devtools__fill_form: {"elements": [{"uid": "1_3", "value": "Sam"}]}',
-                     'TOOL computer: {"action": "type", "text": "hello there"}',
-                     '{"value": "Zk9qWm2x-Tr0ub4dor"}', 'TOOL other: {"uid": "1_7", "value": "Zk9qWm2x-Tr0ub4dor"}',
-                     # a value that reads as a credential, in an object with no label and no typing tool before it, in
-                     # a text that has a word about a key
-                     '{"ref": "key7", "value": "Zk9qWm2x-Tr0ub4dor"}'):
+        # Repinned (REVISION 44): what is typed with no field named is hidden whatever it is (these stayed, but the last
+        # two: an object with no key a typing call holds is no call, so it is read as before).
+        for text, value in (('TOOL mcp__chrome-devtools__fill: {"uid": "1_7", "value": "pelican plan"}', "pelican plan"),
+                            ('TOOL mcp__chrome-devtools__fill_form: {"elements": [{"uid": "1_3", "value": "Sam"}]}', "Sam"),
+                            ('TOOL computer: {"action": "type", "text": "hello there"}', "hello there"),
+                            ('TOOL other: {"uid": "1_7", "value": "Zk9qWm2x-Tr0ub4dor"}', "Zk9qWm2x"),
+                            # an object with a key a typing call holds, a text that has a word about a key
+                            ('{"ref": "key7", "value": "Zk9qWm2x-Tr0ub4dor"}', "Zk9qWm2x")):
+            with self.subTest(hidden=text):
+                self.assertNotIn(value, mask(text))
+        for kept in ('{"value": "Zk9qWm2x-Tr0ub4dor"}',):
             with self.subTest(kept=kept):
                 self.assertEqual(mask(kept), kept)
 
@@ -350,14 +364,18 @@ class TypedSecretInTextTest(unittest.TestCase):
                 self.assertEqual(mask(out), out)
 
     def test_the_text_around_a_call_is_not_read_as_one(self):
-        # "Password" in a key's name, a word about a password, a call quoted in prose with no field, and braces in text.
-        for kept in ('{"element": "Password hint", "text": "your first pet"}',
-                     '{"element": "Password reset link", "text": "click to reset"}',
-                     '{"label": "Search passwords", "value": "pelican"}',
-                     'the tool takes {"element": ..., "text": ...} where element is a label such as "Password"',
+        # A call quoted in prose with no field, and braces in text.
+        for kept in ('the tool takes {"element": ..., "text": ...} where element is a label such as "Password"',
                      "set {a: 1, text: 'hello'} and {b: 2}", '{"title": "Notes", "text": "remember the milk"}'):
             with self.subTest(kept=kept):
                 self.assertEqual(mask(kept), kept)
+        # Repinned (REVISION 44): an object with a field key ("element", "label") is read as a call's input, and its
+        # field is not on the short list of harmless ones (kb.mask._harmless_labels), so what it types is hidden.
+        for text, value in (('{"element": "Password hint", "text": "your first pet"}', "your first pet"),
+                            ('{"element": "Password reset link", "text": "click to reset"}', "click to reset"),
+                            ('{"label": "Search passwords", "value": "pelican"}', "pelican")):
+            with self.subTest(hidden=text):
+                self.assertNotIn(value, mask(text))
 
     def test_a_row_a_reader_stored_before_it_hid_the_value_is_hidden_by_the_mask(self):
         for name, args in (("mcp__playwright__browser_type", {"element": "Password textbox", "ref": "e23",
@@ -513,11 +531,13 @@ class ReviewOneTest(unittest.TestCase):
                 self.assertLess(took[8000], 16 * max(took[1000], 0.01))
 
     def test_a_label_about_a_secret_keeps_what_is_typed(self):
+        # Repinned (REVISION 44): these fields are not on the short list of harmless ones (kb.mask._harmless_labels),
+        # so what is typed into them is hidden; the label stays.
         for label in ("Secret key description", "Tokenizer", "Secretary", "Tokens count", "API token name",
                       "Password policy text", "secretary_email"):
             with self.subTest(label=label):
                 self.assertEqual(typed_secrets("mcp__playwright__browser_type", {"element": label, "text": "used by staging"}),
-                                 {"element": label, "text": "used by staging"})
+                                 {"element": label, "text": "[masked]"})
         for label in ("userPassword", "input[name=password]", "#passwordField", "Enter PIN", "Secret key"):
             with self.subTest(label=label):
                 self.assertEqual(typed_secrets("mcp__playwright__browser_type", {"element": label, "text": "x7Kq9mZ2"})["text"],
@@ -606,11 +626,13 @@ class ReviewTwoTest(unittest.TestCase):
         self.assertGreater(quiet, 2000)
 
     def test_labels_in_capitals_and_camel_case(self):
+        # Repinned (REVISION 44): these fields are not on the short list of harmless ones (kb.mask._harmless_labels),
+        # so what is typed into them is hidden; the label stays.
         for label in ("TOKENIZER", "SECRETARY", "TokenName", "PasswordHint", "SECRET_KEY_NAME", "tokenCount",
                       "PASSWORD_POLICY", "apiKeyDescription"):
             with self.subTest(label=label):
                 self.assertEqual(typed_secrets("mcp__playwright__browser_type", {"element": label, "text": "used by staging"}),
-                                 {"element": label, "text": "used by staging"})
+                                 {"element": label, "text": "[masked]"})
         for label in ("PASSWORD", "SECRET_KEY", "userPassword", "apiKey", "ACCESS_TOKEN", "OneTimeCode", "pinCode",
                       "input[name=newPassword]"):
             with self.subTest(label=label):
@@ -788,11 +810,13 @@ class ReviewThreeTest(unittest.TestCase):
                 self.assertEqual(mask_all(obj), obj)
 
     def test_a_label_about_a_count_keeps_the_number(self):
+        # Repinned (REVISION 44): these fields are not on the short list of harmless ones (kb.mask._harmless_labels),
+        # so what is typed into them is hidden; the label stays.
         for label in ("Max tokens", "Token budget", "Token limit", "Tokens per minute", "Maximum token count",
                       "max_tokens", "tokenQuota", "Context window tokens"):
             with self.subTest(label=label):
                 self.assertEqual(typed_secrets("mcp__playwright__browser_type", {"element": label, "text": "2048"}),
-                                 {"element": label, "text": "2048"})
+                                 {"element": label, "text": "[masked]"})
         self.assertEqual(typed_secrets("mcp__playwright__browser_type", {"element": "PIN", "text": "2048"})["text"],
                          "[masked]")
 
@@ -810,12 +834,14 @@ class ReviewFourTest(unittest.TestCase):
     """The fourth review's findings."""
 
     def test_a_label_asks_for_a_secret_by_its_last_word(self):
+        # Repinned (REVISION 44): these fields are not on the short list of harmless ones (kb.mask._harmless_labels),
+        # so what is typed into them is hidden; the label stays.
         for label, value in (("One-time donation", "50"), ("Secret key algorithm", "RSA"), ("Token decimals", "18"),
                              ("Password strength meter", "strong"), ("Token symbol", "ETH"), ("PIN length", "6"),
                              ("Secret Santa list", "Dana"), ("Access token lifetime", "3600")):
             with self.subTest(label=label):
                 self.assertEqual(typed_secrets("mcp__playwright__browser_type", {"element": label, "text": value}),
-                                 {"element": label, "text": value})
+                                 {"element": label, "text": "[masked]"})
         for label in ("One-time code", "One time password", "Secret key", "PIN code", "2FA code", "Password field",
                       "Enter your password here", "API token (required)", "OTP", "Confirm new password",
                       "input[name=secret_key]", "pinCode", "Password edit box", "Secret recovery phrase", "Seed phrase"):
@@ -857,12 +883,14 @@ class ReviewFiveTest(unittest.TestCase):
     """The fifth review's findings."""
 
     def test_a_token_or_pin_of_another_kind_needs_a_credential(self):
+        # Repinned (REVISION 44): these fields are not on the short list of harmless ones (kb.mask._harmless_labels),
+        # so what is typed into them is hidden; the label stays.
         for label, value in (("CSS color token", "#ff8800"), ("Map pin", "40.7128,-74.0060"), ("Design token", "spacing-4"),
                              ("Output tokens", "4096"), ("Drop a pin", "Main St"), ("Lexer token", "IDENTIFIER"),
                              ("Tokens", "4096")):
             with self.subTest(label=label):
                 self.assertEqual(typed_secrets("mcp__playwright__browser_type", {"element": label, "text": value}),
-                                 {"element": label, "text": value})
+                                 {"element": label, "text": "[masked]"})
         for label, value in (("Discord token", "q8Zr2Lm7Xk4Vp9Nt3Bw6Hc1"), ("Card PIN", "4821"), ("Bearer token", "abc12"),
                              ("Enter the token", "abc12"), ("PIN", "4821"), ("Your 4-digit PIN", "4821"),
                              ("Personal access token", "abc12"), ("GitHub token", "abc12"), ("HuggingFace token", "abc12"),
@@ -871,7 +899,7 @@ class ReviewFiveTest(unittest.TestCase):
                 self.assertEqual(typed_secrets("mcp__playwright__browser_type", {"element": label, "text": value})["text"],
                                  "[masked]")
         args = json.dumps({"element": "CSS color token", "ref": "e3", "text": "#ff8800"})
-        self.assertIn("#ff8800", codex._call_args(args, "mcp__playwright__browser_type"))
+        self.assertNotIn("#ff8800", codex._call_args(args, "mcp__playwright__browser_type"))  # repinned, REVISION 44
 
     def test_a_tokenizers_identifiers_in_xml_stay(self):
         for text in ("<tokens><token>HTTPStatus200</token><token>UTF8Identifier</token></tokens>",
@@ -931,14 +959,16 @@ class ReviewSixTest(unittest.TestCase):
                 self.assertNotIn("Tr0ub4dor", mask(text))
 
     def test_a_token_of_another_kind_keeps_an_identifier(self):
+        # Repinned (REVISION 44): these fields are not on the short list of harmless ones (kb.mask._harmless_labels),
+        # so what is typed into them is hidden; the label stays.
         for label, value in (("Lexer token", "HTTPStatus200"), ("Figma token", "Base64Encoder2026"),
                              ("Map pin", "Pier39Entrance2")):
             with self.subTest(label=label):
                 self.assertEqual(typed_secrets("browser_type", {"element": label, "text": value}),
-                                 {"element": label, "text": value})
+                                 {"element": label, "text": "[masked]"})
         call = json.dumps([{"function": {"name": "browser_type",
                                          "arguments": json.dumps({"element": "Lexer token", "text": "HTTPStatus200"})}}])
-        self.assertIn("HTTPStatus200", hermes._tool_calls(call)[0])
+        self.assertNotIn("HTTPStatus200", hermes._tool_calls(call)[0])  # repinned, REVISION 44
 
     def test_an_aws_setting_about_a_secret_is_no_secret(self):
         for text in ("aws configure set password_policy MinimumLength12", "aws configure set token_expiration 3600",
@@ -999,13 +1029,15 @@ class ReviewEightTest(unittest.TestCase):
                 self.assertEqual(mask(text), masked)
 
     def test_a_field_that_searches_or_names_secrets_is_no_secrets_field(self):
+        # Repinned (REVISION 44): these fields are not on the short list of harmless ones (kb.mask._harmless_labels),
+        # so what is typed into them is hidden; the label stays.
         for label, value in (("Search secrets", "billing"), ("Filter tokens", "gpt"), ("Find passwords", "bank"),
                              ("Rename token", "deploy-bot"), ("Generate password", "16")):
             with self.subTest(label=label):
                 self.assertEqual(typed_secrets("browser_type", {"element": label, "text": value}),
-                                 {"element": label, "text": value})
+                                 {"element": label, "text": "[masked]"})
         args = json.dumps({"element": "Search secrets", "ref": "e23", "text": "billing"})
-        self.assertIn("billing", codex._call_args(args, "mcp__playwright__browser_type"))
+        self.assertNotIn("billing", codex._call_args(args, "mcp__playwright__browser_type"))  # repinned, REVISION 44
 
     def test_base64_of_ordinary_json_is_no_grafana_key(self):
         import base64
@@ -1025,11 +1057,13 @@ class ReviewNineTest(unittest.TestCase):
         self.assertEqual(mask("user: me@example.com\\npass: 'Tr0ub4dor-Zk9q'"), "user: me@example.com\\npass: '[masked]'")
 
     def test_a_search_before_a_joining_word_still_searches(self):
+        # Repinned (REVISION 44): these fields are not on the short list of harmless ones (kb.mask._harmless_labels),
+        # so what is typed into them is hidden; the label stays.
         for label, value in (("Search for passwords", "billing"), ("Filter by password", "bank"),
                              ("Look up tokens by name", "deploy")):
             with self.subTest(label=label):
                 self.assertEqual(typed_secrets("browser_type", {"element": label, "text": value}),
-                                 {"element": label, "text": value})
+                                 {"element": label, "text": "[masked]"})
         # A label that names anything besides the secret is about something else (ReviewTwelveTest).
         self.assertEqual(typed_secrets("browser_type", {"element": "Enter password to continue",
                                                         "text": "x7Kq9mZ2"})["text"], "[masked]")
@@ -1056,10 +1090,12 @@ class ReviewTenTest(unittest.TestCase):
     """The tenth review's findings."""
 
     def test_a_search_reads_on_across_a_mark(self):
+        # Repinned (REVISION 44): these fields are not on the short list of harmless ones (kb.mask._harmless_labels),
+        # so what is typed into them is hidden; the label stays.
         for label, value in (("Search (passwords)", "billing"), ("Filter (password)", "bank"), ("Search: password", "x9")):
             with self.subTest(label=label):
                 self.assertEqual(typed_secrets("browser_type", {"element": label, "text": value}),
-                                 {"element": label, "text": value})
+                                 {"element": label, "text": "[masked]"})
         for label in ("Password (required)", "Password: *", "Enter API token (required)"):
             with self.subTest(label=label):
                 self.assertEqual(typed_secrets("browser_type", {"element": label, "text": "x7Kq9mZ2"})["text"], "[masked]")
@@ -1100,11 +1136,13 @@ class ReviewElevenTest(unittest.TestCase):
     """The eleventh review's findings."""
 
     def test_a_token_or_pin_of_another_kind_across_the_label(self):
+        # Repinned (REVISION 44): these fields are not on the short list of harmless ones (kb.mask._harmless_labels),
+        # so what is typed into them is hidden; the label stays.
         for label, value in (("Token (CSS)", "color.primary"), ("Token (lexer)", "IDENT"), ("Pin (map)", "40.71,-74.00"),
                              ("Token - design system", "spacing-4"), ("PIN: map marker", "Pier 39")):
             with self.subTest(label=label):
                 self.assertEqual(typed_secrets("browser_type", {"element": label, "text": value}),
-                                 {"element": label, "text": value})
+                                 {"element": label, "text": "[masked]"})
         for label in ("Token (required)", "PIN (4 digits)", "Your PIN", "Bot token (Discord)"):
             with self.subTest(label=label):
                 self.assertEqual(typed_secrets("browser_type", {"element": label, "text": "4821"})["text"], "[masked]")
@@ -1128,8 +1166,13 @@ class ReviewElevenTest(unittest.TestCase):
                 self.assertEqual(mask(text), masked)
 
     def test_an_ordinary_typing_call_renders_as_main_renders_it(self):
-        args = {"element": "Search " + "documentation " * 30, "ref": "e15", "text": "billing-invoice-query"}
+        args = {"element": "Search " * 60, "ref": "e15", "text": "billing-invoice-query"}
         self.assertEqual(codex._call_args(args, "browser_type"), "billing-invoice-query")
+        # Repinned (REVISION 44): "Search documentation" is not on the short list of harmless fields, so what is typed
+        # into it is hidden, as one JSON object with the field kept.
+        args = {"element": "Search " + "documentation " * 30, "ref": "e15", "text": "billing-invoice-query"}
+        self.assertNotIn("billing-invoice-query", codex._call_args(args, "browser_type"))
+        self.assertIn("[masked]", codex._call_args(args, "browser_type"))
         self.assertIn("[masked]", codex._call_args({"element": "Password", "ref": "e3", "text": "x7Kq9mZ2"}, "browser_type"))
 
 
@@ -1153,13 +1196,15 @@ class ReviewTwelveTest(unittest.TestCase):
                     self.assertEqual(mask(text), masked)
 
     def test_a_label_names_a_secret_and_nothing_else(self):
+        # Repinned (REVISION 44): these fields are not on the short list of harmless ones (kb.mask._harmless_labels),
+        # so what is typed into them is hidden; the label stays.
         for label, value in (("Password (algorithm)", "bcrypt"), ("Password (hash)", "sha256"),
                              ("Password (regex)", "^.{8,}$"), ("Password rotation days", "90")):
             with self.subTest(label=label):
                 self.assertEqual(typed_secrets("browser_type", {"element": label, "text": value}),
-                                 {"element": label, "text": value})
+                                 {"element": label, "text": "[masked]"})
         args = json.dumps({"element": "Password (algorithm)", "ref": "e7", "text": "bcrypt"})
-        self.assertEqual(codex._call_args(args, "browser_type"), "bcrypt")
+        self.assertNotIn("bcrypt", codex._call_args(args, "browser_type"))  # repinned, REVISION 44
         for label in ("Password", "Password (required)", "Confirm new password", "Enter your password here",
                       "Password for admin account", "Enter password to continue", "#login-password",
                       "input.form-control[name=password]"):
@@ -1191,11 +1236,13 @@ class ReviewThirteenTest(unittest.TestCase):
         self.assertNotIn("X7y8Z9q0", masked)
 
     def test_a_word_after_the_secret_makes_it_a_field_about_it(self):
+        # Repinned (REVISION 44): these fields are not on the short list of harmless ones (kb.mask._harmless_labels),
+        # so what is typed into them is hidden; the label stays.
         for label, value in (("Token type", "refresh_token"), ("Password type", "text"), ("Token service", "auth-svc"),
                              ("Token time", "3600"), ("Password recovery", "me@example.com"), ("PIN device", "kiosk-2")):
             with self.subTest(label=label):
                 self.assertEqual(typed_secrets("browser_type", {"element": label, "text": value}),
-                                 {"element": label, "text": value})
+                                 {"element": label, "text": "[masked]"})
         for label in ("Bot token (Discord)", "One-time code", "Secret recovery phrase", "Seed phrase", "Password for admin account",
                       "Discord bot token", "API token", "2FA code", "Secret key"):
             with self.subTest(label=label):
@@ -1713,7 +1760,11 @@ class ReviewTwentyFourTest(unittest.TestCase):
         typed = "q8Zr2Lm7Xk4Vp9Nt3Bw6Hc1"
         for name in ("computer", "mcp__desktop__computer"):
             self.assertEqual(typed_secrets(name, {"action": "type", "text": typed}), {"action": "type", "text": "[masked]"})
-        for args in ({"action": "type", "text": "hello from the deploy notes"}, {"action": "key", "text": "ctrl+s"},
+        # Repinned (REVISION 44): a computer-use "type" names no field, so what it types is hidden whatever it is (it was
+        # hidden only where it read as a credential).
+        self.assertEqual(typed_secrets("computer", {"action": "type", "text": "hello from the deploy notes"}),
+                         {"action": "type", "text": "[masked]"})
+        for args in ({"action": "key", "text": "ctrl+s"},
                      {"action": "left_click", "coordinate": [12, 34]}):
             with self.subTest(args=args):
                 self.assertEqual(typed_secrets("computer", args), args)
@@ -1942,12 +1993,16 @@ class ReviewThirtyOneTest(unittest.TestCase):
         "await page.getByLabel('PIN').pressSequentially('Tr0ub4dor-Zk9q');",
     )
     ORDINARY = (
-        "await page.getByLabel('Email').fill('me@example.com');",
         "await page.fill('#search', 'pelican plan');",
         'await tools.mcp__playwright__browser_type({"element":"Search","ref":"e2","text":"pelican plan"});',
         "await page.getByLabel('Password').fill(password);",
         "await page.getByRole('button', { name: 'Sign in' }).click();",
         "const fill = (field, value) => field.fill(value);",
+    )
+    # Repinned (REVISION 44): what these type goes into a field that is not on the short list of harmless ones
+    # (kb.mask._harmless_labels), so it is hidden now; the rest of ORDINARY stays.
+    NOW_HIDDEN = (
+        "await page.getByLabel('Email').fill('me@example.com');",
     )
 
     def test_a_password_typed_by_code_is_masked(self):
@@ -1956,8 +2011,10 @@ class ReviewThirtyOneTest(unittest.TestCase):
                 with self.subTest(text=text[:60]):
                     masked = mask(text)
                     self.assertNotIn(self.SECRET, masked)
-                    self.assertIn("me@example.com" if "Email" in code else "Password" if "Password" in code else "",
-                                  masked)
+                    # repinned (REVISION 44): the Email field is not on the short list of harmless ones, so its value is
+                    # hidden too (it stayed)
+                    self.assertIn("Password" if "Password" in code else "", masked)
+                    self.assertNotIn("me@example.com", masked)
         records = codex_session({"type": "custom_tool_call", "name": "exec", "input": self.TYPED[0]})
         self.assertNotIn(self.SECRET, stored("codex", records))
 
@@ -1989,6 +2046,12 @@ class ReviewThirtyOneTest(unittest.TestCase):
                 with self.subTest(text=text[:60]):
                     self.assertEqual(mask(text), text)
 
+    def test_what_ordinary_code_types_into_another_field_is_hidden_now(self):
+        for code in self.NOW_HIDDEN:
+            for text in (code, json.dumps({"code": code})):
+                with self.subTest(text=text[:60]):
+                    self.assertNotIn("me@example.com", mask(text))
+
 
 class ReviewThirtyTwoTest(unittest.TestCase):
     """The thirty-second review's findings: a typing call's reading ran past its own bracket, a brace inside a typed
@@ -2010,14 +2073,15 @@ class ReviewThirtyTwoTest(unittest.TestCase):
     )
     ORDINARY = (
         'await tools.mcp__playwright__browser_type({element: "Search", text: "release notes"});',
-        # (repinned with the mask's reading of an object in text, TypedSecretInTextTest: an object literal with
-        # `label: "Password"` and a `text` is read as a typed field wherever it stands, so a validation object's text
-        # is hidden now; see TypedSecretInTextTest.test_an_object_literal_in_code_that_looks_like_a_typed_field_is_hidden)
-        'await page.get_by_label("Email").fill("me@example.com")',
         'driver.find_element(By.ID, "search").send_keys("pelican plan")',
         'await page.getByRole("button", {\n  name: "Password reset"\n}).click();',
         'await page.getByLabel("Password").fill(password);',
         'page.get_by_label("Password").fill(os.environ["PASSWORD"])',
+    )
+    # Repinned (REVISION 44): what these type goes into a field that is not on the short list of harmless ones
+    # (kb.mask._harmless_labels), so it is hidden now; the rest of ORDINARY stays.
+    NOW_HIDDEN = (
+        'await page.get_by_label("Email").fill("me@example.com")',
     )
 
     def test_a_password_typed_by_code_in_more_shapes_is_masked(self):
@@ -2033,6 +2097,12 @@ class ReviewThirtyTwoTest(unittest.TestCase):
             for text in (code, json.dumps({"code": code})):
                 with self.subTest(text=text[:70]):
                     self.assertEqual(mask(text), text)
+
+    def test_what_ordinary_code_types_into_another_field_is_hidden_now(self):
+        for code in self.NOW_HIDDEN:
+            for text in (code, json.dumps({"code": code})):
+                with self.subTest(text=text[:70]):
+                    self.assertNotIn("me@example.com", mask(text))
 
 
 class ReviewThirtyThreeTest(unittest.TestCase):
@@ -2093,8 +2163,12 @@ class ReviewThirtyFourTest(unittest.TestCase):
     ORDINARY = (
         'Buffer.alloc(32).fill("0123456789abcdef")',
         "new Uint8Array(16).fill(0x2a); out.fill('Zq7vRt2LmX9kQ3w')",
-        'page.get_by_label("Email").fill( # the address\n "me@example.com"\n)',
         'await page.getByLabel(/Search/i).fill("pelican plan");',
+    )
+    # Repinned (REVISION 44): what these type goes into a field that is not on the short list of harmless ones
+    # (kb.mask._harmless_labels), so it is hidden now; the rest of ORDINARY stays.
+    NOW_HIDDEN = (
+        'page.get_by_label("Email").fill( # the address\n "me@example.com"\n)',
     )
 
     def test_more_layouts_of_a_typed_password_are_masked(self):
@@ -2108,6 +2182,12 @@ class ReviewThirtyFourTest(unittest.TestCase):
             for text in (code, json.dumps({"code": code})):
                 with self.subTest(text=text[:70]):
                     self.assertEqual(mask(text), text)
+
+    def test_what_ordinary_code_types_into_another_field_is_hidden_now(self):
+        for code in self.NOW_HIDDEN:
+            for text in (code, json.dumps({"code": code})):
+                with self.subTest(text=text[:70]):
+                    self.assertNotIn("me@example.com", mask(text))
 
 
 class ReviewThirtyFiveTest(unittest.TestCase):
@@ -2321,12 +2401,20 @@ class ReviewFortyTest(unittest.TestCase):
                     self.assertNotIn("sunshine", mask(text))
 
     def test_a_field_after_another_statement_keeps_its_own_label(self):
+        # Repinned (REVISION 44): the same code with a field on the short list of harmless ones (kb.mask._harmless_labels)
+        # stays, as it did with the Email field; the Email field itself is hidden now, as the loop below it holds.
+        for code in ('print("Password")\npage.get_by_label("Search").fill("pelican plan")',
+                     'console.log("Password"); await page.getByLabel("Search").fill("pelican plan");',
+                     'page.get_by_label("Password").fill(pw)\npage.get_by_label("Search").fill("pelican plan")'):
+            for text in (code, json.dumps(code), json.dumps({"code": code})):
+                with self.subTest(text=text[:70]):
+                    self.assertEqual(mask(text), text)
         for code in ('print("Password")\npage.get_by_label("Email").fill("me@example.com")',
                      'console.log("Password"); await page.getByLabel("Email").fill("me@example.com");',
                      'page.get_by_label("Password").fill(pw)\npage.get_by_label("Email").fill("me@example.com")'):
             for text in (code, json.dumps(code), json.dumps({"code": code})):
                 with self.subTest(text=text[:70]):
-                    self.assertEqual(mask(text), text)
+                    self.assertNotIn("me@example.com", mask(text))
 
 
 class ReviewFortyOneTest(unittest.TestCase):
@@ -2349,7 +2437,8 @@ class ReviewFortyOneTest(unittest.TestCase):
                     self.assertNotIn("sunshine", mask(text))
 
     def test_an_element_typed_into_has_no_selector_and_a_page_keeps_one(self):
-        self.assertEqual(mask('page.keyboard.type("sunshine", "x")'), 'page.keyboard.type("sunshine", "x")')
+        # repinned (REVISION 44): typing into the focused field names no field, so what is typed is hidden (it stayed)
+        self.assertEqual(mask('page.keyboard.type("sunshine", "x")'), 'page.keyboard.type("[masked]")')
         self.assertEqual(mask('page.type("#search", "sunshine")'), 'page.type("#search", "sunshine")')
         self.assertNotIn("sunshine", mask('page.frame(name="login").type("#password", "sunshine")'))
 
@@ -2372,11 +2461,18 @@ class ReviewFortyTwoTest(unittest.TestCase):
                     self.assertNotIn("sunshine", mask(text))
 
     def test_a_regex_inside_a_comment_names_no_field(self):
+        # Repinned (REVISION 44): the same code with a field on the short list of harmless ones (kb.mask._harmless_labels)
+        # stays, as it did with the Email field; the Email field itself is hidden now, as the loop below it holds.
+        for code in ('page.getByRole("textbox", {name: "Search", /* name: /Password/, */ exact: true}).fill("pelican plan")',
+                     'page.get_by_role("textbox", name="Search",  # name=re.compile("Password")\n).fill("pelican plan")'):
+            for text in (code, json.dumps(code), json.dumps({"code": code})):
+                with self.subTest(text=text[:70]):
+                    self.assertEqual(mask(text), text)
         for code in ('page.getByRole("textbox", {name: "Email", /* name: /Password/, */ exact: true}).fill("me@example.com")',
                      'page.get_by_role("textbox", name="Email",  # name=re.compile("Password")\n).fill("me@example.com")'):
             for text in (code, json.dumps(code), json.dumps({"code": code})):
                 with self.subTest(text=text[:70]):
-                    self.assertEqual(mask(text), text)
+                    self.assertNotIn("me@example.com", mask(text))
 
 
 class ReviewFortyThreeTest(unittest.TestCase):
@@ -2398,10 +2494,19 @@ class ReviewFortyThreeTest(unittest.TestCase):
                     self.assertNotIn("sunshine", mask(text))
 
     def test_a_containers_name_is_not_its_childs(self):
-        for code in ('page.get_by_test_id("password-reset").get_by_label("Email").fill("me@example.com")',):
+        # Repinned (REVISION 44): a field is on the short list of harmless ones only where every string that names it is
+        # (kb.mask._harmless_labels), the container's too, so a search inside a "password-reset" container is hidden
+        # (it stayed). A container named with a harmless word does not hide it, and the child's own label is read.
+        for code, value, hidden in (
+                ('page.get_by_test_id("password-reset").get_by_label("Search").fill("pelican plan")', "pelican plan", True),
+                ('page.get_by_test_id("password-reset").get_by_label("Email").fill("me@example.com")', "me@example.com", True),
+                ('page.get_by_test_id("search-results").get_by_label("Search").fill("pelican plan")', "pelican plan", False)):
             for text in (code, json.dumps(code), json.dumps({"code": code})):
                 with self.subTest(text=text[:70]):
-                    self.assertEqual(mask(text), text)
+                    if hidden:
+                        self.assertEqual(mask(text), text.replace(value, "[masked]"))
+                    else:
+                        self.assertEqual(mask(text), text)
 
     def test_a_container_that_asks_for_a_secret_marks_its_child(self):
         """Flipped by the union rule (round 45): a container whose own selector asks for a secret names its fields."""
@@ -2475,6 +2580,10 @@ class ReviewFortyFourTest(unittest.TestCase):
 
 
 
+# What the code in the tests of a typing call's field types into a field that is not on the short list of harmless ones.
+HIDDEN_VALUES = ("me@example.com", "sam@example.com", "release notes", "first pet", "sam")
+
+
 class UnionFieldTest(unittest.TestCase):
     """The union rule for a code typing call's field (round 45): any one string of a locator call in its chain, or of
     its own selector, that asks for a secret on its own names the field so, and no other string takes that back.
@@ -2494,6 +2603,17 @@ class UnionFieldTest(unittest.TestCase):
                 with self.subTest(text=wrap(code)[:90]):
                     self.assertEqual(mask(wrap(code)), wrap(code))
 
+    def hides(self, *codes):
+        """What the code types (one of HIDDEN_VALUES) is gone, as written and in each wrapping."""
+        for code in codes:
+            values = [value for value in HIDDEN_VALUES if value in code]
+            self.assertTrue(values, code)
+            for wrap in self.WRAPS:
+                with self.subTest(text=wrap(code)[:90]):
+                    out = mask(wrap(code))
+                    for value in values:
+                        self.assertNotIn(value, out)
+
     # round 44's findings
     def test_a_strategy_takes_no_secret_back(self):
         self.masks("sunshine", 'driver.find_element("id", "password").send_keys("sunshine")',
@@ -2504,8 +2624,9 @@ class UnionFieldTest(unittest.TestCase):
         self.masks("sunshine", 'page.getByLabel("Password").describe("Sign in field").fill("sunshine")')
 
     def test_stays_a_filter_that_names_a_secret(self):
-        self.stays('page.getByLabel("Email").filter({hasNotText: "Password"}).fill("me@example.com")',
-                   'page.get_by_label("Email").filter(has_not_text="Password").fill("me@example.com")')
+        # Repinned (REVISION 44): the field is not on the short list of harmless ones (kb.mask._harmless_labels), so what is typed is hidden.
+        self.masks("me@example.com", 'page.getByLabel("Email").filter({hasNotText: "Password"}).fill("me@example.com")',
+                                     'page.get_by_label("Email").filter(has_not_text="Password").fill("me@example.com")')
 
     # three shapes inside the rule no review had reported: a field's own locator under the one that names it
     def test_a_child_locator_under_a_secret_field(self):
@@ -2526,17 +2647,20 @@ class UnionFieldTest(unittest.TestCase):
 
     # must stay
     def test_stays_describe_text_on_a_plain_field(self):
-        self.stays('page.getByLabel("Email").describe("password field").fill("me@example.com")')
+        # Repinned (REVISION 44): the field is not on the short list of harmless ones (kb.mask._harmless_labels), so what is typed is hidden.
+        self.masks("me@example.com", 'page.getByLabel("Email").describe("password field").fill("me@example.com")')
 
     def test_stays_a_container_named_with_another_word(self):
-        self.stays('page.locator(".password-section").getByLabel("Email").fill("me@example.com")',
-                   'page.get_by_test_id("password-reset").get_by_label("Email").fill("me@example.com")',
-                   'page.locator("#change-password").getByLabel("Email").fill("me@example.com")',
-                   'page.getByRole("dialog", {name: "Change password"}).getByLabel("Email").fill("me@example.com")')
+        # Repinned (REVISION 44): the field is not on the short list of harmless ones (kb.mask._harmless_labels), so what is typed is hidden.
+        self.masks("me@example.com", 'page.locator(".password-section").getByLabel("Email").fill("me@example.com")',
+                                     'page.get_by_test_id("password-reset").get_by_label("Email").fill("me@example.com")',
+                                     'page.locator("#change-password").getByLabel("Email").fill("me@example.com")',
+                                     'page.getByRole("dialog", {name: "Change password"}).getByLabel("Email").fill("me@example.com")')
 
     def test_stays_a_strategy_beside_a_plain_field(self):
-        self.stays('driver.find_element("id", "username").send_keys("sam")',
-                   'driver.find_element("id", "password_hint").send_keys("first pet")')
+        # Repinned (REVISION 44): the field is not on the short list of harmless ones (kb.mask._harmless_labels), so what is typed is hidden.
+        self.masks("sam", 'driver.find_element("id", "username").send_keys("sam")')
+        self.hides('driver.find_element("id", "password_hint").send_keys("first pet")')
 
     def test_stays_a_chain_on_no_page(self):
         self.stays('Buffer.from("password").fill("x")')
@@ -2557,7 +2681,7 @@ class ReviewFortyFiveTest(unittest.TestCase):
     find_element_by_*), and a receiver in brackets that read the strings of every call inside it, filter's and
     describe's too; with the other calls these libraries name a field by."""
 
-    WRAPS, masks, stays = UnionFieldTest.WRAPS, UnionFieldTest.masks, UnionFieldTest.stays
+    WRAPS, masks, stays, hides = UnionFieldTest.WRAPS, UnionFieldTest.masks, UnionFieldTest.stays, UnionFieldTest.hides
 
     def test_each_locator_call_kind_names_its_field(self):
         self.masks("sunshine",
@@ -2572,13 +2696,15 @@ class ReviewFortyFiveTest(unittest.TestCase):
                    '(await page.$x("//input[@name=\'password\']"))[0].type("sunshine")')
 
     def test_stays_a_frame_locator_named_with_another_word(self):
-        self.stays('page.frameLocator("#login").getByLabel("Email").fill("me@example.com")',
-                   'page.frame_locator("#password-reset").get_by_label("Email").fill("me@example.com")')
+        # Repinned (REVISION 44): the field is not on the short list of harmless ones (kb.mask._harmless_labels), so what is typed is hidden.
+        self.masks("me@example.com", 'page.frameLocator("#login").getByLabel("Email").fill("me@example.com")',
+                                     'page.frame_locator("#password-reset").get_by_label("Email").fill("me@example.com")')
 
     def test_a_receiver_in_brackets_reads_its_own_chain(self):
-        self.stays('(page.getByLabel("Email").filter({hasNotText: "Password"})).fill("me@example.com")',
-                   '(page.get_by_label("Email").filter(has_not_text="Password")).fill("me@example.com")',
-                   '(page.getByLabel("Email").describe("Password")).fill("me@example.com")')
+        # Repinned (REVISION 44): the field is not on the short list of harmless ones (kb.mask._harmless_labels), so what is typed is hidden.
+        self.masks("me@example.com", '(page.getByLabel("Email").filter({hasNotText: "Password"})).fill("me@example.com")',
+                                     '(page.get_by_label("Email").filter(has_not_text="Password")).fill("me@example.com")',
+                                     '(page.getByLabel("Email").describe("Password")).fill("me@example.com")')
         self.masks("sunshine", '(await page.$("#password")).fill("sunshine")',
                    '(page.getByLabel("Password").filter({hasText: "Sign in"})).fill("sunshine")')
 
@@ -2588,7 +2714,7 @@ class ReviewFortySixTest(unittest.TestCase):
     """The forty-sixth review's findings: a listed finder on a variable no page check knew, a receiver in brackets after
     a keyword ("return (...)", "await (...)") read as a call to it, and a regex looked for inside a label's quotes."""
 
-    WRAPS, masks, stays = UnionFieldTest.WRAPS, UnionFieldTest.masks, UnionFieldTest.stays
+    WRAPS, masks, stays, hides = UnionFieldTest.WRAPS, UnionFieldTest.masks, UnionFieldTest.stays, UnionFieldTest.hides
 
     def test_a_listed_finder_names_a_page_on_any_variable(self):
         self.masks("sunshine",
@@ -2607,8 +2733,9 @@ class ReviewFortySixTest(unittest.TestCase):
                    'void (page.getByLabel("Password")).fill("sunshine");')
 
     def test_stays_a_regex_inside_a_labels_quotes(self):
-        self.stays('page.getByLabel("Search (/password/)").fill("release notes")',
-                   "page.getByPlaceholder('Filter, e.g. (/token/i)').fill('release notes')")
+        # Repinned (REVISION 44): the field is not on the short list of harmless ones (kb.mask._harmless_labels), so what is typed is hidden.
+        self.masks("release notes", 'page.getByLabel("Search (/password/)").fill("release notes")',
+                                    "page.getByPlaceholder('Filter, e.g. (/token/i)').fill('release notes')")
 
 
 class ReviewFortySevenTest(unittest.TestCase):
@@ -2616,7 +2743,7 @@ class ReviewFortySevenTest(unittest.TestCase):
     keyword on a variable no page check knew, and finder calls the union's list lacked; and a locator call given as
     the typing call's own field argument (user.type(screen.getByLabelText(...), text))."""
 
-    WRAPS, masks, stays = UnionFieldTest.WRAPS, UnionFieldTest.masks, UnionFieldTest.stays
+    WRAPS, masks, stays, hides = UnionFieldTest.WRAPS, UnionFieldTest.masks, UnionFieldTest.stays, UnionFieldTest.hides
 
     def test_a_dotted_and_or_or_is_another_call_in_the_chain(self):
         self.masks("sunshine",
@@ -2625,8 +2752,9 @@ class ReviewFortySevenTest(unittest.TestCase):
                    'page.getByLabel("Password").and (page.getByRole("textbox")).fill("sunshine")')
 
     def test_stays_a_dotted_and_or_or_with_no_secret_field(self):
-        self.stays('page.getByLabel("Email").and(page.getByRole("textbox")).fill("me@example.com")',
-                   'page.getByLabel("Email").or(page.getByLabel("Username")).fill("me@example.com")')
+        # Repinned (REVISION 44): the field is not on the short list of harmless ones (kb.mask._harmless_labels), so what is typed is hidden.
+        self.masks("me@example.com", 'page.getByLabel("Email").and(page.getByRole("textbox")).fill("me@example.com")',
+                                     'page.getByLabel("Email").or(page.getByLabel("Username")).fill("me@example.com")')
 
     def test_a_selector_keyword_on_any_variable(self):
         self.masks("sunshine",
@@ -2635,8 +2763,9 @@ class ReviewFortySevenTest(unittest.TestCase):
                    'tab.fill(selector="#password", value="sunshine")')
 
     def test_stays_a_selector_keyword_for_another_field(self):
-        self.stays('p.fill(value="me@example.com", selector="#email")',
-                   'tab.type(selector="#search", text="release notes")')
+        # Repinned (REVISION 44): the field is not on the short list of harmless ones (kb.mask._harmless_labels), so what is typed is hidden.
+        self.masks("me@example.com", 'p.fill(value="me@example.com", selector="#email")')
+        self.stays('tab.type(selector="#search", text="release notes")')
 
     def test_the_finder_calls_the_list_lacked(self):
         self.masks("sunshine",
@@ -2678,12 +2807,13 @@ class ReviewFortySevenTest(unittest.TestCase):
                    '.perform()')
 
     def test_stays_the_kin_on_another_field(self):
-        self.stays('cy.get("#email").type("sam@example.com")',
-                   'cy.get("#password-reset").find("#email").type("sam@example.com")',
-                   'await user.type(screen.getByLabelText("Email"), "me@example.com")',
-                   'browser.shadow$("#search").setValue("release notes")',
-                   'WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.ID, "email")))'
-                   '.send_keys("me@example.com")',
+        # Repinned (REVISION 44): the field is not on the short list of harmless ones (kb.mask._harmless_labels), so what is typed is hidden.
+        self.masks("sam@example.com", 'cy.get("#email").type("sam@example.com")',
+                                      'cy.get("#password-reset").find("#email").type("sam@example.com")')
+        self.masks("me@example.com", 'await user.type(screen.getByLabelText("Email"), "me@example.com")',
+                                     'WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.ID, "email")))'
+                   '.send_keys("me@example.com")')
+        self.stays('browser.shadow$("#search").setValue("release notes")',
                    'settings.get("password_hint").type("first pet")')
 
 
@@ -2692,10 +2822,11 @@ class ReviewFortyEightTest(unittest.TestCase):
     and a label's closing quote after "Password:" read as a quoted password's opening quote, masking ").fill(" and
     breaking the call the typing reader reads."""
 
-    WRAPS, masks, stays = UnionFieldTest.WRAPS, UnionFieldTest.masks, UnionFieldTest.stays
+    WRAPS, masks, stays, hides = UnionFieldTest.WRAPS, UnionFieldTest.masks, UnionFieldTest.stays, UnionFieldTest.hides
 
     def test_what_add_value_types_is_a_value_not_code(self):
-        self.stays('browser.$("#editor").addValue(\'page.fill("#password", "release notes")\')',
+        # Repinned (REVISION 44): the field is not on the short list of harmless ones (kb.mask._harmless_labels), so what is typed is hidden.
+        self.hides('browser.$("#editor").addValue(\'page.fill("#password", "release notes")\')',
                    '$("#notes").add_value(\'driver.find_element(By.ID, "password").send_keys("release notes")\')')
         self.masks("Abc.fill('q')Z9!", 'browser.$("#password").addValue("Abc.fill(\'q\')Z9!")')
 
@@ -2706,9 +2837,10 @@ class ReviewFortyEightTest(unittest.TestCase):
                    "page.getByLabel('New password:').fill('sunshine')")
 
     def test_stays_a_label_ending_in_a_colon_on_another_field(self):
-        self.stays('page.getByLabel("Search passwords:").fill("release notes")',
-                   'page.getByPlaceholder("Password hint:").fill("first pet")',
-                   'print("Password:", "set in the vault")')
+        # Repinned (REVISION 44): the field is not on the short list of harmless ones (kb.mask._harmless_labels), so what is typed is hidden.
+        self.masks("release notes", 'page.getByLabel("Search passwords:").fill("release notes")')
+        self.hides('page.getByPlaceholder("Password hint:").fill("first pet")')
+        self.stays('print("Password:", "set in the vault")')
 
     def test_a_quoted_password_after_its_names_own_closed_quote(self):
         for text, value in (('DB_PASSWORD="Xk9,mP2;qL7v"', "Xk9,mP2;qL7v"),
@@ -2725,7 +2857,7 @@ class ReviewFortyNineTest(unittest.TestCase):
     quote, so its closing quote after "Password:" was read as a quoted password's opening, masking ").fill(" and
     breaking the call the typing reader reads; a word's apostrophe ("B's") stays an apostrophe."""
 
-    WRAPS, masks, stays = UnionFieldTest.WRAPS, UnionFieldTest.masks, UnionFieldTest.stays
+    WRAPS, masks, stays, hides = UnionFieldTest.WRAPS, UnionFieldTest.masks, UnionFieldTest.stays, UnionFieldTest.hides
 
     def test_a_prefixed_label_keeps_its_call(self):
         self.masks("sunshine",
@@ -2738,9 +2870,10 @@ class ReviewFortyNineTest(unittest.TestCase):
                    "page.get_by_label(r'New password:').fill('sunshine')")
 
     def test_stays_a_prefixed_label_on_another_field(self):
-        self.stays('page.get_by_label(r"Search passwords:").fill("release notes")',
-                   "page.get_by_placeholder(r'Password hint:').fill('first pet')",
-                   'print(r"Password:", "set in the vault")',
+        # Repinned (REVISION 44): the field is not on the short list of harmless ones (kb.mask._harmless_labels), so what is typed is hidden.
+        self.masks("release notes", 'page.get_by_label(r"Search passwords:").fill("release notes")')
+        self.hides("page.get_by_placeholder(r'Password hint:').fill('first pet')")
+        self.stays('print(r"Password:", "set in the vault")',
                    'await page.GetByLabel(@"Search passwords:").FillAsync("release notes");',
                    'await page.GetByLabel($"Search passwords:").FillAsync("release notes");')
 
@@ -2764,7 +2897,7 @@ class AwsOptionValueTest(unittest.TestCase):
     """Found in #37's twelfth review: in aws configure set, a value of one of aws's options that take one ("--profile
     token") was read as the secret setting's name, masking the setting after it and leaving its value readable."""
 
-    WRAPS, masks, stays = UnionFieldTest.WRAPS, UnionFieldTest.masks, UnionFieldTest.stays
+    WRAPS, masks, stays, hides = UnionFieldTest.WRAPS, UnionFieldTest.masks, UnionFieldTest.stays, UnionFieldTest.hides
 
     def test_an_options_value_is_not_the_setting(self):
         self.masks("Zq7vRt2LmX9k",
@@ -2788,7 +2921,7 @@ class ReviewFiftyTest(unittest.TestCase):
     continuation between aws's option and its value ("--profile \\" then "token" on the next line) hid the option.
     Found with them: "type" as a label's verb ("Type your password", "Re-type password") read as one about the secret."""
 
-    WRAPS, masks, stays = UnionFieldTest.WRAPS, UnionFieldTest.masks, UnionFieldTest.stays
+    WRAPS, masks, stays, hides = UnionFieldTest.WRAPS, UnionFieldTest.masks, UnionFieldTest.stays, UnionFieldTest.hides
 
     def test_a_prefixed_label_after_a_space_or_starting_with_re_keeps_its_call(self):
         self.masks("sunshine",
@@ -2801,8 +2934,9 @@ class ReviewFiftyTest(unittest.TestCase):
                    'page.get_by_label( u"Re enter your password").fill("sunshine")')
 
     def test_stays_a_prefixed_label_on_another_field_after_a_space(self):
-        self.stays('page.get_by_label( r"Search passwords:").fill("release notes")',
-                   "page.get_by_placeholder( r'Password hint:').fill('first pet')")
+        # Repinned (REVISION 44): the field is not on the short list of harmless ones (kb.mask._harmless_labels), so what is typed is hidden.
+        self.masks("release notes", 'page.get_by_label( r"Search passwords:").fill("release notes")')
+        self.hides("page.get_by_placeholder( r'Password hint:').fill('first pet')")
 
     def test_a_word_ending_after_a_letter_is_still_an_apostrophe(self):
         for text in ("Plan B's password: 'Xk9,mP2;qL7v'", "(T's password: 'Xk9,mP2;qL7v')",
@@ -2837,11 +2971,12 @@ class ReviewFiftyTest(unittest.TestCase):
                    'page.locator("#typePassword").fill("sunshine")')
 
     def test_stays_type_as_the_secrets_kind(self):
-        self.stays('page.get_by_label("Password type").fill("release notes")',
-                   'page.get_by_label("Type of password").fill("release notes")',
-                   'page.get_by_label("Type: password").fill("release notes")',
-                   'page.get_by_label("Token types").fill("release notes")',
-                   'page.locator("#passwordType").fill("release notes")')
+        # Repinned (REVISION 44): the field is not on the short list of harmless ones (kb.mask._harmless_labels), so what is typed is hidden.
+        self.masks("release notes", 'page.get_by_label("Password type").fill("release notes")',
+                                    'page.get_by_label("Type of password").fill("release notes")',
+                                    'page.get_by_label("Type: password").fill("release notes")',
+                                    'page.get_by_label("Token types").fill("release notes")',
+                                    'page.locator("#passwordType").fill("release notes")')
 
 
 class TypingBracketsTest(unittest.TestCase):
@@ -2849,7 +2984,7 @@ class TypingBracketsTest(unittest.TestCase):
     opening): the quoted-password reading skips quotes inside a typing call's own brackets, which the typing reader
     reads, so a label's ":" and quote never mask a call's code, whatever prefix, word or space stands before them."""
 
-    WRAPS, masks, stays = UnionFieldTest.WRAPS, UnionFieldTest.masks, UnionFieldTest.stays
+    WRAPS, masks, stays, hides = UnionFieldTest.WRAPS, UnionFieldTest.masks, UnionFieldTest.stays, UnionFieldTest.hides
     PREFIXES = ("", "r", "R", "u", "b", "f", "rb", "@", "$")
 
     def test_a_secret_label_masks_only_the_value_and_keeps_the_call(self):
@@ -2870,7 +3005,9 @@ class TypingBracketsTest(unittest.TestCase):
                                   "S password:", "U're password:"):  # another word: a field about something else
                         if quote == "'" and "'" in label:
                             continue
-                        self.stays(f"page.get_by_label({space}{prefix}{quote}{label}{quote})"
+                        # repinned (REVISION 44): these labels are about a password, not on the short list of harmless
+                        # fields (kb.mask._harmless_labels), so the value is hidden (it stayed) and the code is kept
+                        self.masks("release notes", f"page.get_by_label({space}{prefix}{quote}{label}{quote})"
                                    f".fill({quote}release notes{quote})")
 
     def test_the_round_fifty_one_label(self):

@@ -901,7 +901,7 @@ def _gitleaks_edits(text):
 # Which mask() a stored row was masked with. A row of another version, or of none, is masked again when read and by
 # the next ingest. The patterns change it by themselves; bump REVISION when the code that applies them changes what
 # it masks.
-REVISION = 43
+REVISION = 44
 VERSION = f"r{REVISION}-" + hashlib.sha256(repr((REVISION, [p.pattern for p in SECRET_PATTERNS + PREFIXED_SECRETS], KEYED_SECRET.pattern,
                                 ENV_KEY_SECRET.pattern, JSON_SECRET.pattern, FLAG_SECRET.pattern, AUTH_SECRET.pattern,
                                 COMMAND_FLAGS, PASSWORD_NAME.pattern, sorted(PLACEHOLDERS), REFERENCE.pattern,
@@ -6711,43 +6711,83 @@ def _asks_for_a_secret(labels):
     return asks
 
 
+# What a typing tool types is hidden, unless it types into a field on this short list: a field that takes what a page
+# or a site reads in the clear, never a credential. Every other label, a made-up one and a missing one too, hides it,
+# so a list of the labels that ask for a secret (_asks_for_a_secret) cannot miss one ("Auth code", "Backup code",
+# "Security answer"). A label is on the list where it holds one of the core words below and besides it only a
+# filler's: a word that says nothing about what the field takes. A word of another kind, as "code", "key", "pass",
+# "pin", "secret", "token", "answer", "phrase" or "otp" is, makes it a field about something else, whatever else the
+# label says ("Search backup code", "Filter by token").
+#   search, query, q, filter, searchbox, omnibox: a search or a filter takes what a person looks for, and a site
+#     sends it in its address; "q" is the name search forms give it.
+#   url, address: the browser's address bar takes a page's address, which the browser shows and a history keeps.
+_HARMLESS_CORE = frozenset(("search", "searchbox", "query", "q", "filter", "omnibox", "url", "address"))
+# Words that make a field no other: its control ("box", "bar", "textbox", "field", "input"), a form's own words, a
+# joining word, a search engine's name ("Search Google or type a URL" is the address bar's own name), a number.
+_HARMLESS_FILLER = frozenset((
+    "box", "bar", "textbox", "combobox", "field", "input", "text", "form", "results", "result", "enter", "type", "a",
+    "an", "the", "your", "my", "google", "web", "and", "or", "to", "for", "in", "on", "with", "by"))
+
+
+def _harmless_labels(labels):
+    """Whether a field's labels are all on the short list of fields that take nothing secret (_HARMLESS_CORE): one has a
+    core word, and every word of every label is a core word, a filler or a number. A field with no label, or with a
+    letter or a number that is not ASCII (a word read as another script's), is not on it."""
+    core = False
+    for label in labels:
+        if any(c.isalnum() and not c.isascii() for c in label):
+            return False
+        for word in _label_words(_without_attribute_names(label)):
+            if not word:
+                continue  # a mark
+            if word in _HARMLESS_CORE:
+                core = True
+            elif word not in _HARMLESS_FILLER and not word.isdigit():
+                return False
+    return core
+
+
+@functools.lru_cache(maxsize=4096)
+def _labels_are_harmless(labels):
+    """_harmless_labels for a tuple of labels, kept: code that types into many fields repeats its labels."""
+    return _harmless_labels(labels)
+
+
 # Where a tool names the field it types into, and where it holds what it types.
 _LABEL_KEYS = ("element", "name", "label", "selector", "field", "placeholder", "description", "target", "type",
                "aria_label", "ariaLabel", "title", "id", "locator")
-_TYPED_KEYS = ("text", "value")
+_TYPED_KEYS = ("text", "value", "keys", "input", "content", "string")
 # A computer-use tool, whose "type" action types its text wherever the screen's focus is: no field names it.
 _COMPUTER_TOOL = re.compile(r"(?i)computer(?:_\d+)?")
 
 
 def typed_secrets(name, args):
-    """A typing or form-filling tool's input with what it types into a field labelled for a secret, such as
-    "Password textbox", masked whole: a password typed into a page is in no form a mask knows by its shape. A field
-    with no label, as DevTools names one by its uid alone, has its value masked when it reads as a credential. Other
-    tools' input, and other fields, come back as they are. A computer-use tool's "type" action is read as typing
-    into a field with no label."""
+    """A typing or form-filling tool's input with what it types masked whole, unless it types into a field on the short
+    list of harmless ones (_harmless_labels): a password typed into a page is in no form a mask knows by its shape, and
+    no list of the labels that ask for a secret is whole. A field with a label that is not on the list, a field with no
+    label, as DevTools names one by its uid alone, and a computer-use tool's "type" action, which types wherever the
+    screen's focus is, are all masked. Other tools' input, and other fields, come back as they are."""
     tool = name.rsplit("__", 1)[-1].rsplit(".", 1)[-1] if isinstance(name, str) else ""
     if not isinstance(args, dict) or not (_TYPING_TOOL.fullmatch(tool) or _COMPUTER_TOOL.fullmatch(tool)
                                           and args.get("action") == "type"):
         return args
 
-    def field(item):
-        if not isinstance(item, dict):
+    def field(item, level):
+        if isinstance(item, list):
+            return [field(each, level) for each in item]
+        if not isinstance(item, dict) or level > 6:
             return item
         labels = [str(item[key]) for key in _LABEL_KEYS if isinstance(item.get(key), str)]
-        secret = _asks_for_a_secret(labels)
-        out = dict(item)
-        for key in _TYPED_KEYS:
-            value = item.get(key)
-            if isinstance(value, (str, int)) and not isinstance(value, bool) and str(value) and (
-                    secret or not labels and any(map(_password_shaped, _seen_views(str(value))))):
+        hide = not _harmless_labels(labels)
+        out = {}
+        for key, value in item.items():
+            if key in _TYPED_KEYS and hide and isinstance(value, (str, int)) and not isinstance(value, bool) and str(value):
                 out[key] = "[masked]"
+            else:
+                out[key] = field(value, level + 1) if isinstance(value, (dict, list)) else value
         return out
 
-    out = field(args)
-    for key, value in args.items():
-        if isinstance(value, list):
-            out[key] = [field(item) for item in value]
-    return out
+    return field(args, 0)
 
 
 # Code that types into a page, as a tool runs it: a typing tool called with its input written as an object, as Codex's
@@ -7039,9 +7079,8 @@ def _labels_ask_for_a_secret(labels):
 
 
 def _typed_values(text, labels, typed):
-    secret = _labels_ask_for_a_secret(tuple(labels))
-    return [(a, b, "[masked]") for a, b in typed
-            if b > a and (secret or not labels and any(map(_password_shaped, _seen_views(text[a:b]))))]
+    hide = not _labels_are_harmless(tuple(labels))  # typed_secrets' rule: a field with no label hides it too
+    return [(a, b, "[masked]") for a, b in typed if b > a and hide]
 
 
 # A regex literal where a value starts inside a locator's brackets: first, or after ",", ":" or "=".
@@ -7243,7 +7282,8 @@ def _typed_code_edits(text):
         selector = (method in _CODE_SELECTOR_METHODS and not _names_an_element(names)
                     and bool(positional) and [t[0] for t in positional[0] if t[0] not in "()"] == ["s"]
                     and {t[0] for t in positional[0]} <= {"s", "(", ")"} and (
-            bool(second) and (second[0][0] == "s" or second[0][0] == "(" and any(t[0] == "s" for t in second))
+            bool(second) and (second[0][0] == "s" or second[0][0] == "(" and any(t[0] == "s" for t in second)
+                              or second[0][0] != "{")  # a value from a variable: page.fill(selector, password, {...})
             or any(kw in _CODE_VALUE_KEYWORDS and any(t[0] == "s" for t in ts) for kw, ts in args)))
         if selector:
             own.append(positional[0])
@@ -7266,16 +7306,11 @@ def _typed_code_edits(text):
             continue  # a value the code computes: os.environ["PW"], decrypt("vault:pw"), secrets.pw
         if not strings or not (selector or named or field or _names_a_page(names)):
             continue  # a value from a variable, or a call on no page and no locator
-        if not labels:  # only typing into the focused field (page.keyboard.type) is read, by the value's shape
-            a, b = _code_text(text, strings[0])
-            if "keyboard" in names and b > a and not _built_at_run_time(text, strings[0]) and any(
-                    map(_password_shaped, _seen_views(text[a:b]))):
-                edits.append((a, b, "[masked]"))
-            continue
-        # any one string that asks for a secret on its own names the field so: no other string, a container's, a
-        # strategy's ("id") or an option's, takes it back
-        if not any(_labels_ask_for_a_secret((label,)) for label in labels) or all(
-                _built_at_run_time(text, t) for t in strings):
+        # a string typed is hidden unless every string that names its field is on the short list of harmless ones
+        # (_harmless_labels), as typed_secrets reads them: no label, as typing into the focused field
+        # (page.keyboard.type) has none, hides it too, and no other string, a container's, a strategy's ("id") or an
+        # option's, takes it back
+        if _labels_are_harmless(tuple(labels)) or all(_built_at_run_time(text, t) for t in strings):
             continue
         # from the value's first string through the call's last string that is not its field, whatever lies
         # between: a comment, a prefix, an escape or a string read wrong cannot hold any of it back
@@ -7303,8 +7338,17 @@ def _typed_code_edits(text):
 # a string, or a number, under one of the others. kb's readers hide what a tool types at ingest (typed_secrets); a row
 # stored before they did, and any other text that quotes a call, holds it as written, so the mask reads it here.
 _JSON_LABEL_KEYS = frozenset(key.lower() for key in _LABEL_KEYS)
-_JSON_TYPED_KEYS = frozenset(("text", "value", "keys", "input", "content", "string"))
+_JSON_TYPED_KEYS = frozenset(_TYPED_KEYS)
 _JSON_TYPED_HINT = re.compile(r"(?i)(?:text|value|keys|input|content|string)(?:\\*[\"'])?\s*:")
+# The keys a typing tool's input holds and other objects seldom do: where the field is (Playwright's ref, DevTools' uid,
+# a selector, a locator, an element's description, a placeholder, an aria label, a field's label) and how it types.
+# An object with one is read as a typing tool's input: what it types is hidden, unless its field is on the short
+# list of harmless ones (_harmless_labels). One with none (an object with a "name" and a "value", as a list of
+# settings holds) is read as before: hidden where its label asks for a secret.
+_JSON_FIELD_KEYS = frozenset(("ref", "uid", "element", "label", "selector", "placeholder", "aria_label", "arialabel",
+                              "locator", "field", "submit", "slowly"))
+_JSON_FIELD_HINT = re.compile(r"(?i)(?:ref|uid|element|label|selector|placeholder|aria_?label|locator|field|submit"
+                              r"|slowly)(?:\\*[\"'])?\s*:")
 _JSON_SECRET_HINT = re.compile(r"(?i)pass|pwd|pin|otp|secret|token|credential|cvc|cvv|[23]fa|mfa|key|one.?time|"
                                r"verification|security|seed|phrase")
 _TYPING_NAME_AT = re.compile(rf"(?i)(?<![\w$])(?:mcp__[\w-]+__(?:{_TYPING_TOOL.pattern[4:]})"
@@ -7340,8 +7384,9 @@ def _json_name(inner):
     return INVISIBLE.sub("", view[0] if view else inner).lower()
 
 
-def _json_labels_ask(labels):
-    """Whether an object's labels, read as typed_secrets reads them, in each view of them, ask for a secret."""
+def _json_label_views(labels):
+    """An object's labels, read as typed_secrets reads them, in each view of them: as written, as JSON's escapes read
+    them, each without the characters a reader does not see (and as main reads those): a list of labels per view."""
     views = [[], []]
     for label in labels:
         decoded = _json_unescaped(label)
@@ -7349,7 +7394,26 @@ def _json_labels_ask(labels):
             seen = list(_seen_views(read))
             for k in (0, 1):
                 views[k].append(seen[min(k, len(seen) - 1)])
-    return any(_labels_ask_for_a_secret(tuple(view)) for view in views if view)
+    return [tuple(view) for view in views if view]
+
+
+def _json_labels_ask(labels):
+    """Whether an object's labels, read as typed_secrets read them before the short list of harmless fields, in each
+    view of them, ask for a secret."""
+    return any(_labels_ask_for_a_secret(view) for view in _json_label_views(labels))
+
+
+def _json_labels_harmless(labels):
+    """Whether an object's labels are on the short list of harmless fields (_harmless_labels) in every view of them:
+    the views _json_label_views reads, and as written, so a label with a character a reader does not see, or an escape,
+    that reads one way as written and another read through is not on the list, and what is typed under it is hidden."""
+    views = _json_label_views(labels)
+    written = [[], []]
+    for label in labels:
+        decoded = _json_unescaped(label)
+        written[0].append(label)
+        written[1].append(decoded[0] if decoded else label)
+    return all(_labels_are_harmless(view) for view in views + [tuple(view) for view in written])
 
 
 def _typing_named_before(names, start):
@@ -7359,16 +7423,15 @@ def _typing_named_before(names, start):
 
 
 def _json_object_edits(text, frame, typing):
-    """The spans an object's typed values mask: all of them where its labels ask for a secret; where it has no label,
-    those that read as a credential, in what a typing tool's name or a "type" action reads as its input."""
+    """The spans an object's typed values mask. An object read as a typing tool's input (_JSON_FIELD_KEYS, or a typing
+    tool's name stands just before it, or its action is "type") hides all of them unless its labels are on the short
+    list of harmless fields: no label hides them too. Any other object hides them where its labels ask for a secret."""
     typed = frame["typed"]
     if not typed:
         return []
-    if frame["labels"]:
-        return typed if _json_labels_ask(frame["labels"]) else []
-    if not (frame["action"] or typing):
-        return []
-    return [(a, b) for a, b in typed if any(map(_password_shaped, _seen_views(text[a:b])))]
+    if frame["field"] or frame["action"] or typing:
+        return [] if frame["labels"] and _json_labels_harmless(frame["labels"]) else typed
+    return typed if frame["labels"] and _json_labels_ask(frame["labels"]) else []
 
 
 def _typed_json_edits(text):
@@ -7384,7 +7447,8 @@ def _typed_json_edits(text):
     if not (disguised or _JSON_TYPED_HINT.search(text)):
         return []
     names = [m.end() for m in _TYPING_NAME_AT.finditer(text)]
-    if not (disguised or names or _ACTION_TYPE.search(text) or _JSON_SECRET_HINT.search(text)):
+    if not (disguised or names or _ACTION_TYPE.search(text) or _JSON_SECRET_HINT.search(text)
+            or _JSON_FIELD_HINT.search(text)):
         return []
     edits = []
     _json_scan(text, 0, len(text), names, edits, 0)
@@ -7436,8 +7500,8 @@ def _json_scan(text, pos, stop, names, edits, level):
             if level < 4 and _ESCAPED_QUOTE.search(text, a, b):
                 _json_scan(text, a, b, names, edits, level + 1)
         elif tok == "{" or tok == "[":
-            frames.append({"dict": tok == "{", "labels": [], "typed": [], "action": False, "key": None, "value": False,
-                           "start": m.start()})
+            frames.append({"dict": tok == "{", "labels": [], "typed": [], "action": False, "field": False,
+                           "key": None, "value": False, "start": m.start()})
             pending = None
         elif tok == "}" or tok == "]":
             if frames:
@@ -7448,6 +7512,7 @@ def _json_scan(text, pos, stop, names, edits, level):
         elif tok == ":":
             if top is not None and top["dict"] and pending is not None:
                 top["key"], top["value"] = pending, True
+                top["field"] = top["field"] or pending in _JSON_FIELD_KEYS
             pending = None
         elif tok == ",":
             if top is not None:

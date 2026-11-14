@@ -172,6 +172,9 @@ MAIN_MASKS = {"IoK8sApiCoreV1SecretKeySelector": "everywhere", "V1beta1Certifica
               "V1PersistentVolumeClaimSpec": "after Authorization", "GNU_PROPERTY_X86_FEATURE_1_IBT": "after Authorization",
               "OSSL_DEPRECATEDIN_3_0": "after Authorization", "x86_cpu_VPCLMULQDQ": "after Authorization"}
 AFTER_AUTHORIZATION = frozenset(set(header_forms("x")) - {"typed"} | {"headers"})
+# Repinned (REVISION 44): a value typed into the focused field, or into a field with no label, is hidden whatever it is
+# (kb.mask._harmless_labels: no field is named, so it is not on the short list of harmless ones). A code name stayed there.
+TYPED_FORMS = frozenset(("typed", "field with no label"))
 
 
 class CodeNameTest(unittest.TestCase):
@@ -182,7 +185,7 @@ class CodeNameTest(unittest.TestCase):
             for form, masked, shown in readings(name):
                 with self.subTest(name=name, form=form):
                     where = MAIN_MASKS.get(name)
-                    if where == "everywhere" or where and form in AFTER_AUTHORIZATION:
+                    if where == "everywhere" or form in TYPED_FORMS or where and form in AFTER_AUTHORIZATION:
                         self.assertEqual(masked, shown.replace(name, "[masked]"))
                     else:
                         self.assertEqual(masked, shown)
@@ -234,7 +237,7 @@ class TokenCostTest(unittest.TestCase):
 
 class RevisionTest(unittest.TestCase):
     def test_stored_rows_are_masked_again(self):
-        self.assertEqual(masking.REVISION, 43)
+        self.assertEqual(masking.REVISION, 44)
 
 
 if __name__ == "__main__":

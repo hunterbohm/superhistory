@@ -206,10 +206,12 @@ class SameAsBeforeTest(unittest.TestCase):
         self.assertEqual(blob(data.replace(SPLIT, b"mi" + b"ni")), MAIN_BLOB)
 
     def test_every_output_and_origin_is_the_one_from_before(self):
-        # The mask now also hides what a typing call written as an object in text types into a field labelled for a
-        # secret (kb.mask._typed_json_edits), which d512b6d showed. A text that differs is checked with that step
-        # switched off: it must give d512b6d's result then, character for character and origin for origin, so
-        # that step is the only difference, and the step only hides more (the characters it leaves are d512b6d's).
+        # The mask now also hides what a typing call written as an object in text types into a field that is not on the
+        # short list of harmless ones (kb.mask._typed_json_edits), and what code types with no field named or into
+        # a field not on it (kb.mask._typed_code_edits, which d512b6d hid by the label's asking for a secret), which
+        # d512b6d showed. A text that differs is checked with the first switched off and the second d512b6d's own: it
+        # must give d512b6d's result then, character for character and origin for origin, so those two are the only
+        # difference, and they only hide more (the characters they leave are d512b6d's).
         problems, checked, differ, extra = [], 0, [], 0
         ours, theirs = head.capped, before.capped
         for where, text in texts():
@@ -218,7 +220,8 @@ class SameAsBeforeTest(unittest.TestCase):
                 got, want = getattr(head, name)(text), getattr(before, name)(text)
                 if got != want:
                     before_off = head.capped
-                    with mock.patch.object(head, "_typed_json_edits", lambda text: []):
+                    with mock.patch.object(head, "_typed_json_edits", lambda text: []), \
+                            mock.patch.object(head, "_typed_code_edits", before._typed_code_edits):
                         off = getattr(head, name)(text)
                     extra += head.capped - before_off
                     if off != want:
@@ -227,7 +230,10 @@ class SameAsBeforeTest(unittest.TestCase):
                         differ.append(where)
         self.assertGreater(checked, 3000)
         self.assertEqual(problems[:3], [])
-        self.assertLessEqual(len(differ), 4, "only a typing call written as an object differs")
+        # Each text counts once for mask() and once for mask_with_origin(). 4 were allowed (a typing call written as an
+        # object, one text). REVISION 44 hides what is typed into the focused field (page.keyboard.type) whatever it is,
+        # so the 3 texts of a search typed there differ now (plain, as JSON, coloured): 2 more entries each, 10 in all.
+        self.assertLessEqual(len(differ), 4 + 2 * 3, "only a typing call differs")
         self.assertEqual(head.capped - ours - extra, before.capped - theirs)
 
     def test_a_long_text_read_in_pieces_is_the_one_from_before_and_keeps_what_it_did(self):
@@ -236,7 +242,7 @@ class SameAsBeforeTest(unittest.TestCase):
         block = session(9_000, "block", "colour")
         longs = [session(100_000, "long", "colour"), session(100_000, "long", "plain"), (block + "\n\n") * 9,
                  code(60_000).replace("\n", "\n\x1b[32mok\x1b[0m ", 1)]
-        # (The memo's keys hold the mask's VERSION, which REVISION 43 changed: head reads under d512b6d's here, so the
+        # (The memo's keys hold the mask's VERSION, which REVISIONs 43 and 44 changed: head reads under d512b6d's here, so the
         # keys are the same and what the memo kept is compared.)
         with in_pieces(40_000, 12_000, 3_000), mock.patch.object(head, "VERSION", before.VERSION):
             for text in longs:
@@ -255,7 +261,12 @@ class CostTest(unittest.TestCase):
         for name, secret, plain in typing_texts(100_000):
             with self.subTest(name):
                 self.assertNotIn(PASSWORD, head.mask(secret))
-                self.assertIn(PLAIN, head.mask(plain))
+                if name == "keyboard.type":
+                    # Repinned (REVISION 44): typing into the focused field names no field, and what is typed with no
+                    # field named is hidden, a search too. It was kept, as the shape of a search is no credential's.
+                    self.assertNotIn(PLAIN, head.mask(plain))
+                else:
+                    self.assertIn(PLAIN, head.mask(plain))
                 self.assertLess(took(secret), self.BAR * took(secret, before))
 
     def test_one_colour_code_in_a_long_text_costs_what_it_did(self):
