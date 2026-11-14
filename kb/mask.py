@@ -5455,6 +5455,12 @@ def _part(text):
     reads gitleaks' rules for keywords anywhere in the whole text (_SEEN_KEYWORDS), so its result is kept by which of
     the rules that find a secret in it without a keyword of their own there are read (_far_how): a keyword new
     elsewhere in a growing text changes how a piece reads only where such a rule of it finds one."""
+    return _part_record(text)[0]
+
+
+def _part_record(text):
+    """_part(), and with it the record of what the piece's reading holds: {"far": the keywords of each rule that finds a
+    secret in it with none of them there, "saw": the keywords the texts it reads hold}."""
     record = _MEMO.get("far", text)
     record = json.loads(record) if record is not None else None
     found = _MEMO.get("piece", text, _far_how(record["far"])) if isinstance(record, dict) else None
@@ -5472,7 +5478,7 @@ def _part(text):
     saw = _SAW_ALL.get()
     if saw is not None:
         saw.update(record["saw"])
-    return found
+    return found, record
 
 
 def _far_how(far):
@@ -5491,6 +5497,28 @@ def _span(result, origin, base, low, high):
     return result[first:last + 1], [c + base if c >= 0 else -1 for c in origin[first:last + 1]]
 
 
+_LETTERS = re.compile(r"[A-Za-z]{3,}")
+# What a view of the mask may read as other characters or as none: an escape, a percent code, a character a reader does
+# not see (INVISIBLE). Its letters are not letters every view keeps.
+_ESCAPE_LIKE = re.compile(r"\\+(?:u[0-9A-Fa-f]{4}|U[0-9A-Fa-f]{8}|x[0-9A-Fa-f]{2}|[A-Za-z])|%[0-9A-Fa-f]{2}|"
+                          + INVISIBLE.pattern)
+
+
+def _wordless(text):
+    """Whether `text` holds a stretch of REACH // 8 characters with no three letters in a row that every view the mask
+    reads keeps (_ESCAPE_LIKE blanked out first, at its own length). A field and its value may stand any gap apart,
+    farther than REACH: whitespace, "+", "%20", "%2520", characters a reader does not see, as written or escaped
+    (KEYED_SECRET's _GAP). No gap holds such letters, so where they come at least that often, no gap runs past a cut
+    there; elsewhere the cut does not hold and the text is read whole there. Distances are the text's own: a view
+    without its unseen characters would make a gap look shorter than it stands."""
+    view, at, most = _ESCAPE_LIKE.sub(lambda m: " " * len(m.group()), text), 0, REACH // 8
+    for m in _LETTERS.finditer(view):
+        if m.start() - at >= most:
+            return True
+        at = m.end()
+    return len(view) - at >= most
+
+
 def _cut_holds(text, before, after):
     """Whether the cut between two pieces, each (start, end, (result, origin, still)), masks as the text read whole
     there: neither piece's mask hides the characters at the cut, and the two say what a window of the text read whole
@@ -5498,6 +5526,8 @@ def _cut_holds(text, before, after):
     start, cut, (left, left_origin, _) = before
     _, end, (right, right_origin, _) = after
     if not left or not right or left_origin[-1] != cut - 1 - start or right_origin[0] != 0:
+        return False
+    if _wordless(text[max(0, cut - REACH):cut + REACH]):
         return False
     low, high = max(0, cut - 2 * REACH), min(len(text), cut + 2 * REACH)
     window, window_origin, still = _part(text[low:high])
@@ -5613,6 +5643,135 @@ def mask(text):
     if kept:
         _MEMO.put("text", text, found)
     return found
+
+
+# The two ends of a long text's mask. A caller that wants only the first or the last n characters of mask(text), as the
+# check does of a message, would wait for the text read whole, which took minutes at 500 KB. They are read from a window
+# instead: the text up to a cut, or from one, that stands n + 2 * REACH from the end it keeps. The window is read as a
+# piece is (_part), so what holds of the pieces of a long text holds of it (above):
+# - A character more than REACH from the cut reads as the text read whole reads it, so the characters kept do, once
+#   their sources stand that far (_edge).
+# - What a window cannot see is a run that crosses its cut, which a piece sees by the piece beside it. A run that goes
+#   on to the window's edge hides the edge's last character (or first, from the other side), which is checked, as
+#   _pieces checks it. A run that comes in over the cut from the far side is a key's paragraph, masked on to its end
+#   from a header before a tail's cut, or back to its start from a footer after a head's (_headless_key_edits); a
+#   blank line ends it, and none crosses more than two (a PGP key's one, an encrypted key's two), so _BARRIER blank
+#   lines between the kept part and the cut stop every one. A field and its value can also stand any gap apart,
+#   so the text there must not be _wordless either.
+# - A rule that finds a secret in the window with no keyword of its own there reads as the whole text's keywords say
+#   (_far_how); the window is used only where each such rule has a keyword in the text (_keywords_in), as a keyword
+#   in a view only the far text makes could turn it on.
+# Where the window does not hold, the text is masked whole, as it was. A text that does not settle in MAX_PASSES
+# beyond the window has everything that changed masked as one place there (_mask_whole); the window hides no secret
+# that does not hide, and leaves the kept part's own secrets masked each.
+_BARRIER = 3
+
+
+def _edge_cut(text, n, head):
+    """Where mask_head()'s window ends or mask_tail()'s starts, or None where there is no cut that holds: the kept part
+    stands n + 2 * REACH from it, and _BARRIER blank lines, the first (or last) of those past 2 * n from the end kept,
+    stand between the two. It is at a line break, else a space or tab, within PIECE of that distance, as _piece_cuts
+    looks for one, else exactly there; where the blank lines stand farther it is at the last of them, within PIECE."""
+    floor = n + 2 * REACH
+    if head:
+        ends = [m.end() for m in itertools.islice(_BLANK_LINE.finditer(text, 2 * n), _BARRIER)]
+        if len(ends) < _BARRIER or ends[-1] - floor > PIECE:
+            return None
+        if ends[-1] >= floor:
+            return ends[-1]
+        most = floor + PIECE
+        cut = text.find("\n", floor, most)
+        if cut < 0:
+            spaces = [i for i in (text.find(" ", floor, most), text.find("\t", floor, most)) if i >= 0]
+            cut = min(spaces) if spaces else floor - 1
+        return cut + 1
+    most = len(text) - floor
+    starts = collections.deque((m.start() for m in _BLANK_LINE.finditer(text, 0, len(text) - 2 * n)), maxlen=_BARRIER)
+    if len(starts) < _BARRIER or most - starts[0] > PIECE:
+        return None
+    if starts[0] <= most:
+        return starts[0]
+    least = max(0, most - PIECE)
+    cut = text.rfind("\n", least, most)
+    if cut < 0:
+        spaces = [i for i in (text.rfind(" ", least, most), text.rfind("\t", least, most)) if i >= 0]
+        cut = max(spaces) if spaces else most - 1
+    return cut + 1
+
+
+def _read_window(text, window):
+    """_part() of `window`, a piece of `text`, as (result, origin), or None where it cannot be read as `text` reads it:
+    it still changes after MAX_PASSES, or a rule finds a secret in it with no keyword of its own in it, and none in
+    `text`. A window with no such rule reads alike whatever keywords the rest of the text holds, so they are not looked
+    for then."""
+    def read(seen):
+        token = _SEEN_KEYWORDS.set(seen)
+        try:
+            return _part_record(window)
+        finally:
+            _SEEN_KEYWORDS.reset(token)
+
+    def held(far, seen):
+        return all(any(word in seen for word in keywords) for keywords in far)
+    (result, origin, still), record = read(frozenset())
+    if not still and record["far"]:
+        seen = _keywords_in(text)
+        if not held(record["far"], seen):
+            return None
+        (result, origin, still), record = read(seen)
+        if not held(record["far"], seen):
+            return None
+    return None if still else (result, origin)
+
+
+def _edge(text, n, head):
+    """mask(text)[:n] (`head`) or mask(text)[-n:] from a window, or None where the window does not hold: it is read as
+    the text is (_read_window); its edge at the cut is not hidden; the characters kept came from sources REACH or more
+    from the cut; and _BARRIER blank lines stand between them and the cut."""
+    if not _plain():
+        return None
+    cut = _edge_cut(text, n, head)
+    if cut is None:
+        return None
+    window = text[:cut] if head else text[cut:]
+    token = _TOP.set(False)
+    try:
+        found = _read_window(text, window)
+    finally:
+        _TOP.reset(token)
+    if found is None:
+        return None
+    result, origin = found
+    if len(result) < n or origin[-1 if head else 0] != (len(window) - 1 if head else 0):
+        return None
+    if head:
+        k = n - 1
+        while origin[k] < 0:  # in a placeholder: its source ends where the next character kept starts
+            k += 1
+        away = origin[k] + 1 if k == n - 1 else origin[k]
+        apart, far = window[away:], len(window) - away
+    else:
+        k = first = len(result) - n
+        while origin[k] < 0:  # in a placeholder: its source starts where the last character kept before it ends
+            k -= 1
+        away = origin[first] if k == first else origin[k] + 1
+        apart, far = window[:away], away
+    breaks = sum(1 for _ in itertools.islice(_BLANK_LINE.finditer(apart), _BARRIER))
+    if far < REACH or breaks < _BARRIER or _wordless(apart):
+        return None
+    return result[:n] if head else result[-n:]
+
+
+def mask_head(text, n):
+    """mask(text)[:n], read from a window of a long text (above)."""
+    found = _edge(text, n, True) if n > 0 and len(text) > n + 4 * REACH else None
+    return found if found is not None else mask(text)[:n]
+
+
+def mask_tail(text, n):
+    """mask(text)[-n:], read from a window of a long text (above)."""
+    found = _edge(text, n, False) if n > 0 and len(text) > n + 4 * REACH else None
+    return found if found is not None else mask(text)[-n:]
 
 
 # The memo: what mask() worked out, by the text and how it was read, so a text masked again costs a lookup. A session
