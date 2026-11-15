@@ -42,20 +42,29 @@ jobs:
           for command in "$HOME"/.local/bin/*; do "$command" --version; done
 
   test:
-    # The tag's check: the whole suite, on the oldest and the newest Python the product supports.
+    # The tag's check: the whole suite, on the oldest and the newest Python the product supports, run as ci.yml's check
+    # job runs it on every pull request. Ubuntu 26.04 runners have no Python 3.9 for setup-python.
     if: github.event_name == 'push' && !github.event.repository.private
-    runs-on: ubuntu-latest
-    timeout-minutes: 90
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
     strategy:
       fail-fast: true
       matrix:
         python-version: ["3.9", "3.12"]
+        # ci.yml's two shards: exact complements, so every test file runs in exactly one.
+        shard: ["test_[g-m]*.py", "test_[!g-m]*.py"]
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: ${{ matrix.python-version }}
-      - run: python -m unittest discover -s tests -t .
+      # Sync locks and signs with age and ssh-keygen. The runner image has ssh-keygen, not age.
+      - run: sudo apt-get update -q && sudo apt-get install -y -q --no-install-recommends age
+      - run: python -m pip install --quiet .
+      - run: grep -m1 "model name" /proc/cpuinfo; python -m tests.speed
+      - env:
+          PATTERN: ${{ matrix.shard }}
+        run: python -m unittest discover -s tests -t . -p "$PATTERN"
 
   release:
     # Builds the assets from the tag, installs from them once, and creates the release. This step is what a tag gates.
