@@ -5,12 +5,14 @@ rules and with this branch's, the tracked passes that follow, the text read agai
 that takes out a colour code or an invisible character. Each of them runs the same patterns over the same text, and a
 scan is a function of the pattern and the text alone (what a pattern finds in `text` does not depend on who asks), so a
 call now makes each whole-text scan once (kb.mask._first for one match, _scan for all of them) and gives it again where
-it is asked for again. The readings of a call (_READINGS) keep the matches, weighed by what a match holds (_Matches), and
-a scan that is not read to its end, or that finds more than one match for each _MATCH_SPACING characters, keeps nothing.
+it is asked for again. The readings of a call (_READINGS) keep the matches in a pool of their own (scan_get, scan_put), held
+to a bound of the text's size and weighed by what a match holds, so the readings are kept as they were; a scan that is not
+read to its end, or that finds more than one match for each _MATCH_SPACING characters, keeps nothing.
 
 The tests hold the scans to the patterns' own results, the mask to what it is with the scans made each time they are asked
 for (which is what main does), the memory to a bound of the text's size, and each of them to a break planted in the
 shortcut, which makes one of them fail. tests/test_mask_speed.py holds every output to d512b6d's, as before."""
+import array
 import base64
 import contextlib
 import gc
@@ -118,6 +120,11 @@ def shown(matches):
     return [(m.span(), m.groups(), m.lastindex) for m in matches]
 
 
+def weight_of(pool, matches):
+    """What an entry of the pool with these matches weighs: the entry, each match, and a slot for each."""
+    return pool.ENTRY_BYTES + sum(sys.getsizeof(m) + 8 for m in matches)
+
+
 class Counting:
     """A pattern that counts the scans made with it."""
 
@@ -187,12 +194,12 @@ class ScanTest(unittest.TestCase):
         list(head._scan(pattern, long))
         self.assertEqual(pattern.scans, 2)
         with a_call(short):
-            before_size = len(head._READINGS.get())
+            before_size = len(head._READINGS.get().scans)
             list(head._scan(pattern, short))
             list(head._scan(pattern, short))
             head._first(pattern, short)
             head._first(pattern, short)
-            self.assertEqual((pattern.scans, len(head._READINGS.get())), (6, before_size))
+            self.assertEqual((pattern.scans, len(head._READINGS.get().scans)), (6, before_size))
 
     def test_two_patterns_or_two_texts_do_not_share_an_entry(self):
         a, b = Counting(re.compile(r"w\d+")), Counting(re.compile(r"w\d+"))  # the same pattern, two objects
@@ -212,9 +219,9 @@ class ScanTest(unittest.TestCase):
             for m in head._scan(pattern, text):
                 break
             head._scan(pattern, text)  # asked for, and not read at all
-            self.assertEqual(len(readings), 0)
+            self.assertEqual(len(readings.scans), 0)
             self.assertEqual(shown(head._scan(pattern, text)), shown(pattern.finditer(text)))
-            self.assertEqual(len(readings), 1)
+            self.assertEqual(len(readings.scans), 1)
             self.assertEqual(shown(head._scan(pattern, text)), shown(pattern.finditer(text)))
 
     def test_a_scan_that_finds_more_than_one_match_for_each_spacing_keeps_nothing(self):
@@ -225,46 +232,149 @@ class ScanTest(unittest.TestCase):
             with a_call(text):
                 readings = head._READINGS.get()
                 self.assertEqual(shown(head._scan(pattern, text)), shown(pattern.finditer(text)))
-                self.assertEqual(len(readings), kept, spacing)
+                self.assertEqual(len(readings.scans), kept, spacing)
                 self.assertEqual(shown(head._scan(pattern, text)), shown(pattern.finditer(text)))
 
     def test_what_a_scan_keeps_is_weighed_by_what_its_matches_hold(self):
         text = text_with(random.Random("weigh"), 40_000, head._MATCH_SPACING + 8)
-        pattern = re.compile(r"w\d+")
+        pattern = re.compile(r"w(\d+)")
         with a_call(text):
-            readings = head._READINGS.get()
-            head._first(pattern, text)
-            one = readings.size  # the text, once, and a match
-            list(head._scan(pattern, text))
-            count = len(list(pattern.finditer(text)))
-            self.assertGreater(count, 100)
-            self.assertGreaterEqual(readings.size - one, count * head._Matches.MATCH_BYTES + head._Matches.ENTRY_BYTES)
-            self.assertLess(readings.size - one, count * (head._Matches.MATCH_BYTES + 8) + head._Matches.ENTRY_BYTES + 1_000)
+            pool = head._READINGS.get()
+            found = head._first(pattern, text)
+            first = pool.ENTRY_BYTES + sys.getsizeof(found) + 8
+            self.assertEqual(pool.scan_size, sys.getsizeof(text) + first)  # the text once
+            matches = list(head._scan(pattern, text))
+            self.assertGreater(len(matches), 100)
+            self.assertEqual(pool.scan_size, sys.getsizeof(text) + first + pool.ENTRY_BYTES
+                             + sum(sys.getsizeof(m) + 8 for m in matches))
+            self.assertEqual(pool.size, 0)  # none of it is a reading's
 
-    def test_a_match_holds_no_more_than_the_weight_counts(self):
-        groups = max(p.groups for p in vars(head).values() if isinstance(p, re.Pattern))
-        for n in range(groups + 1):
-            match = re.compile("(a)" * n + "a").match("a" * (n + 1))
-            self.assertLessEqual(sys.getsizeof(match) + 8, head._Matches.MATCH_BYTES, n)  # the match and its slot in the tuple
+    def test_the_pool_counts_at_least_what_the_scans_it_keeps_hold(self):
+        # What the memory of a process holds more for the scans (tracemalloc), not their texts, is no more than they weigh,
+        # for no match, one and many, of a pattern of no group and of ten.
+        text = text_with(random.Random("real"), 40_000, head._MATCH_SPACING + 8)
+        for groups in (0, 3, 10):
+            pattern = re.compile("(?:" + "(a)" * groups + ")?w\\d+|(?!)")
+            for count in (0, 1, 150):
+                with self.subTest(groups=groups, count=count), a_call(text):
+                    pool = head._READINGS.get()
+                    pool.scan_limit = 10 ** 12
+                    wanted = tuple(pattern.finditer(text))[:count]
+                    gc.collect()
+                    tracemalloc.start()
+                    try:
+                        before = tracemalloc.get_traced_memory()[0]
+                        for n in range(300):
+                            pool.scan_put((head._ALL_MATCHES, n, text), pattern, tuple(pattern.finditer(text)) if count else ())
+                        held = tracemalloc.get_traced_memory()[0] - before
+                    finally:
+                        tracemalloc.stop()
+                    counted = pool.scan_size - sys.getsizeof(text)
+                    self.assertLessEqual(held, counted)
+                    self.assertTrue(wanted or not count)
 
-    def test_what_is_kept_is_held_to_the_bound_and_the_oldest_goes_first(self):
+    def test_what_is_kept_is_held_to_the_bound_and_the_longest_unused_goes_first(self):
         text = text_with(random.Random("bound"), 40_000, head._MATCH_SPACING + 8)
         patterns = [re.compile(rf"w\d+|x{n}") for n in range(30)]  # each finds the same matches
         with a_call(text):
-            readings = head._READINGS.get()
+            pool = head._READINGS.get()
             list(head._scan(patterns[0], text))
-            readings.limit = readings.size + int(2.5 * (readings.size - sys.getsizeof(text)))  # the text and 3 scans
-            readings.clear()
-            readings.weights.clear()
-            readings.held.clear()
-            readings.size = 0
+            one = pool.scan_size - sys.getsizeof(text)  # an entry
+            pool.scan_limit = sys.getsizeof(text) + int(3.5 * one)  # the text and 3 entries
+            key = lambda n: (head._ALL_MATCHES, id(patterns[n]), text)
+            for n, pattern in enumerate(patterns[1:4], 1):
+                list(head._scan(pattern, text))
+            self.assertEqual(len(pool.scans), 3)  # 0 has gone: one more than the bound
+            self.assertNotIn(key(0), pool.scans)
+            list(head._scan(patterns[1], text))  # 1 is used: it goes last
+            list(head._scan(patterns[4], text))
+            self.assertEqual(list(pool.scans), [key(3), key(1), key(4)][-len(pool.scans):])
+            self.assertNotIn(key(2), pool.scans)  # the longest unused
             for n, pattern in enumerate(patterns):
                 self.assertEqual(shown(head._scan(pattern, text)), shown(pattern.finditer(text)))
-                self.assertTrue(readings.size <= readings.limit or len(readings) == 1, n)
-            self.assertIn((head._ALL_MATCHES, id(patterns[-1]), text), readings)
-            self.assertNotIn((head._ALL_MATCHES, id(patterns[0]), text), readings)
-            self.assertLessEqual(len(readings), 4)
-            self.assertEqual(shown(head._scan(patterns[0], text)), shown(patterns[0].finditer(text)))  # made again
+                self.assertLessEqual(pool.scan_size, pool.scan_limit, n)
+            self.assertIn(key(29), pool.scans)
+            self.assertEqual(pool.size, 0)
+
+    def test_a_scan_that_alone_weighs_more_than_the_bound_is_not_kept_and_its_text_is_not_held(self):
+        text = text_with(random.Random("alone"), 40_000, head._MATCH_SPACING + 8)
+        pattern = re.compile(r"w\d+")
+        with a_call(text):
+            pool = head._READINGS.get()
+            pool.scan_limit = sys.getsizeof(text)
+            self.assertEqual(shown(head._scan(pattern, text)), shown(pattern.finditer(text)))
+            self.assertEqual((len(pool.scans), pool.scan_texts, pool.scan_size), (0, {}, 0))
+            self.assertEqual(shown(head._scan(pattern, text)), shown(pattern.finditer(text)))
+
+    def test_a_text_is_counted_once_for_the_scans_that_hold_it_and_freed_with_the_last(self):
+        text = text_with(random.Random("texts"), 20_000, head._MATCH_SPACING + 8)
+        with a_call(text):
+            pool = head._READINGS.get()
+            for n in range(5):
+                head._first(re.compile(rf"w\d+|x{n}"), text)
+            self.assertEqual(len(pool.scans), 5)
+            self.assertEqual(pool.scan_size, sys.getsizeof(text) + sum(weight_of(pool, found) for _, found, _ in pool.scans.values()))
+            self.assertEqual(pool.scan_texts[id(text)][0], 5)
+            pool.scan_limit = pool.scan_size - 1
+            head._first(re.compile(r"w\d+|y"), text)  # one more: the two oldest of six go
+            self.assertEqual(pool.scan_texts[id(text)][0], 4)
+            pool.scan_limit = 0
+            head._first(re.compile(r"w\d+|z"), text)
+            self.assertEqual((pool.scans, pool.scan_texts, pool.scan_size), ({}, {}, 0))
+
+    def test_an_equal_text_that_is_another_object_reads_the_entry_and_is_not_held_again(self):
+        text = text_with(random.Random("equal"), 20_000, head._MATCH_SPACING + 8)
+        again = "".join([text[:10_000], text[10_000:]])
+        self.assertIsNot(text, again)
+        self.assertEqual(text, again)
+        pattern = Counting(re.compile(r"w\d+"))
+        with a_call(text):
+            pool = head._READINGS.get()
+            want = shown(pattern.pattern.finditer(text))
+            for source in (text, again, again, text):
+                self.assertEqual(shown(head._scan(pattern, source)), want)
+            self.assertEqual(pattern.scans, 1)
+            self.assertEqual(pool.scan_texts.keys(), {id(text)})  # the text the entry was put with, once
+            (key,) = pool.scans
+            self.assertIs(key[2], text)
+            pool.scan_limit = 0
+            head._first(pattern, again)  # the pool is over its bound: all go, the text with them
+            self.assertEqual((pool.scans, pool.scan_texts, pool.scan_size), ({}, {}, 0))
+
+    def test_two_scans_of_one_pattern_and_text_read_side_by_side_are_one_entry(self):
+        text = text_with(random.Random("side"), 20_000, head._MATCH_SPACING + 8)
+        pattern = re.compile(r"w\d+")
+        with a_call(text):
+            pool = head._READINGS.get()
+            one, two = head._scan(pattern, text), head._scan(pattern, text)
+            got = [(a, b) for a, b in zip(one, two)]  # read to their ends together
+            self.assertEqual(shown(m for m, _ in got), shown(pattern.finditer(text)))
+            self.assertEqual(shown(m for _, m in got), shown(pattern.finditer(text)))
+            self.assertEqual(len(pool.scans), 1)
+            self.assertEqual(pool.scan_size, sys.getsizeof(text) + weight_of(pool, [m for m, _ in got]))
+            pool.scan_limit = 0
+            head._first(pattern, text)
+            self.assertEqual((pool.scans, pool.scan_texts, pool.scan_size), ({}, {}, 0))
+
+    def test_a_text_a_reading_holds_is_not_counted_for_the_scans_until_the_reading_is_dropped(self):
+        text = text_with(random.Random("held"), 20_000, head._MATCH_SPACING + 8)
+        readings = head._Readings(0)
+        readings[(text, 0)] = (None, "masked")  # a reading of the text
+        for n in range(2):
+            head._READINGS.set(readings)
+            try:
+                head._first(re.compile(rf"w\d+|x{n}"), text)
+            finally:
+                head._READINGS.set(None)
+        entries = sum(weight_of(readings, found) for _, found, _ in readings.scans.values())
+        self.assertEqual(readings.scan_size, entries)  # the matches and the entries: the text is the reading's
+        self.assertEqual(readings.scan_texts[id(text)][2:], [False])
+        readings.scan_limit = entries + 100
+        readings.limit = 100
+        readings[(text[::-1], 1)] = (None, "another")  # over the readings' bound: the first reading goes
+        self.assertNotIn((text, 0), readings)
+        # the text is the scans' now: it and the entries weigh more than the pool's bound, so they go
+        self.assertEqual((readings.scans, readings.scan_texts, readings.scan_size), ({}, {}, 0))
 
     def test_an_entry_keeps_its_pattern_alive_so_no_other_pattern_has_its_id(self):
         text = code(20_000, "alive")
@@ -275,7 +385,7 @@ class ScanTest(unittest.TestCase):
             key = (head._ALL_MATCHES, id(pattern), text)
             del pattern
             gc.collect()
-            self.assertIs(type(head._READINGS.get()[key][0]), re.Pattern)
+            self.assertIs(type(head._READINGS.get().scans[key][0]), re.Pattern)
             for n in range(300):
                 other = re.compile(rf"(?m)^(\w{{{n % 7 + 1}}})")
                 self.assertEqual(shown(head._scan(other, text)), shown(other.finditer(text)), n)
@@ -317,28 +427,87 @@ class SameOutputTest(unittest.TestCase):
                 self.assertNotEqual(got[0], text)
 
 
+class ReadingsUnchangedTest(unittest.TestCase):
+    """The scans have a pool of their own (kb.mask._Readings.scan_put), so the readings of a call are kept as they were: the
+    same ones, dropped at the same time. Kept in the readings' bound, at 16 bytes for each character, the scans of a long
+    text (up to 3 bytes for each character and for each pattern) pushed out the readings that are worth a pass, and a text
+    of 1 MB took longer than it did without them."""
+
+    def entry(self, r, size, n):
+        text = "".join(r.choice("abcdefgh ") for _ in range(size))
+        return (text, n, r.random()), (None, text[::-1], array.array("i", range(size // 16)))
+
+    def test_the_readings_kept_are_the_ones_kept_without_the_scans(self):
+        r = random.Random("unchanged")
+        text = text_with(r, 20_000, head._MATCH_SPACING + 8)
+        plain, mixed = head._Readings(0), head._Readings(0)
+        plain.limit = mixed.limit = 120_000
+        pattern = re.compile(r"w\d+")
+        matches = tuple(pattern.finditer(text))
+        for n in range(80):
+            key, value = self.entry(r, r.choice((300, 2_000, 9_000, 20_000)), n)
+            plain[key] = value
+            mixed[key] = value
+            mixed.scan_put((head._ALL_MATCHES, n, text), pattern, matches)
+            mixed.scan_put((head._FIRST_MATCH, n, text), pattern, matches[:1])
+            self.assertEqual(list(plain), list(mixed), n)
+            self.assertEqual((plain.size, plain.held), (mixed.size, mixed.held), n)
+        self.assertLess(len(plain), 80)  # some were dropped
+
+    def stores(self, text, readings=head._Readings):
+        """The readings a mask(text) makes (each is a store in the readings), with the floor of the bound off: a bound that
+        the call fills, so a reading is dropped and made again."""
+        made = [0]
+
+        class Counting(readings):
+            def __setitem__(self, key, value):
+                made[0] += 1
+                super().__setitem__(key, value)
+        head._MEMO.kept.clear()
+        head._MEMO.size = 0
+        head.mask(text)  # what a first call of a text keeps in the module for the next (compiled patterns) is not counted
+        with short_floor(), mock.patch.object(head, "_Readings", Counting):
+            head._MEMO.kept.clear()
+            head._MEMO.size = 0
+            head.mask(text)
+        return made[0]
+
+    def test_a_call_makes_the_readings_it_makes_without_the_scans_at_a_bound_it_fills_and_at_one_it_does_not(self):
+        for kind, options in (("codex", dict(commands=0.5, colour=0.4)), ("claude", dict(commands=0.5, typing=0.2))):
+            text = agent_log(60_000, "unchanged", kind, **options)
+            for per_char in (16, 160):
+                with mock.patch.object(head._Readings, "PER_CHAR", per_char):
+                    with scans_off():
+                        without = self.stores(text)
+                    self.assertEqual(self.stores(text), without, (kind, per_char))
+                    self.assertGreater(without, 100)
+
+    def test_scans_kept_in_the_readings_are_found(self):
+        class Shared(head._Readings):
+            def scan_get(self, key):
+                return self.get(key)
+
+            def scan_put(self, key, pattern, matches):
+                made = self[key] = (pattern, matches, 0)
+                return made
+        text = agent_log(60_000, "unchanged", "codex", commands=0.5, colour=0.4)
+        with scans_off():
+            without = self.stores(text)
+        self.assertNotEqual(self.stores(text, Shared), without)
+
+
 def demand_and_supply(text):
     """(the scans a mask(text) asks for, the scans it makes) of the texts the memo applies to (_CHECKED_FROM characters or
-    more): each call of _scan or _first, and each scan that is not answered from what the call kept."""
+    more): each scan asked for of the call's scans (scan_get), and each that is not answered from what it kept."""
     counts = {"asked": 0, "made": 0}
-    scan, first, scanned = head._scan, head._first, head._scanned
-    made_first = head._Readings.__setitem__
+    real = head._Readings.scan_get
 
-    def asking(real):
-        def ask(*args):
-            counts["asked"] += len(args[1]) >= head._CHECKED_FROM  # a shorter text is never kept: it is not asked for here
-            return real(*args)
-        return ask
-
-    def made(*args):
-        counts["made"] += 1
-        return scanned(*args)
-
-    def storing(self, key, value):
-        counts["made"] += key[0] is head._FIRST_MATCH
-        return made_first(self, key, value)
-    with mock.patch.object(head, "_scan", asking(scan)), mock.patch.object(head, "_first", asking(first)), \
-            mock.patch.object(head, "_scanned", made), mock.patch.object(head._Readings, "__setitem__", storing):
+    def get(self, key):
+        made = real(self, key)
+        counts["asked"] += 1
+        counts["made"] += made is None
+        return made
+    with mock.patch.object(head._Readings, "scan_get", get):
         head._MEMO.kept.clear()
         head._MEMO.size = 0
         head.mask(text)
@@ -373,17 +542,39 @@ def peak(text):
 
 
 class MemoryTest(unittest.TestCase):
-    """A call's peak memory with the scans kept is no more than a bound of the text's size over what it is with every scan
-    made each time (the bound of the readings, _Readings.PER_CHAR, is the one the rest of what a call keeps is held to; with
-    its floor off a text of 100 KB stands for a long one). Both are measured on the same text one after the other."""
-    BOUND = 16  # bytes for each character: the readings' own bound (PER_CHAR), over what a call holds without the memo
+    """What a call's pool holds is no more than its bound (_Readings.SCAN_PER_CHAR bytes for each character, at least
+    SCAN_LEAST), by what it counts (the most it counts after each scan it keeps) and by what the process holds more for it
+    (tracemalloc on the same text with the scans kept and with every scan made each time, one after the other). With the
+    floor off a text of 60 KB stands for a long one."""
+    BOUND = 16  # bytes for each character: what the pool may count, and (in real memory) twice what a call may hold more
 
     def setUp(self):
         head.mask(agent_log(20_000, "warm", "codex", commands=0.4, colour=0.4))
 
+    def counted(self, text, *plants):
+        """(the most the pool counts after a scan is kept in mask(text), its bound there) with the floor off."""
+        seen = []
+        real = head._Readings.scan_put
+
+        def put(pool, key, pattern, matches):
+            made = real(pool, key, pattern, matches)
+            seen.append((pool.scan_size, pool.scan_limit))
+            return made
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(short_floor())
+            stack.enter_context(mock.patch.object(head._Readings, "SCAN_LEAST", 0))
+            for plant in plants:
+                stack.enter_context(plant)
+            stack.enter_context(mock.patch.object(head._Readings, "scan_put", put))
+            head._MEMO.kept.clear()
+            head._MEMO.size = 0
+            head.mask(text)
+        return max(size for size, _ in seen), max(limit for _, limit in seen)
+
     def excess(self, text, *plants):
         with contextlib.ExitStack() as stack:
             stack.enter_context(short_floor())
+            stack.enter_context(mock.patch.object(head._Readings, "SCAN_LEAST", 0))
             for plant in plants:
                 stack.enter_context(plant)
             ours = peak(text)
@@ -401,20 +592,36 @@ class MemoryTest(unittest.TestCase):
             n += len(parts[-1]) + 1
         return "\n".join(parts)
 
-    def test_the_memo_adds_no_more_than_the_bound_of_the_text_s_size_on_each_session(self):
+    def test_the_bound_is_the_one_this_test_holds_it_to(self):
+        self.assertLessEqual(head._Readings.SCAN_PER_CHAR, self.BOUND)
+
+    def test_the_pool_counts_no_more_than_its_bound_on_each_session_and_fills_it_on_some(self):
+        filled = 0
         for where, text in list(agent_logs(60_000))[::2]:
             with self.subTest(where):
-                self.assertLess(self.excess(text), self.BOUND)
+                most, limit = self.counted(text)
+                self.assertEqual(limit, head._Readings.SCAN_PER_CHAR * len(text))
+                self.assertLessEqual(most, limit)
+                filled += most > 0.9 * limit
+        self.assertGreater(filled, 0)
 
-    def test_the_memo_adds_no_more_than_the_bound_on_texts_with_as_many_matches_as_it_keeps_and_more(self):
+    def test_the_pool_counts_no_more_than_its_bound_on_texts_with_as_many_matches_as_it_keeps_and_more(self):
         for spacing in (head._MATCH_SPACING + 8, head._MATCH_SPACING // 2, 16):
             with self.subTest(spacing=spacing):
-                self.assertLess(self.excess(self.dense(spacing)), self.BOUND)
+                text = self.dense(spacing)
+                most, limit = self.counted(text)
+                self.assertLessEqual(most, limit)
 
-    def test_a_memo_that_counts_nothing_for_what_it_keeps_and_keeps_all_is_found(self):
-        free = mock.patch.multiple(head._Matches, MATCH_BYTES=0, ENTRY_BYTES=0)
-        every = mock.patch.object(head, "_MATCH_SPACING", 1)
-        self.assertGreater(self.excess(self.dense(16), free, every), self.BOUND)
+    def test_the_memo_adds_no_more_than_twice_the_bound_in_real_memory_on_each_session(self):
+        for where, text in list(agent_logs(60_000))[::2]:
+            with self.subTest(where):
+                self.assertLess(self.excess(text), 2 * self.BOUND)
+
+    def test_a_memo_with_no_bound_is_found(self):
+        free = mock.patch.multiple(head._Readings, SCAN_PER_CHAR=10 ** 9, SCAN_LEAST=10 ** 12)
+        text = agent_log(60_000, "free", "claude", commands=0.5, colour=0.4, typing=0.1)
+        most, limit = self.counted(text, free)
+        self.assertGreater(most, self.BOUND * len(text))
 
 
 class PlantedBreakTest(unittest.TestCase):
