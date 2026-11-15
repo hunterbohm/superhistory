@@ -318,15 +318,15 @@ class SameOutputTest(unittest.TestCase):
 
 
 def demand_and_supply(text):
-    """(the scans a mask(text) asks for, the scans it makes): each call of _scan or _first, and each scan that is not
-    answered from what the call kept."""
+    """(the scans a mask(text) asks for, the scans it makes) of the texts the memo applies to (_CHECKED_FROM characters or
+    more): each call of _scan or _first, and each scan that is not answered from what the call kept."""
     counts = {"asked": 0, "made": 0}
     scan, first, scanned = head._scan, head._first, head._scanned
     made_first = head._Readings.__setitem__
 
     def asking(real):
         def ask(*args):
-            counts["asked"] += 1
+            counts["asked"] += len(args[1]) >= head._CHECKED_FROM  # a shorter text is never kept: it is not asked for here
             return real(*args)
         return ask
 
