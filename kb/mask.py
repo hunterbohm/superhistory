@@ -4857,6 +4857,34 @@ def _read_once(kind, read, text, rules, *more):
     return list(made[2])
 
 
+# What a key of _READINGS starts with, where it holds the edits of one step of _reading made on a text: one row of the
+# commands (_command_row), one of today's (_todays_row) and one step that reads a text alone (_step_read).
+_COMMAND_ROW, _TODAYS_ROW, _TEXT_STEP = (object() for _ in range(3))
+
+
+def _command_row(text, command, unseen):
+    return _command_password_edits(text, *command, unseen)
+
+
+def _todays_row(text, command, unseen):
+    return _todays_password_edits(text, *command, unseen)
+
+
+def _step_read(text, step):
+    return step(text)
+
+
+def _once_for(first, kind, read, text, rules, *more):
+    """read(text, rules, *more), made once in a call (_read_once) where `text` is the text the reading was given (an edit
+    that changed nothing, as "[masked]" for "[masked]", makes another string of it) and has _CHECKED_FROM characters or
+    more: the memo is then keyed by the text the reading was given, which the call's readings hold already (_run's key),
+    so it holds no text of its own, and a shorter text, which costs less to read than its entry costs to keep, is read
+    where it is, as is a text an edit changed."""
+    if len(text) >= _CHECKED_FROM and (text is first or text == first):
+        return _read_once(kind, read, first, rules, *more)
+    return read(text, rules, *more)
+
+
 # A pattern that needs something no text before it holds finds nothing in it, and most texts lack what most patterns
 # need: a token shape's first characters, a command's name. What a pattern needs is read once, the first time it is
 # asked about, from sre's own parse of it, and a text that lacks one of its needs is not searched for it (_may_find).
@@ -5035,6 +5063,97 @@ def _finditer(pattern, text, *bounds):
     return pattern.finditer(text, *bounds) if _may_find(pattern, text) else iter(())
 
 
+# The patterns that read a secret's value after its name (KEYED_SECRET, a password in quotes, an app's) all start with
+# _KEY_NAME, and searched for it, each tries every run of name characters in a text: one 100,000 characters long takes
+# each of them 25 ms to find nothing, where few of its runs hold a word a secret's name has. A match of one starts where
+# _KEY_NAME does, and that is where a run of name characters starts (its first thing is a lookbehind for none) that
+# holds one of the words _required reads from it: each way _KEY_NAME reads takes only name characters, the words in it
+# among them, and ends where the run does (its last is a lookahead for none). Such a pattern is tried from the starts
+# of those runs (_name_starts) and nowhere else, which finds the match its search finds first, as it tries every start in
+# order. A name here is what the fold of the text (_folded) says it is, as the letters sre takes for others are in it
+# as they are read.
+_NAME_STARTS = object()  # what a key of _READINGS starts with, where it holds a text's name starts (_name_starts)
+_NAME_NOT = re.compile(r"[^a-z0-9_.-]")  # a character no name run holds, in a fold
+_NAME_WORDS = []  # the words one of which a run of name characters holds where _KEY_NAME starts it, read once
+_NAME_PATTERNS = {}  # id of a pattern: (the pattern, whether it starts with a secret's name), as _NEEDS holds a pattern's
+
+
+def _starts_with_a_name(pattern):
+    """Whether `pattern` starts with _KEY_NAME, or with main's own copy of it (_main_reading), as the patterns that read a
+    value after a name do."""
+    entry = _NAME_PATTERNS.get(id(pattern))
+    if entry is None or entry[0] is not pattern:
+        if len(_NAME_PATTERNS) > 1024:
+            _NAME_PATTERNS.clear()
+        source = pattern.pattern
+        entry = _NAME_PATTERNS[id(pattern)] = (pattern, isinstance(source, str) and source.startswith(
+            (_KEY_NAME, _main_reading(re.compile(_KEY_NAME)).pattern)))
+    return entry[1]
+
+
+def _name_words():
+    """The words one of which every run of name characters that _KEY_NAME starts holds (the most telling need
+    _required reads from it), lowered and in ASCII; none where it reads nothing."""
+    if not _NAME_WORDS:
+        needs = _required(re.compile(_KEY_NAME))
+        _NAME_WORDS.append(needs[0] if needs else ())
+    return _NAME_WORDS[0]
+
+
+def _name_starts_read(text):
+    """Where each run of name characters (what [A-Za-z0-9_.-] takes, ignoring case) starts that holds a word of
+    _name_words in the fold of `text`, in order, as an array: a few in a hundred of a text's runs, so it holds a few bytes
+    in a hundred of the text's. None where there is nothing to tell by, as where no word was read or the fold is not as
+    long as the text."""
+    words, fold = _name_words(), _folded(text)
+    if not words or len(fold) != len(text):
+        return None
+    blank = _NAME_NOT.sub(" ", fold)  # the runs are what lies between the blanks
+    marks = bytearray(len(text))
+    for word in words:
+        at = fold.find(word)
+        while at >= 0:
+            marks[blank.rfind(" ", 0, at) + 1] = 1
+            end = blank.find(" ", at)  # the rest of this run holds no start of another
+            at = fold.find(word, end) if end >= 0 else -1
+    return array.array("q", itertools.compress(range(len(text)), marks))
+
+
+def _name_starts(text):
+    """_name_starts_read, made once in a call for each text (_READINGS), as every pattern that reads a name asks."""
+    readings = _READINGS.get()
+    if readings is None:
+        return _name_starts_read(text)
+    key = (_NAME_STARTS, text)
+    found = readings.get(key, _SAME)
+    if found is _SAME:
+        found = readings[key] = _name_starts_read(text)
+    return found
+
+
+def _name_search(pattern, text):
+    """pattern.search(text, pos) as a function of pos, and from the start (the default) as _search reads it: for a text
+    of _CHECKED_FROM characters or more and a pattern that starts with a secret's name, tried only where a run of name
+    characters that holds a word of one starts (_name_starts), not at each of its runs."""
+    if len(text) < _CHECKED_FROM or not _starts_with_a_name(pattern):
+        return lambda pos=0: pattern.search(text, pos) if pos else _search(pattern, text)
+    if not _may_find(pattern, text):  # a search from where a match ended is made only after one was found
+        return lambda pos=0: None
+    starts = _name_starts(text)
+    if starts is None:
+        return lambda pos=0: pattern.search(text, pos)
+
+    def search(pos=0):
+        i, n = bisect.bisect_left(starts, pos), len(starts)
+        while i < n:
+            found = pattern.match(text, starts[i])
+            if found:
+                return found
+            i += 1
+        return None
+    return search
+
+
 def _run(text, rules, origin=None, named=None, fired=None, look=False):
     """_reading, made once in a call for each text, rules, origin untracked or fresh, and context: made again, it gives
     the first reading's text and origin, adds to `named` and `fired` what the first added, and counts again the texts
@@ -5098,7 +5217,7 @@ def _reading(text, rules, origin=None, named=None, fired=None, look=False):
     this reading's rows main's own lack find nothing but main 33c82f6's (_TODAYS_COMMANDS) find a password: only while
     the passes so far masked as main's do, as main's rows then read the text main's own pass reads."""
     patterns, keyed, reading = rules
-    size = len(text)
+    size, first = len(text), text
     note = fired.append if fired is not None else (lambda _: None)
     # gitleaks' rules read the text the pass was given too, before any pattern here cuts a token: GitLab's own shape
     # takes a routable token's first part and leaves ".aa1234567", and a link's reading a webhook's start. Each token
@@ -5119,7 +5238,8 @@ def _reading(text, rules, origin=None, named=None, fired=None, look=False):
     for edits in (_docker_login_edits, rests, _headless_key_edits, lambda text: _glued_run_edits(text, rests)):
         here = _KEY_HERE.set(frozenset(c for c, o in enumerate(origin) if o in places) if places else frozenset())
         try:
-            text, origin = _edit(text, origin, edits(text))
+            text, origin = _edit(text, origin, _once_for(first, _TEXT_STEP, _step_read, text, edits)
+                                 if edits is _docker_login_edits else edits(text))
         finally:
             _KEY_HERE.reset(here)
     for pattern, main in zip(PREFIXED_SECRETS if reading != "main" else _MAIN_PREFIXED, _MAIN_PREFIXED):
@@ -5134,7 +5254,8 @@ def _reading(text, rules, origin=None, named=None, fired=None, look=False):
         text, origin = _edit(text, origin, edits)
     if _search(_ANY_COMMAND, text) and reading == "today":  # every row as main reads it today
         for n, command in enumerate(_TODAYS_COMMANDS):
-            edits = _todays_password_edits(text, *command, n >= _MAIN_COMMANDS) if _may_find(command[0], text) else []
+            edits = _once_for(first, _TODAYS_ROW, _todays_row, text, command, n >= _MAIN_COMMANDS) \
+                if _may_find(command[0], text) else []
             if edits and n >= _MAIN_COMMANDS:
                 note(command)
             text, origin = _edit(text, origin, edits)
@@ -5144,7 +5265,7 @@ def _reading(text, rules, origin=None, named=None, fired=None, look=False):
         for n, command in enumerate(rows):
             if n == _MAIN_COMMANDS:
                 mains = text  # what main's rows from here on read today, the rows before it alike
-            edits = _command_password_edits(text, *command, n >= _MAIN_COMMANDS)
+            edits = _once_for(first, _COMMAND_ROW, _command_row, text, command, n >= _MAIN_COMMANDS)
             if edits and n >= _MAIN_COMMANDS:
                 note(command)
                 mains = None
@@ -5174,7 +5295,9 @@ def _reading(text, rules, origin=None, named=None, fired=None, look=False):
     # id is read more narrowly (secret_in_id), and an id one took for a token would drop its item.
     if reading in ("named", "today"):
         for step in (_name_value_edits, _typed_code_edits, _typed_json_edits, _gitleaks_edits):
-            edits = step(text)  # read from the text the step before left
+            # read from the text the step before left; the two that read a text alone are made once for the text given
+            edits = _once_for(first, _TEXT_STEP, _step_read, text, step) if step in (_typed_code_edits, _typed_json_edits) \
+                else step(text)
             if edits:
                 note(edits)
             text, origin = _edit(text, origin, edits)
@@ -5254,7 +5377,8 @@ def _named(pattern, span_of, text, reading, note=lambda _: None):
     <value>"; so is one that holds a secret, where the value it masks is a name and its separator whose own value
     follows, as in "passwd: Ppasswd: <password>". Past that the search goes on after the match, as re.sub's does, so a
     long value is read once. An id reads as re.sub reads it."""
-    m = _search(pattern, text)
+    search = _name_search(pattern, text)
+    m = search()
     while m:
         span = span_of(m)
         if span:
@@ -5267,10 +5391,10 @@ def _named(pattern, span_of, text, reading, note=lambda _: None):
                 note(inner)  # read on at a masked value, as main does not
                 m = inner
             else:
-                m = pattern.search(text, m.end())
+                m = search(m.end())
             continue
         inner = pattern.match(text, m.start(3)) if reading in ("named", "main") else None
-        m = inner if inner else pattern.search(text, m.end())
+        m = inner if inner else search(m.end())
 
 
 def _token_shapes(patterns, after_a_break=False):
@@ -5291,6 +5415,29 @@ def _token_shapes(patterns, after_a_break=False):
 
 _TOKENS = {id(rules): (_token_shapes(rules[0]), _token_shapes(rules[0], after_a_break=True))
            for rules in (_TEXT_RULES, _ID_RULES, _MAIN_RULES, _TODAYS_RULES)}
+# The token shapes that can find something in a text, as one pattern, kept by which they are (ids, with the shapes, which
+# keeps each id its own): of 21 shapes, a text holds what a few need.
+_TOKEN_SUBSETS = {}
+
+
+def _token_spans(rules, view):
+    """The (start, end) of each match, past the empty and the scheme words' (_scheme_words), of the token shapes of
+    `rules` in `view` (_TOKENS). A shape that can find nothing in `view` (_may_find) is left out of the pattern: where
+    several shapes could start a match, the first that matches wins, and one that matches nowhere is never that."""
+    tokens = _TOKENS[id(rules)][0]
+    if len(view) >= _CHECKED_FROM:
+        shapes = tuple(shape for shape in rules[0] if _may_find(shape, view))
+        if not shapes:
+            return []
+        if len(shapes) < len(rules[0]):
+            key = tuple(map(id, shapes))
+            entry = _TOKEN_SUBSETS.get(key)
+            if entry is None:
+                if len(_TOKEN_SUBSETS) > 32:
+                    _TOKEN_SUBSETS.clear()
+                entry = _TOKEN_SUBSETS[key] = (shapes, _token_shapes(shapes))
+            tokens = entry[1]
+    return [(m.start(), m.end()) for m in tokens.finditer(view) if m.end() > m.start() and not _scheme_words(m)]
 
 
 def _scoped(source):
@@ -5460,8 +5607,8 @@ def _split_secrets_seen_read(text, rules, run, starts, seen_by_main):
     gone, view, places, where, removed = v.gone, v.view, v.places, v.where, v.removed
     if not gone:
         return seen_by_main
-    tokens, after_a_break = _TOKENS[id(rules)]
-    found = [(m.start(), m.end()) for m in tokens.finditer(view) if m.end() > m.start() and not _scheme_words(m)]
+    after_a_break = _TOKENS[id(rules)][1]
+    found = _token_spans(rules, view)
     text_only = rules[2] in ("named", "today")  # an id is read without gitleaks' rules, as _run reads it
     found = sorted(found + (_gitleaks_spans(view) if text_only else []))
     lower = view.lower()
@@ -5545,8 +5692,8 @@ def _main_split_spans_read(text, rules):
     v = _Split(text, _MAIN_INVISIBLE_RUN, _MAIN_READING_START)
     if not v.gone:
         return []
-    tokens, after_a_break = _TOKENS[id(rules)]
-    found = [(m.start(), m.end()) for m in tokens.finditer(v.view) if m.end() > m.start() and not _scheme_words(m)]
+    after_a_break = _TOKENS[id(rules)][1]
+    found = _token_spans(rules, v.view)
     rests = [(m.start(), m.end()) for m in _GLUED_RUN.finditer(v.view)]
     spans = [cut for start, end in found + _glued_tokens(v, found, after_a_break, []) + rests
              if v.split(start, end) for cut in [v.cut(start, end)] if cut]
