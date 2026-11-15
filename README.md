@@ -495,6 +495,9 @@ Known limits:
   reads as one about the type of a secret; three or more spaces between a mark and a regular expression, or a regular
   expression that ends in an escaped backslash, which keep a typing call after them from being read; and values built at
   run time, or typed by other automation libraries and recorder formats.
+- A typing call on a name of your own shows what it types: `pw.fill("...")` after `pw = page.locator("#pw")`,
+  `el.send_keys("...")` after `el = driver.find_element(...)`, `box.fill("...")`. A call is read only where its chain
+  names a page, a frame, a locator, a driver, a browser, an element, `cy` or the keyboard.
 - A call written as an object in text leaves a few shapes unread: a value typed under a key other than text, value, keys,
   input, content or string; a label in another object than the one that holds the value; an object with only a name, a
   type, an id, a title, a description or a target for a label, and none of a typing call's other keys, no typing tool's
@@ -504,9 +507,21 @@ Known limits:
   three times. Over-masking is the other side of the rule for typed values: a search typed with the keyboard and no field
   named (page.keyboard.type), a username, an email address or a name typed into any field but a harmless one, and
   an object with a "label" and a "value" that is no call (an option of a list), are masked.
+- A call written as an object with no quotes around its keys and values (`{element: Password, text: x}`) is not read, so
+  its text shows. With quotes around the values (`{element: "Password", text: "x"}`) it is read.
+- A tool that types under another name than a browser tool's (`send_keys`, `enter_text`) is read as a typing tool only
+  when its input names a field, with a ref, an element, a selector, a uid or a label. With only a text or keys value,
+  what it types shows.
 - Escaping hides some secrets from the readers. A provider's token split by an invisible character and written as JSON
   inside JSON inside JSON shows a fragment. A password line of base64 after a placeholder and lines of base64 that
-  decode to words, written as JSON escaped twice, shows, though it is masked when plain or escaped once.
+  decode to words shows when the placeholder is alone on its line, plain or escaped. When the placeholder is glued to
+  those lines, it shows only written as JSON escaped twice, and is masked plain or escaped once.
+- Superhistory does not decode base64 to look for a password, so a password written as base64 shows, as in
+  `echo cGFzc3dvcmQ9d2FscnVzc2VjcmV0OQ== | base64 -d`, unless it comes after a scheme word such as Basic in an
+  "Authorization:" header. Base64 is read only to find a private key.
+- A private key file saved in UTF-16 or UTF-32 (as some Windows tools save one) and then written as base64 shows,
+  wrapped in lines or on one line, with its byte order mark or without. Its header is not ASCII in those encodings, so
+  it is not found.
 - Masking costs time in proportion to the text, but a text in which Superhistory's newer readings fire is masked a second time
   beside Superhistory's earlier mask, so a long run of built shapes is slow: 4,000 soft-hyphen-split passwords with a link
   inside each (160 KB) take about 10 s, 30,000 command lines with a password each (900 KB) about 14 s, and 256 KB of
@@ -685,6 +700,10 @@ Known limits:
   instead, as Superhistory read such lists before, so a password after a flag in it can show.
 - A YAML list of secrets under a secret's name (`tokens:` followed by `- value` lines) is masked only where an item
   holds a provider's token shape.
+- A Sync recovery or pairing code (it starts "VRC1" or "VP1") is not masked when Superhistory stores an item, or before
+  the AI call. Sync hides one only as items leave your computer for it. There, a code written without its head (32
+  letters and digits, alone or in groups of four) shows when letters or digits are glued to it, unless they make whole
+  groups of four.
 
 ## Why there are no embeddings
 
