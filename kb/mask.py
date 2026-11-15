@@ -4725,15 +4725,7 @@ def _edit(text, origin, edits):
 _READINGS = contextvars.ContextVar("kb_mask_readings", default=None)
 
 
-# What a scan of a text keeps (_first, _scanned): its matches, as a tuple that _weigh counts by what a match holds (a
-# match of a pattern of ten groups holds 300 bytes) and for the entry that keeps it (a key, a value, the weights).
-class _Matches(tuple):
-    MATCH_BYTES = 400
-    ENTRY_BYTES = 600
-
-
-# What _weigh counts: the rest is small.
-_WEIGHED = frozenset((str, bytes, array.array, list, tuple, set, frozenset, _Matches))
+_WEIGHED = frozenset((str, bytes, array.array, list, tuple, set, frozenset))  # what _weigh counts: the rest is small
 
 
 def _weigh(obj, out, depth=2):
@@ -4743,8 +4735,6 @@ def _weigh(obj, out, depth=2):
     kind = type(obj)
     if kind is str or kind is bytes or kind is array.array:
         out[id(obj)] = sys.getsizeof(obj)
-    elif kind is _Matches:
-        out[id(obj)] = sys.getsizeof(obj) + _Matches.MATCH_BYTES * len(obj) + _Matches.ENTRY_BYTES
     elif kind is list or kind is tuple or kind is set or kind is frozenset:
         size = sys.getsizeof(obj)
         if depth and len(obj) <= 8:
@@ -4765,6 +4755,11 @@ class _Readings(collections.OrderedDict):
     the readings, as _run, _read_once, _gitleaks_spans and _named_found use it, that drops its oldest first."""
     PER_CHAR = 16
     LEAST = 16 * 1024 * 1024
+    # The scans of whole texts a call keeps (_first, _scan) are not readings: they have a pool and a bound of their own,
+    # so what the call keeps of its readings, and when it drops them, is what it was without them.
+    SCAN_PER_CHAR = 16
+    SCAN_LEAST = 1024 * 1024
+    ENTRY_BYTES = 300  # what an entry of the pool holds besides its text and matches: a key, a record, a place in a table
 
     def __init__(self, size=0):
         super().__init__()
@@ -4772,6 +4767,51 @@ class _Readings(collections.OrderedDict):
         self.weights = {}  # key: {id of what it holds: its size}
         self.held = {}  # id of what some reading holds: how many hold it
         self.size = 0
+        self.scan_limit = max(self.SCAN_LEAST, self.SCAN_PER_CHAR * size)
+        self.scans = collections.OrderedDict()  # key: (the pattern, its matches, what the entry holds besides its text), the longest unused first
+        self.scan_texts = {}  # id of a text that some scan holds: [how many hold it, its size, whether only scans do]
+        self.scan_size = 0
+
+    def scan_get(self, key):
+        """The record of the scan `key` (a tag, the id of a pattern, a text), or None; a record read is the latest used."""
+        made = self.scans.get(key)
+        if made is not None:
+            self.scans.move_to_end(key)  # the key held stays the one it was put with: its text is the one counted
+        return made
+
+    def scan_put(self, key, pattern, matches):
+        """Keeps the matches of `pattern` in the text of `key`, and drops the scans longest unused while what the pool
+        holds weighs more than its bound (_scan_trim): each match and entry, and each text that no reading holds (one
+        a reading holds is the reading's, and counts here from the time the reading drops it). The record is given
+        back, kept or not; one kept already for an equal key, as where two scans of one text were read side by side, is
+        given back and stays. The record holds the pattern, so its id stays its own as long as the key is."""
+        made = self.scans.get(key)
+        if made is not None:
+            return made
+        text = key[2]
+        weight = self.ENTRY_BYTES + sum(map(sys.getsizeof, matches)) + 8 * len(matches)  # and a slot for each
+        made = self.scans[key] = (pattern, matches, weight)
+        held = self.scan_texts.get(id(text))
+        if held is None:
+            alone = id(text) not in self.held
+            held = self.scan_texts[id(text)] = [0, sys.getsizeof(text), alone]
+            if alone:
+                self.scan_size += held[1]
+        held[0] += 1
+        self.scan_size += weight
+        self._scan_trim()
+        return made
+
+    def _scan_trim(self):
+        while self.scan_size > self.scan_limit and self.scans:
+            oldest, record = self.scans.popitem(last=False)
+            self.scan_size -= record[2]
+            held = self.scan_texts[id(oldest[2])]
+            held[0] -= 1
+            if not held[0]:
+                if held[2]:
+                    self.scan_size -= held[1]
+                del self.scan_texts[id(oldest[2])]
 
     def __setitem__(self, key, value):
         if key in self:
@@ -4804,6 +4844,11 @@ class _Readings(collections.OrderedDict):
             else:
                 del self.held[obj]
                 self.size -= size
+                held = self.scan_texts.get(obj)
+                if held is not None and not held[2]:  # a text only some scans hold now
+                    held[2] = True
+                    self.scan_size += held[1]
+                    self._scan_trim()
 
 
 # A reading's origin kept in runs: where each run of characters that came one after another starts, and the first
@@ -5063,28 +5108,28 @@ def _may_find(pattern, text):
     return True
 
 
-# What a key of _READINGS starts with where it holds a pattern's scan of a whole text: its first match (_first) or its
-# matches (_scan).
+# What a key of a call's scans starts with: the first match of a pattern in a text (_first) or all its matches (_scan).
 _FIRST_MATCH, _ALL_MATCHES = object(), object()
 # A scan keeps its matches only up to one for each this many characters of the text, so what a pattern that matches
-# nearly everywhere would keep is not more than a few bytes for each of the text's characters (_Matches).
+# nearly everywhere would keep is not more than a few bytes for each of the text's characters.
 _MATCH_SPACING = 128
 
 
 def _first(pattern, text):
-    """pattern.search(text), made once in a call (_READINGS) for each pattern and text of _CHECKED_FROM characters or
-    more: a scan is a function of the pattern and the text alone, so it finds the same match wherever it is asked for,
-    in whatever context a reading is made in. A shorter text costs less to search than its entry costs to keep."""
+    """pattern.search(text), made once in a call (_Readings.scan_get) for each pattern and text of _CHECKED_FROM
+    characters or more: a scan is a function of the pattern and the text alone, so it finds the same match wherever it
+    is asked for, in whatever context a reading is made in. A shorter text costs less to search than its entry costs to
+    keep."""
     if len(text) < _CHECKED_FROM:
         return pattern.search(text)
     readings = _READINGS.get()
     if readings is None:
         return pattern.search(text)
     key = (_FIRST_MATCH, id(pattern), text)
-    made = readings.get(key)
+    made = readings.scan_get(key)
     if made is None:
         found = pattern.search(text)
-        made = readings[key] = (pattern, _Matches((found,) if found else ()))  # the pattern in it keeps its id its own
+        made = readings.scan_put(key, pattern, (found,) if found else ())
     return made[1][0] if made[1] else None
 
 
@@ -5099,7 +5144,7 @@ def _scan(pattern, text):
     if readings is None:
         return pattern.finditer(text)
     key = (_ALL_MATCHES, id(pattern), text)
-    made = readings.get(key)
+    made = readings.scan_get(key)
     if made is not None:
         return iter(made[1])
     return _scanned(readings, key, pattern, text)
@@ -5114,7 +5159,7 @@ def _scanned(readings, key, pattern, text):
                 kept = None
         yield m
     if kept is not None:
-        readings[key] = (pattern, _Matches(kept))
+        readings.scan_put(key, pattern, tuple(kept))
 
 
 def _dropped(runs, text):
