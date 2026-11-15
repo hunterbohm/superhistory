@@ -4,7 +4,7 @@
 message's longest keywords, the search, and the picker. `check` is the same code with the plan call allowed; no `check`
 lookup used the fallback on either half (its queries are all the model's). Each tool ran once per question.
 
-Run on the mini against the CLI gateway, one question at a time, from a scratch copy of this branch's code (commit
+Run on a test machine against a model gateway, one question at a time, from a scratch copy of this branch's code (commit
 1a1bcceb). Month A: `python3 bench/run.py month --month a --label fallback --tools none,check,check-fallback`
 (`none` ran first in a run stopped by a bench bug fixed in 1a1bcceb; `check` and `check-fallback` ran again from the
 start). Month B, with `BENCH_HELDOUT_LOG` on a new file and the scratch copy's old `b-baseline` rows removed:
