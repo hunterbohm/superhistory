@@ -2691,7 +2691,7 @@ def _todays_password_edits(text, line_pattern, flag, always, unseen=False):
     next option."""
     edits, reading, known = [], [], {}  # reading: the lines read that hold the text so far, innermost last
     read_to = 0  # where the lines read before the text so far end
-    for line in _scan(line_pattern, text):
+    for line in line_pattern.finditer(text):
         while reading and reading[-1][0] <= line.start():
             read_to = max(read_to, reading.pop()[0])
         held = _holding(reading[-1][1], line.start()) if reading else None
