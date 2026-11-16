@@ -528,25 +528,32 @@ class ReadsLessTest(unittest.TestCase):
         self.assertLess(made, asked, (asked, made))
 
 
-def peak(text):
-    """The most memory, in bytes, that mask(text) holds at once (tracemalloc), with what it keeps for the next call cleared."""
-    head._MEMO.kept.clear()
-    head._MEMO.size = 0
-    gc.collect()
-    tracemalloc.start()
-    try:
-        head.mask(text)
-        return tracemalloc.get_traced_memory()[1]
-    finally:
-        tracemalloc.stop()
+def peak(text, runs=3):
+    """The least over `runs` calls of the most memory, in bytes, that mask(text) holds at once (tracemalloc), with what it
+    keeps for the next call cleared. A peak moves by up to 9 bytes for each character from one call to the next (the cyclic
+    collector runs at other times, and garbage is held until it does); the lowest of three is the peak without it."""
+    lowest = None
+    for _ in range(runs):
+        head._MEMO.kept.clear()
+        head._MEMO.size = 0
+        gc.collect()
+        tracemalloc.start()
+        try:
+            head.mask(text)
+            now = tracemalloc.get_traced_memory()[1]
+        finally:
+            tracemalloc.stop()
+        lowest = now if lowest is None else min(lowest, now)
+    return lowest
 
 
 class MemoryTest(unittest.TestCase):
     """What a call's pool holds is no more than its bound (_Readings.SCAN_PER_CHAR bytes for each character, at least
     SCAN_LEAST), by what it counts (the most it counts after each scan it keeps) and by what the process holds more for it
-    (tracemalloc on the same text with the scans kept and with every scan made each time, one after the other). With the
-    floor off a text of 60 KB stands for a long one."""
-    BOUND = 16  # bytes for each character: what the pool may count, and (in real memory) twice what a call may hold more
+    (tracemalloc on the same text with the scans kept and with every scan made each time, one after the other: measured
+    8 to 11 bytes for each character on the sessions and 1 to 5 on the dense texts, over a bound of 16). With the floor off
+    a text of 60 KB stands for a long one."""
+    BOUND = 16  # bytes for each character: what the pool may count, and what a call may hold more in real memory
 
     def setUp(self):
         head.mask(agent_log(20_000, "warm", "codex", commands=0.4, colour=0.4))
@@ -612,16 +619,26 @@ class MemoryTest(unittest.TestCase):
                 most, limit = self.counted(text)
                 self.assertLessEqual(most, limit)
 
-    def test_the_memo_adds_no_more_than_twice_the_bound_in_real_memory_on_each_session(self):
+    def test_the_memo_adds_no_more_than_the_bound_in_real_memory_on_each_session(self):
         for where, text in list(agent_logs(60_000))[::2]:
             with self.subTest(where):
-                self.assertLess(self.excess(text), 2 * self.BOUND)
+                self.assertLess(self.excess(text), self.BOUND)
+
+    def test_the_memo_adds_no_more_than_the_bound_in_real_memory_on_texts_with_as_many_matches_as_it_keeps_and_more(self):
+        for spacing in (head._MATCH_SPACING + 8, head._MATCH_SPACING // 2, 16):
+            with self.subTest(spacing=spacing):
+                self.assertLess(self.excess(self.dense(spacing)), self.BOUND)
 
     def test_a_memo_with_no_bound_is_found(self):
         free = mock.patch.multiple(head._Readings, SCAN_PER_CHAR=10 ** 9, SCAN_LEAST=10 ** 12)
         text = agent_log(60_000, "free", "claude", commands=0.5, colour=0.4, typing=0.1)
         most, limit = self.counted(text, free)
         self.assertGreater(most, self.BOUND * len(text))
+
+    def test_a_memo_with_no_bound_that_keeps_all_is_found_in_real_memory(self):
+        free = mock.patch.multiple(head._Readings, SCAN_PER_CHAR=10 ** 9, SCAN_LEAST=10 ** 12)
+        every = mock.patch.object(head, "_MATCH_SPACING", 1)
+        self.assertGreater(self.excess(self.dense(16), free, every), self.BOUND)
 
 
 class PlantedBreakTest(unittest.TestCase):
