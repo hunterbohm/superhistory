@@ -1510,7 +1510,7 @@ def _written_key_spans(text, through=None):
 def _written_blocks(text):
     """Each block of base64 lines in `text` that _written_key_spans reads, as the (start, end) of each of its lines."""
     block = []
-    for m in _WRAPPED_BASE64.finditer(text):
+    for m in _scan(_WRAPPED_BASE64, text):
         escape = _ESCAPE_LETTER.match(text, m.start())
         lines = _wrapped_lines(text, escape.end() if escape else m.start(), m.end())
         # a run led by an escape's letter whose line break comes right after it: a blank line escaped ("\\n\\n"),
@@ -1538,10 +1538,10 @@ _UNSEEN_ESCAPED = re.compile(rf"{_CSI}|(?<!\\)\\*(?:{_CSI}|{_ESCAPED_INVISIBLE})
 def _unseen_view(text):
     """(`text` without the characters a reader does not see, at any depth of escaping, and for each of its characters
     where it stands in `text`), so a run one of them splits reads whole."""
-    if not INVISIBLE.search(text):
+    if not _first(INVISIBLE, text):
         return text, range(len(text))
     kept, pieces, last = [], [], 0
-    for m in _UNSEEN_ESCAPED.finditer(text):
+    for m in _scan(_UNSEEN_ESCAPED, text):
         # An escaped form takes only its own backslashes: one where a run of them is odd, two (an escape escaped
         # again, as JSON in JSON writes one) where it is even; the rest escape each other, as a line break's does
         # in "\\<ZWSP>n" written as JSON.
@@ -2513,7 +2513,7 @@ def _command_password_edits(text, line_pattern, flag, always, unseen=False):
         return []
     edits = _read_password_edits(text, line_pattern, flag, always, unseen)
     narrower = _MAIN_SPELLING.get(line_pattern)
-    if narrower is not None and any(not narrower.match(text, m.start()) for m in line_pattern.finditer(text)):
+    if narrower is not None and any(not narrower.match(text, m.start()) for m in _scan(line_pattern, text)):
         edits = _in_order(edits + _read_password_edits(text, narrower, flag, always, unseen))
     return edits
 
@@ -2538,7 +2538,7 @@ def _read_lines(text, line_pattern, flag, always, unseen, keyed):
     the next option, and the substitutions read are passed on as _command_line passes them with `keyed`."""
     edits, reading, known = [], [], {}  # reading: the lines read that hold the text so far, innermost last
     read_to = 0  # where the lines read before the text so far end
-    for line in line_pattern.finditer(text):
+    for line in _scan(line_pattern, text):
         while reading and reading[-1][0] <= line.start():
             read_to = max(read_to, reading.pop()[0])
         held = _holding(reading[-1][1], line.start()) if reading else None
@@ -3321,7 +3321,7 @@ def _view_edits(text, view, split, base):
     reads, the spans that mask what they hold, the spans that mask what the lines read hold), in the text as written.
     A view only says where to mask: every span is mapped back to the text as written, and no view's text is kept."""
     read = split.view if split else view
-    if not _ANY_COMMAND.search(read):
+    if not _first(_ANY_COMMAND, read):
         return [], [], []
     if base:  # the containers and strings the text holds, read whole, and the fail-closed rule outside them
         lists, listed = _container_edits(read)
@@ -3337,7 +3337,7 @@ def _view_edits(text, view, split, base):
     if not split:
         return lists, list(listed), lined
     # Back to the text as written, a value with the colour codes around it, as its reading masks one.
-    unwrapped = {i for m in _QUOTE_ESCAPE.finditer(view) for i in range(m.start(), m.end())}
+    unwrapped = {i for m in _scan(_QUOTE_ESCAPE, view) for i in range(m.start(), m.end())}
 
     def back(start, end):
         start, end = split.raw(start, end)
@@ -3363,11 +3363,11 @@ def _wrapping_edits(text):
     JSON or Python writes one, is read as mask_all reads the list (_flag_values). The fail-closed rule reads the text
     as written and each JSON string in it decoded as its own text (_container_edits). A view only says where to mask:
     each edit puts "[masked]" over a stretch of the text as written, which keeps every other character."""
-    if not (_ANY_COMMAND.search(text) or INVISIBLE.search(text)):
+    if not (_first(_ANY_COMMAND, text) or _first(INVISIBLE, text)):
         return []
     view = _CONTINUATION.sub(lambda m: " " * len(m.group()), text)
     lists, listed, lined = [], [], []
-    deepest = max((len(m.group()) for m in _QUOTE_ESCAPE.finditer(view)), default=0)
+    deepest = max((len(m.group()) for m in _scan(_QUOTE_ESCAPE, view)), default=0)
     for levels, runs in zip((4, 3, 2, 1, 0), _UNESCAPED):
         if levels and deepest < 2 ** (levels - 1):
             continue  # no quote escaped so deep: the view is the one a level up
@@ -4755,6 +4755,11 @@ class _Readings(collections.OrderedDict):
     the readings, as _run, _read_once, _gitleaks_spans and _named_found use it, that drops its oldest first."""
     PER_CHAR = 16
     LEAST = 16 * 1024 * 1024
+    # The scans of whole texts a call keeps (_first, _scan) are not readings: they have a pool and a bound of their own,
+    # so what the call keeps of its readings, and when it drops them, is what it was without them.
+    SCAN_PER_CHAR = 16
+    SCAN_LEAST = 1024 * 1024
+    ENTRY_BYTES = 300  # what an entry of the pool holds besides its text and matches: a key, a record, a place in a table
 
     def __init__(self, size=0):
         super().__init__()
@@ -4762,6 +4767,51 @@ class _Readings(collections.OrderedDict):
         self.weights = {}  # key: {id of what it holds: its size}
         self.held = {}  # id of what some reading holds: how many hold it
         self.size = 0
+        self.scan_limit = max(self.SCAN_LEAST, self.SCAN_PER_CHAR * size)
+        self.scans = collections.OrderedDict()  # key: (the pattern, its matches, what the entry holds besides its text), the longest unused first
+        self.scan_texts = {}  # id of a text that some scan holds: [how many hold it, its size, whether only scans do]
+        self.scan_size = 0
+
+    def scan_get(self, key):
+        """The record of the scan `key` (a tag, the id of a pattern, a text), or None; a record read is the latest used."""
+        made = self.scans.get(key)
+        if made is not None:
+            self.scans.move_to_end(key)  # the key held stays the one it was put with: its text is the one counted
+        return made
+
+    def scan_put(self, key, pattern, matches):
+        """Keeps the matches of `pattern` in the text of `key`, and drops the scans longest unused while what the pool
+        holds weighs more than its bound (_scan_trim): each match and entry, and each text that no reading holds (one
+        a reading holds is the reading's, and counts here from the time the reading drops it). The record is given
+        back, kept or not; one kept already for an equal key, as where two scans of one text were read side by side, is
+        given back and stays. The record holds the pattern, so its id stays its own as long as the key is."""
+        made = self.scans.get(key)
+        if made is not None:
+            return made
+        text = key[2]
+        weight = self.ENTRY_BYTES + sum(map(sys.getsizeof, matches)) + 8 * len(matches)  # and a slot for each
+        made = self.scans[key] = (pattern, matches, weight)
+        held = self.scan_texts.get(id(text))
+        if held is None:
+            alone = id(text) not in self.held
+            held = self.scan_texts[id(text)] = [0, sys.getsizeof(text), alone]
+            if alone:
+                self.scan_size += held[1]
+        held[0] += 1
+        self.scan_size += weight
+        self._scan_trim()
+        return made
+
+    def _scan_trim(self):
+        while self.scan_size > self.scan_limit and self.scans:
+            oldest, record = self.scans.popitem(last=False)
+            self.scan_size -= record[2]
+            held = self.scan_texts[id(oldest[2])]
+            held[0] -= 1
+            if not held[0]:
+                if held[2]:
+                    self.scan_size -= held[1]
+                del self.scan_texts[id(oldest[2])]
 
     def __setitem__(self, key, value):
         if key in self:
@@ -4794,6 +4844,11 @@ class _Readings(collections.OrderedDict):
             else:
                 del self.held[obj]
                 self.size -= size
+                held = self.scan_texts.get(obj)
+                if held is not None and not held[2]:  # a text only some scans hold now
+                    held[2] = True
+                    self.scan_size += held[1]
+                    self._scan_trim()
 
 
 # A reading's origin kept in runs: where each run of characters that came one after another starts, and the first
@@ -5053,14 +5108,84 @@ def _may_find(pattern, text):
     return True
 
 
+# What a key of a call's scans starts with: the first match of a pattern in a text (_first) or all its matches (_scan).
+_FIRST_MATCH, _ALL_MATCHES = object(), object()
+# A scan keeps its matches only up to one for each this many characters of the text, so what a pattern that matches
+# nearly everywhere would keep is not more than a few bytes for each of the text's characters.
+_MATCH_SPACING = 128
+
+
+def _first(pattern, text):
+    """pattern.search(text), made once in a call (_Readings.scan_get) for each pattern and text of _CHECKED_FROM
+    characters or more: a scan is a function of the pattern and the text alone, so it finds the same match wherever it
+    is asked for, in whatever context a reading is made in. A shorter text costs less to search than its entry costs to
+    keep."""
+    if len(text) < _CHECKED_FROM:
+        return pattern.search(text)
+    readings = _READINGS.get()
+    if readings is None:
+        return pattern.search(text)
+    key = (_FIRST_MATCH, id(pattern), text)
+    made = readings.scan_get(key)
+    if made is None:
+        found = pattern.search(text)
+        made = readings.scan_put(key, pattern, (found,) if found else ())
+    return made[1][0] if made[1] else None
+
+
+def _scan(pattern, text):
+    """pattern.finditer(text), as _first reads one match: made once in a call for each pattern and text of _CHECKED_FROM
+    characters or more, and gives the same matches again as they were found. They are kept where the scan ends, and only
+    where there are not more than _MATCH_SPACING characters to a match, so one that is not read to its end, or that
+    matches nearly everywhere, is read again where it is asked for again."""
+    if len(text) < _CHECKED_FROM:
+        return pattern.finditer(text)
+    readings = _READINGS.get()
+    if readings is None:
+        return pattern.finditer(text)
+    key = (_ALL_MATCHES, id(pattern), text)
+    made = readings.scan_get(key)
+    if made is not None:
+        return iter(made[1])
+    return _scanned(readings, key, pattern, text)
+
+
+def _scanned(readings, key, pattern, text):
+    kept, most = [], len(text) // _MATCH_SPACING
+    for m in pattern.finditer(text):
+        if kept is not None:
+            kept.append(m)
+            if len(kept) > most:
+                kept = None
+        yield m
+    if kept is not None:
+        readings.scan_put(key, pattern, tuple(kept))
+
+
+def _dropped(runs, text):
+    """runs.sub("", text) for a pattern that matches no empty string, read from its scan (_scan): the text without them."""
+    pieces, last = [], 0
+    for m in _scan(runs, text):
+        pieces.append(text[last:m.start()])
+        last = m.end()
+    pieces.append(text[last:])
+    return "".join(pieces)
+
+
 def _search(pattern, text, *bounds):
-    """pattern.search(text, *bounds), not run where the pattern can find nothing in `text` (_may_find)."""
-    return pattern.search(text, *bounds) if _may_find(pattern, text) else None
+    """pattern.search(text, *bounds), not run where the pattern can find nothing in `text` (_may_find), and made once in
+    a call where it reads the whole text (_first)."""
+    if not _may_find(pattern, text):
+        return None
+    return pattern.search(text, *bounds) if bounds else _first(pattern, text)
 
 
 def _finditer(pattern, text, *bounds):
-    """pattern.finditer(text, *bounds), not run where the pattern can find nothing in `text` (_may_find)."""
-    return pattern.finditer(text, *bounds) if _may_find(pattern, text) else iter(())
+    """pattern.finditer(text, *bounds), not run where the pattern can find nothing in `text` (_may_find), and made once
+    in a call where it reads the whole text (_scan)."""
+    if not _may_find(pattern, text):
+        return iter(())
+    return pattern.finditer(text, *bounds) if bounds else _scan(pattern, text)
 
 
 # The patterns that read a secret's value after its name (KEYED_SECRET, a password in quotes, an app's) all start with
@@ -5437,7 +5562,7 @@ def _token_spans(rules, view):
                     _TOKEN_SUBSETS.clear()
                 entry = _TOKEN_SUBSETS[key] = (shapes, _token_shapes(shapes))
             tokens = entry[1]
-    return [(m.start(), m.end()) for m in tokens.finditer(view) if m.end() > m.start() and not _scheme_words(m)]
+    return [(m.start(), m.end()) for m in _scan(tokens, view) if m.end() > m.start() and not _scheme_words(m)]
 
 
 def _scoped(source):
@@ -5495,7 +5620,7 @@ def _once(text, rules, origin=None, novel=None):
     or the view hid anything."""
     if novel is None:
         novel = _NOVEL.get()
-    spans = _split_secrets(text, rules) if INVISIBLE.search(text) else []
+    spans = _split_secrets(text, rules) if _first(INVISIBLE, text) else []
     if spans and novel is not None:
         novel.append(spans)
     if not spans:
@@ -5589,9 +5714,9 @@ def _todays_view_differs(text):
     app password; where the text spells a program as only this branch reads it, as "az.exe" (_WINDOWS_FILE), and with it
     where a reading starts; or where its rows of a command, which it reads as main does, or this branch's wrappings may
     read a command's name, in the text read without its invisible characters or in a JSON string it holds escaped."""
-    return ([m.span() for m in _INVISIBLE_RUN.finditer(text)] != [m.span() for m in _TODAYS_INVISIBLE_RUN.finditer(text)]
-            or _WINDOWS_SPELLING.search(text) or _ANY_COMMAND.search(_INVISIBLE_RUN.sub("", text))
-            or _ESCAPED_PRINTABLE.search(text))
+    return ([m.span() for m in _scan(_INVISIBLE_RUN, text)] != [m.span() for m in _scan(_TODAYS_INVISIBLE_RUN, text)]
+            or _first(_WINDOWS_SPELLING, text) or _ANY_COMMAND.search(_dropped(_INVISIBLE_RUN, text))
+            or _first(_ESCAPED_PRINTABLE, text))
 
 
 def _split_secrets_seen(text, rules, run, starts, seen_by_main):
@@ -5741,7 +5866,7 @@ def _main_hidden(text):
     COMMAND_FLAGS as this mask does not. Where it still changes after MAX_PASSES, its mask() masks whole all between
     what the text and the last pass share at both ends, and all that is marked too."""
     hidden = _hidden(text, *_passes(text, _main_once))
-    return _todays_hidden(text, hidden) if _ANY_COMMAND.search(text) else hidden
+    return _todays_hidden(text, hidden) if _first(_ANY_COMMAND, text) else hidden
 
 
 def _todays_hidden(text, mains):
@@ -5800,7 +5925,7 @@ class _Split:
 
     def __init__(self, text, runs, starts=_READING_START):
         self.text, self.starts = text, starts
-        self.gone = [i for run in runs.finditer(text) if not starts.match(text, run.end())
+        self.gone = [i for run in _scan(runs, text) if not starts.match(text, run.end())
                      for i in range(run.start(), run.end())]
         self.view = "".join(text[a + 1:b] for a, b in zip([-1] + self.gone, self.gone + [len(text)]))
         # The view's i-th character sits after every removed character whose place in the view is i or before.
@@ -7583,7 +7708,7 @@ def _typed_code_edits(text):
     """Each password code types into a page, as an edit that masks it: a typing tool's input written in code, read with
     typed_secrets' rule, and a string typed into a field whose locator's strings (its label, placeholder, role's name or
     selector) ask for a secret. A value typed from a variable stays."""
-    if not _CODE_HINT.search(text):
+    if not _first(_CODE_HINT, text):
         return []
     tokens, loose, stretches, comments = _code_tokens(text)
     comments = _Spans(comments)
@@ -7595,11 +7720,11 @@ def _typed_code_edits(text):
         k = bisect.bisect_left(starts, call.end() - 1)
         return k if k < len(tokens) and tokens[k][0] == "(" and tokens[k][1] == call.end() - 1 else None
 
-    for call in _CODE_TYPING_CALL.finditer(text):
+    for call in _scan(_CODE_TYPING_CALL, text):
         k = opening(call)
         if k is not None:
             edits += _typed_in_objects(text, _call_span(tokens, k, stretches.holding(tokens[k][1])[1])[0])
-    for call in _CODE_FILL_CALL.finditer(text):
+    for call in _scan(_CODE_FILL_CALL, text):
         k = opening(call)
         if k is None:
             continue
@@ -7842,12 +7967,12 @@ def _typed_json_edits(text):
     to the line's end. A string that holds objects of its own, as a call's arguments do in JSON, is read as they are."""
     # The two gates only save the scan on a text with no such call. A name written with an escape, or with a character
     # a reader does not see, would pass neither, so a text that holds one goes to the scan.
-    disguised = "\\u" in text or "\\U" in text or INVISIBLE.search(text) is not None
-    if not (disguised or _JSON_TYPED_HINT.search(text)):
+    disguised = "\\u" in text or "\\U" in text or _first(INVISIBLE, text) is not None
+    if not (disguised or _first(_JSON_TYPED_HINT, text)):
         return []
-    names = [m.end() for m in _TYPING_NAME_AT.finditer(text)]
-    if not (disguised or names or _ACTION_TYPE.search(text) or _JSON_SECRET_HINT.search(text)
-            or _JSON_FIELD_HINT.search(text)):
+    names = [m.end() for m in _scan(_TYPING_NAME_AT, text)]
+    if not (disguised or names or _first(_ACTION_TYPE, text) or _first(_JSON_SECRET_HINT, text)
+            or _first(_JSON_FIELD_HINT, text)):
         return []
     edits = []
     _json_scan(text, 0, len(text), names, edits, 0)
