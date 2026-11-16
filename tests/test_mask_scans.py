@@ -347,9 +347,12 @@ class ScanTest(unittest.TestCase):
         with a_call(text):
             pool = head._READINGS.get()
             one, two = head._scan(pattern, text), head._scan(pattern, text)
-            got = [(a, b) for a, b in zip(one, two)]  # read to their ends together
-            self.assertEqual(shown(m for m, _ in got), shown(pattern.finditer(text)))
+            got = [(a, b) for a, b in zip(one, two)]  # read together until the first is at its end
+            self.assertEqual(len(pool.scans), 1)  # the first has kept its matches: the second is not at its end yet
             self.assertEqual(shown(m for _, m in got), shown(pattern.finditer(text)))
+            self.assertEqual(list(two), [])  # the second is at its end, and finds an entry kept for the same key
+            self.assertEqual(pool.scan_texts[id(text)][0], 1)  # held once: not one entry and another for the same key
+            self.assertEqual(shown(m for m, _ in got), shown(pattern.finditer(text)))
             self.assertEqual(len(pool.scans), 1)
             self.assertEqual(pool.scan_size, sys.getsizeof(text) + weight_of(pool, [m for m, _ in got]))
             pool.scan_limit = 0
@@ -375,6 +378,24 @@ class ScanTest(unittest.TestCase):
         self.assertNotIn((text, 0), readings)
         # the text is the scans' now: it and the entries weigh more than the pool's bound, so they go
         self.assertEqual((readings.scans, readings.scan_texts, readings.scan_size), ({}, {}, 0))
+
+    def test_a_text_without_the_runs_of_a_pattern_is_what_the_pattern_s_own_sub_gives(self):
+        # _dropped(runs, text) is runs.sub("", text) read from the scan: outside a call, in one, short and long, and
+        # again from the entry the first made
+        r = random.Random("dropped")
+        for runs in (head._INVISIBLE_RUN, re.compile(r"\s+"), re.compile(r"[0-9]{2,}"), re.compile(r"no such thing")):
+            for size in (200, 20_000):
+                for kind in range(3):
+                    text = "".join(r.choice(["a", "b", " ", "12", "\u200b", "\x1b[0m", "\n", "x" * 7]) for _ in range(size // 3))
+                    if kind == 1:
+                        text = text + "\u200b\u200b"  # a run at its end
+                    elif kind == 2:
+                        text = "\u200b" + text  # and at its start
+                    want = runs.sub("", text)
+                    self.assertEqual(head._dropped(runs, text), want, (runs.pattern[:20], size, kind))
+                    with a_call(text):
+                        for ask in range(2):
+                            self.assertEqual(head._dropped(runs, text), want, (runs.pattern[:20], size, kind, ask))
 
     def test_an_entry_keeps_its_pattern_alive_so_no_other_pattern_has_its_id(self):
         text = code(20_000, "alive")

@@ -445,15 +445,24 @@ def short_calls():
 
 class StepMemoTest(unittest.TestCase):
     @staticmethod
-    def reach(root, defs):
+    def reach(root, defs, leaves=()):
+        """The functions and classes of the module that `root` reaches by name; those of `leaves` are reached but not entered."""
         seen, stack = set(), [root]
         while stack:
             name = stack.pop()
             if name in seen or name not in defs:
                 continue
             seen.add(name)
+            if name in leaves and name != root:
+                continue
             stack += [n.id for n in ast.walk(defs[name]) if isinstance(n, ast.Name)]
         return seen
+
+    # The scans of a whole text (_first, _scan, with _scanned and _dropped) find the scan a call kept in its readings
+    # (_READINGS) and give what the pattern's own search or finditer gives on the text (tests/test_mask_scans.py): they
+    # are a function of the pattern and the text, whoever asks. A step may reach them, and they may reach nothing impure but
+    # that context variable.
+    SCANS = ("_first", "_scan", "_scanned", "_dropped")
 
     def test_a_step_made_once_reads_nothing_but_its_text_and_its_row(self):
         # A reading made once is made for the text, the rules and the context in its key (_read_once): nothing a step
@@ -466,11 +475,17 @@ class StepMemoTest(unittest.TestCase):
         impure |= {"_reading", "_run", "_read_once", "_named_found", "_gitleaks_spans", "_one_call", "mask",
                    "mask_with_origin", "_mask_whole", "_masked", "_split_secrets"}
         self.assertGreaterEqual(len(impure), 14)
+        for scan in self.SCANS:
+            self.assertIn(scan, defs)
+        self.assertEqual(sorted({name for scan in self.SCANS for f in self.reach(scan, defs)
+                                 for name in {n.id for n in ast.walk(defs[f]) if isinstance(n, ast.Name)} & impure}),
+                         ["_READINGS"])
         for step in STEPS:
-            reached = self.reach(step, defs)
+            reached = self.reach(step, defs, self.SCANS)
             self.assertGreater(len(reached), 5, step)
-            self.assertEqual(sorted(name for f in reached for name in {n.id for n in ast.walk(defs[f])
-                                                                        if isinstance(n, ast.Name)} & impure), [], step)
+            self.assertEqual(sorted(name for f in reached - set(self.SCANS)
+                                    for name in {n.id for n in ast.walk(defs[f]) if isinstance(n, ast.Name)} & impure),
+                             [], step)
         # The same reading finds what the check is for: the one step of those a reading makes that is not made once reaches
         # the mask itself (a pair's name is read as a value), and reads what is not in a key.
         reached = self.reach("_name_value_edits", defs)
