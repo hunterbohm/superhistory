@@ -101,6 +101,15 @@ def _grouped(db, rows, rows_arg, after, sources, n, before):
     return lists
 
 
+def _unsummarized(db, ids):
+    """Those of the raw rows `ids` whose item has no doc or summary row."""
+    if not ids:
+        return set()
+    return {i for (i,) in db.execute(
+        f"SELECT d.id FROM docs d WHERE d.id IN ({','.join('?' * len(ids))}) AND NOT EXISTS (SELECT 1 FROM docs s "
+        f"WHERE s.source = d.source AND s.source_id = d.source_id AND s.kind IN ('doc', 'segment', 'atom'))", ids)}
+
+
 def _stale_rows(db, match, rows):
     """{id: (the newer decisions, whether the owner rejected one)} for those of `rows` that state a decision search
     leaves out, so search ranks them lower and each carries a note naming what replaced it. A row states a decision
@@ -206,9 +215,13 @@ def search(db, query, after=None, sources=(), limit=10, before=None, keep=None, 
     match = " OR ".join(terms)
     fused = {}
     summary, raw = _ranked(db, match, after, tuple(sources), CANDIDATES, before)
+    alone = _unsummarized(db, raw)
     for ids, weight in ((summary, 1.0), (raw, RAW_WEIGHT)):
         for rank, rid in enumerate(ids, 1):
-            fused[rid] = fused.get(rid, 0.0) + weight / (RRF_K + rank)
+            # A long note stored only as chunks has no summary to stand for it in the summary list, so its chunk
+            # weighs as a summary row at its rank. Raw chunks of a summarized item weigh RAW_WEIGHT.
+            share = 1.0 if rid in alone else weight
+            fused[rid] = fused.get(rid, 0.0) + share / (RRF_K + rank)
     if not fused:
         return []
     coverage = _coverage(db, terms, list(fused))
