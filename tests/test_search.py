@@ -312,7 +312,8 @@ class SearchTest(TempDB):
         self.add("r", "kestrel falcon osprey\n" + "padding line of ordinary text\n" * 200, title="every word")
         self.assertEqual(self.titles("kestrel falcon osprey"), ["every word", "one word"])
         hits = {h["title"]: h for h in search.search(self.db, "kestrel falcon osprey")}
-        self.assertAlmostEqual(hits["one word"]["score"] / (1 / (search.RRF_K + 1)), 2 / 3, places=2)
+        # One word of three keeps COVERAGE_FLOOR of its score, not a third, so a note missing a filler word holds up.
+        self.assertAlmostEqual(hits["one word"]["score"] / (1 / (search.RRF_K + 1)), 2 * search.COVERAGE_FLOOR, places=2)
 
     def test_reciprocal_rank_scores(self):
         self.add("a", "narwhal narwhal narwhal", title="strong", ts="2000-01-01T00:00:00Z")
@@ -714,6 +715,60 @@ class ExcerptTest(TempDB):
         hit = search.search(self.db, "walrus")[0]
         self.assertTrue(hit["excerpt"].startswith("Opening line of the note."))
         self.assertLessEqual(len(hit["excerpt"]), search.EXCERPT_CHARS)
+
+
+class RankingTest(TempDB):
+    """How much each kind of record counts, by its source's type: kept notes, fast-aging chats, helper sessions."""
+
+    def hits(self, query, **types):
+        return [h["source_id"].split(":")[-1] for h in search.search(self.db, query, types=types)]
+
+    def test_a_word_loses_its_punctuation_and_a_contraction_its_ending(self):
+        self.assertEqual(search.fts_terms("what are we charging again, the 26 to 50 ones"),
+                         ['"charging"', '"26"', '"50"'])
+        self.assertEqual(search.fts_terms("where's the boat, suite?"), ['"boat"', '"suite"'])
+        self.assertEqual(search.fts_terms("kevin's ~/code/relay-drill, --force"),
+                         ['"kevin"', '"~/code/relay-drill"', '"--force"'])
+        self.assertEqual(search.fts_terms('"suite, again" still'), ['"suite, again"'])
+
+    def test_a_note_edited_lately_outranks_the_same_words_in_a_session(self):
+        self.add("chat", "pangolin pricing for teams", source="sessions", ts=iso(timedelta(days=2)))
+        self.add("note.md", "pangolin pricing for teams", source="vault", ts=iso(timedelta(days=3)))
+        self.assertEqual(self.hits("pangolin pricing", vault="notes"), ["note.md", "chat"])
+        self.assertEqual(self.hits("pangolin pricing"), ["chat", "note.md"])  # a source named vault is no notes type
+
+    def test_a_note_left_alone_or_in_a_state_folder_is_not_lifted(self):
+        self.add("chat", "pangolin pricing for teams", source="sessions", ts=iso(timedelta(days=2)))
+        self.add("old.md", "pangolin pricing for teams", source="vault", ts=iso(timedelta(days=search.NOTE_LIVE_DAYS + 5)))
+        self.add("Agents/State/log.md", "pangolin pricing for teams", source="vault", ts=iso(timedelta(days=1)))
+        self.assertEqual(self.hits("pangolin pricing", vault="notes")[0], "chat")
+
+    def test_a_session_ages_faster_than_a_note(self):
+        self.add("chat", "pangolin pricing for teams", source="codex", ts=iso(timedelta(days=120)))
+        self.add("note.md", "pangolin pricing for teams", source="vault", ts=iso(timedelta(days=150)))
+        self.assertEqual(self.hits("pangolin pricing", vault="notes", codex="codex"), ["note.md", "chat"])
+
+    def test_a_helper_session_ranks_below_its_parent_but_its_decisions_keep_their_rank(self):
+        brief = "Claude Code session in ~/code/x\n\nUSER: Act as the review sub-agent for this task.\n\n"
+        self.add("parent", "Claude Code session in ~/code/x\n\nUSER: pangolin pricing for teams", source="cc")
+        self.add("helper", brief + "pangolin pricing for teams", source="cc")
+        self.add("marked", "pangolin pricing for teams", source="cc", meta={"subagent": True})
+        self.assertEqual(self.hits("pangolin pricing")[0], "parent")
+        store.replace_rows(self.db, "cc", "helper", [
+            {"kind": "atom", "ts": iso(), "title": "decision: pangolin", "content": "pangolin pricing for teams is flat",
+             "metadata": {"atom": "decision"}}], store.SUMMARY_KINDS)
+        self.assertEqual(self.hits("pangolin pricing flat")[0], "helper")
+
+    def test_source_types_come_from_the_config_file(self):
+        home = os.path.join(self.tmp.name, "home")
+        os.makedirs(home)
+        with open(os.path.join(home, "config.toml"), "w") as fh:
+            fh.write('[sources.vault]\ntype = "notes"\npath = "~/vault"\n\n[sources.codex]\n')
+        with mock.patch.object(search, "_TYPES", None), mock.patch.dict(os.environ, {"SUPERHISTORY_HOME": home}):
+            self.assertEqual(search.source_types(), {"vault": "notes", "codex": "codex"})
+        with mock.patch.object(search, "_TYPES", None), \
+                mock.patch.dict(os.environ, {"SUPERHISTORY_HOME": os.path.join(self.tmp.name, "none")}):
+            self.assertEqual(search.source_types(), {})
 
 
 class PointerTest(unittest.TestCase):

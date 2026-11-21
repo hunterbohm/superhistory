@@ -112,7 +112,8 @@ class DecisionTest(Store):
         self.assertEqual(self.ids("Composio app accounts"),
                          ["Composio switched off; Executor replaces it for app accounts."])
 
-    def test_an_agents_decision_never_hides_the_owners_own(self):
+    def test_an_agents_checked_replacement_hides_the_owners_older_decision_without_his_review(self):
+        # The owner's choice (2026-11-21): a newer decision both calls agree on replaces an older one, his own too.
         self.session("old", "2026-06-12T10:00:00Z", ["Composio CLI is the default for connected app accounts."],
                      text="USER: composio cli is the default for app accounts\n\nASSISTANT: ok")
         self.session("new", "2026-10-24T10:00:00Z", ["Composio switched off; Executor replaces it for app accounts."])
@@ -123,11 +124,11 @@ class DecisionTest(Store):
             return answer("owner", "composio cli is the default for app accounts")
 
         self.assertEqual(self.run_pass(Model(judge)).replaced, 1)
-        self.assertEqual(len(self.ids("Composio app accounts")), 2)
-        new = self.db.execute("SELECT id FROM docs WHERE content LIKE 'Composio switched off%'").fetchone()[0]
-        decisions.answer(self.db, new, "confirmed")
         self.assertEqual(self.ids("Composio app accounts"),
                          ["Composio switched off; Executor replaces it for app accounts."])
+        new = self.db.execute("SELECT id FROM docs WHERE content LIKE 'Composio switched off%'").fetchone()[0]
+        decisions.answer(self.db, new, "rejected")
+        self.assertEqual(self.ids("Composio app accounts"), ["Composio CLI is the default for connected app accounts."])
 
     def test_a_mark_whose_replacing_decision_is_gone_hides_nothing_even_before_the_next_pass(self):
         self.session("old", "2026-06-12T10:00:00Z", ["Composio CLI is the default for connected app accounts."])
@@ -270,7 +271,30 @@ class DecisionTest(Store):
         me = d(10, "2026-09-01", "Composio CLI default app accounts connected rule replaced")
         self.assertEqual([c.row for c in decisions.Index(newer + [older, me]).older(me, k=1)], [9])
 
-    def test_an_agents_report_hides_nothing_until_the_older_decision_is_judged(self):
+    def test_the_judge_sees_older_standing_choices_before_one_off_steps(self):
+        def d(n, ts, text):
+            return decisions.Decision(n, "s", f"i{n}", "k", ts, text)
+        steps = [d(n, "2026-10-0%d" % n, "Composio app accounts connected rule step") for n in range(1, 6)]
+        rule = d(8, "2026-01-01", "Composio is the rule for app accounts.")
+        me = d(9, "2026-10-09", "Composio app accounts connected rule step replaced")
+        index = decisions.Index(steps + [rule, me], lasting=[rule.ref])
+        self.assertEqual([c.row for c in index.older(me, k=2)][0], 8)
+        self.assertEqual([c.row for c in decisions.Index(steps + [rule, me]).older(me, k=2)], [1, 2])
+
+    def test_review_reads_the_decision_records_in_a_few_queries(self):
+        for n in range(40):
+            self.session(f"s{n}", f"2026-11-{n % 28 + 1:02d}T10:00:00Z", [f"Vendor{n} bills widget{n} orders{n}."])
+        self.run_pass(Model(lambda *a: answer(matters=True)))
+        queries = []
+        self.db.set_trace_callback(queries.append)
+        try:
+            found = decisions.review(self.db, limit=100)
+        finally:
+            self.db.set_trace_callback(None)
+        self.assertEqual(len(found), 40)
+        self.assertLess(len(queries), 10)
+
+    def test_an_agents_report_hides_the_older_decision_before_that_one_is_judged(self):
         self.session("old", "2026-06-12T10:00:00Z", ["Composio CLI is the default for connected app accounts."],
                      text="USER: composio cli is the default for app accounts\n\nASSISTANT: ok")
         self.session("new", "2026-10-24T10:00:00Z", ["Composio switched off; Executor replaces it for app accounts."])
@@ -278,9 +302,9 @@ class DecisionTest(Store):
                       else answer("owner", "composio cli is the default for app accounts"))
         decisions.run(self.db, judge, OWNER, kind_of, LOG, limit=1, workers=1)
         self.assertEqual(self.db.execute("SELECT count(*) FROM decisions WHERE new_key IS NOT NULL").fetchone()[0], 1)
-        self.assertEqual(len(self.ids("Composio app accounts")), 2)
+        self.assertEqual(len(self.ids("Composio app accounts")), 1)
         self.run_pass(judge)
-        self.assertEqual(len(self.ids("Composio app accounts")), 2)
+        self.assertEqual(len(self.ids("Composio app accounts")), 1)
 
     def test_each_copy_of_the_replaced_text_in_another_item_is_shown_and_checked(self):
         for sid in ("old1", "old2"):
@@ -502,19 +526,25 @@ class DecisionTest(Store):
                      text="USER: yeah lets just use executor for every app acount from now on\n\nASSISTANT: ok")
         self.session("relayed", "2026-11-02T10:00:00Z", ["Merge trains approved by Hunter for all workers."],
                      text="USER: You own the merge lane. Hunter approved merge trains.\n\nASSISTANT: ok")
-        self.session("aside", "2026-11-03T10:00:00Z", ["Invoices are sent in USD."],
+        # A whole short reply that says yes or no is his (the owner's choice, 2026-11-21); a piece of a longer line,
+        # or a short line that answers nothing, is not.
+        self.session("reply", "2026-11-03T10:00:00Z", ["Invoices are sent in USD."],
                      text="USER: sounds good to me thanks\n\nASSISTANT: ok")
+        self.session("piece", "2026-11-04T10:00:00Z", ["Invoices are sent in EUR."],
+                     text="USER: ok but first tell me what the totals were\n\nASSISTANT: ok")
+        self.session("asked", "2026-11-05T10:00:00Z", ["Invoices are sent in GBP."],
+                     text="USER: tell me more\n\nASSISTANT: ok")
 
         def judge(text, older, passages):
-            if "Executor" in text:
-                return answer("owner", "lets just use executor for every app acount")
-            if "Invoices" in text:
-                return answer("owner", "sounds good to me thanks")
-            return answer("owner", "Hunter approved merge trains for every lane today")
+            quotes = {"Executor": "lets just use executor for every app acount", "USD": "sounds good to me thanks",
+                      "EUR": "ok but", "GBP": "tell me more"}
+            return answer("owner", next((q for k, q in quotes.items() if k in text),
+                                        "Hunter approved merge trains for every lane today"))
 
-        self.assertEqual(self.run_pass(Model(judge)).authors, {"owner": 1, "agent": 2, "other": 0})
+        self.assertEqual(self.run_pass(Model(judge)).authors, {"owner": 2, "agent": 3, "other": 0})
         rows = dict(self.db.execute("SELECT source_id, author FROM decisions"))
-        self.assertEqual(rows, {"typed": "owner", "relayed": "agent", "aside": "agent"})
+        self.assertEqual(rows, {"typed": "owner", "relayed": "agent", "reply": "owner", "piece": "agent",
+                                "asked": "agent"})
 
     def test_each_decision_is_judged_once_and_a_failed_batch_on_the_next_run(self):
         self.session("a", "2026-11-01T10:00:00Z", ["Prices are quoted in USD."])
@@ -560,10 +590,16 @@ class DecisionTest(Store):
         self.session("b", "2026-10-24T10:00:00Z", ["Composio switched off; Executor replaces it for app accounts."])
         self.session("c", "2026-10-25T10:00:00Z", ["Composio switched off for good; Nango holds app accounts."])
         self.run_pass(Model(lambda text, older, _: answer(replaces=older if "switched" in text else ())))
-        self.assertIn(old, self.ids("Composio app accounts"))  # agent reports alone never hide his words
+        self.assertNotIn(old, self.ids("Composio app accounts"))
+
+        def holder():
+            hit = next(h for h in search.search(self.db, "Composio app accounts", history=True) if h["content"] == old)
+            return decisions.describe(self.db, hit["replaced_by"])[1]
+        self.assertEqual(holder(), "Composio switched off for good; Nango holds app accounts.")  # the newer one
         b = self.db.execute("SELECT id FROM docs WHERE content LIKE 'Composio switched off;%'").fetchone()[0]
         decisions.answer(self.db, b, "confirmed")
         self.assertNotIn(old, self.ids("Composio app accounts"))
+        self.assertEqual(holder(), "Composio switched off; Executor replaces it for app accounts.")
 
     def test_review_lists_an_agent_decision_again_once_its_replacement_is_rewritten(self):
         old = "Merge trains approved: one worker merges all green PRs."
