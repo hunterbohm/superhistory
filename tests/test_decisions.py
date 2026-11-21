@@ -258,7 +258,9 @@ class DecisionTest(Store):
                and h["source_id"].endswith("old")]
         self.assertEqual(len(raw), 1)
         self.assertEqual(raw[0]["replaced_in_item"], [new])
-        self.assertTrue(raw[0]["snippet"].startswith(f"[A decision here was replaced later; see #{new}]"))
+        self.assertTrue(raw[0]["snippet"].startswith(
+            f"[Out of date: replaced on 2026-10-24 by #{new}: Composio switched off; Executor replaces it for app "
+            "accounts.] "))
 
     def test_older_candidates_are_found_below_any_number_of_newer_better_matches(self):
         def d(n, ts, text):
@@ -328,7 +330,61 @@ class DecisionTest(Store):
         hits = [h for h in search.search(self.db, "composio connected app accounts") if h["source_id"] == "old"]
         self.assertEqual([(h["content"][:21], h.get("replaced_in_item")) for h in hits],
                          [("Run composio connect ", [new])])
-        self.assertTrue(hits[0]["snippet"].startswith("[A decision here was replaced later"))
+        self.assertTrue(hits[0]["snippet"].startswith("[Out of date: replaced on 2026-10-24"))
+
+    def replaced_with_rows(self, rows):
+        """An old session whose decision a newer session replaced, with `rows` (kind, ts, content) beside it."""
+        self.session("old", "2026-06-12T10:00:00Z", ["Composio CLI is the default for connected app accounts."])
+        store.replace_rows(self.db, "claude_code", "old", [
+            {"kind": "atom", "ts": "2026-06-12T10:00:00Z", "title": "decision: Composio CLI is the default",
+             "content": "Composio CLI is the default for connected app accounts.", "metadata": {"atom": "decision"}}]
+            + [{"kind": kind, "ts": ts, "title": content[:40], "content": content, "metadata": {}}
+               for kind, ts, content in rows], store.SUMMARY_KINDS)
+        self.db.commit()
+        self.session("new", "2026-10-24T10:00:00Z", ["Composio switched off; Executor replaces it for app accounts."])
+        self.run_pass(Model(lambda text, older, _: answer(replaces=older if "switched" in text else ())))
+        return self.db.execute("SELECT id FROM docs WHERE content LIKE 'Composio switched off%'").fetchone()[0]
+
+    def test_only_the_records_that_state_the_old_choice_carry_the_note(self):
+        self.replaced_with_rows([
+            ("segment", "2026-06-12T10:00:00Z", "Set the Composio CLI as the default for connected app accounts."),
+            ("segment", "2026-06-12T11:00:00Z", "Composio invoices are paid by card every month.")])
+
+        def old_hit(query):
+            return next(h for h in search.search(self.db, query) if h["source_id"] == "old")
+        stating = old_hit("set composio cli default connected app accounts")
+        self.assertTrue(stating["content"].startswith("Set the Composio CLI"))
+        self.assertTrue(stating["replaced_in_item"])
+        other = old_hit("composio invoices paid card month")
+        self.assertTrue(other["content"].startswith("Composio invoices"))
+        self.assertNotIn("replaced_in_item", other)
+        self.assertFalse(other["snippet"].startswith("[Out of date"))
+
+    def test_a_record_written_after_the_replacement_gets_no_note(self):
+        self.replaced_with_rows([
+            ("segment", "2026-11-02T10:00:00Z", "Composio CLI default for connected app accounts, looked at again.")])
+        hits = [h for h in search.search(self.db, "composio cli default connected app accounts")
+                if h["source_id"] == "old"]
+        self.assertEqual([(h["kind"], h.get("replaced_in_item")) for h in hits], [("segment", None)])
+
+    def test_a_record_that_states_the_new_choice_more_than_the_old_gets_no_note(self):
+        self.replaced_with_rows([
+            ("segment", "2026-06-12T10:00:00Z",
+             "Composio CLI default for connected app accounts until Executor replaces it; switched off later.")])
+        hits = [h for h in search.search(self.db, "composio cli default connected app accounts")
+                if h["source_id"] == "old"]
+        self.assertEqual([h.get("replaced_in_item") for h in hits], [None])
+
+    def test_a_record_that_states_the_old_choice_ranks_below_the_one_that_replaced_it(self):
+        new = self.replaced_with_rows([
+            ("segment", "2026-06-12T10:00:00Z", "Composio CLI default for connected app accounts: Composio CLI.")])
+        hits = search.search(self.db, "composio cli default connected app accounts")
+        order = [h["id"] for h in hits]
+        old = next(h["id"] for h in hits if h["source_id"] == "old")
+        self.assertLess(order.index(new), order.index(old))
+        with mock.patch.object(search, "STALE_WEIGHT", 1.0):
+            order = [h["id"] for h in search.search(self.db, "composio cli default connected app accounts")]
+        self.assertLess(order.index(old), order.index(new))
 
     def test_an_older_decision_that_arrives_after_its_replacement_was_judged_is_still_checked(self):
         new = "Composio switched off; Executor replaces it for app accounts."

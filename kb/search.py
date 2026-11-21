@@ -27,7 +27,12 @@ SNIPPETS = ("snippet({table}, {column}, '[', ']', ' … ', 24), "
 EXCERPT_CHARS = 500
 SNIPPET_CHARS = 220
 MARK, END = "\x02", "\x03"
-STALE_NOTE = "[A decision here was replaced later; see {}] "
+STALE_NOTE = "[Out of date: replaced on {date} by #{id}: {text}] "
+STALE_TEXT_CHARS = 140
+# The share of a replaced decision's words a record must hold to count as stating it (decisions.terms).
+STATES = 0.5
+# A record that states a replaced or rejected decision ranks at this share of its score.
+STALE_WEIGHT = 0.5
 REJECTED_NOTE = "[A decision here was rejected by the owner] "
 
 
@@ -96,30 +101,51 @@ def _grouped(db, rows, rows_arg, after, sources, n, before):
     return lists
 
 
-def _stale_items(db, match, items):
-    """{item: (the ids of the newer decisions, whether the owner rejected one)} for those of `items` holding a decision
-    that matches the search and that search leaves out, so their other rows, such as the session text that still
-    states the old choice, carry a note naming what replaced it or saying he rejected it. Checked per item, whichever
-    of its rows the search picked."""
+def _stale_rows(db, match, rows):
+    """{id: (the newer decisions, whether the owner rejected one)} for those of `rows` that state a decision search
+    leaves out, so search ranks them lower and each carries a note naming what replaced it. A row states a decision
+    of its own item that matches the search when it holds at least STATES of the decision's words, more of them than
+    of the newer decision's, and is older than the newer decision: the same session's other records, and the one
+    written after the change, keep their rank and get no note."""
+    items = sorted({(r[2], r[3]) for r in rows})
+    marked = set()
+    for i in range(0, len(items), 300):
+        batch = items[i:i + 300]
+        where = " OR ".join("(source=? AND source_id=?)" for _ in batch)
+        marked.update(db.execute(f"SELECT DISTINCT source, source_id FROM decisions WHERE (new_key IS NOT NULL "
+                                 f"OR answer='rejected') AND ({where})", [v for t in batch for v in t]))
     found = {}
-    for src, sid in items:
-        if not db.execute("SELECT 1 FROM decisions WHERE source=? AND source_id=? AND (new_key IS NOT NULL "
-                          "OR answer='rejected') LIMIT 1", (src, sid)).fetchone():
-            continue
+    for src, sid in sorted(marked):
         atoms = db.execute("SELECT id, source, source_id, kind, content FROM docs WHERE source=? AND source_id=? "
                            "AND kind='atom'", (src, sid)).fetchall()
         matching = {i for (i,) in db.execute(
             f"SELECT rowid FROM docs_fts WHERE docs_fts MATCH ? AND rowid IN ({','.join('?' * len(atoms))})",
             (match, *[a[0] for a in atoms]))} if atoms else set()
-        rows, rejected = [], False
-        for by in decisions.hidden(db, [a for a in atoms if a[0] in matching]).values():
-            rejected |= by == "rejected"
-            row = decisions.describe(db, by)[0] if by != "rejected" else None
-            if row and row not in rows:
-                rows.append(row)
-        if rows or rejected:
-            found[(src, sid)] = (rows, rejected)
+        texts = {a[0]: a[4] for a in atoms}
+        olds = []
+        for rid, by in decisions.hidden(db, [a for a in atoms if a[0] in matching]).items():
+            new = None if by == "rejected" else decisions._find(db, by)
+            if by == "rejected" or new:
+                olds.append((decisions.terms(texts[rid]), new))
+        for row in rows:
+            if (row[2], row[3]) != (src, sid):
+                continue
+            words = set(decisions.terms(f"{row[5]} {row[6]}"))
+            newer, rejected = [], False
+            for old, new in olds:
+                share = _share(old, words)
+                if share < STATES or new and (row[4] >= new.ts or _share(decisions.terms(new.text), words) >= share):
+                    continue
+                rejected |= new is None
+                if new and new not in newer:
+                    newer.append(new)
+            if newer or rejected:
+                found[row[0]] = (newer, rejected)
     return found
+
+
+def _share(words, found):
+    return sum(w in found for w in words) / len(words) if words else 0.0
 
 
 def _stand_ins(db, match, lost, fused, after, before):
@@ -200,6 +226,7 @@ def search(db, query, after=None, sources=(), limit=10, before=None, keep=None, 
             rows.append(row)
             coverage.update(_coverage(db, terms, [row[0]]))
     marks = store.superseded(db, {(r[2], r[3]) for r in rows})
+    stale = _stale_rows(db, match, rows) if not history and decisions.has_table(db) else {}
     best, total = {}, {}
     for row in rows:
         rid, kind, src, sid, ts, title, content, meta = row
@@ -207,6 +234,8 @@ def search(db, query, after=None, sources=(), limit=10, before=None, keep=None, 
         score = fused[rid] * coverage[rid] * (1 + math.exp(-_age_days(ts, now) / 180))
         if superseded:
             score *= 0.5
+        if rid in stale:
+            score *= STALE_WEIGHT
         hit = {"id": rid, "kind": kind, "source": src, "source_id": sid, "ts": ts, "title": title,
                "content": content, "meta": json.loads(meta), "superseded_by": superseded, "score": score,
                "replaced_by": out.get(rid)}
@@ -221,9 +250,6 @@ def search(db, query, after=None, sources=(), limit=10, before=None, keep=None, 
     allowed = (h for h in best.values() if h["id"] not in skipped and (h["id"] in fresh
                or not secret_id(h["source"], h["source_id"], item_names(db, h["source"], h["source_id"]))))
     hits = sorted((h for h in allowed if keep is None or keep(h)), key=lambda h: -h["score"])[:limit]
-    stale = {}
-    if not history and decisions.has_table(db):
-        stale = _stale_items(db, match, {(h["source"], h["source_id"]) for h in hits})
     for hit in hits:
         if hit["id"] in fresh:
             own = hit["content"]
@@ -237,11 +263,14 @@ def search(db, query, after=None, sources=(), limit=10, before=None, keep=None, 
             snip, marked = _snippets(hit["title"], own, match)
         hit["snippet"] = re.sub(r"\s+", " ", snip if "[" in snip else own[:SNIPPET_CHARS]).strip()
         hit["excerpt"] = excerpt(marked if MARK in marked else own)
-        newer, rejected = stale.get((hit["source"], hit["source_id"]), ([], False))
+        newer, rejected = stale.get(hit["id"], ([], False))
         note = ""
         if newer:
-            hit["replaced_in_item"] = newer
-            note += STALE_NOTE.format(", ".join(f"#{n}" for n in newer))
+            hit["replaced_in_item"] = [n.row for n in newer]
+            for n in newer:
+                text = re.sub(r"\s+", " ", mask(n.text)).strip()
+                text = text if len(text) <= STALE_TEXT_CHARS else text[:STALE_TEXT_CHARS - 1].rstrip() + "…"
+                note += STALE_NOTE.format(date=n.ts[:10], id=n.row, text=text)
         if rejected:
             hit["rejected_in_item"] = True
             note += REJECTED_NOTE
