@@ -9,7 +9,7 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from unittest import mock
 
-from kb import cli, config as config_mod, mask as mask_module, store
+from kb import cli, config as config_mod, mask as mask_module, search, store
 
 NOTES_CONFIG = 'machine = "studio"\n\n[sources.notes]\npath = "{path}"\n'
 
@@ -166,6 +166,56 @@ class CliTest(TempHome):
         self.assertIn("2 rows", self.run_kb("stats")[1])
         self.assertEqual(self.run_kb("supersede", 2, 1)[0], 0)
         self.assertIn("(superseded)", self.run_kb("search", "pangolin")[1])
+
+    def test_each_result_says_how_old_it_is(self):
+        self.add("a", "pangolin report", title="Old", ts=iso(timedelta(days=12, hours=1)))
+        self.add("b", "pangolin draft", title="New", ts=iso(timedelta(hours=2)))
+        self.add("c", "pangolin meeting", title="Soon", ts=iso(-timedelta(days=3, hours=1)))
+        out = self.run_kb("search", "pangolin")[1]
+        self.assertRegex(out, r"\d{4}-\d\d-\d\d \(12 days ago\)  s  doc #\d+  Old")
+        self.assertRegex(out, r"\(today\)  s  doc #\d+  New")
+        self.assertRegex(out, r"\(in 4 days\)  s  doc #\d+  Soon")
+        self.assertEqual(cli._ago("2026-11-19T00:00:00Z", datetime(2026, 11, 20, 1, tzinfo=timezone.utc)), "1 day ago")
+        self.assertEqual(cli._ago("not a date"), "date unknown")
+
+    def test_a_result_names_a_newer_record_of_its_item(self):
+        self.add("s", "USER: pangolin\n" + "filler line\n" * 600, title="session", ts=iso(timedelta(days=30)))
+        store.replace_rows(self.db, "s", "s", [
+            {"kind": "segment", "ts": iso(timedelta(days=30)), "title": "Pangolin plan first",
+             "content": "The pangolin plan starts in March.", "metadata": {}},
+            {"kind": "segment", "ts": iso(timedelta(days=2)), "title": "Pangolin plan moved",
+             "content": "The pangolin plan moved to May.", "metadata": {}},
+            {"kind": "segment", "ts": iso(timedelta(days=1)), "title": "Lunch", "content": "Lunch was late.",
+             "metadata": {}}], store.SUMMARY_KINDS)
+        self.db.commit()
+        out = self.run_kb("search", "pangolin plan starts March")[1]
+        first = out.split("\n1. ")[1].split("\n2. ")[0]
+        self.assertIn("Pangolin plan first", first)
+        self.assertRegex(first, r"newer in the same item: #\d+ \(\d{4}-\d\d-\d\d\) Pangolin plan moved")
+        self.assertNotIn("newer in the same item", self.run_kb("search", "pangolin plan moved May")[1].split("\n2. ")[0])
+
+    def test_a_newer_record_is_a_full_day_later_whatever_zone_its_time_names(self):
+        store.store_item(self.db, "s", "z", "2026-06-01T10:00:00Z", "session", "USER: heron\n" + "filler line\n" * 600, {})
+        store.replace_rows(self.db, "s", "z", [
+            {"kind": "segment", "ts": "2026-06-01T10:00:00Z", "title": "Heron plan first", "content": "Heron plan one.",
+             "metadata": {}},
+            {"kind": "segment", "ts": "2026-06-02T11:00:00+03:00", "title": "Heron plan soon",
+             "content": "Heron plan two.", "metadata": {}}], store.SUMMARY_KINDS)
+        self.db.commit()
+        hit = next(h for h in search.search(self.db, "heron plan one") if h["title"] == "Heron plan first")
+        self.assertIsNone(hit["newer"])
+
+    def test_a_note_names_its_live_file_to_read(self):
+        self.write_config(NOTES_CONFIG.format(path=self.tmp.name))
+        self.add("offer.md", "pangolin offer", title="Offer", source="notes", ts=iso(timedelta(days=3)),
+                 meta={"path": "/notes/offer.md", "url": "obsidian://open?file=offer"})
+        self.add("x", "pangolin elsewhere", title="Other", source="gmail", meta={"path": "/mail/x"})
+        out = self.run_kb("search", "pangolin")[1]
+        self.assertIn("-> obsidian://open?file=offer\n", out)
+        self.assertIn("-> live file /notes/offer.md: this copy is from ", out)
+        self.assertEqual(out.count("-> live file"), 1)
+        self.add("plain.md", "pangolin plain", title="Plain", source="notes", meta={"path": "/notes/plain.md"})
+        self.assertEqual(self.run_kb("search", "pangolin plain")[1].count("/notes/plain.md"), 1)
 
     def test_a_file_on_this_machine_has_no_host_prefix(self):
         self.write_config('machine = "laptop"\n')
