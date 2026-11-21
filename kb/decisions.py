@@ -94,7 +94,8 @@ Each NEW decision comes with OLDER decisions that a keyword search found ("in ..
 was decided in), and with passages from the owner's side of the same conversation: the USER turns of an agent session, \
 his texts, his emails, his lines in a meeting transcript.
 
-A short reply of {owner}'s that approves or turns down what was just put to him ("yes do it", "no, keep it") is his own words: quote it whole.
+A short reply of {owner}'s that approves or turns down what was just put to him ("yes do it", "no, keep it") \
+is his own words: quote it whole.
 
 USER turns are often not {owner}. Agents and scripts start sessions too: review requests, sub-agent briefs ("You own \
 the ... track", "Act as the review sub-agent"), scheduled prompts, and briefs that speak of {owner} in the third person \

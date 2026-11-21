@@ -123,9 +123,9 @@ def home_key(path, home=None):
 # The opening lines of a prompt one agent hands another: a delegated task, a code review round, a judge's brief. The
 # session it starts is a helper run whose words repeat its parent's, so search ranks it lower and summarize skips it.
 DELEGATED = re.compile(
-    r"^(?:\[T3 Code: the agent in T3 thread |Act as the [\w-]+ sub-agent\b|Read ~/\.claude/plugins/marketplaces/\S*worker\.md"
-    r"|You own the .{1,80}\btrack\b|Round \d+ review of PR\b|Review PR https?://|Review this PR\. Reply AGREE"
-    r"|Not a PR review\.|Codex review of\b)", re.M)
+    r"^(?:\[T3 Code: the agent in T3 thread |Act as the [\w-]+ sub-agent\b"
+    r"|Read ~/\.claude/plugins/marketplaces/\S*worker\.md|You own the .{1,80}\btrack\b|Round \d+ review of PR\b"
+    r"|Review PR https?://|Review this PR\. Reply AGREE|Not a PR review\.|Codex review of\b)", re.M)
 # How far into a prompt its opening lines may run: a note a tool puts first, such as T3 Code's, comes before them.
 DELEGATED_CHARS = 600
 

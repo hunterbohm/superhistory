@@ -381,9 +381,14 @@ def _newer(db, match, hit):
     made = _when(hit["ts"])
     if made is None:
         return None
-    rows = db.execute("SELECT d.id, d.kind, d.source, d.source_id, d.ts, d.title, d.content FROM docs_fts JOIN docs d "
-                      "ON d.id = docs_fts.rowid WHERE docs_fts MATCH ? AND d.source = ? AND d.source_id = ? "
-                      "AND d.kind IN ('doc', 'segment', 'atom')", (match, hit["source"], hit["source_id"])).fetchall()
+    # The match runs on the item's own rows: run on the whole index and filtered after, it took 0.1 s a hit.
+    ids = [i for (i,) in db.execute("SELECT id FROM docs WHERE source = ? AND source_id = ? AND kind IN "
+                                    "('doc', 'segment', 'atom')", (hit["source"], hit["source_id"]))]
+    if not ids:
+        return None
+    rows = db.execute(f"SELECT d.id, d.kind, d.source, d.source_id, d.ts, d.title, d.content FROM docs_fts JOIN docs d "
+                      f"ON d.id = docs_fts.rowid WHERE docs_fts MATCH ? "
+                      f"AND docs_fts.rowid IN ({','.join('?' * len(ids))})", (match, *ids)).fetchall()
     rows = sorted((r for r in rows if (_when(r[4]) or made) >= made + timedelta(days=1)),
                   key=lambda r: (-_when(r[4]).timestamp(), r[0]))
     out = decisions.hidden(db, [(r[0], r[2], r[3], r[1], r[6]) for r in rows])

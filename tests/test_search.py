@@ -313,7 +313,8 @@ class SearchTest(TempDB):
         self.assertEqual(self.titles("kestrel falcon osprey"), ["every word", "one word"])
         hits = {h["title"]: h for h in search.search(self.db, "kestrel falcon osprey")}
         # One word of three keeps COVERAGE_FLOOR of its score, not a third, so a note missing a filler word holds up.
-        self.assertAlmostEqual(hits["one word"]["score"] / (1 / (search.RRF_K + 1)), 2 * search.COVERAGE_FLOOR, places=2)
+        self.assertAlmostEqual(hits["one word"]["score"] / (1 / (search.RRF_K + 1)), 2 * search.COVERAGE_FLOOR,
+                               places=2)
 
     def test_reciprocal_rank_scores(self):
         self.add("a", "narwhal narwhal narwhal", title="strong", ts="2000-01-01T00:00:00Z")
@@ -739,7 +740,8 @@ class RankingTest(TempDB):
 
     def test_a_note_left_alone_or_in_a_state_folder_is_not_lifted(self):
         self.add("chat", "pangolin pricing for teams", source="sessions", ts=iso(timedelta(days=2)))
-        self.add("old.md", "pangolin pricing for teams", source="vault", ts=iso(timedelta(days=search.NOTE_LIVE_DAYS + 5)))
+        old = iso(timedelta(days=search.NOTE_LIVE_DAYS + 5))
+        self.add("old.md", "pangolin pricing for teams", source="vault", ts=old)
         self.add("Agents/State/log.md", "pangolin pricing for teams", source="vault", ts=iso(timedelta(days=1)))
         self.assertEqual(self.hits("pangolin pricing", vault="notes")[0], "chat")
 
@@ -755,8 +757,8 @@ class RankingTest(TempDB):
         self.add("marked", "pangolin pricing for teams", source="cc", meta={"subagent": True})
         self.assertEqual(self.hits("pangolin pricing")[0], "parent")
         store.replace_rows(self.db, "cc", "helper", [
-            {"kind": "atom", "ts": iso(), "title": "decision: pangolin", "content": "pangolin pricing for teams is flat",
-             "metadata": {"atom": "decision"}}], store.SUMMARY_KINDS)
+            {"kind": "atom", "ts": iso(), "title": "decision: pangolin",
+             "content": "pangolin pricing for teams is flat", "metadata": {"atom": "decision"}}], store.SUMMARY_KINDS)
         self.assertEqual(self.hits("pangolin pricing flat")[0], "helper")
 
     def test_source_types_come_from_the_config_file(self):
