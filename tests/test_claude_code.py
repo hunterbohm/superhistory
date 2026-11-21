@@ -57,6 +57,26 @@ class ClaudeCodeCase(unittest.TestCase):
 
 
 class ReadingTest(ClaudeCodeCase):
+    def test_a_session_another_agent_started_is_marked_subagent(self):
+        prompts = {
+            "own": "why is the nightly backup off?",
+            "t3": "[T3 Code: the agent in T3 thread \"abc\" sent this message, not the user.]\n\nAct as the research "
+                  "sub-agent for this task.",
+            "tools": "[T3 Code: this message came through T3 Code's tools, not from the user typing in this chat.]"
+                     "\n\nRead ~/.claude/plugins/marketplaces/team/kit/skills/helper/worker.md "
+                     "first.",
+            "track": "You own the search ranking track. Measure first.",
+            "quoted": "what does 'Act as the review sub-agent' mean in that prompt?",
+            "typed": "Review PR https://github.com/me/app/pull/12 and tell me if it is safe",
+        }
+        names = {}
+        for n, (name, prompt) in enumerate(prompts.items()):
+            names[f"3f1c2d4e-0000-4000-8000-0000000000{n:02d}"] = name
+            self.write(f"-work-app/{name}.jsonl", turns(list(names)[-1], prompt))
+        found = {names[sid]: item.meta.get("subagent", False) for sid, item in self.items().items()}
+        self.assertEqual(found, {"own": False, "t3": True, "tools": True, "track": True, "quoted": False,
+                                 "typed": False})
+
     def test_a_session_becomes_one_item_with_its_conversation_and_without_noise(self):
         shutil.copytree(FIXTURES, self.root, dirs_exist_ok=True)
         item = self.items()[SESSION]

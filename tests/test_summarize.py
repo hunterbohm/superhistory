@@ -139,6 +139,10 @@ class SummarizeTest(unittest.TestCase):
         self.addCleanup(patcher.stop)
         return sleeps
 
+    def test_a_helper_session_another_agent_started_is_not_summarized(self):
+        self.store("sessions", "test:helper", long_text("helper"), {**SESSION_META, "subagent": True})
+        self.assertEqual(self.pending_ids(), ["test:s1"])
+
     def test_needs_summary_only_long_items_in_scope(self):
         self.store("sessions", "test:short", "one short line", {"path": "/sessions/short.md"})
         self.store("docs", "test:Areas/Health.md", long_text("note"), {"path": "/d/Areas/Health.md"})

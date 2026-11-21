@@ -186,6 +186,20 @@ class ReadingTest(CodexCase):
                    conversation(sid=other, extra={"thread_source": "guardian_review"}))
         self.assertEqual(self.items(), {})
 
+    def test_a_helper_session_is_marked_subagent(self):
+        sids = ["019e0000-0000-7000-8000-0000000000%02d" % n for n in range(1, 6)]
+        self.write(f"sessions/2026/06/03/rollout-a-{sids[0]}.jsonl", conversation(sid=sids[0]))
+        self.write(f"sessions/2026/06/03/rollout-b-{sids[1]}.jsonl",
+                   conversation(sid=sids[1], extra={"thread_source": "subagent"}))
+        self.write(f"sessions/2026/06/03/rollout-c-{sids[2]}.jsonl",
+                   conversation(sid=sids[2], source={"subagent": {"thread_spawn": {"depth": 1}}}))
+        self.write(f"sessions/2026/06/03/rollout-d-{sids[3]}.jsonl",
+                   conversation(sid=sids[3], prompt="Act as the review sub-agent for this task.\n\nGoal: review it"))
+        self.write(f"sessions/2026/06/03/rollout-e-{sids[4]}.jsonl",
+                   conversation(sid=sids[4], prompt="Round 3 review of PR 49: check the fix"))
+        self.assertEqual({sid: item.meta.get("subagent", False) for sid, item in self.items().items()},
+                         {sids[0]: False, sids[1]: True, sids[2]: True, sids[3]: True, sids[4]: True})
+
     def test_missing_roots_and_bad_lines_are_harmless(self):
         self.assertEqual(self.items(), {})
         lines = conversation()

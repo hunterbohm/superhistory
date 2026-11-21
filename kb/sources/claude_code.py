@@ -16,7 +16,7 @@ from typing import Tuple
 
 from kb.ai.cli import WORKDIR_PREFIX
 from kb.mask import clip, is_auth_code, mask, mask_all, typed_secrets
-from kb.sources import Gone, Item, Progress, SourceType, home_key
+from kb.sources import Gone, Item, Progress, SourceType, delegated, home_key
 
 TOOL_CHARS = 300
 ERROR_CHARS = 800
@@ -108,9 +108,10 @@ def render(path, mark):
         return None
     title = title or mask(first_prompt.splitlines()[0])[:100]
     head = f"Claude Code session in {cwd or '?'}" + (f" ({branch})" if branch else "")
-    return Item(
-        session or os.path.basename(path)[:-6], last_ts, title, head + "\n\n" + "\n\n".join(lines),
-        {"path": path, "cwd": cwd, "branch": branch, "started": first_ts}, mark)
+    meta = {"path": path, "cwd": cwd, "branch": branch, "started": first_ts}
+    if delegated(first_prompt):
+        meta["subagent"] = True
+    return Item(session or os.path.basename(path)[:-6], last_ts, title, head + "\n\n" + "\n\n".join(lines), meta, mark)
 
 
 def _session_files(root, since):

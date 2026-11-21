@@ -6,14 +6,39 @@ from datetime import datetime, timedelta, timezone
 
 from kb import decisions, store
 from kb.mask import mask, mask_all
+from kb.sources import delegated
 from kb.store import SUMMARY_KINDS, TOKENIZE, current, item_names, secret_id, unversioned
 
 STOPWORDS = set("""a an and are as at be been but by can could did do does doing for from had has have
 how i if in into is it its just me my no not of on or our should so than that the their them then there
 these they this those to was we were what when where which who why will with would you your about any
-all also get got make made say said tell""".split())
+all also get got make made say said tell whats wheres theres heres hows whos thats now still again thing things
+ones much often like ever already currently really supposed stuff end up back""".split())
+# A word's punctuation at either end, and a contraction's ending: "again," is "again" and "where's" is "where".
+EDGES = re.compile(r"^[^\w~/.-]+|[^\w/]+$")
+CONTRACTION = re.compile(r"['’](?:s|re|ll|ve|d|m)$", re.I)
 RRF_K = 60
 RAW_WEIGHT = 0.5
+# The share of its score a record keeps when it holds only one of the query's words; the rest grows with each other
+# word it holds, so a note missing one word of a long question keeps most of its score.
+COVERAGE_FLOOR = 0.4
+# A record ranks up to twice its score when new, the bonus shrinking by e every DECAY_DAYS. A chat, mail, issue or
+# agent session goes out of date faster than a note, which whoever keeps it edits.
+DECAY_DAYS = 180.0
+EPHEMERAL = ("claude_code", "codex", "hermes", "gmail", "imessage", "github")  # source types, or names
+EPHEMERAL_DECAY_DAYS = 60.0
+# A note its owner edited in the last NOTE_LIVE_DAYS is the record kept current, so it outranks talk about the same
+# thing. One left alone longer is a record of its day, as is any note under a folder named in NOT_KEPT, such as an
+# agent's state log.
+NOTE_WEIGHT = 2.0
+NOTE_LIVE_DAYS = 14.0
+NOT_KEPT = ("state",)
+# A helper session another agent started repeats its parent's words. A decision found in one keeps its rank: the
+# decisions pass judged it, and the helper may be where it was made. The session's first message is in the first
+# HEAD_CHARS of its text, after its header line.
+HELPER_WEIGHT = 0.5
+HELPER_KEEPS = ("decision",)
+HEAD_CHARS = 1000
 CANDIDATES = 60
 # Rows a search scores before it groups them by item. A common word like "test" can match a third of a store's rows,
 # and reading each one's item took up to 3.5 s on a 440,000-row store; the top 3,000 held every full list in 400
@@ -37,10 +62,14 @@ REJECTED_NOTE = "[A decision here was rejected by the owner] "
 
 
 def fts_terms(text):
-    """Each word or "quoted phrase" becomes a quoted FTS phrase."""
+    """Each word or "quoted phrase" becomes a quoted FTS phrase. A word loses its punctuation at either end and a
+    contraction's ending first, so "again," and "where's" are the stopwords they hold."""
     terms = []
     for token in re.findall(r'"[^"]+"|\S+', text):
+        quoted = len(token) > 1 and token[0] == token[-1] == '"'
         token = token.strip('"').replace('"', "")
+        if not quoted:
+            token = CONTRACTION.sub("", EDGES.sub("", token))
         words = re.findall(r"\w+", token)
         if not words or (len(words) == 1 and words[0].lower() in STOPWORDS):
             continue
@@ -190,7 +219,8 @@ def _coverage(db, terms, ids):
         for (rid,) in db.execute(f"SELECT rowid FROM docs_fts WHERE docs_fts MATCH ? AND rowid IN ({marks})",
                                  (term, *ids)):
             hits[rid] += 1
-    return {rid: n / len(terms) for rid, n in hits.items()}
+    return {rid: COVERAGE_FLOOR + (1 - COVERAGE_FLOOR) * (n - 1) / (len(terms) - 1) if n else 0.0
+            for rid, n in hits.items()}
 
 
 def _age_days(ts, now):
@@ -203,12 +233,57 @@ def _age_days(ts, now):
     return abs((now - t).total_seconds()) / 86400
 
 
-def search(db, query, after=None, sources=(), limit=10, before=None, keep=None, history=False):
+def source_types():
+    """{source name: type name} from the user's config file, read once. A source it does not name is of the type its
+    name names, as in the config itself; an unreadable file names none."""
+    global _TYPES
+    if _TYPES is None:
+        try:
+            from kb import config, paths
+            with open(paths.Paths.for_user().config_file, encoding="utf-8") as fh:
+                tables = config.read_toml(fh.read()).get("sources", {})
+            _TYPES = {name: t.get("type", name) for name, t in tables.items() if isinstance(t, dict)}
+        except (OSError, ValueError, AttributeError):
+            _TYPES = {}
+    return _TYPES
+
+
+_TYPES = None
+
+
+def _note_weight(source_type, source_id, meta, age):
+    """NOTE_WEIGHT for a kept note, else 1."""
+    if source_type != "notes" or age > NOTE_LIVE_DAYS:
+        return 1.0
+    folders = {f.lower() for f in str(meta.get("path") or source_id).split("/")[:-1]}
+    return 1.0 if folders & set(NOT_KEPT) else NOTE_WEIGHT
+
+
+def _helpers(db, items):
+    """Those of `items`, (source, source_id) pairs, that are helper sessions another agent started: ingest marks one
+    "subagent", and an item stored before it did shows it in its first message."""
+    found = set()
+    for src, sid in items:
+        row = db.execute("SELECT title, substr(content, 1, ?), metadata FROM docs WHERE source=? AND source_id=? "
+                         "AND kind IN ('doc', 'raw') ORDER BY kind = 'raw', json_extract(metadata, '$.chunk') LIMIT 1",
+                         (HEAD_CHARS, src, sid)).fetchone()
+        if not row:
+            continue
+        title, head, meta = row
+        prompt = head.split("USER: ", 1)[1] if "USER: " in head else ""
+        if json.loads(meta).get("subagent") or delegated(prompt) or delegated(title):
+            found.add((src, sid))
+    return found
+
+
+def search(db, query, after=None, sources=(), limit=10, before=None, keep=None, history=False, types=None):
     """sources: names to search in, or () for every source.
     before: an ISO time; the search then sees only older items and ranks recency from that time.
     keep: a test on each hit, applied before the limit so skipped hits don't use up slots.
     history: also find decisions a newer one replaced or the owner rejected, which are left out by default; such a hit
-    names what replaced it in hit["replaced_by"]."""
+    names what replaced it in hit["replaced_by"].
+    types: {source name: type name}, which say which records are kept notes and which go out of date fast; by default
+    the user's config (source_types())."""
     terms = fts_terms(query)
     if not terms:
         return []
@@ -240,17 +315,24 @@ def search(db, query, after=None, sources=(), limit=10, before=None, keep=None, 
             coverage.update(_coverage(db, terms, [row[0]]))
     marks = store.superseded(db, {(r[2], r[3]) for r in rows})
     stale = _stale_rows(db, match, rows) if not history and decisions.has_table(db) else {}
+    types = source_types() if types is None else types
+    helpers = _helpers(db, {(r[2], r[3]) for r in rows})
     best, total = {}, {}
     for row in rows:
         rid, kind, src, sid, ts, title, content, meta = row
         superseded = marks.get((src, sid))
-        score = fused[rid] * coverage[rid] * (1 + math.exp(-_age_days(ts, now) / 180))
+        meta = json.loads(meta)
+        age, source_type = _age_days(ts, now), types.get(src, src)
+        score = fused[rid] * coverage[rid] * _note_weight(source_type, sid, meta, age)
+        score *= 1 + math.exp(-age / (EPHEMERAL_DECAY_DAYS if {src, source_type} & set(EPHEMERAL) else DECAY_DAYS))
         if superseded:
             score *= 0.5
         if rid in stale:
             score *= STALE_WEIGHT
+        if (src, sid) in helpers and not (kind == "atom" and meta.get("atom") in HELPER_KEEPS):
+            score *= HELPER_WEIGHT
         hit = {"id": rid, "kind": kind, "source": src, "source_id": sid, "ts": ts, "title": title,
-               "content": content, "meta": json.loads(meta), "superseded_by": superseded, "score": score,
+               "content": content, "meta": meta, "superseded_by": superseded, "score": score,
                "replaced_by": out.get(rid)}
         total[(src, sid)] = total.get((src, sid), 0.0) + score
         if (src, sid) not in best or score > best[(src, sid)]["score"]:
@@ -299,9 +381,14 @@ def _newer(db, match, hit):
     made = _when(hit["ts"])
     if made is None:
         return None
-    rows = db.execute("SELECT d.id, d.kind, d.source, d.source_id, d.ts, d.title, d.content FROM docs_fts JOIN docs d "
-                      "ON d.id = docs_fts.rowid WHERE docs_fts MATCH ? AND d.source = ? AND d.source_id = ? "
-                      "AND d.kind IN ('doc', 'segment', 'atom')", (match, hit["source"], hit["source_id"])).fetchall()
+    # The match runs on the item's own rows: run on the whole index and filtered after, it took 0.1 s a hit.
+    ids = [i for (i,) in db.execute("SELECT id FROM docs WHERE source = ? AND source_id = ? AND kind IN "
+                                    "('doc', 'segment', 'atom')", (hit["source"], hit["source_id"]))]
+    if not ids:
+        return None
+    rows = db.execute(f"SELECT d.id, d.kind, d.source, d.source_id, d.ts, d.title, d.content FROM docs_fts JOIN docs d "
+                      f"ON d.id = docs_fts.rowid WHERE docs_fts MATCH ? "
+                      f"AND docs_fts.rowid IN ({','.join('?' * len(ids))})", (match, *ids)).fetchall()
     rows = sorted((r for r in rows if (_when(r[4]) or made) >= made + timedelta(days=1)),
                   key=lambda r: (-_when(r[4]).timestamp(), r[0]))
     out = decisions.hidden(db, [(r[0], r[2], r[3], r[1], r[6]) for r in rows])

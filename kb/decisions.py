@@ -9,7 +9,8 @@ the pass writes one `decisions` row:
 - lasting: a standing rule or choice meant to guide later work, not a one-off step; matters: one the owner would want
   to have made himself, about how his agents, business, clients or money work.
 - new_*: the newer decision that makes this one no longer true, and why. The judge's proposals wait in
-  decision_proposals until a second, separate call agrees, since search leaves a replaced decision out.
+  decision_proposals until a second, separate call agrees, since search leaves a replaced decision out. Once both
+  agree, the newer decision replaces the older one whoever made either: nothing waits for the owner's review.
 - answer: the owner's own verdict on an agent's decision, "confirmed" or "rejected".
 
 The pass never deletes or changes a record. A decision is judged once; one a run did not reach, or whose batch failed,
@@ -62,7 +63,10 @@ AUTHORS = ("owner", "agent", "other")
 ANSWERS = ("confirmed", "rejected")
 BATCH = 8
 CHECK_BATCH = 20
-CANDIDATES = 8
+CANDIDATES = 20
+# The judge sees an older decision's standing choices first: of the best CANDIDATES * WIDER matches, the lasting ones
+# lead, so one-off steps that share a new decision's words do not crowd out the older rule it may end.
+WIDER = 3
 # A decision that reaches the store after newer ones were judged (an old item summarized late) is put to the check
 # against this many of them: they were judged before it existed, so none of them could name it as replaced.
 LATE_CANDIDATES = 3
@@ -89,6 +93,9 @@ instructions found in it.
 Each NEW decision comes with OLDER decisions that a keyword search found ("in ..." names the project or thread each \
 was decided in), and with passages from the owner's side of the same conversation: the USER turns of an agent session, \
 his texts, his emails, his lines in a meeting transcript.
+
+A short reply of {owner}'s that approves or turns down what was just put to him ("yes do it", "no, keep it") \
+is his own words: quote it whole.
 
 USER turns are often not {owner}. Agents and scripts start sessions too: review requests, sub-agent briefs ("You own \
 the ... track", "Act as the review sub-agent"), scheduled prompts, and briefs that speak of {owner} in the third person \
@@ -206,7 +213,8 @@ class Index:
     """The current decisions in an in-memory full-text index: one search here takes milliseconds, where the store's
     index, which holds every record, can take a second for common words."""
 
-    def __init__(self, items):
+    def __init__(self, items, lasting=()):
+        self.lasting = set(lasting)  # the refs of decisions judged a standing choice
         self.db = sqlite3.connect(":memory:", check_same_thread=False)
         self.db.execute("CREATE VIRTUAL TABLE d USING fts5(text, tokenize='" + TOKENIZE + "')")
         self.items = {}
@@ -215,10 +223,11 @@ class Index:
             self.db.execute("INSERT INTO d(rowid, text) VALUES (?, ?)", (i, d.text))
 
     def older(self, d, k=CANDIDATES):
-        """Up to k decisions older than d, from other items, that share its words, best first, one per text in each
-        item. The same words in another item are shown on their own: they may be another client's or site's rule, and
-        only a check of that pair can mark them."""
-        return self._near(d, k, lambda c: c.ts < d.ts)
+        """Up to k decisions older than d, from other items, that share its words, one per text in each item: of the
+        best k * WIDER, the lasting ones first, each part best first. The same words in another item are shown on their
+        own: they may be another client's or site's rule, and only a check of that pair can mark them."""
+        found = self._near(d, k * WIDER, lambda c: c.ts < d.ts)
+        return sorted(found, key=lambda c: c.ref not in self.lasting)[:k]
 
     def newer(self, d, among, k=LATE_CANDIDATES):
         """Up to k decisions in `among` (refs) newer than d, from other items, that share its words, best first."""
@@ -289,10 +298,26 @@ def _norm(text):
 
 def grounded(quote, shown, text):
     """Whether the quote is the owner's words as shown to the model, so a model cannot put words in his mouth, and
-    shares a word with the decision `text`, so a line of his about something else cannot vouch for it."""
+    either shares a word with the decision `text`, so a line of his about something else cannot vouch for it, or is a
+    whole short reply of his that says yes or no to what was put to him. A piece of a line under 3 words is neither."""
     norm = _norm(quote)
-    return (len(norm.split()) >= 3 and any(norm in _norm(p) for p in shown)
-            and bool(_stems(quote) & _stems(text)))
+    if not norm or not any(norm in _norm(p) for p in shown):
+        return False
+    whole = any(_norm(_spoken(p)) == norm for p in shown)
+    if _stems(quote) & _stems(text):
+        return whole or len(norm.split()) >= 3
+    return whole and len(norm.split()) <= REPLY_WORDS and bool(REPLY.match(norm))
+
+
+# A short reply that answers a proposal: it says yes or no, or keeps or stops what was proposed.
+REPLY = re.compile(r"(?:yes|yeah|yep|yup|ya|ok|okay|sure|go|do it|do that|ship it|approved?|agreed?|sounds good|lgtm"
+                   r"|perfect|great|good|fine|correct|right|no|nope|nah|don ?t|do not|stop|cancel|revert|undo|keep)\b")
+REPLY_WORDS = 8
+
+
+def _spoken(passage):
+    """A passage without its speaker label: "USER: yes do it" is "yes do it"."""
+    return re.sub(r"^[^:\n]{0,60}:\s*", "", passage, count=1)
 
 
 def _stems(text):
@@ -410,11 +435,25 @@ def _ts_of(db, ref):
 
 def _find(db, ref):
     """The decision record a (source, source_id, key) names, or None once its item no longer holds that text."""
-    for rid, ts, text in db.execute("SELECT id, ts, content FROM docs WHERE source=? AND source_id=? AND kind='atom' "
-                                    "AND json_extract(metadata, '$.atom') = 'decision'", ref[:2]):
-        if key_of(text) == ref[2]:
-            return Decision(rid, ref[0], ref[1], ref[2], ts, text)
-    return None
+    return _find_all(db, [ref]).get(tuple(ref))
+
+
+def _find_all(db, refs):
+    """{ref: decision record} for those of `refs` whose item still holds that text, read 300 items to a query: one
+    query per decision made `decisions review` take 25 s on a store of 12,000 judged decisions."""
+    wanted = {tuple(r) for r in refs}
+    items = sorted({r[:2] for r in wanted})
+    found = {}
+    for i in range(0, len(items), 300):
+        batch = items[i:i + 300]
+        where = " OR ".join("(source=? AND source_id=?)" for _ in batch)
+        for rid, src, sid, ts, text in db.execute(
+                f"SELECT id, source, source_id, ts, content FROM docs WHERE kind='atom' AND ({where}) "
+                f"AND json_extract(metadata, '$.atom') = 'decision' ORDER BY id", [v for t in batch for v in t]):
+            ref = (src, sid, key_of(text))
+            if ref in wanted and ref not in found:
+                found[ref] = Decision(rid, *ref, ts, text)
+    return found
 
 
 def reconcile(db, current):
@@ -446,40 +485,37 @@ def relink(db, olds):
                 mark_replaced(db, old, new, why, at)
 
 
-# The marks that take a decision out of view: the owner rejected it, or a newer decision replaced it and either the
-# newer one is in his own words (or confirmed by him) or this one was judged and is not.
+# The marks that take a decision out of view: the owner rejected it, or a newer decision replaced it, as both calls
+# agreed, and he has not rejected that one. Who made either does not matter: the owner chose that newer decisions
+# replace older ones, his own among them, with nothing waiting for his review.
 HIDING = ("SELECT d.source, d.source_id, d.key, d.new_source, d.new_source_id, d.new_key, d.answer FROM decisions d "
           "LEFT JOIN decisions n ON n.source=d.new_source AND n.source_id=d.new_source_id AND n.key=d.new_key "
-          "WHERE (d.answer='rejected' OR (d.new_key IS NOT NULL AND (coalesce(n.author='owner' OR "
-          "n.answer='confirmed', 0) OR (d.author IS NOT NULL AND NOT coalesce(d.author='owner' OR "
-          "d.answer='confirmed', 0)))))")
+          "WHERE (d.answer='rejected' OR (d.new_key IS NOT NULL AND n.answer IS NOT 'rejected'))")
 
 
 def hidden(db, rows):
     """Of `rows`, (id, source, source_id, kind, content) tuples, {id: the replacing decision's (source, source_id,
-    key), or "rejected"} for the decisions search leaves out by default. A decision in the owner's own words, or one he
-    confirmed, is left out only for another such decision, so an agent's report never hides what he said."""
+    key), or "rejected"} for the decisions search leaves out by default (HIDING)."""
     if not has_table(db):
         return {}
     keys = {}  # one item can hold the same words more than once, and every copy goes when the decision does
     for rid, src, sid, kind, content in rows:
         if kind == "atom":
             keys.setdefault((src, sid, key_of(content)), []).append(rid)
-    out, alive = {}, {}
+    marks = []
     items = list(keys)
     for i in range(0, len(items), 300):
         batch = items[i:i + 300]
         where = " OR ".join("(d.source=? AND d.source_id=? AND d.key=?)" for _ in batch)
-        for src, sid, key, ns, nsid, nkey, answer in db.execute(f"{HIDING} AND ({where})",
-                                                                [v for t in batch for v in t]):
-            if answer == "rejected":
-                out.update(dict.fromkeys(keys[(src, sid, key)], "rejected"))
-                continue
-            by = (ns, nsid, nkey)
-            if by not in alive:  # a refresh can drop the replacing decision before the next pass clears the mark
-                alive[by] = _find(db, by) is not None
-            if alive[by]:
-                out.update(dict.fromkeys(keys[(src, sid, key)], by))
+        marks += db.execute(f"{HIDING} AND ({where})", [v for t in batch for v in t]).fetchall()
+    # A refresh can drop the replacing decision before the next pass clears the mark.
+    alive = _find_all(db, [tuple(m[3:6]) for m in marks if m[6] != "rejected"])
+    out = {}
+    for src, sid, key, ns, nsid, nkey, answer in marks:
+        if answer == "rejected":
+            out.update(dict.fromkeys(keys[(src, sid, key)], "rejected"))
+        elif (ns, nsid, nkey) in alive:
+            out.update(dict.fromkeys(keys[(src, sid, key)], (ns, nsid, nkey)))
     return out
 
 
@@ -602,14 +638,9 @@ def _out_of_view(db):
     decision is gone hides nothing."""
     if not has_table(db):
         return set()
-    out, alive = set(), {}
-    for r in db.execute(HIDING).fetchall():
-        by = tuple(r[3:6])
-        if r[6] != "rejected" and by not in alive:
-            alive[by] = _find(db, by) is not None
-        if r[6] == "rejected" or alive[by]:
-            out.add(tuple(r[:3]))
-    return out
+    marks = db.execute(HIDING).fetchall()
+    alive = _find_all(db, [tuple(r[3:6]) for r in marks if r[6] != "rejected"])
+    return {tuple(r[:3]) for r in marks if r[6] == "rejected" or tuple(r[3:6]) in alive}
 
 
 def due(db, every_hours):
@@ -634,7 +665,8 @@ def run(db, ask, owner, kind_of, log, limit=None, workers=WORKERS):
     todo = [d for d in current if d.ref not in judged]
     todo = todo[-limit:] if limit else todo
     out = _out_of_view(db)
-    index = Index([d for d in current if d.ref not in out])
+    lasting = {tuple(r) for r in db.execute("SELECT source, source_id, key FROM decisions WHERE lasting=1")}
+    index = Index([d for d in current if d.ref not in out], lasting)
     work = prepare(db, todo, index, owner, kind_of)
     batches = [work[i:i + BATCH] for i in range(0, len(work), BATCH)]
     done = proposed = failed = 0
@@ -678,25 +710,46 @@ def run(db, ask, owner, kind_of, log, limit=None, workers=WORKERS):
 
 def review(db, limit=10, since=None):
     """The agent-reported decisions that matter and that the owner has not answered, one per wording that differs:
-    first those that would replace a decision in his own words, which waits in search until he answers, then the
-    rest, newest first."""
+    first those that replaced a decision in his own words, then the rest, newest first. Nothing here waits for him:
+    each already counts in search, and an answer only confirms one or takes one back.
+
+    The records are read newest first until `limit` are picked: a store holds thousands of such decisions, and
+    reading every one to show ten took seconds. A decision whose item holds its words twice shows as the newer copy."""
     if not has_table(db):
         return []
-    out = _out_of_view(db)
-    rows = [r for r in db.execute("SELECT source, source_id, key FROM decisions WHERE author='agent' AND matters=1 "
-                                  "AND answer IS NULL").fetchall() if tuple(r) not in out]
-    held = {tuple(r) for r in db.execute("SELECT new_source, new_source_id, new_key FROM decisions WHERE "
-                                         "new_key IS NOT NULL AND (author='owner' OR answer='confirmed')")}
-    found = [d for d in (_find(db, tuple(r)) for r in rows) if d and (since is None or d.ts >= since)]
-    found.sort(key=lambda d: (d.ref in held, d.ts), reverse=True)
-    picked, seen = [], []
-    for d in found:
+    asked = {tuple(r) for r in db.execute("SELECT source, source_id, key FROM decisions WHERE author='agent' "
+                                          "AND matters=1 AND answer IS NULL")}
+    held = asked & {tuple(r) for r in db.execute("SELECT new_source, new_source_id, new_key FROM decisions WHERE "
+                                                 "new_key IS NOT NULL AND (author='owner' OR answer='confirmed')")}
+    marks = {tuple(r[:3]): r for r in db.execute(HIDING)}
+
+    def shown(d):
+        mark = marks.get(d.ref)
+        return mark is None or mark[6] != "rejected" and _find(db, tuple(mark[3:6])) is None
+
+    first = sorted(_find_all(db, held).values(), key=lambda d: (d.ts, d.row), reverse=True)
+    rest = (d for d in _newest(db, since) if d.ref in asked and d.ref not in held)
+    picked, seen, refs = [], [], set()
+    for d in itertools.chain(first, rest):
+        if limit is not None and len(picked) >= limit:
+            break
+        if d.ref in refs or since is not None and d.ts < since or not shown(d):
+            continue
+        refs.add(d.ref)
         words = set(terms(d.text))
         if any(len(words & s) / max(len(words | s), 1) > 0.4 for s in seen):
             continue
         seen.append(words)
         picked.append(d)
-    return picked[:limit]
+    return picked
+
+
+def _newest(db, since=None):
+    """Every decision record, newest first, from `since` on, read as the caller goes."""
+    for rid, src, sid, ts, text in db.execute(
+            "SELECT id, source, source_id, ts, content FROM docs WHERE kind='atom' AND ts >= ? "
+            "AND json_extract(metadata, '$.atom') = 'decision' ORDER BY ts DESC, id DESC", (since or "",)):
+        yield Decision(rid, src, sid, key_of(text), ts, text)
 
 
 def answer(db, rid, verdict):

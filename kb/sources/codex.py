@@ -17,7 +17,7 @@ from typing import Tuple
 
 from kb.ai.cli import WORKDIR_PREFIX
 from kb.mask import clip, is_auth_code, mask, mask_all, typed_secrets
-from kb.sources import Gone, Item, Progress, SourceType, home_key
+from kb.sources import Gone, Item, Progress, SourceType, delegated, home_key
 
 
 @dataclass(frozen=True)
@@ -116,6 +116,13 @@ def _is_guardian(meta):
     )
 
 
+def _is_helper(meta, first_prompt):
+    """Whether the session is a helper another agent started: Codex's own subagent, or a task an agent handed it."""
+    source = meta.get("source")
+    return (meta.get("thread_source") == "subagent" or isinstance(source, dict) and bool(source.get("subagent"))
+            or delegated(first_prompt))
+
+
 def _message_lines(payload):
     role = payload.get("role")
     if role not in ("user", "assistant"):
@@ -207,10 +214,12 @@ def render(paths, mark):
     branch = (meta.get("git") or {}).get("branch")
     title = _title(first_prompt or fallback_title or "") or os.path.basename(path)
     head = f"Codex session in {cwd or '?'}" + (f" ({branch})" if branch else "")
+    found = {"path": path, "cwd": cwd, "branch": branch, "started": meta.get("timestamp")}
+    if _is_helper(meta, first_prompt):
+        found["subagent"] = True
     return Item(
         meta.get("id") or meta.get("session_id") or os.path.basename(path)[:-6], last_ts, title,
-        head + "\n\n" + "\n\n".join(lines),
-        {"path": path, "cwd": cwd, "branch": branch, "started": meta.get("timestamp")}, mark)
+        head + "\n\n" + "\n\n".join(lines), found, mark)
 
 
 def _candidates(roots, since):

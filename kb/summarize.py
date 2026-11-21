@@ -111,7 +111,9 @@ def plan(text, previous, now):
 def pending(db, scope, limit=None, owner=None):
     """Long items in scope, quiet for SETTLE_MINUTES, whose latest pass is not of their current hash and that have
     no recorded failure for it, newest first. Items that waits() holds back are left out before `limit`. With
-    `owner`, only items under that install's prefixes (kb.ids): another computer summarizes its own items."""
+    `owner`, only items under that install's prefixes (kb.ids): another computer summarizes its own items. A helper
+    session another agent started (meta "subagent") is left out: its words repeat its parent's, and its summaries
+    would cost model calls for records that crowd out its parent's."""
     if not scope.rules:
         return []
     names = sorted(scope.rules)
@@ -130,6 +132,7 @@ def pending(db, scope, limit=None, owner=None):
         FROM docs r
         WHERE r.kind='raw' AND json_extract(r.metadata, '$.chunk')=0 AND r.source IN ({','.join('?' * len(names))})
           {mine}
+          AND json_extract(r.metadata, '$.subagent') IS NOT 1
           AND julianday(r.ts) <= julianday('now', '-{SETTLE_MINUTES} minutes')
           AND json_extract(previous, '$.of_hash') IS NOT h
           AND NOT EXISTS (SELECT 1 FROM ingest_state f WHERE f.source='{FAILED}'
