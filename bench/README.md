@@ -204,3 +204,14 @@ The check also ran on its owner's real knowledge base: 53 questions written from
 | No lookup | 11 | 0 | 11 |
 
 The questions were found with `superhistory search`, so every answerable one is reachable by keyword search, which favours the check. With 42 answerable questions, one question moves the score by 2.4 points. The sessions that wrote the questions were hidden from every search. On 8 of the 11 questions with nothing to find, the check added nothing. On 2026-11-02 the released check added nothing on 9 of the 11. Its 46 sits below the 49 and 50 the same lookup scored on 2026-10-27. With no model calls, the old code on a plain snapshot of the knowledge base and the released code on a re-masked copy of the same snapshot show the same search hits, picker records and cards on all 53 questions, and masking hides no word of any answer. That points to six days of change in the knowledge base, which grew by 19% and renamed an app the answer key predates, and to answer noise, rather than to the code.
+
+## Recall on your own store
+
+`bench/recall.py` asks a narrower question with no model calls: for each question, does plain search put a record that holds the current answer in the top 5, and does an out-of-date record rank above it? You write the question file from your own records, and it stays outside this repository, since it names them. The script's docstring gives the format.
+
+```bash
+SUPERHISTORY_HOME=~/archives/superhistory python3 bench/recall.py ~/private/recall-questions.jsonl
+python3 bench/recall.py QUESTIONS.jsonl --command "superhistory search"   # the installed command, scored the same way
+```
+
+To measure a change to search, run the old code and the new code on the same store one after the other: a store that keeps ingesting changes between runs, so an older baseline is not comparable.
