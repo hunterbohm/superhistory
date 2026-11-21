@@ -67,13 +67,15 @@ class ReadingTest(ClaudeCodeCase):
                      "first.",
             "track": "You own the search ranking track. Measure first.",
             "quoted": "what does 'Act as the review sub-agent' mean in that prompt?",
+            "typed": "Review PR https://github.com/me/app/pull/12 and tell me if it is safe",
         }
         names = {}
         for n, (name, prompt) in enumerate(prompts.items()):
             names[f"3f1c2d4e-0000-4000-8000-0000000000{n:02d}"] = name
             self.write(f"-work-app/{name}.jsonl", turns(list(names)[-1], prompt))
         found = {names[sid]: item.meta.get("subagent", False) for sid, item in self.items().items()}
-        self.assertEqual(found, {"own": False, "t3": True, "tools": True, "track": True, "quoted": False})
+        self.assertEqual(found, {"own": False, "t3": True, "tools": True, "track": True, "quoted": False,
+                                 "typed": False})
 
     def test_a_session_becomes_one_item_with_its_conversation_and_without_noise(self):
         shutil.copytree(FIXTURES, self.root, dirs_exist_ok=True)
