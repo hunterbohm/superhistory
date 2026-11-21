@@ -214,7 +214,7 @@ class SummarizeTest(unittest.TestCase):
     def test_growth_is_summarized_as_an_append_pass(self):
         self.run_once(FakeModel(summary_text()))
         first = self.summary_rows()
-        old, new = long_text("alpha"), long_text("beta", lines=100)
+        old, new = long_text("alpha"), long_text("beta", lines=300)
         self.assertGreater(len(new), summarize.MIN_NEW_CHARS)
         self.grow(old + new)
         self.assertEqual(self.pending_ids(), ["test:s1"])
@@ -235,7 +235,7 @@ class SummarizeTest(unittest.TestCase):
         self.run_once(FakeModel(summary_text()))
         first = self.summary_rows()
         old = long_text("alpha")
-        new = long_text("beta", lines=100)[:summarize.MIN_NEW_CHARS - 1]
+        new = long_text("beta", lines=300)[:summarize.MIN_NEW_CHARS - 1]
         self.grow(old + new)
         self.assertEqual(self.pending_ids(), [])
         self.date_summary(hours_ago=23)
@@ -319,7 +319,7 @@ class SummarizeTest(unittest.TestCase):
     def test_item_back_at_an_earlier_text_gets_a_full_pass(self):
         self.run_once(FakeModel(summary_text()))
         old = long_text("alpha")
-        self.grow(old + long_text("beta", lines=100))
+        self.grow(old + long_text("beta", lines=300))
         self.run_titled("Beta work")
         self.grow(old)
         self.assertEqual(self.pending_ids(), ["test:s1"])
@@ -336,7 +336,7 @@ class SummarizeTest(unittest.TestCase):
         text = long_text("alpha")
         self.assertEqual(self.run_once(model), (1, 0))
         for part in ("bravo", "zeppelin"):
-            text = self.grow(text + long_text(part, lines=100))
+            text = self.grow(text + long_text(part, lines=300))
             self.assertEqual(self.run_once(model), (1, 0))
         self.assertEqual([r[2] for r in self.summary_rows()], ["alpha rollout", "bravo rollout", "zeppelin rollout"])
         hits = search.search(self.db, "zeppelin rollout")
@@ -543,6 +543,114 @@ class SummarizeTest(unittest.TestCase):
         self.assertEqual(summarize.estimate(self.db, self.config, only="chats"), {})
         self.run_once(FakeModel(summary_text()))
         self.assertEqual(summarize.estimate(self.db, self.config), {})
+
+
+def session_text(n, start=0):
+    """An agent session's text as its source writes it, with every kind of turn, `n` rounds of each."""
+    turns = []
+    for i in range(start, start + n):
+        turns += [f"USER: round {i}: why does the walrus build fail?\n\nIt fails on the second step.",
+                  f'TOOL Bash: {{"command": "make walrus-{i}"}}',
+                  f"RESULT: {'compiler output line ' * 15}{i}",
+                  f"ERROR: walrus-{i}.c:12: undefined reference to tusk_{i}",
+                  f"AGENT reviewer -> author: round {i} looks right",
+                  f"ASSISTANT: round {i}: linking tusk_{i} fixed the walrus build"]
+    return "\n\n".join(turns)
+
+
+SESSION_SOURCES = """
+[sources.claude_code]
+summarize = true
+
+[sources.mail]
+type = "notes"
+path = "mail"
+summarize = true
+"""
+
+
+class CompactTest(unittest.TestCase):
+    """What the model reads of an agent session: every turn but its tool calls and their results."""
+
+    def setUp(self):
+        self.paths = scratch_paths(self)
+        self.db = open_db(self, self.paths)
+        self.config = parse_config(SESSION_SOURCES)
+
+    def store(self, source, text, sid="test:s1"):
+        store.store_item(self.db, source, sid, "2026-10-18T10:00:00Z", "Walrus build", text, {"path": "/s/1.jsonl"})
+        self.db.commit()
+
+    def sent(self):
+        model = FakeModel(summary_text([segment("Walrus")], []))
+        self.assertEqual(summarize.run(self.db, self.config, model, LOG), (1, 0))
+        return model.prompts[0].user
+
+    def meta(self):
+        return json.loads(self.db.execute("SELECT metadata FROM docs WHERE kind='segment' ORDER BY id DESC LIMIT 1")
+                          .fetchone()[0])
+
+    def test_user_assistant_agent_and_error_turns_stay_word_for_word_and_tool_turns_go(self):
+        text = "Claude Code session in ~/code/walrus (main)\n\n" + session_text(3)
+        out = summarize.compact(text)
+        self.assertTrue(out.startswith("Claude Code session in ~/code/walrus (main)\n\nUSER: round 0"))
+        for turn in text.split("\n\n"):
+            if turn.startswith(("USER: ", "ASSISTANT: ", "AGENT ", "ERROR: ")):
+                self.assertIn(turn, out)
+        self.assertIn("USER: round 1: why does the walrus build fail?\n\nIt fails on the second step.", out)
+        self.assertNotIn("TOOL ", out)
+        self.assertNotIn("RESULT: ", out)
+        self.assertNotIn("compiler output", out)
+        self.assertNotIn("make walrus", out)
+
+    def test_a_label_inside_a_turn_starts_no_turn(self):
+        text = "USER: paste this:\nRESULT: not a real one\nTOOL Bash: neither\n\nRESULT: a real one"
+        self.assertEqual(summarize.compact(text), "USER: paste this:\nRESULT: not a real one\nTOOL Bash: neither\n\n")
+
+    def test_a_cut_inside_a_turn_keeps_or_drops_its_rest_by_the_turn_s_label(self):
+        text = session_text(2)
+        user, result = text.index("It fails on the second step."), text.index("compiler output")
+        self.assertTrue(summarize.compact(text, user).startswith("It fails on the second step.\n\nERROR: walrus-0"))
+        self.assertTrue(summarize.compact(text, result).startswith("ERROR: walrus-0"))
+        whole = summarize.compact(text)
+        self.assertEqual(summarize.compact(text, 0, result) + summarize.compact(text, result), whole)
+
+    def test_a_session_s_model_input_is_compact_and_other_sources_keep_every_line(self):
+        text = "Claude Code session in ~/code/walrus\n\n" + session_text(40)
+        self.store("claude_code", text)
+        sent = self.sent()
+        self.assertIn(summarize.compact(text), sent)
+        self.assertNotIn("TOOL Bash", sent)
+        self.assertLess(len(sent), len(text) / 2)
+        self.assertEqual((self.meta()["from_chars"], self.meta()["of_chars"]), (0, len(text)))
+        self.db.execute("DELETE FROM docs")
+        self.store("mail", text)
+        self.assertEqual(summarize.estimate(self.db, self.config), {"mail": [1, len(text)]})
+        self.assertIn(text, self.sent())
+        self.store("claude_code", text, sid="test:s2")
+        self.assertEqual(summarize.estimate(self.db, self.config), {"claude_code": [1, len(summarize.compact(text))]})
+
+    def test_an_append_pass_plans_from_the_whole_text_and_reads_only_the_compact_new_part(self):
+        old = "Claude Code session in ~/code/walrus\n\n" + session_text(40)
+        self.store("claude_code", old)
+        self.sent()
+        self.assertEqual(self.meta()["of_chars"], len(old))
+        grown = old + "\n\n" + session_text(60, start=40)
+        self.assertGreater(len(grown) - len(old), summarize.MIN_NEW_CHARS)
+        self.store("claude_code", grown)
+        rules = summarize.scope(self.config)
+        self.assertEqual([i.source_id for i in summarize.pending(self.db, rules)], ["test:s1"])
+        sent = self.sent()
+        self.assertEqual((self.meta()["from_chars"], self.meta()["of_chars"]), (len(old), len(grown)))
+        self.assertEqual(self.meta()["prefix"], summarize._prefix(grown, len(grown)))
+        after = sent.rsplit(summarize.INDEXED, 1)[1]
+        self.assertIn(summarize.compact(grown, len(old)).rstrip("\n"), after)
+        self.assertNotIn("round 39", after)
+        self.assertNotIn("TOOL Bash", sent)
+        self.assertIn(summarize.compact(old)[-summarize.OVERLAP:], sent)
+        self.assertEqual(summarize.pending(self.db, rules), [], "the pass covers the whole text: no re-summary")
+        self.store("claude_code", grown + "\n\nUSER: one more small question")
+        self.assertEqual(summarize.pending(self.db, rules), [], "a small growth waits, judged by the raw text")
 
 
 class ParseTest(unittest.TestCase):

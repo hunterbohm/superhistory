@@ -8,15 +8,21 @@ from typing import NamedTuple, Optional
 
 from kb import ai, ids, store
 from kb.ai import BadAnswer, Prompt, Refused
+from kb.decisions import SESSION_TYPES
 from kb.mask import mask, masked_log
 
 MAX_INPUT_CHARS = 150_000
+# An agent session's text without its tool calls and results (compact()) is about a third of its length, so it reads
+# in fewer characters; a meeting transcript or mail thread keeps MAX_INPUT_CHARS.
+SESSION_INPUT_CHARS = 60_000
 SLICES = 8
 MAX_TOKENS = 8000
 RUN_CAP = 150
-SETTLE_MINUTES = 30
+# A session in use grows every few minutes: one quiet for two hours is likely done, and one that grows by under
+# MIN_NEW_CHARS (raw characters, tool output included) waits for more before another pass.
+SETTLE_MINUTES = 120
 OVERLAP = 4000
-MIN_NEW_CHARS = 4000
+MIN_NEW_CHARS = 16000
 RESUMMARY_HOURS = 24
 WORKERS = 4
 MAX_SEGMENTS = 8
@@ -26,6 +32,12 @@ FAILED = store.SUMMARY_FAILED
 ATOM_TYPES = ("error_fix", "command", "decision", "path")
 OTHERS_ATOMS = ("decision", "path")
 CLOSING_TAG = re.compile(r"<\s*/\s*item\s*>", re.I)
+# An agent session's turns, as its source writes them: a label at the start of the text or after a blank line. Sources
+# put a blank line between turns, so a label inside a turn, such as a session an agent printed, starts none.
+TURN = re.compile(r"(?:\A|(?<=\n\n))(?:USER|ASSISTANT|ERROR|RESULT|AGENT [^\n:]*|TOOL [^\s:]*): ")
+# The turns the model reads of a session: the tool calls and what they printed are most of a session's text and
+# little of what it is about. An error stays, for its error_fix atom.
+DROPPED_TURNS = ("TOOL ", "RESULT: ")
 INDEXED = "[... already indexed above this line ...]"
 SYSTEM = """You index one item from a personal archive (an agent chat session, a meeting transcript, an email thread, or a text conversation) so keyword search can find it later.
 
@@ -64,8 +76,10 @@ class Malformed(Exception):
 
 
 class Scope(NamedTuple):
-    """Per source name: which of its items get summaries, and the atom types its text may yield."""
+    """Per source name: which of its items get summaries, and the atom types its text may yield. `sessions` names the
+    sources of agent sessions, whose text the model reads compact()ed."""
     rules: dict
+    sessions: frozenset = frozenset()
 
     def covers(self, source, source_id):
         rule = self.rules.get(source)
@@ -76,8 +90,9 @@ class Scope(NamedTuple):
 
 
 def scope(config, only=None):
-    return Scope({s.name: (s.summarize, OTHERS_ATOMS if s.type.others_wrote else ATOM_TYPES)
-                  for s in config.sources if (s.summarize.every or s.summarize.globs) and only in (None, s.name)})
+    chosen = [s for s in config.sources if (s.summarize.every or s.summarize.globs) and only in (None, s.name)]
+    return Scope({s.name: (s.summarize, OTHERS_ATOMS if s.type.others_wrote else ATOM_TYPES) for s in chosen},
+                 frozenset(s.name for s in chosen if s.type_name in SESSION_TYPES))
 
 
 def _prefix(text, end):
@@ -156,6 +171,19 @@ def item_text(db, item):
     if store.unversioned(db, [r[0] for r in rows]):
         return ""  # an older superhistory's rows, which no reader shows
     return mask("".join(r[1] for r in rows))  # masked whole, before any cut, in case rows are of another version
+
+
+def compact(text, start=0, end=None):
+    """The part of an agent session's text from `start` to `end` that the model reads: every turn but tool calls and
+    their results (DROPPED_TURNS), and the header line before the first turn. Turns are found in the whole text, so a
+    cut inside a turn keeps or drops its rest as the turn's label says, and offsets into the text stay offsets into
+    the item's text."""
+    end = len(text) if end is None else end
+    bounds = [m.start() for m in TURN.finditer(text)]
+    spans = [(0, bounds[0] if bounds else len(text))] + [
+        (b, bounds[i + 1] if i + 1 < len(bounds) else len(text)) for i, b in enumerate(bounds)
+        if not text.startswith(DROPPED_TURNS, b)]
+    return "".join(text[max(a, start):min(b, end)] for a, b in spans if a < end and b > start)
 
 
 def cap(text, limit=MAX_INPUT_CHARS, slices=SLICES):
@@ -239,7 +267,7 @@ def summarize(db, items, scope, model, log, timeout=300.0):
     log = masked_log(log)
     done = failed = 0
     now = datetime.now(timezone.utc)
-    limit = min(MAX_INPUT_CHARS, model.traits.max_prompt_chars)
+    limits = {False: MAX_INPUT_CHARS, True: SESSION_INPUT_CHARS}
     workers = max(1, min(WORKERS, model.traits.parallel))
     queue = iter(items)
     futures = {}
@@ -261,7 +289,14 @@ def summarize(db, items, scope, model, log, timeout=300.0):
             start = plan(text, item.previous, now)
             if start is None:
                 continue
-            part = cap(f"{text[max(start - OVERLAP, 0):start]}\n{INDEXED}\n{text[start:]}" if start else text, limit)
+            # Offsets and the prefix hash are of the item's whole text, so the next pass plans from it as before.
+            session = item.source in scope.sessions
+            if session:
+                head, body = compact(text, 0, start)[-OVERLAP:], compact(text, start)
+            else:
+                head, body = text[max(start - OVERLAP, 0):start], text[start:]
+            part = cap(f"{head}\n{INDEXED}\n{body}" if start else body,
+                       min(limits[session], model.traits.max_prompt_chars))
             span = {"from_chars": start, "of_chars": len(text), "prefix": _prefix(text, len(text))}
             prompt = request(item, part, scope.atom_types(item.source), start)
             futures[pool.submit(ask, prompt)] = item, span, len(part)
@@ -305,11 +340,19 @@ def run(db, config, model, log, limit=None, only=None):
 
 
 def estimate(db, config, only=None):
-    """Per source: (pending items, characters the model would read)."""
+    """Per source: (pending items, characters the model would read on a full pass)."""
     totals = {}
-    for item in pending(db, scope(config, only), owner=config.owner):
+    rules = scope(config, only)
+    for item in pending(db, rules, owner=config.owner):
         t = totals.setdefault(item.source, [0, 0])
         t[0] += 1
-        t[1] += min(item.chars, MAX_INPUT_CHARS)
+        if item.source in rules.sessions:
+            # The raw rows, unmasked: masking changes a length little and takes most of the time.
+            text = "".join(c for (c,) in db.execute("SELECT content FROM docs WHERE source=? AND source_id=? AND "
+                                                    "kind='raw' ORDER BY json_extract(metadata, '$.chunk')",
+                                                    (item.source, item.source_id)))
+            t[1] += min(len(compact(text)), SESSION_INPUT_CHARS)
+        else:
+            t[1] += min(item.chars, MAX_INPUT_CHARS)
     return totals
 

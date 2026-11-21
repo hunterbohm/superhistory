@@ -27,12 +27,15 @@ COVERAGE_FLOOR = 0.4
 DECAY_DAYS = 180.0
 EPHEMERAL = ("claude_code", "codex", "hermes", "gmail", "imessage", "github")  # source types, or names
 EPHEMERAL_DECAY_DAYS = 60.0
-# A note its owner edited in the last NOTE_LIVE_DAYS is the record kept current, so it outranks talk about the same
-# thing. One left alone longer is a record of its day, as is any note under a folder named in NOT_KEPT, such as an
-# agent's state log.
+# A kept note is the record its owner keeps current, such as a contact card or a repo's CONTEXT.md, so one edited in
+# the last NOTE_LIVE_DAYS outranks talk about the same thing. One left alone longer ranks as any record does: lifted
+# too, on 40 real questions, it pushed answers out of the top 5. A note named in NOT_KEPT or under such a folder, such
+# as an agent's STATE.md log, or one whose path holds a date, such as a daily note, a meeting's notes or a dated
+# report, is a record of its day and no kept note.
 NOTE_WEIGHT = 2.0
 NOTE_LIVE_DAYS = 14.0
 NOT_KEPT = ("state",)
+DATED = re.compile(r"\d{4}-\d\d-\d\d")
 # A helper session another agent started repeats its parent's words. A decision found in one keeps its rank: the
 # decisions pass judged it, and the helper may be where it was made. The session's first message is in the first
 # HEAD_CHARS of its text, after its header line.
@@ -40,6 +43,10 @@ HELPER_WEIGHT = 0.5
 HELPER_KEEPS = ("decision",)
 HEAD_CHARS = 1000
 CANDIDATES = 60
+# Kept notes also fill a list of their own, NOTE_CANDIDATES places long, so a contact card or a repo's CONTEXT.md is
+# scored even when hundreds of sessions repeat the search's words and fill the other lists. A note at a place in it
+# counts as a raw row at that place would, unless it already ranks better in the other lists.
+NOTE_CANDIDATES = 20
 # Rows a search scores before it groups them by item. A common word like "test" can match a third of a store's rows,
 # and reading each one's item took up to 3.5 s on a 440,000-row store; the top 3,000 held every full list in 400
 # real lookups.
@@ -83,10 +90,10 @@ def fts_query(text):
     return " OR ".join(fts_terms(text))
 
 
-def _ranked(db, match, after, sources, n, before=None):
-    """Best-first row ids for the summary list (doc, segment and atom rows) and for the raw list, one per item in each,
-    so one long session can't fill a list. One full-text match feeds both: scoring every matching row is most of a
-    search's time."""
+def _ranked(db, match, after, sources, n, before=None, notes=(), note_n=0):
+    """Best-first row ids for the summary list (doc, segment and atom rows), the raw list, and the notes list (rows of
+    any kind from the sources named in `notes`, `note_n` places), one per item in each, so one long session can't fill
+    a list. One full-text match feeds all three: scoring every matching row is most of a search's time."""
     best = db.execute("SELECT rowid, bm25(docs_fts, 4.0, 1.0) AS score FROM docs_fts WHERE docs_fts MATCH ? "
                       "ORDER BY score, rowid LIMIT ?", (match, TOP_ROWS + 1)).fetchall()
     # Exact when every list fills from the best rows: an item with no row among them scores below every item with one.
@@ -94,16 +101,17 @@ def _ranked(db, match, after, sources, n, before=None):
     if len(best) <= TOP_ROWS or best[TOP_ROWS - 1][1] != best[TOP_ROWS][1]:
         # json_extract, not ->>, which needs SQLite 3.38 (Ubuntu 22.04's Python has 3.37).
         rows = "SELECT json_extract(value, '$[0]') AS id, json_extract(value, '$[1]') AS score FROM json_each(?)"
-        lists = _grouped(db, rows, json.dumps(best[:TOP_ROWS]), after, sources, n, before)
-        if len(best) <= TOP_ROWS or min(map(len, lists)) >= n:
+        lists = _grouped(db, rows, json.dumps(best[:TOP_ROWS]), after, sources, n, before, notes, note_n)
+        if len(best) <= TOP_ROWS or (min(map(len, lists[:2])) >= n and (not notes or len(lists[2]) >= note_n)):
             return lists
     rows = "SELECT rowid AS id, bm25(docs_fts, 4.0, 1.0) AS score FROM docs_fts WHERE docs_fts MATCH ?"
-    return _grouped(db, rows, match, after, sources, n, before)
+    return _grouped(db, rows, match, after, sources, n, before, notes, note_n)
 
 
-def _grouped(db, rows, rows_arg, after, sources, n, before):
-    """The two lists from `rows`, a query of (id, score) taking one argument: the best row of each item, best first,
-    ties by row id so every run orders them the same. Each list keeps its own `n` places."""
+def _grouped(db, rows, rows_arg, after, sources, n, before, notes=(), note_n=0):
+    """The three lists from `rows`, a query of (id, score) taking one argument: the best row of each item, best first,
+    ties by row id so every run orders them the same. The summary and raw lists keep `n` places each, the notes list
+    `note_n`."""
     kinds = ("doc",) + SUMMARY_KINDS + ("raw",)
     # CROSS JOIN keeps the rows first; otherwise SQLite may walk every doc and run the full-text match for each.
     sql = (f"SELECT d.id, d.source, d.source_id, d.kind = 'raw' AS raw, r.score FROM ({rows}) r "
@@ -119,14 +127,21 @@ def _grouped(db, rows, rows_arg, after, sources, n, before):
         sql += f" AND d.source IN ({','.join('?' * len(sources))})"
         args += list(sources)
     # One row per item before the limit: a session with hundreds of matching rows would otherwise take every slot.
-    # MATERIALIZED keeps bm25() inside the full-text query, the only place SQLite allows it.
-    sql = (f"WITH m AS MATERIALIZED ({sql}) SELECT id, raw FROM ("
-           f"SELECT id, raw, row_number() OVER (PARTITION BY raw ORDER BY score, id) AS place FROM ("
-           f"SELECT id, raw, score, row_number() OVER (PARTITION BY raw, source, source_id ORDER BY score, id) AS nth "
-           f"FROM m) WHERE nth = 1) WHERE place <= ? ORDER BY raw, place")
-    lists = ([], [])
-    for rid, raw in db.execute(sql, (*args, n)):
-        lists[raw].append(rid)
+    # MATERIALIZED keeps bm25() inside the full-text query, the only place SQLite allows it. Lane 0 is the summary
+    # list, 1 the raw list, 2 the notes list, which holds a note's rows a second time.
+    lanes = "SELECT id, raw AS lane, source, source_id, score FROM m"
+    if notes:
+        db.create_function("kept_note", 1, _kept_path, deterministic=True)
+        lanes += (" UNION ALL SELECT id, 2, source, source_id, score FROM m "
+                  f"WHERE source IN ({','.join('?' * len(notes))}) AND kept_note(source_id)")
+        args += list(notes)
+    sql = (f"WITH m AS MATERIALIZED ({sql}) SELECT id, lane FROM ("
+           f"SELECT id, lane, row_number() OVER (PARTITION BY lane ORDER BY score, id) AS place FROM ("
+           f"SELECT id, lane, score, row_number() OVER (PARTITION BY lane, source, source_id ORDER BY score, id) "
+           f"AS nth FROM ({lanes})) WHERE nth = 1) WHERE place <= CASE lane WHEN 2 THEN ? ELSE ? END ORDER BY lane, place")
+    lists = ([], [], [])
+    for rid, lane in db.execute(sql, (*args, note_n, n)):
+        lists[lane].append(rid)
     return lists
 
 
@@ -251,12 +266,18 @@ def source_types():
 _TYPES = None
 
 
-def _note_weight(source_type, source_id, meta, age):
-    """NOTE_WEIGHT for a kept note, else 1."""
-    if source_type != "notes" or age > NOTE_LIVE_DAYS:
-        return 1.0
-    folders = {f.lower() for f in str(meta.get("path") or source_id).split("/")[:-1]}
-    return 1.0 if folders & set(NOT_KEPT) else NOTE_WEIGHT
+def _kept_path(source_id):
+    """Whether a note's id names a kept note: its path inside its folder, after the install's prefix, holds no date,
+    and neither its file nor any folder over it is named in NOT_KEPT."""
+    path = source_id.split(":", 1)[-1].lower()
+    parts = path.split("/")
+    names = set(parts[:-1]) | {parts[-1].rsplit(".", 1)[0]}
+    return not DATED.search(path) and not names & set(NOT_KEPT)
+
+
+def _note_weight(source_type, source_id, age):
+    """NOTE_WEIGHT for a kept note edited in the last NOTE_LIVE_DAYS, else 1."""
+    return NOTE_WEIGHT if source_type == "notes" and age <= NOTE_LIVE_DAYS and _kept_path(source_id) else 1.0
 
 
 def _helpers(db, items):
@@ -289,7 +310,9 @@ def search(db, query, after=None, sources=(), limit=10, before=None, keep=None, 
         return []
     match = " OR ".join(terms)
     fused = {}
-    summary, raw = _ranked(db, match, after, tuple(sources), CANDIDATES, before)
+    types = source_types() if types is None else types
+    notes = tuple(sorted(n for n, t in types.items() if t == "notes" and (not sources or n in sources)))
+    summary, raw, noted = _ranked(db, match, after, tuple(sources), CANDIDATES, before, notes, NOTE_CANDIDATES)
     alone = _unsummarized(db, raw)
     for ids, weight in ((summary, 1.0), (raw, RAW_WEIGHT)):
         for rank, rid in enumerate(ids, 1):
@@ -297,6 +320,8 @@ def search(db, query, after=None, sources=(), limit=10, before=None, keep=None, 
             # weighs as a summary row at its rank. Raw chunks of a summarized item weigh RAW_WEIGHT.
             share = 1.0 if rid in alone else weight
             fused[rid] = fused.get(rid, 0.0) + share / (RRF_K + rank)
+    for rank, rid in enumerate(noted, 1):
+        fused[rid] = max(fused.get(rid, 0.0), RAW_WEIGHT / (RRF_K + rank))
     if not fused:
         return []
     coverage = _coverage(db, terms, list(fused))
@@ -315,7 +340,6 @@ def search(db, query, after=None, sources=(), limit=10, before=None, keep=None, 
             coverage.update(_coverage(db, terms, [row[0]]))
     marks = store.superseded(db, {(r[2], r[3]) for r in rows})
     stale = _stale_rows(db, match, rows) if not history and decisions.has_table(db) else {}
-    types = source_types() if types is None else types
     helpers = _helpers(db, {(r[2], r[3]) for r in rows})
     best, total = {}, {}
     for row in rows:
@@ -323,7 +347,7 @@ def search(db, query, after=None, sources=(), limit=10, before=None, keep=None, 
         superseded = marks.get((src, sid))
         meta = json.loads(meta)
         age, source_type = _age_days(ts, now), types.get(src, src)
-        score = fused[rid] * coverage[rid] * _note_weight(source_type, sid, meta, age)
+        score = fused[rid] * coverage[rid] * _note_weight(source_type, sid, age)
         score *= 1 + math.exp(-age / (EPHEMERAL_DECAY_DAYS if {src, source_type} & set(EPHEMERAL) else DECAY_DAYS))
         if superseded:
             score *= 0.5
