@@ -4,6 +4,7 @@ out-of-date record rank above it?
 
     python3 bench/recall.py QUESTIONS.jsonl [--db PATH] [--limit 20] [--top 5] [--json]
     python3 bench/recall.py QUESTIONS.jsonl --command "superhistory search"   # the installed command instead
+    python3 bench/recall.py QUESTIONS.jsonl --skip 2026-11-21-recall-work   # leave out the sessions that wrote it
 
 The store opens read-only, at --db or at the store SUPERHISTORY_HOME names. The question file is yours and stays
 outside this repository: it names your own records. One JSON object per line:
@@ -18,7 +19,12 @@ each found in the title or text, case ignored). Ids change when ingest refreshes
 
 Each line printed is one question: whether a wanted record is in the top --top, its rank (- when not in the first
 --limit), and "STALE" when a stale record ranks above it. The last lines total them. With --command the ids are read
-from the command's printed results and each is looked up in the store, so the same matchers apply.
+from the command's printed results and each is looked up in the store, so the same matchers apply; --command reads
+the store SUPERHISTORY_HOME names, so it takes no --db.
+
+The agent sessions that wrote or ran the questions hold their words and land in the store at the next ingest, where
+they outrank every real answer. Each --skip drops the hits whose item id, file path or working folder holds the given
+text, such as the folder those sessions ran in, before they take a place.
 """
 import argparse
 import json
@@ -32,6 +38,9 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
 
 from kb import search, store  # noqa: E402
+
+
+SPARE = 20
 
 
 def load(path):
@@ -60,6 +69,11 @@ def matches(hit, matcher):
     return all(t.lower() in body for t in ([texts] if isinstance(texts, str) else texts))
 
 
+def skipped(hit, skip):
+    where = " ".join((hit["source_id"], str(hit["meta"].get("path", "")), str(hit["meta"].get("cwd", ""))))
+    return any(s in where for s in skip)
+
+
 def first(hits, matchers):
     return next((i for i, h in enumerate(hits, 1) if any(matches(h, m) for m in matchers)), None)
 
@@ -78,7 +92,7 @@ def rows(db, ids):
 def run_command(command, db, query, limit):
     out = subprocess.run(shlex.split(command) + [query, "--limit", str(limit)], capture_output=True, text=True,
                          check=True).stdout
-    ids = [int(i) for i in re.findall(r"^\d+\. \S+\s+\S+\s+\S+ #(\d+)", out, re.M)]
+    ids = [int(i) for i in re.findall(r"^\d+\. \S+(?: \([^)]*\))?\s+\S+\s+\S+ #(\d+)", out, re.M)]
     return rows(db, ids) if ids else []
 
 
@@ -97,8 +111,11 @@ def main(argv=None):
     p.add_argument("--limit", type=int, default=20, help="results read per question")
     p.add_argument("--top", type=int, default=5, help="the rank that counts as found")
     p.add_argument("--command", help="run this search command instead of the package's search()")
+    p.add_argument("--skip", action="append", default=[], help="leave out hits whose path holds this text")
     p.add_argument("--json", action="store_true", help="one JSON result per line")
     args = p.parse_args(argv)
+    if args.command and args.db:
+        p.error("--command searches the store SUPERHISTORY_HOME names, so its ids are looked up there; drop --db")
     if not args.db:
         from kb import paths
         args.db = paths.Paths.for_user().db
@@ -106,9 +123,11 @@ def main(argv=None):
     results = []
     for question in load(args.questions):
         if args.command:
-            hits = run_command(args.command, db, question["q"], args.limit)
+            # Asked for more than --limit, so the skipped hits do not shorten the list.
+            hits = run_command(args.command, db, question["q"], args.limit + SPARE)
+            hits = [h for h in hits if not skipped(h, args.skip)][:args.limit]
         else:
-            hits = search.search(db, question["q"], limit=args.limit)
+            hits = search.search(db, question["q"], limit=args.limit, keep=lambda h: not skipped(h, args.skip))
         r = score(question, hits, args.top)
         results.append(r)
         if args.json:

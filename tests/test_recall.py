@@ -7,6 +7,7 @@ import sys
 import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
+from unittest import mock
 
 from kb import store
 
@@ -35,13 +36,13 @@ class RecallTest(unittest.TestCase):
         db.commit()
         db.close()
 
-    def run_probe(self, questions, *flags):
+    def run_probe(self, questions, *flags, db=True):
         path = os.path.join(self.dir, "q.jsonl")
         with open(path, "w") as f:
             f.write("# a comment line\n\n" + "".join(json.dumps(q) + "\n" for q in questions))
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
-            recall.main([path, "--db", self.db_path, *flags])
+            recall.main([path, *(["--db", self.db_path] if db else []), *flags])
         return out.getvalue()
 
     def test_a_stale_record_above_the_current_one_is_counted(self):
@@ -76,12 +77,23 @@ class RecallTest(unittest.TestCase):
         db.close()
         fake = os.path.join(self.dir, "fake.py")
         with open(fake, "w") as f:
-            f.write("import sys\nassert sys.argv[1:] == ['walrus plan', '--limit', '20']\n"
+            f.write("import sys\nassert sys.argv[1:] == ['walrus plan', '--limit', '40']\n"
                     f"print('header line')\nprint('1. 2026-11-17  vault  raw #{offer}  SALES-OFFER')\n"
-                    f"print('   snippet #{commit}')\nprint('2. 2026-11-01  git  doc #{commit}  price commit')\n")
+                    f"print('   snippet #{commit}')\nprint('2. 2026-11-01 (19 days ago)  git  doc #{commit}  price commit')\n")
         q = {"q": "walrus plan", "want": [{"path": "SALES-OFFER"}], "stale": [{"source": "git"}]}
-        row = json.loads(self.run_probe([q], "--json", "--command", f"{sys.executable} {fake}").splitlines()[0])
+        with mock.patch.dict(os.environ, {"SUPERHISTORY_HOME": self.dir}):
+            row = json.loads(self.run_probe([q], "--json", "--command", f"{sys.executable} {fake}",
+                                            db=False).splitlines()[0])
         self.assertEqual((row["rank"], row["stale_rank"], row["stale_above"]), (1, 2, False))
+
+    def test_the_command_with_another_store_is_refused(self):
+        with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
+            self.run_probe([{"q": "walrus", "want": [{"id": 1}]}], "--command", "superhistory search")
+
+    def test_a_skipped_hit_takes_no_place(self):
+        q = {"q": "walrus plan teams 26 to 50", "want": [{"path": "SALES-OFFER"}], "stale": [{"source": "git"}]}
+        row = json.loads(self.run_probe([q], "--json", "--skip", "commit").splitlines()[0])
+        self.assertEqual((row["rank"], row["stale_rank"]), (1, None))
 
     def test_a_question_without_a_wanted_record_is_refused(self):
         with self.assertRaises(SystemExit):
