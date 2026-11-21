@@ -63,7 +63,7 @@ class ReadingTest(ClaudeCodeCase):
             "t3": "[T3 Code: the agent in T3 thread \"abc\" sent this message, not the user.]\n\nAct as the research "
                   "sub-agent for this task.",
             "tools": "[T3 Code: this message came through T3 Code's tools, not from the user typing in this chat.]"
-                     "\n\nRead ~/.claude/plugins/marketplaces/cursor-plugins/pstack/skills/poteto-mode/worker.md "
+                     "\n\nRead ~/.claude/plugins/marketplaces/team/kit/skills/helper/worker.md "
                      "first.",
             "track": "You own the search ranking track. Measure first.",
             "quoted": "what does 'Act as the review sub-agent' mean in that prompt?",
