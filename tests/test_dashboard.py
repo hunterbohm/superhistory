@@ -12,6 +12,7 @@ import unittest
 import urllib.error
 import urllib.request
 from collections import Counter
+from datetime import datetime, timedelta
 from pathlib import Path
 from unittest import mock
 from urllib.parse import urlparse
@@ -591,7 +592,9 @@ class HealthTest(Served):
         store.record_failure(self.db, "gmail@here", RuntimeError("the server said no"))
         store.set_watermark(self.db, store.STATE, "last_ingest", store.now_iso())
         os.makedirs(self.paths.log_dir)
-        (self.paths.log("ingest")).write_text(self.LOG)
+        # The overview reads the last LOG_DAYS of the log, so the failure is dated yesterday, not on the fixture's day.
+        yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+        (self.paths.log("ingest")).write_text(self.LOG.replace("2026-11-05", yesterday))
         self.serve()
         overview = self.api("overview")
         self.assertEqual([(f["unit"], f["error"]) for f in overview["failing"]], [("gmail@here", "the server said no")])
