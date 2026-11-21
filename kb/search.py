@@ -296,17 +296,26 @@ def search(db, query, after=None, sources=(), limit=10, before=None, keep=None, 
 def _newer(db, match, hit):
     """(id, ts, title) of the newest record of the hit's item that matches the search and was written at least a day
     after the hit, such as a later part of a long session, or None. A decision search leaves out does not count."""
-    try:
-        after = (datetime.fromisoformat(hit["ts"].replace("Z", "+00:00")) + timedelta(days=1)).isoformat()
-    except ValueError:
+    made = _when(hit["ts"])
+    if made is None:
         return None
     rows = db.execute("SELECT d.id, d.kind, d.source, d.source_id, d.ts, d.title, d.content FROM docs_fts JOIN docs d "
                       "ON d.id = docs_fts.rowid WHERE docs_fts MATCH ? AND d.source = ? AND d.source_id = ? "
-                      "AND d.kind IN ('doc', 'segment', 'atom') AND d.ts >= ? ORDER BY d.ts DESC, d.id",
-                      (match, hit["source"], hit["source_id"], after[:19])).fetchall()
+                      "AND d.kind IN ('doc', 'segment', 'atom')", (match, hit["source"], hit["source_id"])).fetchall()
+    rows = sorted((r for r in rows if (_when(r[4]) or made) >= made + timedelta(days=1)),
+                  key=lambda r: (-_when(r[4]).timestamp(), r[0]))
     out = decisions.hidden(db, [(r[0], r[2], r[3], r[1], r[6]) for r in rows])
     row = next((r for r in rows if r[0] not in out), None)
     return (row[0], row[4], mask(row[5])) if row else None
+
+
+def _when(ts):
+    """`ts` as an aware time, UTC when it names no zone, or None when it does not read as one."""
+    try:
+        t = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return t if t.tzinfo else t.replace(tzinfo=timezone.utc)
 
 
 def search_stores(stores, query, after=None, sources=(), limit=10, before=None, keep=None, history=False):

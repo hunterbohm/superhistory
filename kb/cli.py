@@ -123,7 +123,7 @@ def cmd_search(db, paths, config, args):
         if where != live:
             print(f"   -> {mask(where)}")
         if live:
-            print(f"   -> live file {live}: this copy is from {h['ts'][:10]}; read the file for its current state")
+            print(f"   -> live file {mask(live)}: this copy is from {h['ts'][:10]}; read the file for its current state")
 
 
 @reads_db

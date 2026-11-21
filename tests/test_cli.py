@@ -9,7 +9,7 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from unittest import mock
 
-from kb import cli, config as config_mod, mask as mask_module, store
+from kb import cli, config as config_mod, mask as mask_module, search, store
 
 NOTES_CONFIG = 'machine = "studio"\n\n[sources.notes]\npath = "{path}"\n'
 
@@ -193,6 +193,17 @@ class CliTest(TempHome):
         self.assertIn("Pangolin plan first", first)
         self.assertRegex(first, r"newer in the same item: #\d+ \(\d{4}-\d\d-\d\d\) Pangolin plan moved")
         self.assertNotIn("newer in the same item", self.run_kb("search", "pangolin plan moved May")[1].split("\n2. ")[0])
+
+    def test_a_newer_record_is_a_full_day_later_whatever_zone_its_time_names(self):
+        store.store_item(self.db, "s", "z", "2026-06-01T10:00:00Z", "session", "USER: heron\n" + "filler line\n" * 600, {})
+        store.replace_rows(self.db, "s", "z", [
+            {"kind": "segment", "ts": "2026-06-01T10:00:00Z", "title": "Heron plan first", "content": "Heron plan one.",
+             "metadata": {}},
+            {"kind": "segment", "ts": "2026-06-02T11:00:00+03:00", "title": "Heron plan soon",
+             "content": "Heron plan two.", "metadata": {}}], store.SUMMARY_KINDS)
+        self.db.commit()
+        hit = next(h for h in search.search(self.db, "heron plan one") if h["title"] == "Heron plan first")
+        self.assertIsNone(hit["newer"])
 
     def test_a_note_names_its_live_file_to_read(self):
         self.write_config(NOTES_CONFIG.format(path=self.tmp.name))
