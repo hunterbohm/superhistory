@@ -278,13 +278,34 @@ class SearchTest(TempDB):
         self.add("r", long_body("marmot"), title="raw item")
         self.assertEqual(sorted(self.titles("marmot")), ["doc item", "raw item"])
 
-    def test_raw_matches_weigh_half(self):
+    def test_raw_matches_of_a_summarized_item_weigh_half(self):
+        ts = iso()
+        self.add("d", "marmot sighting", title="doc item", ts=ts)
+        self.add("r", long_body("marmot"), title="raw item", ts=ts)
+        store.replace_rows(self.db, "s", "r", [{"kind": "segment", "ts": ts, "title": "summary",
+                                                "content": "a summary with no match", "metadata": {}}],
+                           kinds=store.SUMMARY_KINDS)
+        hits = {h["title"]: h for h in search.search(self.db, "marmot")}
+        self.assertAlmostEqual(hits["raw item"]["score"] / hits["doc item"]["score"], search.RAW_WEIGHT, places=6)
+        self.assertEqual(self.titles("marmot"), ["doc item", "raw item"])
+
+    def test_a_long_note_stored_only_as_chunks_weighs_as_a_summary_row(self):
         ts = iso()
         self.add("d", "marmot sighting", title="doc item", ts=ts)
         self.add("r", long_body("marmot"), title="raw item", ts=ts)
         hits = {h["title"]: h for h in search.search(self.db, "marmot")}
-        self.assertAlmostEqual(hits["raw item"]["score"] / hits["doc item"]["score"], search.RAW_WEIGHT, places=6)
-        self.assertEqual(self.titles("marmot"), ["doc item", "raw item"])
+        self.assertAlmostEqual(hits["raw item"]["score"] / hits["doc item"]["score"], 1.0, places=6)
+
+    def test_a_long_current_note_outranks_an_older_session_summarized_about_it(self):
+        self.add("note.md", long_body("walrus pricing tiers"), title="SALES-OFFER", ts=iso(timedelta(days=3)),
+                 source="vault")
+        old = iso(timedelta(days=20))
+        self.add("session", long_body("the usual work"), title="session", ts=old, source="claude_code")
+        store.replace_rows(self.db, "claude_code", "session", [
+            {"kind": "segment", "ts": old, "title": "walrus pricing tiers",
+             "content": "Walrus pricing tiers were talked over.", "metadata": {}}], kinds=store.SUMMARY_KINDS)
+        self.db.commit()
+        self.assertEqual(self.titles("walrus pricing tiers"), ["SALES-OFFER", "walrus pricing tiers"])
 
     def test_raw_row_matching_every_word_beats_doc_matching_one(self):
         self.add("d", "kestrel newsletter", title="one word")
