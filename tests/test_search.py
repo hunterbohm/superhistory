@@ -502,9 +502,11 @@ class SearchTest(TempDB):
             self.add(f"item{i}", f"deploy notes {i} " + "deploy " * (i % 7) + ("rollback" if i % 4 == 0 else ""),
                      title=f"item{i}", ts=f"2026-10-{i % 28 + 1:02d}T00:00:00Z", source="a" if i % 2 else "b")
         queries = [("deploy rollback", {}), ("deploy", {"after": "2026-10-15T00:00:00Z"}),
-                   ("deploy", {"sources": ("a",)}), ("rollback", {"before": "2026-10-10T00:00:00Z"})]
+                   ("deploy", {"sources": ("a",)}), ("rollback", {"before": "2026-10-10T00:00:00Z"}),
+                   ("deploy rollback", {"types": {"a": "notes"}})]
         for query, kw in queries:
-            with self.subTest(query=query, **kw), mock.patch.object(search, "CANDIDATES", 4):
+            with self.subTest(query=query, **kw), mock.patch.object(search, "CANDIDATES", 4), \
+                    mock.patch.object(search, "NOTE_CANDIDATES", 3):
                 with mock.patch.object(search, "TOP_ROWS", 10 ** 9):
                     full = [h["id"] for h in search.search(self.db, query, **kw)]
                 for top in (1, 3, 12):
@@ -744,6 +746,28 @@ class RankingTest(TempDB):
         self.add("old.md", "pangolin pricing for teams", source="vault", ts=old)
         self.add("Agents/State/log.md", "pangolin pricing for teams", source="vault", ts=iso(timedelta(days=1)))
         self.assertEqual(self.hits("pangolin pricing", vault="notes")[0], "chat")
+
+    def test_a_state_log_or_a_dated_note_is_a_record_of_its_day(self):
+        for sid in ("c-aaaaaaaaaaaaa:docs/STATE.md", "c-aaaaaaaaaaaaa:State/now.md", "Daily/2026-11-13.md",
+                    "reviews/2026-11-10-run/notes.md"):
+            with self.subTest(sid=sid):
+                self.db.execute("DELETE FROM docs")
+                self.add("chat", "pangolin pricing for teams", source="sessions", ts=iso(timedelta(days=2)))
+                self.add(sid, "pangolin pricing for teams", source="vault", ts=iso(timedelta(days=1)))
+                self.assertEqual(self.hits("pangolin pricing", vault="notes")[0], "chat")
+        self.assertTrue(search._kept_path("c-aaaaaaaaaaaaa:Contacts/Work/Kevin Weaver.md"))
+        self.assertTrue(search._kept_path("c-aaaaaaaaaaaaa:docs/statement.md"))
+
+    def test_a_kept_note_is_scored_when_sessions_fill_the_shared_lists(self):
+        for i in range(12):
+            self.add(f"chat{i}", "pangolin pricing " * 5 + f"session {i}", source="sessions", ts=iso(timedelta(days=1)))
+        self.add("Contacts/Pangolin.md", "pangolin " + "card filler " * 200, source="vault", ts=iso(timedelta(days=40)))
+        self.add("Daily/2026-10-01.md", "pangolin " + "day filler " * 200, source="vault", ts=iso(timedelta(days=40)))
+        with mock.patch.object(search, "CANDIDATES", 3):
+            hits = self.hits("pangolin pricing", vault="notes")
+            self.assertIn("Contacts/Pangolin.md", hits)
+            self.assertNotIn("Daily/2026-10-01.md", hits)
+            self.assertNotIn("Contacts/Pangolin.md", self.hits("pangolin pricing"))  # with no notes type, no own list
 
     def test_a_session_ages_faster_than_a_note(self):
         self.add("chat", "pangolin pricing for teams", source="codex", ts=iso(timedelta(days=120)))
