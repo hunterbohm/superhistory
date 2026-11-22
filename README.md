@@ -94,7 +94,7 @@ roots = ["~/code"]
 
 | Command | What it does |
 | --- | --- |
-| `superhistory search "words"` | Searches everything. `--source`, `--after` and `--limit` narrow it. `--history` also shows decisions a newer one replaced. |
+| `superhistory search "words"` | Searches everything. `--source`, `--after` and `--limit` narrow it. `--history` also shows decisions a newer one replaced. With `[search] rerank = true` in the config, your AI plug-in orders the hits of a search of two or more words, sending it the top hits' passages; `--no-rerank` skips that for one search. |
 | `superhistory get ID` | Prints the stored text of a search hit, a page at a time. |
 | `superhistory ingest` | Reads every source now, then summarizes new long items. |
 | `superhistory stats` | Shows how many records each source has and which sources failed. |
@@ -370,7 +370,8 @@ opening handshake, and the `initialize` handshake of `2025-11-25` and the three 
 
 Everything stays in one file on your computer. The only thing that leaves it is the AI call you chose: the plug-in
 gets your message, the two turns before it, and the start of a few candidate records, and the summarizer sends long
-items to it (an agent session without its tool calls and what they printed). With no plug-in, Superhistory still
+items to it (an agent session without its tool calls and what they printed). With `[search] rerank = true`, a search
+of two or more words also sends it the search and passages of its top hits. With no plug-in, Superhistory still
 searches but adds nothing to your prompts and writes no summaries.
 
 What goes to the plug-in is masked first, but masking is best effort: a secret the mask misses is stored as written and
