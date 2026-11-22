@@ -137,8 +137,8 @@ def _prompt(today, query, hits, wiki, index=()):
         flag = " (superseded)" if hit.get("superseded_by") else ""
         page = " (Living Wiki)" if wiki and hit["source"] == wiki else ""
         text = re.sub(r"\s+", " ", hit.get("excerpt") or hit.get("snippet") or "").strip()[:RECORD_CHARS]
-        lines.append(f"{n}. [{hit['ts'][:10]}] {hit['source']} {hit['kind']}{page}{flag} "
-                     f"{re.sub(r'\s+', ' ', hit['title'])[:120]}\n   {text}")
+        title = re.sub(r"\s+", " ", hit["title"])[:120]
+        lines.append(f"{n}. [{hit['ts'][:10]}] {hit['source']} {hit['kind']}{page}{flag} {title}\n   {text}")
     if not hits:
         lines.append("(none)")
     if index:
