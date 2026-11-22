@@ -12,6 +12,9 @@
     [decisions]                   # judge new decision records once a day; off until owner names you
     owner = ["Sam Lee", "sam@example.com"]   # the name you go by first, then other names and addresses you write as
     instructions = ["~/code/*/AGENTS.md"]    # files your agents load, which `superhistory decisions drift` checks against them
+    [search]                      # `superhistory search` and the MCP search tool
+    rerank = true                 # the [ai] model orders the keyword hits; default false
+    wiki_source = "wiki"          # a source whose pages the model may open when the hits do not answer
     [sources.notes]               # one table per source; its name is what `superhistory search --source` takes
     type = "notes"                # default: the table name
     path = "~/Notes"
@@ -164,6 +167,24 @@ class DecisionSettings:
 
 
 @dataclass(frozen=True)
+class SearchSettings:
+    """With rerank on, a search of two or more words asks the [ai] model to order rerank_pool keyword hits, and with
+    smart_retry, when none of them answers, to open up to two of wiki_source's pages or search once more (kb.rerank).
+    Each call has rerank_timeout seconds; a failed one leaves the keyword order."""
+    rerank: bool = False
+    rerank_pool: int = 35
+    rerank_timeout: int = 8
+    smart_retry: bool = True
+    wiki_source: str = ""
+
+    def __post_init__(self):
+        if self.rerank_pool < 5:
+            raise ValueError("rerank_pool: must be at least 5")
+        if self.rerank_timeout < 1:
+            raise ValueError("rerank_timeout: must be at least 1")
+
+
+@dataclass(frozen=True)
 class Schedule:
     every_minutes: int = 15
 
@@ -178,6 +199,7 @@ class Config:
     sources: Tuple[Source, ...] = ()
     hosts: Tuple[Host, ...] = ()
     decisions: DecisionSettings = DecisionSettings()
+    search: SearchSettings = SearchSettings()
     # Whose items these are: the install id kb fills in when it writes (kb.ids). A Config built elsewhere, such as a
     # hosted store's, may leave it empty; its items are then prefixed by `machine`.
     install: str = ""
@@ -246,7 +268,8 @@ def parse(text):
     elif holds_secret(machine):
         problems.append(SECRET_NAME.format(where="machine"))
         machine = "local"
-    tables = {key: raw.pop(key, {}) for key in ("ai", "check", "summarize", "schedule", "hosts", "sources", "decisions")}
+    tables = {key: raw.pop(key, {}) for key in ("ai", "check", "summarize", "schedule", "hosts", "sources", "decisions",
+                                                    "search")}
     extra = {key: raw.pop(key) for key in EXTENSION_TABLES if key in raw}
     problems += [f"{key}: unknown key" for key in raw]
     for key, value in tables.items():
@@ -259,6 +282,10 @@ def parse(text):
     summarize = options_from(SummarizeSettings, tables["summarize"], "summarize", problems)
     schedule = options_from(Schedule, tables["schedule"], "schedule", problems)
     decisions = options_from(DecisionSettings, tables["decisions"], "decisions", problems)
+    search = options_from(SearchSettings, tables["search"], "search", problems)
+    # A source turned off still counts, so turning the wiki off does not make the file wrong.
+    if search and search.wiki_source and search.wiki_source not in tables["sources"]:
+        problems.append(f"search.wiki_source: no [sources.{search.wiki_source}] table")
     ai = _ai(tables["ai"], problems)
     hosts = []
     for name, table in tables["hosts"].items():
@@ -288,7 +315,8 @@ def parse(text):
                      for s in sources if s.type.account and not s.type.account(s.options)]
     if problems:
         raise ConfigError(problems)
-    return Config(machine, ai, check, summarize, schedule, tuple(sources), tuple(hosts), decisions, extra=extra)
+    return Config(machine, ai, check, summarize, schedule, tuple(sources), tuple(hosts), decisions, search,
+                  extra=extra)
 
 
 def _ai(table, problems):

@@ -16,7 +16,7 @@ import traceback
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from kb import COMMAND, NAME, __version__, ai, backup, check, config as config_mod, decisions, ids, ingest, search, store, summarize, sync
+from kb import COMMAND, NAME, __version__, ai, backup, check, config as config_mod, decisions, ids, ingest, rerank, search, store, summarize, sync
 from kb.ai import AIError
 from kb.mask import MaskFilter, MaskedStream, mask, masked_log, memo
 from kb.paths import Paths
@@ -104,8 +104,12 @@ def source_names(config, name):
 def cmd_search(db, paths, config, args):
     print(header(db, config))
     print(DATA_NOTE + "\n")
-    hits = search.search(db, args.query, args.after, source_names(config, args.source), args.limit,
-                         history=args.history)
+    names = source_names(config, args.source)
+    if args.no_rerank:
+        hits = search.search(db, args.query, args.after, names, args.limit, history=args.history)
+    else:
+        hits = rerank.rerank(db, config, args.query, after=args.after, sources=names, limit=args.limit,
+                             history=args.history)
     if not hits:
         print("No matches. Try other distinctive words.")
     files = {s.name for s in config.sources if s.type_name in FILE_TYPES}
@@ -1099,6 +1103,8 @@ def parser():
     s.add_argument("--limit", type=int, default=10)
     s.add_argument("--history", action="store_true",
                    help="also show decisions a newer one replaced, or that you rejected")
+    s.add_argument("--no-rerank", action="store_true",
+                   help="keep the keyword order even when [search] rerank is on in the config")
     s.set_defaults(fn=cmd_search)
     g = sub.add_parser("get", help="print the stored text of a search hit's item, a page at a time")
     g.add_argument("id", type=int)

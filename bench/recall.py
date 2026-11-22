@@ -5,6 +5,7 @@ out-of-date record rank above it?
     python3 bench/recall.py QUESTIONS.jsonl [--db PATH] [--limit 20] [--top 5] [--json]
     python3 bench/recall.py QUESTIONS.jsonl --command "superhistory search"   # the installed command instead
     python3 bench/recall.py QUESTIONS.jsonl --skip 2026-11-21-recall-work   # leave out the sessions that wrote it
+    python3 bench/recall.py QUESTIONS.jsonl --rerank [--config PATH]   # the [ai] model orders the hits (kb.rerank)
 
 The store opens read-only, at --db or at the store SUPERHISTORY_HOME names. The question file is yours and stays
 outside this repository: it names your own records. One JSON object per line:
@@ -20,13 +21,16 @@ each found in the title or text, case ignored). Ids change when ingest refreshes
 Each line printed is one question: whether a wanted record is in the top --top, its rank (- when not in the first
 --limit), and "STALE" when a stale record ranks above it. The last lines total them. With --command the ids are read
 from the command's printed results and each is looked up in the store, so the same matchers apply; --command reads
-the store SUPERHISTORY_HOME names, so it takes no --db.
+the store SUPERHISTORY_HOME names, so it takes no --db. --rerank searches as `superhistory search` does with [search]
+rerank on: it reads the config at --config, or the user's, and turns rerank on whatever the file says, so one question
+file compares both orders. It calls the [ai] model for each question of two or more words.
 
 The agent sessions that wrote or ran the questions hold their words and land in the store at the next ingest, where
 they outrank every real answer. Each --skip drops the hits whose item id, file path or working folder holds the given
 text, such as the folder those sessions ran in, before they take a place.
 """
 import argparse
+import dataclasses
 import json
 import os
 import re
@@ -37,7 +41,7 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
 
-from kb import search, store  # noqa: E402
+from kb import rerank, search, store  # noqa: E402
 
 
 SPARE = 20
@@ -113,12 +117,18 @@ def main(argv=None):
     p.add_argument("--command", help="run this search command instead of the package's search()")
     p.add_argument("--skip", action="append", default=[], help="leave out hits whose path holds this text")
     p.add_argument("--json", action="store_true", help="one JSON result per line")
+    p.add_argument("--rerank", action="store_true", help="let the [ai] model order the hits, as kb.rerank does")
+    p.add_argument("--config", help="the config file --rerank reads (default: the user's)")
     args = p.parse_args(argv)
-    if args.command and args.db:
-        p.error("--command searches the store SUPERHISTORY_HOME names, so its ids are looked up there; drop --db")
+    if args.command and (args.db or args.rerank):
+        p.error("--command searches the store SUPERHISTORY_HOME names with its own config; drop --db and --rerank")
+    from kb import config, paths
     if not args.db:
-        from kb import paths
         args.db = paths.Paths.for_user().db
+    settings = None
+    if args.rerank:
+        settings = config.load(args.config or paths.Paths.for_user().config_file)
+        settings = dataclasses.replace(settings, search=dataclasses.replace(settings.search, rerank=True))
     db = store.connect(args.db, readonly=True)
     results = []
     for question in load(args.questions):
@@ -126,6 +136,9 @@ def main(argv=None):
             # Asked for more than --limit, so the skipped hits do not shorten the list.
             hits = run_command(args.command, db, question["q"], args.limit + SPARE)
             hits = [h for h in hits if not skipped(h, args.skip)][:args.limit]
+        elif settings:
+            hits = rerank.rerank(db, settings, question["q"], limit=args.limit,
+                                 keep=lambda h: not skipped(h, args.skip))
         else:
             hits = search.search(db, question["q"], limit=args.limit, keep=lambda h: not skipped(h, args.skip))
         r = score(question, hits, args.top)
